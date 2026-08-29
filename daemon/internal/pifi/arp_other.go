@@ -1,0 +1,26 @@
+//go:build !linux
+
+package pifi
+
+import (
+	"errors"
+	"time"
+)
+
+// Stub so the daemon compiles and its tests run on a developer's macOS
+// machine. AF_PACKET has no portable equivalent; pifi only ever runs on the Pi,
+// but being unable to build locally would make development needlessly painful.
+type Learner struct{ bridge string }
+
+type Seen struct {
+	IP   string
+	Port string
+}
+
+func NewLearner(bridge string) *Learner { return &Learner{bridge: bridge} }
+
+func (l *Learner) Run() error {
+	return errors.New("passive learning requires Linux (AF_PACKET)")
+}
+func (l *Learner) Close()                              {}
+func (l *Learner) Table(time.Duration) map[string]Seen { return map[string]Seen{} }

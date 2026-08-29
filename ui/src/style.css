@@ -1,0 +1,285 @@
+/*
+ * pifi is an instrument, so it is styled like one: dark, dense, and numeric.
+ * Every measured value is monospaced and tabular so digits hold their column
+ * and a changing number does not make the layout twitch once a second.
+ *
+ * Downlink is cyan and uplink is amber, consistently, everywhere. Direction is
+ * the single most confusable thing in a bidirectional conditioner, so it is
+ * carried by colour as well as by label.
+ */
+
+:root {
+  --bg: #0d1117;
+  --panel: #151b23;
+  --panel-2: #1c232d;
+  --line: #2a3441;
+  --line-soft: #202834;
+
+  --ink: #e6edf3;
+  --ink-dim: #9aa7b4;
+  --ink-faint: #6b7885;
+
+  /* Downlink / uplink are a categorical pair (identity = direction), stepped
+     for this dark surface and validated: lightness band OKLCH L 0.48-0.67,
+     CVD separation dE 26.8 protan / 32.4 tritan, normal-vision dE 31.8, both
+     above 3:1 against --panel. The earlier cyan/amber pair failed the
+     lightness band on a dark surface. */
+  --down: #3987e5;
+  --up: #d95926;
+  --ok: #4ade80;
+  --warn: #fb923c;
+  --bad: #f87171;
+
+  --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas,
+    "Liberation Mono", monospace;
+  --sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
+    "Helvetica Neue", Arial, sans-serif;
+
+  --r: 8px;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font-family: var(--sans);
+  font-size: 14px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+
+.num {
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+}
+
+.wrap { max-width: 1180px; margin: 0 auto; padding: 20px 16px 64px; }
+
+/* --- header ------------------------------------------------------------- */
+header.top {
+  display: flex;
+  align-items: baseline;
+  gap: 14px;
+  flex-wrap: wrap;
+  padding-bottom: 14px;
+  border-bottom: 1px solid var(--line);
+  margin-bottom: 18px;
+}
+header.top h1 {
+  margin: 0;
+  font-size: 20px;
+  letter-spacing: -0.01em;
+  font-weight: 650;
+}
+header.top .sub { color: var(--ink-faint); font-size: 13px; }
+
+.pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 9px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  font-size: 12px;
+  color: var(--ink-dim);
+}
+.dot { width: 7px; height: 7px; border-radius: 50%; background: var(--ink-faint); }
+.dot.live { background: var(--ok); box-shadow: 0 0 0 3px rgb(74 222 128 / 0.15); }
+.dot.stale { background: var(--warn); }
+.dot.off { background: var(--bad); }
+
+/* --- notices ------------------------------------------------------------ */
+.notice {
+  display: flex;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--warn);
+  border-radius: var(--r);
+  background: var(--panel);
+  color: var(--ink-dim);
+  font-size: 13px;
+  margin-bottom: 10px;
+}
+.notice.bad { border-left-color: var(--bad); }
+
+/* Footnotes: same shape as a notice, dialled back so they read as standing
+   context rather than something needing attention. */
+.notes { margin-top: 26px; padding-top: 16px; border-top: 1px solid var(--line); }
+.notes .notice.info {
+  border-left-color: var(--line);
+  color: var(--ink-faint);
+  font-size: 12px;
+  background: transparent;
+}
+
+/* --- device card -------------------------------------------------------- */
+.card {
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+  background: var(--panel);
+  margin-bottom: 14px;
+  overflow: hidden;
+}
+.card.absent { opacity: 0.62; }
+
+.card-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 14px;
+  background: var(--panel-2);
+  border-bottom: 1px solid var(--line);
+  flex-wrap: wrap;
+}
+.card-head .name {
+  font-weight: 600;
+  font-size: 15px;
+  background: none;
+  border: 1px solid transparent;
+  color: var(--ink);
+  padding: 2px 6px;
+  border-radius: 5px;
+  min-width: 120px;
+  font-family: inherit;
+}
+.card-head .name:hover { border-color: var(--line); }
+.card-head .name:focus { border-color: var(--down); outline: none; background: var(--bg); }
+.meta { color: var(--ink-faint); font-size: 12px; }
+.spacer { flex: 1; }
+
+.badge {
+  font-size: 11px;
+  padding: 1px 7px;
+  border-radius: 4px;
+  border: 1px solid var(--line);
+  color: var(--ink-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.badge.wifi { color: var(--down); border-color: color-mix(in srgb, var(--down) 40%, var(--line)); }
+.badge.wired { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 40%, var(--line)); }
+
+/* --- direction panes ---------------------------------------------------- */
+.dirs { display: grid; grid-template-columns: 1fr 1fr; gap: 1px; background: var(--line-soft); }
+@media (max-width: 860px) { .dirs { grid-template-columns: 1fr; } }
+
+/* min-width:0 because a grid item defaults to min-width:auto -- its content
+   size -- so a wide child (an SVG with an explicit width) pushes the column
+   past its share and overflows the card instead of shrinking. */
+.dir { background: var(--panel); padding: 13px 14px; min-width: 0; }
+.dir h3 {
+  margin: 0 0 10px;
+  font-size: 11px;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.dir.down h3 { color: var(--down); }
+.dir.up h3 { color: var(--up); }
+
+.readout { margin-left: auto; font-size: 17px; font-weight: 600; }
+.dir.down .readout { color: var(--down); }
+.dir.up .readout { color: var(--up); }
+.readout small { font-size: 11px; font-weight: 400; color: var(--ink-faint); }
+
+/* --- sliders ------------------------------------------------------------ */
+.row { display: grid; grid-template-columns: 58px 1fr 82px; gap: 10px; align-items: center; margin-bottom: 7px; }
+.row label { font-size: 12px; color: var(--ink-dim); }
+.row .val { text-align: right; font-size: 12px; color: var(--ink); }
+.row.disabled { opacity: 0.45; }
+
+input[type='range'] {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: 3px;
+  border-radius: 2px;
+  background: var(--line);
+  outline: none;
+}
+input[type='range']::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 13px;
+  height: 13px;
+  border-radius: 50%;
+  background: var(--ink);
+  cursor: pointer;
+  border: 2px solid var(--panel);
+}
+.dir.down input[type='range']::-webkit-slider-thumb { background: var(--down); }
+.dir.up input[type='range']::-webkit-slider-thumb { background: var(--up); }
+input[type='range']::-moz-range-thumb {
+  width: 13px; height: 13px; border-radius: 50%;
+  background: var(--ink); cursor: pointer; border: 2px solid var(--panel);
+}
+
+/* --- footers, tables ---------------------------------------------------- */
+.card-foot {
+  padding: 10px 14px;
+  border-top: 1px solid var(--line);
+  background: var(--panel-2);
+  display: flex;
+  gap: 16px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+.rtt {
+  font-size: 13px;
+  padding: 3px 10px;
+  border-radius: 5px;
+  border: 1px solid var(--line);
+  background: var(--bg);
+}
+.rtt b { color: var(--ink); }
+
+table.counters { width: 100%; border-collapse: collapse; font-size: 12px; }
+table.counters th {
+  text-align: right;
+  font-weight: 500;
+  color: var(--ink-faint);
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--line);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  white-space: nowrap;
+}
+table.counters th:first-child, table.counters td:first-child { text-align: left; }
+table.counters td { text-align: right; padding: 4px 8px; border-bottom: 1px solid var(--line-soft); }
+.scroll-x { overflow-x: auto; }
+
+button {
+  font: inherit;
+  font-size: 12px;
+  color: var(--ink-dim);
+  background: var(--panel);
+  border: 1px solid var(--line);
+  padding: 4px 11px;
+  border-radius: 5px;
+  cursor: pointer;
+}
+button:hover { color: var(--ink); border-color: var(--ink-faint); }
+button.accent { color: var(--bg); background: var(--down); border-color: var(--down); font-weight: 600; }
+button.ghost { background: transparent; }
+
+select, input[type='text'], input[type='number'] {
+  font: inherit;
+  font-size: 12px;
+  color: var(--ink);
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  padding: 3px 7px;
+}
+
+.presets { display: flex; gap: 6px; flex-wrap: wrap; }
+.pill.link { text-decoration: none; }
+.pill.link:hover { color: var(--ink); border-color: var(--ink-faint); }
+
+.empty { text-align: center; padding: 56px 20px; color: var(--ink-faint); }

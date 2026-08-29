@@ -1,0 +1,26 @@
+# Secrets and local configuration
+.env
+
+# Build outputs, anchored to the repo root. NOT a bare `dist/`: that pattern
+# matches at any depth and would also exclude daemon/web/dist, whose
+# placeholder index.html must be tracked or //go:embed fails to compile on a
+# fresh clone.
+#
+# cache/ and dist/ are excluded deliberately, not just for tidiness: a built
+# image is a derivative of Raspberry Pi OS and must not be redistributed from
+# this repository. See docs/LICENSING.md.
+/cache/
+/work/
+/dist/
+
+# Compiled payload, produced by scripts/build-payload.sh
+overlay/usr/local/bin/pifid
+# Compiled web interface; the placeholder index.html beside it IS tracked.
+daemon/web/dist/assets/
+
+node_modules/
+.DS_Store
+
+# memsearch plugin session memory. Contains conversation notes, including
+# credentials that were discussed. Never commit.
+.memsearch/

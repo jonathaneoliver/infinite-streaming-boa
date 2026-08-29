@@ -1,0 +1,7 @@
+# Extra packages baked into the image at build time (native arm64 chroot).
+# The finished Pi never needs a network connection to become useful.
+iproute2
+nftables
+avahi-daemon
+rfkill
+iw

@@ -1,0 +1,33 @@
+[Unit]
+Description=pifi per-client network link conditioner
+Documentation=https://github.com/jonathaneoliver/pifi
+# The bridge must exist before queueing disciplines can be attached to its
+# ports, and NetworkManager is what creates it.
+After=network-online.target NetworkManager.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=/etc/default/pifi
+ExecStart=/usr/local/bin/pifid \
+  -addr ${PIFI_ADDR} \
+  -bridge ${PIFI_BRIDGE} \
+  -wan ${PIFI_WAN_PORT} \
+  -wlan ${PIFI_WLAN_PORT} \
+  -lan ${PIFI_LAN_PORT} \
+  -state ${PIFI_STATE}
+Restart=always
+RestartSec=3
+
+# Root is required: the daemon configures queueing disciplines and opens a
+# packet socket to learn client addresses. These limits keep the rest of the
+# system's surface closed rather than granting blanket privilege.
+User=root
+NoNewPrivileges=false
+ProtectHome=yes
+ProtectSystem=strict
+ReadWritePaths=/var/lib/pifi
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target
