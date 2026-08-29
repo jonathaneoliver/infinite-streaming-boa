@@ -1,6 +1,9 @@
 package pifi
 
-import "testing"
+import (
+	"net"
+	"testing"
+)
 
 // buildMsg assembles a DNS message from a header and a body, so the tests read
 // as data rather than as byte arithmetic.
@@ -95,14 +98,19 @@ func TestUDPPayload(t *testing.T) {
 	pkt[22], pkt[23] = 0x14, 0xe9 // dport 5353
 	copy(pkt[28:], []byte{1, 2, 3, 4})
 
-	got, ok := udpPayload(pkt, mdnsPort)
+	copy(pkt[ipSrc:], []byte{192, 168, 0, 214})
+
+	got, src, ok := udpPayload(pkt, mdnsPort)
 	if !ok || len(got) != 4 || got[0] != 1 {
 		t.Fatalf("want the 4-byte payload, got %v ok=%v", got, ok)
 	}
-	if _, ok := udpPayload(pkt, 53); ok {
+	if src.String() != "192.168.0.214" {
+		t.Fatalf("want the source address 192.168.0.214, got %v", src)
+	}
+	if _, _, ok := udpPayload(pkt, 53); ok {
 		t.Fatal("must not match a different port")
 	}
-	if _, ok := udpPayload([]byte{0x45}, mdnsPort); ok {
+	if _, _, ok := udpPayload([]byte{0x45}, mdnsPort); ok {
 		t.Fatal("must reject a runt packet")
 	}
 }
@@ -135,5 +143,83 @@ func TestIsUUIDName(t *testing.T) {
 		if isUUIDName(s) {
 			t.Errorf("%q must not be treated as a UUID", s)
 		}
+	}
+}
+
+// frame wraps a DNS message in a UDP datagram inside an IP packet, the shape
+// the capture socket delivers: no Ethernet header, IP header first.
+func frame(src, dst net.IP, msg []byte) []byte {
+	udp := []byte{0x14, 0xe9, 0x14, 0xe9, 0, 0, 0, 0} // 5353 -> 5353
+	udp[4] = byte((len(msg) + 8) >> 8)
+	udp[5] = byte(len(msg) + 8)
+	if v4 := src.To4(); v4 != nil {
+		h := make([]byte, ipMinLen)
+		h[0] = 0x45
+		h[9] = 17
+		copy(h[ipSrc:], v4)
+		copy(h[16:], dst.To4())
+		return append(append(h, udp...), msg...)
+	}
+	h := make([]byte, ip6MinLen)
+	h[0] = 0x60
+	h[6] = 17
+	copy(h[ip6Src:], src.To16())
+	copy(h[24:], dst.To16())
+	return append(append(h, udp...), msg...)
+}
+
+// A device is named by the record for the address it is announcing FROM. That
+// binding is the one that can be keyed by MAC, which is what makes a name stick
+// to a device whose address this box has never otherwise seen.
+func TestParseMDNSFrame_NamesTheSender(t *testing.T) {
+	v4 := append(name("Jons-iPhone", "local"),
+		0, dnsTypeA, 0x80, 1, 0, 0, 0, 120, 0, 4, 192, 168, 0, 214)
+	_, sender := ParseMDNSFrame(frame(
+		net.ParseIP("192.168.0.214"), net.ParseIP("224.0.0.251"),
+		buildMsg(0, 1, 0, 0, v4)))
+	if sender != "Jons-iPhone" {
+		t.Fatalf("want Jons-iPhone, got %q", sender)
+	}
+
+	// IPv6 is the case that matters most: measured on a real network, most
+	// announcements arrive over v6, on addresses pifi has not otherwise seen.
+	v6 := append(name("AppleTV", "local"),
+		0, dnsTypeAAAA, 0x80, 1, 0, 0, 0, 120, 0, 16,
+		0xfd, 0xd5, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x05)
+	byAddr, sender := ParseMDNSFrame(frame(
+		net.ParseIP("fdd5::5"), net.ParseIP("ff02::fb"),
+		buildMsg(0, 0, 0, 1, v6)))
+	if sender != "AppleTV" {
+		t.Fatalf("want AppleTV, got %q", sender)
+	}
+	if byAddr["fdd5::5"] != "AppleTV" {
+		t.Fatalf("the address binding must survive too, got %v", byAddr)
+	}
+}
+
+// Bonjour Sleep Proxy: an Apple TV answers on behalf of a sleeping laptop, so
+// the name in the packet is not the sender's. Attributing it would put the
+// laptop's name on the Apple TV's card and leave it there.
+func TestParseMDNSFrame_RefusesAnotherHostsName(t *testing.T) {
+	body := append(name("Graces-MacBook", "local"),
+		0, dnsTypeA, 0x80, 1, 0, 0, 0, 120, 0, 4, 192, 168, 0, 50)
+	byAddr, sender := ParseMDNSFrame(frame(
+		net.ParseIP("192.168.0.9"), net.ParseIP("224.0.0.251"),
+		buildMsg(0, 1, 0, 0, body)))
+	if sender != "" {
+		t.Fatalf("a name for another host must not be attributed to the sender, got %q", sender)
+	}
+	// It is still worth knowing by address; only the MAC binding is refused.
+	if byAddr["192.168.0.50"] != "Graces-MacBook" {
+		t.Fatalf("want the address binding kept, got %v", byAddr)
+	}
+}
+
+func TestParseMDNSFrame_IgnoresNonMDNS(t *testing.T) {
+	pkt := make([]byte, ipMinLen+8)
+	pkt[0], pkt[9] = 0x45, 17
+	pkt[22], pkt[23] = 0, 53 // port 53, not 5353
+	if byAddr, sender := ParseMDNSFrame(pkt); byAddr != nil || sender != "" {
+		t.Fatalf("want nothing from a non-mDNS packet, got %v %q", byAddr, sender)
 	}
 }

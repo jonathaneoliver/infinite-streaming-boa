@@ -77,7 +77,7 @@ func NewEngine(cfg Config) *Engine {
 		cfg:       cfg,
 		sh:        NewShaper(cfg.WANPort, cfg.Bridge),
 		st:        NewStore(cfg.StatePath),
-		learn:     NewLearner(cfg.Bridge),
+		learn:     NewLearner(cfg.Bridge, cfg.WlanPort, cfg.LanPort),
 		prev:      map[string]counterSample{},
 		demo:      newDemoFleet(),
 		demoBytes: map[string]uint64{},
@@ -255,6 +255,7 @@ func (e *Engine) tick() {
 	// "no address yet". The IPv4 sampler refreshes anything actually sending.
 	arp := e.learn.Table(20 * time.Minute)
 	neigh := NeighTable(e.cfg.Bridge)
+	macNames := e.learn.MACNames()
 	names := e.learn.Names()
 	policies := e.st.All()
 
@@ -342,9 +343,21 @@ func (e *Engine) tick() {
 		if !hasPol {
 			pol = Policy{MAC: mac, Enabled: true}
 		}
-		// What the device calls itself, from its own mDNS announcements. Any
-		// of its addresses may carry the binding, so all are tried.
-		hostname := names[ip]
+		// What the device calls itself, from its own mDNS announcements.
+		//
+		// The MAC-keyed binding comes first because it is the one that holds:
+		// a device announces on whatever address it likes, including one this
+		// box has never otherwise seen, and on a real network most of those
+		// announcements are IPv6. Matching by address needs pifi to already
+		// know the address, which for an idle device it often does not.
+		//
+		// The address-keyed table is the fallback, for an announcement whose
+		// sender could not be identified. Any of the device's addresses may
+		// carry that binding, so all are tried.
+		hostname := macNames[mac]
+		if hostname == "" {
+			hostname = names[ip]
+		}
 		if hostname == "" {
 			for _, a := range v6 {
 				if n := names[a]; n != "" {
@@ -456,7 +469,7 @@ func (e *Engine) tick() {
 			Leases:    false, // transparent bridge: upstream owns DHCP
 			WlanIface: e.cfg.WlanPort, UplinkIf: e.cfg.WANPort,
 			Ntopng: e.ntopngUp(), NtopngPort: ntopngPort,
-			NamesLearned: len(names),
+			NamesLearned: len(names), NamesByMAC: len(macNames),
 		},
 		Notices: e.notices(ready, reason),
 	}

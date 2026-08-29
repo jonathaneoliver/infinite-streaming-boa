@@ -18,12 +18,13 @@ type Seen struct {
 	Port string
 }
 
-func NewLearner(bridge string) *Learner { return &Learner{bridge: bridge} }
+func NewLearner(bridge, wlanPort, lanPort string) *Learner { return &Learner{bridge: bridge} }
 
 func (l *Learner) Run() error {
 	return errors.New("passive learning requires Linux (AF_PACKET)")
 }
 func (l *Learner) Names() map[string]string            { return map[string]string{} }
+func (l *Learner) MACNames() map[string]string         { return map[string]string{} }
 func (l *Learner) LoadNames(string)                    {}
 func (l *Learner) SaveNames(string)                    {}
 func (l *Learner) Close()                              {}

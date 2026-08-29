@@ -26,10 +26,13 @@ import (
 const (
 	mdnsPort = 5353
 
-	// Header lengths live here rather than in the Linux-only listener so the
-	// packet dissection below stays portable and testable off the Pi.
+	// Header lengths and field offsets live here rather than in the Linux-only
+	// listener so the packet dissection below stays portable and testable off
+	// the Pi.
 	ipMinLen  = 20 // IPv4 header, minimum
 	ip6MinLen = 40 // IPv6 fixed header
+	ipSrc     = 12 // source address, IPv4
+	ip6Src    = 8  // source address, IPv6
 
 	dnsHeaderLen = 12
 	dnsTypeA     = 1
@@ -182,44 +185,87 @@ func isUUIDName(n string) bool {
 }
 
 // udpPayload returns the UDP payload of an IPv4 or IPv6 packet when it is
-// addressed to or from the given port, along with whether it matched.
+// addressed to or from the given port, along with the packet's SOURCE address
+// and whether it matched.
+//
+// The source address comes back because it is what ties an announcement to the
+// host that made it -- see nameForSender.
 //
 // IPv6 extension headers are not walked: mDNS in practice carries none, and
 // chasing a header chain to salvage a display name is not worth the code.
-func udpPayload(pkt []byte, port int) ([]byte, bool) {
+func udpPayload(pkt []byte, port int) ([]byte, net.IP, bool) {
 	if len(pkt) < 1 {
-		return nil, false
+		return nil, nil, false
 	}
 	var hdrLen, proto int
+	var src net.IP
 
 	switch pkt[0] >> 4 {
 	case 4:
 		if len(pkt) < ipMinLen {
-			return nil, false
+			return nil, nil, false
 		}
 		hdrLen = int(pkt[0]&0x0F) * 4
 		if hdrLen < ipMinLen {
-			return nil, false
+			return nil, nil, false
 		}
 		proto = int(pkt[9])
+		src = net.IP(pkt[ipSrc : ipSrc+4])
 	case 6:
 		if len(pkt) < ip6MinLen {
-			return nil, false
+			return nil, nil, false
 		}
 		hdrLen = ip6MinLen
 		proto = int(pkt[6])
+		src = net.IP(pkt[ip6Src : ip6Src+16])
 	default:
-		return nil, false
+		return nil, nil, false
 	}
 
 	const udp = 17
 	if proto != udp || len(pkt) < hdrLen+8 {
-		return nil, false
+		return nil, nil, false
 	}
-	src := int(pkt[hdrLen])<<8 | int(pkt[hdrLen+1])
-	dst := int(pkt[hdrLen+2])<<8 | int(pkt[hdrLen+3])
-	if src != port && dst != port {
-		return nil, false
+	sport := int(pkt[hdrLen])<<8 | int(pkt[hdrLen+1])
+	dport := int(pkt[hdrLen+2])<<8 | int(pkt[hdrLen+3])
+	if sport != port && dport != port {
+		return nil, nil, false
 	}
-	return pkt[hdrLen+8:], true
+	return pkt[hdrLen+8:], src, true
+}
+
+// ParseMDNSFrame reads a whole IP packet and returns both the address-to-name
+// bindings it carries and the one name attributable to the host that SENT it.
+//
+// That second value is the one that can be keyed by source MAC, which is what
+// makes a name stick to a device rather than to an address it may not hold for
+// long, or that this box may never have seen.
+func ParseMDNSFrame(pkt []byte) (byAddr map[string]string, sender string) {
+	payload, src, ok := udpPayload(pkt, mdnsPort)
+	if !ok {
+		return nil, ""
+	}
+	byAddr = ParseMDNS(payload)
+	return byAddr, nameForSender(byAddr, src)
+}
+
+// nameForSender picks the name belonging to the host a message came FROM: the
+// one bound to the packet's own source address.
+//
+// That is the ordinary shape of an announcement. A device sends from the
+// address it is telling the network about, so a record for the source address
+// is the sender naming itself -- evidence rather than inference.
+//
+// Nothing weaker is accepted, deliberately. A message announcing exactly one
+// name is USUALLY that host's own, but Bonjour Sleep Proxy is the exception: an
+// Apple TV answers on behalf of a sleeping device, so the only name in the
+// packet belongs to a different machine. Believing it would put "Graces-MacBook"
+// on the Apple TV's card and leave it there, since the sleeping device sends
+// nothing that would correct it. A bare MAC is an honest label and a wrong name
+// is not, and the address-keyed table still catches whatever this refuses.
+func nameForSender(byAddr map[string]string, src net.IP) string {
+	if src == nil {
+		return ""
+	}
+	return byAddr[src.String()]
 }
