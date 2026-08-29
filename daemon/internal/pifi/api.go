@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io/fs"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -71,11 +72,42 @@ func (a *API) health(w http.ResponseWriter, r *http.Request) {
 // hundredfold to re-send data the client already has. The UI fetches this once
 // on load and appends from the live stream thereafter.
 func (a *API) getHistory(w http.ResponseWriter, r *http.Request) {
+	// The window the interface is about to draw, so a 1-minute view does not
+	// pay for an hour of samples. Clamped rather than rejected: a bad query
+	// string should degrade to a sensible chart, not an error page.
+	win := time.Duration(clampInt(atoiOr(r.URL.Query().Get("window"), 300), 60, 3600)) * time.Second
+	max := clampInt(atoiOr(r.URL.Query().Get("points"), 600), 60, 3600)
+
+	series, bucket := a.e.History().Window(win, max)
 	writeJSON(w, http.StatusOK, map[string]any{
+		// bucket_ms is what one plotted point actually covers; interval_ms is
+		// the live tick the stream appends at. They differ on long ranges, and
+		// conflating them would let the chart claim a resolution it does not
+		// have.
 		"interval_ms": 1000,
+		"bucket_ms":   bucket,
+		"window_sec":  int(win.Seconds()),
 		"now":         nowMs(),
-		"clients":     a.e.History().Snapshot(),
+		"clients":     series,
 	})
+}
+
+func atoiOr(s string, def int) int {
+	n, err := strconv.Atoi(s)
+	if err != nil {
+		return def
+	}
+	return n
+}
+
+func clampInt(v, lo, hi int) int {
+	if v < lo {
+		return lo
+	}
+	if v > hi {
+		return hi
+	}
+	return v
 }
 
 func (a *API) stream(w http.ResponseWriter, r *http.Request) {

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue';
-import type { Client, Shape, Series } from '@/types';
+import type { Client, Shape, Series, ChartPrefs } from '@/types';
 import { PRESETS, ntopngUrl } from '@/types';
 import ShapeSliders from './ShapeSliders.vue';
 import SubClasses from './SubClasses.vue';
@@ -11,6 +11,10 @@ const props = defineProps<{
   series?: Series;
   ntopngPort?: number;
   collapsed?: boolean;
+  /** Chart settings, shared by every card so devices stay comparable. */
+  chart: ChartPrefs;
+  /** Right-hand edge of every plot, held still while a chart is hovered. */
+  now: number;
 }>();
 const emit = defineEmits<{
   shape: [dir: 'down' | 'up', shape: Shape];
@@ -23,7 +27,18 @@ const emit = defineEmits<{
   removeSub: [string];
   patchSub: [string, Record<string, unknown>];
   subShape: [string, 'down' | 'up', Shape];
+  hovering: [boolean];
 }>();
+
+// The chart props every plot on this card shares. Spread rather than repeated
+// four times, so the sparkline on a folded row can never drift out of step with
+// the full chart it summarises.
+const chartProps = computed(() => ({
+  windowMs: props.chart.rangeSec * 1000,
+  now: props.now,
+  yMode: props.chart.yMode,
+  yManual: props.chart.yManual,
+}));
 
 const open = ref(false);
 
@@ -114,7 +129,9 @@ function fmtBytes(n: number): string {
 
       <span class="cell spark">
         <TrafficChart
-          :data="series?.down ?? []" color="var(--down)" label="Downlink"
+          v-bind="chartProps"
+          :t="series?.t ?? []" :data="series?.down ?? []"
+          color="var(--down)" label="Downlink"
           :cap="client.policy.down.rate_mbps" :height="24" compact
         />
       </span>
@@ -124,7 +141,9 @@ function fmtBytes(n: number): string {
 
       <span class="cell spark">
         <TrafficChart
-          :data="series?.up ?? []" color="var(--up)" label="Uplink"
+          v-bind="chartProps"
+          :t="series?.t ?? []" :data="series?.up ?? []"
+          color="var(--up)" label="Uplink"
           :cap="client.policy.up.rate_mbps" :height="24" compact
         />
       </span>
@@ -262,8 +281,11 @@ function fmtBytes(n: number): string {
           </span>
         </h3>
         <TrafficChart
-          :data="series?.down ?? []" color="var(--down)" label="Downlink"
+          v-bind="chartProps"
+          :t="series?.t ?? []" :data="series?.down ?? []"
+          color="var(--down)" label="Downlink"
           :cap="client.policy.down.rate_mbps" :height="196"
+          @hovering="(v: boolean) => emit('hovering', v)"
         />
         <ShapeSliders
           :shape="client.policy.down" dir="down" :disabled="!client.shapeable"
@@ -280,8 +302,11 @@ function fmtBytes(n: number): string {
           </span>
         </h3>
         <TrafficChart
-          :data="series?.up ?? []" color="var(--up)" label="Uplink"
+          v-bind="chartProps"
+          :t="series?.t ?? []" :data="series?.up ?? []"
+          color="var(--up)" label="Uplink"
           :cap="client.policy.up.rate_mbps" :height="196"
+          @hovering="(v: boolean) => emit('hovering', v)"
         />
         <ShapeSliders
           :shape="client.policy.up" dir="up" :disabled="!client.shapeable"

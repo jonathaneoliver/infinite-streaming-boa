@@ -51,6 +51,47 @@ func newDemoFleet() []*demoClient {
 	}
 }
 
+// demoOffer is the rate a synthetic device would like to send at time t.
+//
+// A slow swell rather than a flat line, so the sparkline and the axis modes can
+// actually be judged. Split out from demoTick because the backfill below has to
+// evaluate the same curve at past instants -- two copies of it would drift, and
+// the seam where a replayed hour met the live tick would look like a bug in the
+// chart rather than a difference in the fixture.
+func demoOffer(d *demoClient, t float64) float64 {
+	return d.baseMbps * (0.55 + 0.45*math.Sin(t/11+d.phase))
+}
+
+// demoBackfill replays an hour of synthetic history into the ring at start-up.
+//
+// Without it, demo mode cannot exercise the thing it exists to exercise: the
+// 15m and 1h ranges, the server-side decimation, and the reload seed are all
+// invisible until the daemon has been running for an hour. This makes them
+// visible on the first page load.
+//
+// Demo mode only. Inventing history on a real box would put traffic on the
+// chart that never happened, which is precisely the lie this interface is
+// built not to tell.
+func (e *Engine) demoBackfill() {
+	now := time.Now()
+	for _, d := range e.demo {
+		if !d.present || d.ip == "" {
+			continue
+		}
+		for age := historyLen; age >= 1; age-- {
+			at := now.Add(-time.Duration(age) * time.Second)
+			// The same jitter the live tick applies. Without it the replayed
+			// hour is a clean sine and the live tail is noisy, so the seam
+			// between them reads as a rendering bug in the chart rather than
+			// the boundary of a fixture.
+			offer := demoOffer(d, float64(at.UnixMilli())/1000.0) * (0.85 + 0.3*rand.Float64())
+			e.hist.Add(d.mac, Sample{
+				T: at.UnixMilli(), Down: offer, Up: offer * 0.12,
+			})
+		}
+	}
+}
+
 // demoTick synthesises one frame. Throughput respects whatever cap the operator
 // has set, so dragging a slider visibly changes the graph -- without that the
 // controls feel dead and the interface cannot really be judged.
@@ -100,11 +141,7 @@ func (e *Engine) demoTick() {
 		}
 
 		if d.present && d.ip != "" {
-			// A slow swell plus jitter reads as real traffic rather than a
-			// synthetic sine, which matters when judging the sparkline.
-			wave := 0.55 + 0.45*math.Sin(t/11+d.phase)
-			noise := 0.85 + 0.3*rand.Float64()
-			offer := d.baseMbps * wave * noise
+			offer := demoOffer(d, t) * (0.85 + 0.3*rand.Float64())
 
 			down := offer
 			if pol.Enabled && pol.Down.RateMbps > 0 {
@@ -132,6 +169,16 @@ func (e *Engine) demoTick() {
 			}
 		}
 		clients = append(clients, c)
+	}
+
+	// Recorded before publishing, exactly as the real tick does, so the demo
+	// exercises the same history path the interface reads back.
+	for i := range clients {
+		e.hist.Add(clients[i].MAC, Sample{
+			T:    now.UnixMilli(),
+			Down: clients[i].DownCounters.ThroughputMbps,
+			Up:   clients[i].UpCounters.ThroughputMbps,
+		})
 	}
 
 	e.mu.Lock()
