@@ -154,7 +154,7 @@ identity      = MAC                       (stable across DHCP renewal)
 ip            = resolved attribute        (F, else C; may be absent)
 port          = from B (wifi) or C2 (wired); REQUIRED to shape downlink
 present       = appears in B, C2 or F     (NOT "has a lease")
-label         = A.hostname, else user-set nickname, else MAC
+label         = user-set nickname, else G.name, else MAC
 policy        = keyed by MAC, persisted   (survives IP change and disconnect)
 counters      = D + E, keyed by classid   (epoch-bounded per policy write)
 ```
@@ -277,3 +277,45 @@ nothing injected onto a network pifi is meant to be invisible on.
   WAN port is excluded, or the client list fills with the rest of the network.
 - Entries older than 5 minutes are dropped: a stale binding would aim a shaping
   filter at an address that may since have moved to another device.
+
+## Source G — mDNS announcements · MAC→name
+
+**VERIFIED** in a container on 2026-08-29, against a bridge with two namespaces
+hanging off it. An `AF_PACKET`/`SOCK_DGRAM` socket opened with `ETH_P_ALL` and a
+hand-assembled classic BPF program passing UDP port 5353, plus multicast
+listeners on 224.0.0.251 and ff02::fb as a fallback.
+
+Devices announce themselves unprompted on the mDNS group, and a bridge sees
+every one of those frames. Nothing is queried and nothing is injected. Only A
+and AAAA answers are read: `name` → the address the record binds it to.
+
+| Field | Meaning |
+|---|---|
+| Source MAC | From the frame's link-layer header. **The key.** |
+| Source IP | Which of the announced addresses the sender is speaking from |
+| A / AAAA rdata | An address the sender claims |
+| Record name | What it calls that address, minus the `.local` suffix |
+
+**Semantics that bite**
+
+- **A name must be keyed by MAC, not by address.** Measured on a real network on
+  2026-08-29: 16 of 22 learned bindings were IPv6 against 6 IPv4, and pifi learns
+  a client's IPv6 addresses only by observing its traffic. An idle device
+  announcing over v6 has no address pifi knows, so an address-keyed name can
+  never be joined to it. The MAC is on the frame either way.
+- **`ETH_P_ALL`, not `ETH_P_IP`.** A protocol-specific packet socket only
+  receives frames delivered LOCALLY; the bridge claims a forwarded frame first.
+  The BPF program does the protocol selection the socket cannot.
+- **BPF offsets start at the IP header**, not the Ethernet header, because
+  `SOCK_DGRAM` has already pulled the link-layer header when the filter runs.
+  A filter written against a frame — as every tcpdump example is — passes
+  nothing at all.
+- **Every multicast frame arrives twice**: once at ingress on the physical port,
+  once when the bridge delivers a copy locally with `skb->dev` rewritten to
+  itself. The bridge's copy is skipped.
+- The name in a packet is not always the sender's. Bonjour Sleep Proxy answers
+  on behalf of a sleeping device, so only a record matching the packet's own
+  source address is attributed to the sender.
+- Announcements are a trickle — a handful of packets every few minutes — so the
+  sampled socket of Source F is the wrong instrument: it drops most of what it
+  sees by design, which is precisely the one packet carrying a name.

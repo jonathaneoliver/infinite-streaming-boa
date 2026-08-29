@@ -57,6 +57,7 @@ type Learner struct {
 	seen   map[string]learned
 	bridge string
 	fd     int
+	mdnsFd int
 
 	ifnames sync.Map // ifindex -> name
 
@@ -67,10 +68,17 @@ type Learner struct {
 	local   []*net.IPNet
 	local6  []*net.IPNet
 
-	// names maps an address to what the device calls itself, learned from the
-	// mDNS announcements every device broadcasts unprompted.
-	namesMu sync.RWMutex
-	names   map[string]string
+	// macNames maps a client MAC to what the device calls itself, learned from
+	// the mDNS announcements every device broadcasts unprompted. The MAC is the
+	// device; an address is only somewhere it currently is.
+	//
+	// names is the same thing keyed by address, kept as the fallback for an
+	// announcement whose sender could not be identified -- and because it is
+	// what the box learned before MAC keying existed, so a restored table still
+	// labels devices while the first announcements come in.
+	namesMu  sync.RWMutex
+	macNames map[string]string
+	names    map[string]string
 }
 
 type learned struct {
@@ -93,9 +101,6 @@ const (
 	arpSenderMAC  = 8
 	arpSenderIPv4 = 14
 
-	ipSrc  = 12
-	ip6Src = 8
-
 	// Cap the filters a single device can demand. A misbehaving stack cycling
 	// through addresses should not be able to fill the filter table.
 	maxV6PerMAC = 8
@@ -116,8 +121,20 @@ func htons(v uint16) uint16 { return v<<8 | v>>8 }
 func NewLearner(bridge string) *Learner {
 	return &Learner{
 		seen: map[string]learned{}, names: map[string]string{},
-		bridge: bridge, fd: -1,
+		macNames: map[string]string{},
+		bridge:   bridge, fd: -1, mdnsFd: -1,
 	}
+}
+
+// nameTable is the on-disk form of both name tables.
+//
+// The file used to be a bare address-to-name object. A box upgraded in place
+// still has one, and unmarshalling that into this struct leaves both fields
+// nil, which is how the old shape is recognised and kept rather than thrown
+// away on the one restart where the names have not been relearned yet.
+type nameTable struct {
+	ByMAC     map[string]string `json:"by_mac"`
+	ByAddress map[string]string `json:"by_address"`
 }
 
 // LoadNames restores previously learned names so a restart does not blank every
@@ -127,22 +144,30 @@ func (l *Learner) LoadNames(path string) {
 	if err != nil {
 		return
 	}
-	var m map[string]string
-	if json.Unmarshal(raw, &m) != nil {
+	var t nameTable
+	if json.Unmarshal(raw, &t) != nil {
 		return
 	}
+	if t.ByMAC == nil && t.ByAddress == nil {
+		if json.Unmarshal(raw, &t.ByAddress) != nil {
+			return
+		}
+	}
 	l.namesMu.Lock()
-	for k, v := range m {
+	for k, v := range t.ByMAC {
+		l.macNames[normMAC(k)] = v
+	}
+	for k, v := range t.ByAddress {
 		l.names[k] = v
 	}
 	l.namesMu.Unlock()
 }
 
-// SaveNames writes the table out. Best-effort by design: a display name must
+// SaveNames writes the tables out. Best-effort by design: a display name must
 // never be able to fail the daemon.
 func (l *Learner) SaveNames(path string) {
 	l.namesMu.RLock()
-	raw, err := json.Marshal(l.names)
+	raw, err := json.Marshal(nameTable{ByMAC: l.macNames, ByAddress: l.names})
 	l.namesMu.RUnlock()
 	if err != nil {
 		return
@@ -237,17 +262,22 @@ func (l *Learner) Run() error {
 		}
 	}()
 
-	// A DEDICATED listener for mDNS, not the sampled packet stream below.
+	// DEDICATED listeners for mDNS, not the sampled packet stream below.
 	//
 	// The sampler is tuned for volume: it catches any packet from a device that
 	// is doing something, which is the right shape for learning addresses. mDNS
 	// is the opposite -- a handful of packets every few minutes -- so sampling
-	// would routinely discard the one packet carrying the name. Joining the
-	// multicast group and reading every announcement costs almost nothing,
-	// because that traffic is tiny.
+	// would routinely discard the one packet carrying the name. Reading every
+	// announcement costs almost nothing, because that traffic is tiny.
 	//
-	// Still passive: nothing is queried, nothing is sent, the box stays
+	// The filtered packet socket is the one that matters, because it is the
+	// only path that carries the SENDER'S MAC. The two multicast listeners are
+	// kept behind it: they need no privileges beyond the join, so they still
+	// learn names by address if the packet socket cannot be set up.
+	//
+	// All three are passive: nothing is queried, nothing is sent, the box stays
 	// invisible.
+	l.startMDNSCapture()
 	go l.listenMDNS("udp4", &net.UDPAddr{IP: net.IPv4(224, 0, 0, 251), Port: mdnsPort})
 	go l.listenMDNS("udp6", &net.UDPAddr{IP: net.ParseIP("ff02::fb"), Port: mdnsPort})
 
@@ -301,14 +331,14 @@ func (l *Learner) Run() error {
 				// Source MAC from the sockaddr, source IP from the header.
 				mac = net.HardwareAddr(ll.Addr[:6]).String()
 				ip = net.IP(buf[ipSrc : ipSrc+4])
-				l.maybeMDNS(buf[:n])
+				l.recordMDNS(mac, buf[:n])
 			case htons(ethPIPV6):
 				if n < ip6MinLen || ll.Halen < 6 {
 					continue
 				}
 				mac = net.HardwareAddr(ll.Addr[:6]).String()
 				ip = net.IP(buf[ip6Src : ip6Src+16])
-				l.maybeMDNS(buf[:n])
+				l.recordMDNS(mac, buf[:n])
 			default:
 				continue
 			}
@@ -386,6 +416,9 @@ func (l *Learner) Close() {
 	if l.fd >= 0 {
 		_ = syscall.Close(l.fd)
 	}
+	if l.mdnsFd >= 0 {
+		_ = syscall.Close(l.mdnsFd)
+	}
 }
 
 // Seen is one learned client: where it is and what address it holds.
@@ -422,45 +455,73 @@ func (l *Learner) Table(ttl time.Duration) map[string]Seen {
 	return out
 }
 
-// maybeMDNS records any address-to-name bindings an mDNS packet carries.
+// recordMDNS records what an mDNS packet says, against the MAC that sent it
+// where the sender can be identified, and against addresses either way.
 //
 // Multicast announcements are addressed to the group, not to this box, but a
 // bridge sees them anyway -- which is the whole reason this works without
 // querying anything.
-func (l *Learner) maybeMDNS(pkt []byte) {
-	payload, ok := udpPayload(pkt, mdnsPort)
-	if !ok {
-		return
-	}
-	found := ParseMDNS(payload)
-	if len(found) == 0 {
+//
+// mac may be empty, for a path that has no link-layer header to read it from.
+func (l *Learner) recordMDNS(mac string, pkt []byte) {
+	byAddr, sender := ParseMDNSFrame(pkt)
+	l.storeNames(mac, byAddr, sender)
+}
+
+// storeNames merges one announcement into both tables.
+func (l *Learner) storeNames(mac string, byAddr map[string]string, sender string) {
+	if len(byAddr) == 0 && sender == "" {
 		return
 	}
 	l.namesMu.Lock()
-	for ip, name := range found {
+	defer l.namesMu.Unlock()
+	for ip, name := range byAddr {
 		if name != "" {
 			l.names[ip] = name
 		}
 	}
-	// Bound the table. Names are a display convenience; an unbounded map fed
+	if mac != "" && sender != "" {
+		l.macNames[normMAC(mac)] = sender
+	}
+	// Bound both tables. Names are a display convenience; an unbounded map fed
 	// by anything on the network is not.
-	if len(l.names) > 512 {
-		for k := range l.names {
-			delete(l.names, k)
-			if len(l.names) <= 384 {
-				break
-			}
+	capNames(l.names)
+	capNames(l.macNames)
+}
+
+// capNames drops entries once a table grows past what any real network needs.
+// Which entries go is unspecified: the point is a ceiling, and anything still
+// on the network re-announces within minutes.
+func capNames(m map[string]string) {
+	if len(m) <= 512 {
+		return
+	}
+	for k := range m {
+		delete(m, k)
+		if len(m) <= 384 {
+			return
 		}
 	}
-	l.namesMu.Unlock()
 }
 
 // Names returns the address-to-name bindings learned so far.
 func (l *Learner) Names() map[string]string {
 	l.namesMu.RLock()
 	defer l.namesMu.RUnlock()
-	out := make(map[string]string, len(l.names))
-	for k, v := range l.names {
+	return copyNames(l.names)
+}
+
+// MACNames returns the MAC-to-name bindings learned so far -- the ones that
+// hold whether or not this box has ever seen the address a device announced on.
+func (l *Learner) MACNames() map[string]string {
+	l.namesMu.RLock()
+	defer l.namesMu.RUnlock()
+	return copyNames(l.macNames)
+}
+
+func copyNames(m map[string]string) map[string]string {
+	out := make(map[string]string, len(m))
+	for k, v := range m {
 		// Filter here as well as at parse time, so a UUID already sitting in
 		// memory or restored from disk can never reach the interface.
 		if v == "" || isUUIDName(v) {
@@ -504,16 +565,8 @@ func (l *Learner) listenMDNS(network string, group *net.UDPAddr) {
 		if err != nil {
 			return
 		}
-		found := ParseMDNS(buf[:n])
-		if len(found) == 0 {
-			continue
-		}
-		l.namesMu.Lock()
-		for ip, name := range found {
-			if name != "" {
-				l.names[ip] = name
-			}
-		}
-		l.namesMu.Unlock()
+		// No MAC on this path: the kernel handed over a UDP payload, and the
+		// frame that carried it is long gone. Addresses only.
+		l.storeNames("", ParseMDNS(buf[:n]), "")
 	}
 }

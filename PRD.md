@@ -82,8 +82,14 @@ device card. Optional: the image builds without it.
   outlives the client that held it.
 - A client may hold several IPv6 addresses at once (privacy extensions); all are
   tracked and all are conditioned.
-- Names are learned from mDNS announcements the device makes anyway. Randomised
-  UUID hostnames are discarded — they are worse labels than a MAC.
+- Names are learned from mDNS announcements the device makes anyway, and are
+  keyed by **MAC**: a name is bound to the device that announced it, not to the
+  address it announced on. A device is named even when it announces on an
+  address this box has never otherwise seen — the common case on IPv6.
+- A name is taken only from a device announcing an address it is sending from.
+  A name announced on another host's behalf is not attributed to the sender: a
+  bare MAC is an honest label and a confidently wrong name is not.
+- Randomised UUID hostnames are discarded — they are worse labels than a MAC.
 - An operator-set label always wins over a learned name.
 
 ### 6.2 Policy
