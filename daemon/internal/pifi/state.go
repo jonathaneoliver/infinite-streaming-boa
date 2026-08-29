@@ -221,6 +221,7 @@ func (e *Engine) tick() {
 	// "no address yet". The IPv4 sampler refreshes anything actually sending.
 	arp := e.learn.Table(20 * time.Minute)
 	neigh := NeighTable(e.cfg.Bridge)
+	names := e.learn.Names()
 	policies := e.st.All()
 
 	// The join. Presence is the union of "associated to the radio" and "seen on
@@ -307,12 +308,29 @@ func (e *Engine) tick() {
 		if !hasPol {
 			pol = Policy{MAC: mac, Enabled: true}
 		}
+		// What the device calls itself, from its own mDNS announcements. Any
+		// of its addresses may carry the binding, so all are tried.
+		hostname := names[ip]
+		if hostname == "" {
+			for _, a := range v6 {
+				if n := names[a]; n != "" {
+					hostname = n
+					break
+				}
+			}
+		}
+		// An operator-set label always wins; the announced name is only a
+		// better default than a bare MAC.
 		label := pol.Label
+		if label == "" {
+			label = hostname
+		}
 		if label == "" {
 			label = mac
 		}
 		c := Client{
-			MAC: mac, IP: ip, IPv6: v6, Label: label, Medium: a.medium, Port: a.port,
+			MAC: mac, IP: ip, IPv6: v6, Hostname: hostname,
+			Label: label, Medium: a.medium, Port: a.port,
 			// Either family is enough to attach a filter to.
 			Present: a.present, Shapeable: ip != "" || len(v6) > 0,
 			Station: stations[mac], Policy: pol, LastSeen: now.UnixMilli(),

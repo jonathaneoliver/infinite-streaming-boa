@@ -63,6 +63,11 @@ type Learner struct {
 	localMu sync.RWMutex
 	local   []*net.IPNet
 	local6  []*net.IPNet
+
+	// names maps an address to what the device calls itself, learned from the
+	// mDNS announcements every device broadcasts unprompted.
+	namesMu sync.RWMutex
+	names   map[string]string
 }
 
 type learned struct {
@@ -85,12 +90,8 @@ const (
 	arpSenderMAC  = 8
 	arpSenderIPv4 = 14
 
-	ipMinLen = 20
-	ipSrc    = 12
-
-	// IPv6 fixed header: 8 bytes of preamble, then a 16-byte source address.
-	ip6MinLen = 40
-	ip6Src    = 8
+	ipSrc  = 12
+	ip6Src = 8
 
 	// Cap the filters a single device can demand. A misbehaving stack cycling
 	// through addresses should not be able to fill the filter table.
@@ -110,7 +111,10 @@ const (
 func htons(v uint16) uint16 { return v<<8 | v>>8 }
 
 func NewLearner(bridge string) *Learner {
-	return &Learner{seen: map[string]learned{}, bridge: bridge, fd: -1}
+	return &Learner{
+		seen: map[string]learned{}, names: map[string]string{},
+		bridge: bridge, fd: -1,
+	}
 }
 
 func (l *Learner) ifname(idx int) string {
@@ -197,6 +201,20 @@ func (l *Learner) Run() error {
 		}
 	}()
 
+	// A DEDICATED listener for mDNS, not the sampled packet stream below.
+	//
+	// The sampler is tuned for volume: it catches any packet from a device that
+	// is doing something, which is the right shape for learning addresses. mDNS
+	// is the opposite -- a handful of packets every few minutes -- so sampling
+	// would routinely discard the one packet carrying the name. Joining the
+	// multicast group and reading every announcement costs almost nothing,
+	// because that traffic is tiny.
+	//
+	// Still passive: nothing is queried, nothing is sent, the box stays
+	// invisible.
+	go l.listenMDNS("udp4", &net.UDPAddr{IP: net.IPv4(224, 0, 0, 251), Port: mdnsPort})
+	go l.listenMDNS("udp6", &net.UDPAddr{IP: net.ParseIP("ff02::fb"), Port: mdnsPort})
+
 	fd, err := syscall.Socket(syscall.AF_PACKET, syscall.SOCK_DGRAM, int(htons(ethPALL)))
 	if err != nil {
 		return err
@@ -208,7 +226,10 @@ func (l *Learner) Run() error {
 	// that is, sampling -- the normal case rather than an error case.
 	_ = syscall.SetsockoptInt(fd, syscall.SOL_SOCKET, syscall.SO_RCVBUF, 128*1024)
 
-	buf := make([]byte, 128) // only the front of the header is ever needed
+	// Large enough for a whole mDNS announcement. The previous 128 bytes was
+	// fine for reading addresses out of a header, but recvfrom truncates
+	// silently, so a name would have been cut in half rather than missing.
+	buf := make([]byte, 1500)
 	recent := map[string]time.Time{}
 
 	for {
@@ -244,12 +265,14 @@ func (l *Learner) Run() error {
 				// Source MAC from the sockaddr, source IP from the header.
 				mac = net.HardwareAddr(ll.Addr[:6]).String()
 				ip = net.IP(buf[ipSrc : ipSrc+4])
+				l.maybeMDNS(buf[:n])
 			case htons(ethPIPV6):
 				if n < ip6MinLen || ll.Halen < 6 {
 					continue
 				}
 				mac = net.HardwareAddr(ll.Addr[:6]).String()
 				ip = net.IP(buf[ip6Src : ip6Src+16])
+				l.maybeMDNS(buf[:n])
 			default:
 				continue
 			}
@@ -361,4 +384,86 @@ func (l *Learner) Table(ttl time.Duration) map[string]Seen {
 		out[mac] = Seen{IP: e.ip, IPv6: v6, Port: e.port}
 	}
 	return out
+}
+
+// maybeMDNS records any address-to-name bindings an mDNS packet carries.
+//
+// Multicast announcements are addressed to the group, not to this box, but a
+// bridge sees them anyway -- which is the whole reason this works without
+// querying anything.
+func (l *Learner) maybeMDNS(pkt []byte) {
+	payload, ok := udpPayload(pkt, mdnsPort)
+	if !ok {
+		return
+	}
+	found := ParseMDNS(payload)
+	if len(found) == 0 {
+		return
+	}
+	l.namesMu.Lock()
+	for ip, name := range found {
+		if name != "" {
+			l.names[ip] = name
+		}
+	}
+	// Bound the table. Names are a display convenience; an unbounded map fed
+	// by anything on the network is not.
+	if len(l.names) > 512 {
+		for k := range l.names {
+			delete(l.names, k)
+			if len(l.names) <= 384 {
+				break
+			}
+		}
+	}
+	l.namesMu.Unlock()
+}
+
+// Names returns the address-to-name bindings learned so far.
+func (l *Learner) Names() map[string]string {
+	l.namesMu.RLock()
+	defer l.namesMu.RUnlock()
+	out := make(map[string]string, len(l.names))
+	for k, v := range l.names {
+		out[k] = v
+	}
+	return out
+}
+
+// listenMDNS joins the mDNS multicast group on the bridge and records the
+// address-to-name bindings every announcement carries.
+//
+// Failure is deliberately quiet and non-fatal: names are a display convenience,
+// and a box that conditions traffic correctly while showing MAC addresses is
+// far better than one refusing to start because a multicast join failed.
+func (l *Learner) listenMDNS(network string, group *net.UDPAddr) {
+	ifi, err := net.InterfaceByName(l.bridge)
+	if err != nil {
+		return
+	}
+	conn, err := net.ListenMulticastUDP(network, ifi, group)
+	if err != nil {
+		return
+	}
+	defer conn.Close()
+	_ = conn.SetReadBuffer(64 * 1024)
+
+	buf := make([]byte, 9000) // a large record set can exceed one MTU
+	for {
+		n, _, err := conn.ReadFromUDP(buf)
+		if err != nil {
+			return
+		}
+		found := ParseMDNS(buf[:n])
+		if len(found) == 0 {
+			continue
+		}
+		l.namesMu.Lock()
+		for ip, name := range found {
+			if name != "" {
+				l.names[ip] = name
+			}
+		}
+		l.namesMu.Unlock()
+	}
 }

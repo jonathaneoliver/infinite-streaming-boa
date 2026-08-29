@@ -23,5 +23,6 @@ func NewLearner(bridge string) *Learner { return &Learner{bridge: bridge} }
 func (l *Learner) Run() error {
 	return errors.New("passive learning requires Linux (AF_PACKET)")
 }
+func (l *Learner) Names() map[string]string            { return map[string]string{} }
 func (l *Learner) Close()                              {}
 func (l *Learner) Table(time.Duration) map[string]Seen { return map[string]Seen{} }
