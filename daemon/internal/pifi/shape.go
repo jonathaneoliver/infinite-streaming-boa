@@ -188,8 +188,26 @@ func tcQuiet(args ...string) { _ = exec.Command("tc", args...).Run() }
 // to live there. Ports appear over time -- lan0 only exists once a USB adapter
 // is plugged in -- so this cannot all happen at startup.
 func (s *Shaper) ensurePort(dev string) error {
+	// The cache is keyed by NAME, and a name can outlive the interface it
+	// referred to: a USB adapter unplugged and replugged, a wlan0 reset, a veth
+	// recreated. Trusting the cache then means the new interface never gets its
+	// root qdisc, so nothing attaches and shaping silently stops while the
+	// interface still shows every policy applied. Verify instead of trusting.
 	if s.ports[dev] {
-		return nil
+		if s.hasRootHTB(dev) {
+			return nil
+		}
+		// The interface was replaced. Forget every rule that referenced it so
+		// Apply rewrites them onto the new one.
+		delete(s.ports, dev)
+		for key, r := range s.applied {
+			if r.downPort == dev {
+				r.haveDown = false
+				r.downPort = ""
+				s.applied[key] = r
+			}
+		}
+		fmt.Printf("infinite-streaming-pifi: %s was replaced; rebuilding its queueing\n", dev)
 	}
 	if exec.Command("ip", "link", "show", dev).Run() != nil {
 		return fmt.Errorf("interface %s does not exist", dev)
@@ -687,4 +705,15 @@ func (s *Shaper) readNetemRates(dev string) map[int]float64 {
 		out[min] = float64(q.Options.Rate.Rate) * 8 / 1e6 // bytes/s -> Mbps
 	}
 	return out
+}
+
+// hasRootHTB reports whether our root qdisc is still present on an interface.
+// Cheap enough to run per reconcile, and the only reliable way to tell a cached
+// name from a live configuration.
+func (s *Shaper) hasRootHTB(dev string) bool {
+	out, err := exec.Command("tc", "qdisc", "show", "dev", dev).Output()
+	if err != nil {
+		return false
+	}
+	return strings.Contains(string(out), "qdisc htb 1:")
 }

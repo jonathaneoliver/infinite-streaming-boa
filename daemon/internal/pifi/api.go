@@ -38,6 +38,7 @@ func (a *API) Routes() *http.ServeMux {
 	mux.HandleFunc("PATCH /api/devices/{mac}/sub/{id}", a.patchSub)
 	mux.HandleFunc("DELETE /api/devices/{mac}/sub/{id}", a.deleteSub)
 	mux.HandleFunc("POST /api/devices/{mac}/reset", a.resetDevice)
+	mux.HandleFunc("DELETE /api/devices/{mac}", a.forgetDevice)
 	mux.Handle("/", http.FileServer(http.FS(a.ui)))
 	return mux
 }
@@ -348,4 +349,24 @@ func (a *API) resetDevice(w http.ResponseWriter, r *http.Request) {
 		p.Sub[i].Enabled = false
 	}
 	a.commit(w, p)
+}
+
+// forgetDevice removes a device's stored configuration entirely.
+//
+// A device with stored policy is listed even when absent, so its settings can
+// be prepared before it reconnects. That is useful until something transient
+// leaves a row behind -- a test rig, a guest, a randomised MAC that will never
+// return -- and then the list only grows. Reset clears conditioning but keeps
+// the row; this drops it.
+//
+// A device that is still on the network will simply reappear, unconfigured,
+// which is the correct outcome: pifi is describing what it sees.
+func (a *API) forgetDevice(w http.ResponseWriter, r *http.Request) {
+	mac := normMAC(r.PathValue("mac"))
+	if err := a.e.Store().Delete(mac); err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	a.e.BumpControl()
+	writeJSON(w, http.StatusOK, map[string]string{"forgotten": mac})
 }

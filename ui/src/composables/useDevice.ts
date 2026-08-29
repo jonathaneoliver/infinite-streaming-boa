@@ -112,6 +112,11 @@ export function useDevice() {
     return send(`/api/devices/${mac}/reset`, 'POST', undefined);
   }
 
+  /** Drop a device's stored configuration so it stops being listed. */
+  function forget(mac: string) {
+    return send(`/api/devices/${mac}`, 'DELETE', undefined);
+  }
+
   return {
     writing,
     conflict,
@@ -121,5 +126,6 @@ export function useDevice() {
     patchSub,
     deleteSub,
     reset,
+    forget,
   };
 }

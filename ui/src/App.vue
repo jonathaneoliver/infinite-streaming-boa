@@ -65,6 +65,7 @@ const rev = (c: Client) => c.policy.rev;
       @preset="(down: Shape, up: Shape) => dev.patchPolicy(c.mac, rev(c), { down, up })"
       @label="(l: string) => dev.patchPolicy(c.mac, rev(c), { label: l })"
       @reset="dev.reset(c.mac)"
+      @forget="dev.forget(c.mac)"
       @add-sub="dev.addSub(c.mac, rev(c), 'new rule', {})"
       @remove-sub="(id: string) => dev.deleteSub(c.mac, id)"
       @patch-sub="(id: string, p: Record<string, unknown>) => dev.patchSub(c.mac, id, rev(c), p)"

@@ -12,6 +12,7 @@ const emit = defineEmits<{
   preset: [down: Shape, up: Shape];
   label: [string];
   reset: [];
+  forget: [];
   addSub: [];
   removeSub: [string];
   patchSub: [string, Record<string, unknown>];
@@ -126,6 +127,11 @@ function fmtBytes(n: number): string {
         conditioned
       </span>
       <button v-if="conditioned" @click="emit('reset')">reset</button>
+      <!-- Only offered for a device that is not here: forgetting one that is
+           present just makes it reappear unconfigured a second later. -->
+      <button v-if="!client.present" class="ghost" @click="emit('forget')">
+        forget
+      </button>
     </div>
 
     <div v-if="!client.shapeable && client.present" class="notice bad" style="margin: 10px 14px">

@@ -15,8 +15,11 @@
 
 # Compiled payload, produced by scripts/build-payload.sh
 overlay/usr/local/bin/infinite-streaming-pifid
-# Compiled web interface; the placeholder index.html beside it IS tracked.
-daemon/web/dist/assets/
+# Compiled web interface. Everything here is a build product; only an empty
+# marker is tracked, which is enough to satisfy //go:embed all:dist so a fresh
+# clone compiles before the UI has been built.
+daemon/web/dist/*
+!daemon/web/dist/.gitkeep
 
 node_modules/
 .DS_Store
