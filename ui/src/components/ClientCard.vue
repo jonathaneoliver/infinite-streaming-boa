@@ -6,13 +6,19 @@ import ShapeSliders from './ShapeSliders.vue';
 import SubClasses from './SubClasses.vue';
 import TrafficChart from './TrafficChart.vue';
 
-const props = defineProps<{ client: Client; series?: Series; ntopngPort?: number }>();
+const props = defineProps<{
+  client: Client;
+  series?: Series;
+  ntopngPort?: number;
+  collapsed?: boolean;
+}>();
 const emit = defineEmits<{
   shape: [dir: 'down' | 'up', shape: Shape];
   preset: [down: Shape, up: Shape];
   label: [string];
   reset: [];
   forget: [];
+  toggle: [];
   addSub: [];
   removeSub: [string];
   patchSub: [string, Record<string, unknown>];
@@ -39,6 +45,27 @@ const conditioned = computed(() => {
   return p.enabled && (dirty(p.down) || dirty(p.up));
 });
 
+/**
+ * The card title toggles the fold, in both directions.
+ *
+ * Two things are deliberately excluded:
+ *
+ * Clicks on something interactive. The name is an editable input and an absent
+ * device carries a "forget" button, both of which sit in the title; swallowing
+ * their clicks would make them unusable.
+ *
+ * Clicks that conclude a text selection. Dragging across a MAC address to copy
+ * it ends in a click on the header, and folding the card away underneath that
+ * would be infuriating. Checking the selection is emptier than disabling the
+ * interaction, which was the first attempt.
+ */
+function onHeadClick(e: MouseEvent) {
+  const el = e.target as HTMLElement | null;
+  if (el?.closest('input, button, a, select, textarea')) return;
+  if ((window.getSelection()?.toString() ?? '').length > 0) return;
+  emit('toggle');
+}
+
 function fmtBytes(n: number): string {
   if (n < 1024) return `${n} B`;
   const u = ['KB', 'MB', 'GB', 'TB'];
@@ -54,7 +81,73 @@ function fmtBytes(n: number): string {
 
 <template>
   <div :class="['card', { absent: !client.present }]">
-    <div class="card-head">
+    <!-- The folded row is its own markup rather than the full header with
+         pieces hidden. A grid only lines up if every row has the SAME cells,
+         and the optional fields -- medium, address, conditioned -- would drop
+         out and shift everything after them. Each slot is always rendered here
+         and simply left empty when it does not apply. -->
+    <div v-if="collapsed" class="card-head folded" @click="onHeadClick">
+      <span
+        class="dot" :class="client.present ? 'live' : 'off'"
+        :title="client.present ? 'Connected now' : 'Not currently connected'"
+      ></span>
+
+      <input
+        class="name" :value="client.label"
+        @change="emit('label', ($event.target as HTMLInputElement).value)"
+      />
+
+      <span class="cell">
+        <span v-if="client.medium" class="badge" :class="client.medium">
+          {{ client.medium }}
+        </span>
+      </span>
+
+      <span class="cell meta num addr">
+        {{ client.ip || (client.ipv6?.length ? client.ipv6[0] : 'no address yet') }}
+      </span>
+
+      <span class="cell spark">
+        <TrafficChart
+          :data="series?.down ?? []" color="var(--down)" label="Downlink"
+          :cap="client.policy.down.rate_mbps" :height="24" compact
+        />
+      </span>
+      <span class="cell num val" style="color: var(--down)">
+        &darr;{{ client.down_counters.throughput_mbps.toFixed(2) }}
+      </span>
+
+      <span class="cell spark">
+        <TrafficChart
+          :data="series?.up ?? []" color="var(--up)" label="Uplink"
+          :cap="client.policy.up.rate_mbps" :height="24" compact
+        />
+      </span>
+      <span class="cell num val" style="color: var(--up)">
+        &uarr;{{ client.up_counters.throughput_mbps.toFixed(2) }}
+      </span>
+
+      <span class="cell meta unit">Mbps</span>
+
+      <span class="cell">
+        <span v-if="conditioned" class="badge" style="color: var(--warn)">
+          conditioned
+        </span>
+      </span>
+
+      <span class="cell">
+        <button v-if="!client.present" class="ghost" @click="emit('forget')">
+          forget
+        </button>
+      </span>
+
+      <button
+        class="fold-toggle ghost" @click="emit('toggle')"
+        title="Expand this device" :aria-expanded="false"
+      >&#9656;</button>
+    </div>
+
+    <div v-else class="card-head" @click="onHeadClick">
       <span
         class="dot"
         :class="client.present ? 'live' : 'off'"
@@ -132,8 +225,16 @@ function fmtBytes(n: number): string {
       <button v-if="!client.present" class="ghost" @click="emit('forget')">
         forget
       </button>
+      <button
+        class="fold-toggle ghost" @click="emit('toggle')"
+        :title="collapsed ? 'Expand this device' : 'Fold this device away'"
+        :aria-expanded="!collapsed"
+      >{{ collapsed ? '▸' : '▾' }}</button>
     </div>
 
+    <!-- Folding is presentation only: the card keeps receiving live updates,
+         so the summary above stays current and expanding shows no gap. -->
+    <template v-if="!collapsed">
     <div v-if="!client.shapeable && client.present" class="notice bad" style="margin: 10px 14px">
       This device has no IP address yet, so it cannot be conditioned. Traffic
       filters match on addresses, and there is nothing to match on until it
@@ -161,7 +262,7 @@ function fmtBytes(n: number): string {
         </h3>
         <TrafficChart
           :data="series?.down ?? []" color="var(--down)" label="Downlink"
-          :cap="client.policy.down.rate_mbps"
+          :cap="client.policy.down.rate_mbps" :height="196"
         />
         <ShapeSliders
           :shape="client.policy.down" dir="down" :disabled="!client.shapeable"
@@ -179,7 +280,7 @@ function fmtBytes(n: number): string {
         </h3>
         <TrafficChart
           :data="series?.up ?? []" color="var(--up)" label="Uplink"
-          :cap="client.policy.up.rate_mbps"
+          :cap="client.policy.up.rate_mbps" :height="196"
         />
         <ShapeSliders
           :shape="client.policy.up" dir="up" :disabled="!client.shapeable"
@@ -254,10 +355,50 @@ function fmtBytes(n: number): string {
         @shape="(id, dir, s) => emit('subShape', id, dir, s)"
       />
     </div>
+    </template>
   </div>
 </template>
 
 <style scoped>
+.fold-summary { display: flex; align-items: center; gap: 6px; flex: none; }
+/* A folded row must not wrap. A ragged two-line list is harder to scan than a
+   dense one-line one, which is the entire reason for folding. */
+.card-head { cursor: pointer; }
+/* The name stays a text field, so it must not inherit the row's pointer. */
+.card-head .name { cursor: text; }
+
+/* Fixed columns so every folded row lines up. Flex sized each row to its own
+   content, which made a list of devices impossible to scan down. */
+.card-head.folded {
+  display: grid;
+  grid-template-columns:
+    14px                  /* presence */
+    minmax(96px, 1.3fr)   /* name */
+    58px                  /* medium */
+    minmax(104px, 1fr)    /* address */
+    76px 68px             /* downlink: shape, then figure -- 68px fits a
+                             three-digit rate such as 103.66 without touching
+                             the next column */
+    76px 68px             /* uplink */
+    38px                  /* unit */
+    92px                  /* conditioned */
+    56px                  /* actions */
+    30px;                 /* toggle */
+  align-items: center;
+  gap: 8px;
+  overflow: hidden;
+}
+.card-head.folded:hover { background: var(--panel); }
+.card-head.folded .cell { min-width: 0; overflow: hidden; }
+.card-head.folded .addr,
+.card-head.folded .name { text-overflow: ellipsis; white-space: nowrap; }
+.card-head.folded .val { text-align: right; font-size: 12px; font-weight: 600; }
+.card-head.folded .unit { font-size: 11px; }
+.card-head.folded .spark { display: block; }
+.card-head.folded .name { flex: 0 1 auto; min-width: 90px; }
+.fold-spark { width: 84px; display: block; }
+.fold-val { font-size: 12px; font-weight: 600; }
+.fold-toggle { font-size: 13px; line-height: 1; padding: 3px 8px; }
 .ntop-link {
   font-size: 11px;
   color: var(--ink-dim);
