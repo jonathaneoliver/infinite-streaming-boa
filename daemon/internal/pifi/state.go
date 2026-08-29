@@ -138,13 +138,13 @@ func (e *Engine) BumpControl() {
 func (e *Engine) desired(clients []Client) []Desired {
 	var want []Desired
 	for _, c := range clients {
-		if !c.Policy.Enabled || c.IP == "" {
-			continue
+		if c.IP == "" {
+			continue // not shapeable, and nothing to attach a filter to
 		}
 		// Sub-classes first: they are more specific, and the Shaper installs
 		// them at a filter priority that wins over the device default.
 		for _, sub := range c.Policy.Sub {
-			if !sub.Enabled || sub.Match.IsEmpty() {
+			if !c.Policy.Enabled || !sub.Enabled || sub.Match.IsEmpty() {
 				continue
 			}
 			want = append(want, Desired{
@@ -152,12 +152,20 @@ func (e *Engine) desired(clients []Client) []Desired {
 				Match: sub.Match, Down: sub.Down, Up: sub.Up, IsSub: true,
 			})
 		}
-		if c.Policy.Down.IsClean() && c.Policy.Up.IsClean() {
-			continue // nothing to enforce for the device default
+		// The device class is created even when nothing is being enforced.
+		// Throughput is derived from tc class counters, so without a class an
+		// actively streaming client reports 0.00 Mbps and the interface looks
+		// broken -- measuring only what is being shaped is backwards. An HTB
+		// class with no netem leaf is a pure counter: writeNetem drops the leaf
+		// for a clean shape, so this costs one class and one filter per client
+		// and changes nothing about the traffic.
+		down, up := c.Policy.Down, c.Policy.Up
+		if !c.Policy.Enabled {
+			// Disabled means "do not condition", not "do not measure".
+			down, up = Shape{}, Shape{}
 		}
 		want = append(want, Desired{
-			Key: c.MAC, IP: c.IP, Port: c.Port,
-			Down: c.Policy.Down, Up: c.Policy.Up,
+			Key: c.MAC, IP: c.IP, Port: c.Port, Down: down, Up: up,
 		})
 	}
 	return want
