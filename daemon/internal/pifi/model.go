@@ -182,9 +182,14 @@ type Capabilities struct {
 	// Ntopng reports whether ntopng is actually ANSWERING, not merely
 	// installed. The UI hides its deep links otherwise, because a reflashed
 	// image without the prebuilt artifact would otherwise show dead links.
-	Ntopng     bool   `json:"ntopng"`
-	NtopngPort int    `json:"ntopng_port"`
-	Reason     string `json:"reason,omitempty"`
+	Ntopng     bool `json:"ntopng"`
+	NtopngPort int  `json:"ntopng_port"`
+	// NamesLearned is how many address-to-name bindings mDNS has yielded.
+	// Zero means nothing is being heard; a healthy number while a client still
+	// shows a MAC means that device simply has not announced itself. Without
+	// this the two cases are indistinguishable from outside the box.
+	NamesLearned int    `json:"names_learned"`
+	Reason       string `json:"reason,omitempty"`
 }
 
 // Snapshot is the whole server state, delivered complete on every SSE event.

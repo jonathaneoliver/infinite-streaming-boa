@@ -3,7 +3,10 @@
 package pifi
 
 import (
+	"encoding/json"
+	"fmt"
 	"net"
+	"os"
 	"sort"
 	"sync"
 	"syscall"
@@ -114,6 +117,39 @@ func NewLearner(bridge string) *Learner {
 	return &Learner{
 		seen: map[string]learned{}, names: map[string]string{},
 		bridge: bridge, fd: -1,
+	}
+}
+
+// LoadNames restores previously learned names so a restart does not blank every
+// device back to a bare MAC while waiting for the next announcement.
+func (l *Learner) LoadNames(path string) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return
+	}
+	var m map[string]string
+	if json.Unmarshal(raw, &m) != nil {
+		return
+	}
+	l.namesMu.Lock()
+	for k, v := range m {
+		l.names[k] = v
+	}
+	l.namesMu.Unlock()
+}
+
+// SaveNames writes the table out. Best-effort by design: a display name must
+// never be able to fail the daemon.
+func (l *Learner) SaveNames(path string) {
+	l.namesMu.RLock()
+	raw, err := json.Marshal(l.names)
+	l.namesMu.RUnlock()
+	if err != nil {
+		return
+	}
+	tmp := path + ".tmp"
+	if os.WriteFile(tmp, raw, 0o644) == nil {
+		_ = os.Rename(tmp, path)
 	}
 }
 
@@ -439,12 +475,21 @@ func (l *Learner) Names() map[string]string {
 func (l *Learner) listenMDNS(network string, group *net.UDPAddr) {
 	ifi, err := net.InterfaceByName(l.bridge)
 	if err != nil {
+		fmt.Printf("infinite-streaming-pifi: mDNS %s: no interface %s: %v\n",
+			network, l.bridge, err)
 		return
 	}
+	// avahi-daemon is also bound to 5353 on this box. A multicast listener
+	// sets SO_REUSEADDR so both can receive, but if that ever stops holding
+	// the failure must be visible: silently showing MAC addresses forever,
+	// with no indication why, is the worst outcome.
 	conn, err := net.ListenMulticastUDP(network, ifi, group)
 	if err != nil {
+		fmt.Printf("infinite-streaming-pifi: mDNS %s join failed on %s: %v "+
+			"(device names will not be learned)\n", network, l.bridge, err)
 		return
 	}
+	fmt.Printf("infinite-streaming-pifi: mDNS %s listening on %s\n", network, l.bridge)
 	defer conn.Close()
 	_ = conn.SetReadBuffer(64 * 1024)
 

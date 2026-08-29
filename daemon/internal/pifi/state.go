@@ -3,6 +3,7 @@ package pifi
 import (
 	"fmt"
 	"net"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"sync"
@@ -59,6 +60,8 @@ type Engine struct {
 	ntopUp      bool
 	ntopChecked time.Time
 
+	namesPath string
+
 	subs map[chan Snapshot]struct{}
 }
 
@@ -102,6 +105,21 @@ func (e *Engine) Start() {
 	if err := e.sh.Setup(); err != nil {
 		fmt.Printf("infinite-streaming-pifi: shaping unavailable: %v\n", err)
 	}
+	// Devices announce only occasionally -- on join, on wake, when services
+	// change -- so an in-memory-only name table means every daemon restart
+	// drops every client back to a bare MAC until the next announcement,
+	// which can be many minutes away. From outside that is indistinguishable
+	// from the feature breaking.
+	e.namesPath = filepath.Join(filepath.Dir(e.cfg.StatePath), "names.json")
+	namesPath := e.namesPath
+	e.learn.LoadNames(namesPath)
+	go func() {
+		t := time.NewTicker(2 * time.Minute)
+		defer t.Stop()
+		for range t.C {
+			e.learn.SaveNames(namesPath)
+		}
+	}()
 	go func() {
 		if err := e.learn.Run(); err != nil {
 			fmt.Printf("infinite-streaming-pifi: passive learner stopped: %v\n", err)
@@ -408,6 +426,7 @@ func (e *Engine) tick() {
 			Leases:    false, // transparent bridge: upstream owns DHCP
 			WlanIface: e.cfg.WlanPort, UplinkIf: e.cfg.WANPort,
 			Ntopng: e.ntopngUp(), NtopngPort: ntopngPort,
+			NamesLearned: len(names),
 		},
 		Notices: e.notices(ready, reason),
 	}
@@ -470,4 +489,14 @@ func (e *Engine) ControlRevision() uint64 {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 	return e.ctrlRev
+}
+
+// FlushNames persists the learned name table. Called on shutdown so a restart
+// does not blank every device back to a bare MAC: devices announce themselves
+// only occasionally, so the gap before the next announcement can be minutes,
+// and from outside that is indistinguishable from the feature being broken.
+func (e *Engine) FlushNames() {
+	if e.namesPath != "" {
+		e.learn.SaveNames(e.namesPath)
+	}
 }

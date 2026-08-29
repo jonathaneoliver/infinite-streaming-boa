@@ -83,6 +83,7 @@ func main() {
 	// the single most confusing failure this box could present.
 	if !cfg.Demo {
 		fmt.Println("infinite-streaming-pifi: shutting down, removing traffic conditioning")
+		eng.FlushNames()
 		eng.Shaper().Teardown()
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
