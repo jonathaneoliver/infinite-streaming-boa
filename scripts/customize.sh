@@ -162,9 +162,9 @@ write_conn() {
 # port, so miscabling can physically create a loop, and a bridging loop takes
 # down the entire upstream network rather than just this box. forward-delay is
 # trimmed to the spec minimum so boot-to-traffic is ~4s rather than ~30s.
-write_conn pifi-br <<EOF
+write_conn infinite-streaming-pifi-br <<EOF
 [connection]
-id=pifi-br
+id=infinite-streaming-pifi-br
 uuid=$(uuidgen)
 type=bridge
 interface-name=br-lan
@@ -189,9 +189,9 @@ EOF
 
 # WAN port: the link to the existing network. Enslaved to the bridge, so it
 # carries no address of its own.
-write_conn pifi-wan <<EOF
+write_conn infinite-streaming-pifi-wan <<EOF
 [connection]
-id=pifi-wan
+id=infinite-streaming-pifi-wan
 uuid=$(uuidgen)
 type=ethernet
 interface-name=${PIFI_WAN_PORT}
@@ -203,9 +203,9 @@ EOF
 
 # Downstream wired port (the USB adapter), renamed to lan0 by the udev rule
 # below. Absent hardware simply means this profile never activates.
-write_conn pifi-lan <<EOF
+write_conn infinite-streaming-pifi-lan <<EOF
 [connection]
-id=pifi-lan
+id=infinite-streaming-pifi-lan
 uuid=$(uuidgen)
 type=ethernet
 interface-name=lan0
@@ -221,7 +221,7 @@ EOF
 {
   cat <<EOF
 [connection]
-id=pifi-ap
+id=infinite-streaming-pifi-ap
 uuid=$(uuidgen)
 type=wifi
 interface-name=wlan0
@@ -247,14 +247,14 @@ pairwise=ccmp
 group=ccmp
 psk=${AP_PASSWORD}
 EOF
-} | write_conn pifi-ap
+} | write_conn infinite-streaming-pifi-ap
 
 log "Bridge br-lan: ${PIFI_WAN_PORT} (wan) + wlan0 (ap '${AP_SSID}') + lan0 (usb)"
 
 # Stable name for the USB ethernet adapter. On a Pi 4/5 the onboard NIC is not
 # a USB device, so ID_BUS==usb identifies the add-on adapter unambiguously.
 # (On a Pi 3 the onboard NIC *is* USB and this heuristic would not hold.)
-cat > "$ROOT/etc/udev/rules.d/76-pifi-usb-lan.rules" <<'UDEV'
+cat > "$ROOT/etc/udev/rules.d/76-infinite-streaming-pifi-usb-lan.rules" <<'UDEV'
 # First USB ethernet adapter becomes lan0, the downstream wired port.
 SUBSYSTEM=="net", ACTION=="add", ENV{ID_BUS}=="usb", ATTR{address}!="", NAME="lan0"
 UDEV
@@ -263,7 +263,7 @@ UDEV
 # if upstream DHCP is missing -- or the box is bench-tested with nothing in the
 # WAN port -- there would be no way to reach the UI on a headless device. This
 # secondary address is present regardless of DHCP.
-install -D -m 0644 /dev/stdin "$ROOT/etc/systemd/system/pifi-rescue-ip.service" <<EOF
+install -D -m 0644 /dev/stdin "$ROOT/etc/systemd/system/infinite-streaming-pifi-rescue-ip.service" <<EOF
 [Unit]
 Description=pifi fixed rescue address on br-lan
 After=NetworkManager.service
@@ -272,13 +272,13 @@ Wants=NetworkManager.service
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-ExecStart=/usr/local/sbin/pifi-rescue-ip
+ExecStart=/usr/local/sbin/infinite-streaming-pifi-rescue-ip
 
 [Install]
 WantedBy=multi-user.target
 EOF
 
-install -D -m 0755 /dev/stdin "$ROOT/usr/local/sbin/pifi-rescue-ip" <<EOF
+install -D -m 0755 /dev/stdin "$ROOT/usr/local/sbin/infinite-streaming-pifi-rescue-ip" <<EOF
 #!/bin/sh
 # Waits for the bridge, then pins a known address so the box is always
 # reachable. "replace" rather than "add" so a re-run is idempotent.
@@ -290,8 +290,8 @@ exec ip addr replace ${PIFI_RESCUE_IP}/24 dev br-lan
 EOF
 
 install -d -m 0755 "$ROOT/etc/systemd/system/multi-user.target.wants"
-ln -sf /etc/systemd/system/pifi-rescue-ip.service \
-  "$ROOT/etc/systemd/system/multi-user.target.wants/pifi-rescue-ip.service"
+ln -sf /etc/systemd/system/infinite-streaming-pifi-rescue-ip.service \
+  "$ROOT/etc/systemd/system/multi-user.target.wants/infinite-streaming-pifi-rescue-ip.service"
 log "Rescue address ${PIFI_RESCUE_IP}/24 on br-lan"
 
 ## 6. Wireless regulatory domain -------------------------------------------
@@ -300,7 +300,7 @@ log "Rescue address ${PIFI_RESCUE_IP}/24 on br-lan"
 # the module option applies from the first moment cfg80211 loads, and the
 # first-boot script sets the same value through the Pi's own config path.
 echo "options cfg80211 ieee80211_regdom=${AP_COUNTRY}" \
-  > "$ROOT/etc/modprobe.d/pifi-regdom.conf"
+  > "$ROOT/etc/modprobe.d/infinite-streaming-pifi-regdom.conf"
 
 ## 7. Overlay files ---------------------------------------------------------
 if [ -d /overlay ] && [ -n "$(ls -A /overlay 2>/dev/null)" ]; then
@@ -379,32 +379,32 @@ done
 [ -n "$MODFAIL" ] && die "base image kernel lacks modules the conditioner requires"
 
 # Load at boot so the daemon never races a first modprobe.
-printf 'sch_htb\nsch_netem\ncls_u32\n' > "$ROOT/etc/modules-load.d/pifi.conf"
+printf 'sch_htb\nsch_netem\ncls_u32\n' > "$ROOT/etc/modules-load.d/infinite-streaming-pifi.conf"
 
 ## 8c. pifi daemon ----------------------------------------------------------
 # The daemon's runtime configuration is written here rather than baked into the
 # unit file, so the same overlay works for any port layout and the values stay
 # editable on a running box.
 install -d -m 0755 "$ROOT/etc/systemd/system/multi-user.target.wants"
-install -D -m 0644 /dev/stdin "$ROOT/etc/default/pifi" <<EOF
-# pifi daemon configuration. Changing a value here and restarting
-# pifid.service is enough; nothing needs rebuilding.
+install -D -m 0644 /dev/stdin "$ROOT/etc/default/infinite-streaming-pifi" <<EOF
+# infinite-streaming-pifi daemon configuration. Changing a value here and restarting
+# infinite-streaming-pifi.service is enough; nothing needs rebuilding.
 PIFI_ADDR=:80
 PIFI_BRIDGE=br-lan
 PIFI_WAN_PORT=${PIFI_WAN_PORT}
 PIFI_WLAN_PORT=wlan0
 PIFI_LAN_PORT=lan0
-PIFI_STATE=/var/lib/pifi/policies.json
+PIFI_STATE=/var/lib/infinite-streaming-pifi/policies.json
 EOF
 
-install -d -m 0755 "$ROOT/var/lib/pifi"
+install -d -m 0755 "$ROOT/var/lib/infinite-streaming-pifi"
 
-if [ -x "$ROOT/usr/local/bin/pifid" ]; then
-  ln -sf /etc/systemd/system/pifid.service \
-    "$ROOT/etc/systemd/system/multi-user.target.wants/pifid.service"
-  log "pifi daemon enabled ($(du -h "$ROOT/usr/local/bin/pifid" | cut -f1))"
+if [ -x "$ROOT/usr/local/bin/infinite-streaming-pifid" ]; then
+  ln -sf /etc/systemd/system/infinite-streaming-pifi.service \
+    "$ROOT/etc/systemd/system/multi-user.target.wants/infinite-streaming-pifi.service"
+  log "pifi daemon enabled ($(du -h "$ROOT/usr/local/bin/infinite-streaming-pifid" | cut -f1))"
 else
-  warn "overlay/usr/local/bin/pifid missing -- image will boot as a plain"
+  warn "overlay/usr/local/bin/infinite-streaming-pifid missing -- image will boot as a plain"
   warn "bridge with no conditioning. Run scripts/build-payload.sh first."
 fi
 
@@ -422,7 +422,7 @@ if [ -f /cache/ntopng-arm64.tar.gz ]; then
   # every client in both directions.
   install -d -m 0755 "$ROOT/etc/ntopng" "$ROOT/var/lib/ntopng"
   cat > "$ROOT/etc/ntopng/ntopng.conf" <<EOF
-# Managed by pifi. ntopng serves :3000; pifid owns :80.
+# Managed by infinite-streaming-pifi. ntopng serves :3000; infinite-streaming-pifid owns :80.
 -i=br-lan
 -w=3000
 -d=/var/lib/ntopng
@@ -503,7 +503,7 @@ UNIT
   printf '%s\n' "$NTOP_MD5" > "$ROOT/etc/ntopng/admin.md5"
   chmod 0600 "$ROOT/etc/ntopng/admin.md5"
 
-  install -D -m 0755 /dev/stdin "$ROOT/usr/local/sbin/pifi-ntopng-passwd" <<'SEED'
+  install -D -m 0755 /dev/stdin "$ROOT/usr/local/sbin/infinite-streaming-pifi-ntopng-passwd" <<'SEED'
 #!/bin/sh
 # Overwrites ntopng's admin password with the one configured for this box.
 # Runs after ntopng has created its default admin user: seeding before that
@@ -520,7 +520,7 @@ redis-cli SET ntopng.user.admin.password "$HASH" >/dev/null 2>&1 || exit 0
 redis-cli SET ntopng.prefs.admin_password_changed 1 >/dev/null 2>&1 || true
 SEED
 
-  install -D -m 0644 /dev/stdin "$ROOT/etc/systemd/system/pifi-ntopng-passwd.service" <<'UNIT'
+  install -D -m 0644 /dev/stdin "$ROOT/etc/systemd/system/infinite-streaming-pifi-ntopng-passwd.service" <<'UNIT'
 [Unit]
 Description=Set ntopng admin password from pifi configuration
 After=ntopng.service redis-server.service
@@ -528,14 +528,14 @@ Requires=redis-server.service
 
 [Service]
 Type=oneshot
-ExecStart=/usr/local/sbin/pifi-ntopng-passwd
+ExecStart=/usr/local/sbin/infinite-streaming-pifi-ntopng-passwd
 RemainAfterExit=yes
 
 [Install]
 WantedBy=multi-user.target
 UNIT
-  ln -sf /etc/systemd/system/pifi-ntopng-passwd.service \
-    "$ROOT/etc/systemd/system/multi-user.target.wants/pifi-ntopng-passwd.service"
+  ln -sf /etc/systemd/system/infinite-streaming-pifi-ntopng-passwd.service \
+    "$ROOT/etc/systemd/system/multi-user.target.wants/infinite-streaming-pifi-ntopng-passwd.service"
 
   log "ntopng will serve on :3000"
 else
@@ -543,7 +543,7 @@ else
 fi
 
 ## 9. First-boot service ----------------------------------------------------
-install -D -m 0755 /dev/stdin "$ROOT/usr/local/sbin/pifi-firstboot" <<EOF
+install -D -m 0755 /dev/stdin "$ROOT/usr/local/sbin/infinite-streaming-pifi-firstboot" <<EOF
 #!/bin/sh
 # Runs once on first boot, then disables itself.
 set -e
@@ -556,18 +556,18 @@ rfkill unblock wifi || true
 # avahi publishes ${PIFI_HOSTNAME}.local so the box is reachable by name.
 systemctl enable --now avahi-daemon 2>/dev/null || true
 
-systemctl disable pifi-firstboot.service || true
+systemctl disable infinite-streaming-pifi-firstboot.service || true
 EOF
 
-install -D -m 0644 /dev/stdin "$ROOT/etc/systemd/system/pifi-firstboot.service" <<'EOF'
+install -D -m 0644 /dev/stdin "$ROOT/etc/systemd/system/infinite-streaming-pifi-firstboot.service" <<'EOF'
 [Unit]
 Description=pifi one-time first boot setup
 After=multi-user.target NetworkManager.service
-ConditionPathExists=/usr/local/sbin/pifi-firstboot
+ConditionPathExists=/usr/local/sbin/infinite-streaming-pifi-firstboot
 
 [Service]
 Type=oneshot
-ExecStart=/usr/local/sbin/pifi-firstboot
+ExecStart=/usr/local/sbin/infinite-streaming-pifi-firstboot
 RemainAfterExit=yes
 
 [Install]
@@ -575,8 +575,8 @@ WantedBy=multi-user.target
 EOF
 
 install -d -m 0755 "$ROOT/etc/systemd/system/multi-user.target.wants"
-ln -sf /etc/systemd/system/pifi-firstboot.service \
-  "$ROOT/etc/systemd/system/multi-user.target.wants/pifi-firstboot.service"
+ln -sf /etc/systemd/system/infinite-streaming-pifi-firstboot.service \
+  "$ROOT/etc/systemd/system/multi-user.target.wants/infinite-streaming-pifi-firstboot.service"
 
 ## 10. Finish ---------------------------------------------------------------
 sync

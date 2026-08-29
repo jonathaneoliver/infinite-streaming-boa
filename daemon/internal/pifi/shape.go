@@ -151,7 +151,7 @@ func (s *Shaper) writeExemptions(dev string, ips []string) {
 			"parent", "1:", "prio", fmt.Sprint(prefExempt+i), "u32",
 			"match", "ip", "src", ip+"/32",
 			"flowid", fmt.Sprintf("1:%x", defaultMinor)); err != nil {
-			fmt.Printf("pifi: could not exempt %s on %s: %v\n", ip, dev, err)
+			fmt.Printf("infinite-streaming-pifi: could not exempt %s on %s: %v\n", ip, dev, err)
 		}
 	}
 }

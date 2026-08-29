@@ -140,6 +140,6 @@ cat <<'DONE'
     USB ethernet     ->  a wired device under test   (optional)
     Wi-Fi            ->  clients join the pifi SSID
 
-  Then open  http://pifi.local/  from anywhere on your network.
+  Then open  http://infinite-streaming-pifi.local/  from anywhere on your network.
 
 DONE

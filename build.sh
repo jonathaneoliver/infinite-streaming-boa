@@ -97,7 +97,7 @@ fi
 
 ## Build --------------------------------------------------------------------
 STAMP=$(date +%Y%m%d)
-OUT_NAME="pifi-${STAMP}.img"
+OUT_NAME="infinite-streaming-pifi-${STAMP}.img"
 
 log "Preparing builder container"
 docker build -q -t pifi-builder . >/dev/null

@@ -14,7 +14,7 @@
 /dist/
 
 # Compiled payload, produced by scripts/build-payload.sh
-overlay/usr/local/bin/pifid
+overlay/usr/local/bin/infinite-streaming-pifid
 # Compiled web interface; the placeholder index.html beside it IS tracked.
 daemon/web/dist/assets/
 

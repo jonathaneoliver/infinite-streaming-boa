@@ -100,11 +100,11 @@ func (e *Engine) Start() {
 		return
 	}
 	if err := e.sh.Setup(); err != nil {
-		fmt.Printf("pifi: shaping unavailable: %v\n", err)
+		fmt.Printf("infinite-streaming-pifi: shaping unavailable: %v\n", err)
 	}
 	go func() {
 		if err := e.learn.Run(); err != nil {
-			fmt.Printf("pifi: passive learner stopped: %v\n", err)
+			fmt.Printf("infinite-streaming-pifi: passive learner stopped: %v\n", err)
 		}
 	}()
 	go func() {
@@ -322,7 +322,7 @@ func (e *Engine) tick() {
 
 	if ready, _ := e.sh.Ready(); ready {
 		for _, err := range e.sh.Apply(e.desired(clients)) {
-			fmt.Printf("pifi: shaping: %v\n", err)
+			fmt.Printf("infinite-streaming-pifi: shaping: %v\n", err)
 		}
 	}
 

@@ -21,7 +21,7 @@ export default defineConfig({
     // the fastest loop is the one that needs no hardware:
     //
     //   scripts/dev.sh                          -> synthetic clients, no Pi
-    //   scripts/dev.sh pifi.local               -> live data from a real Pi
+    //   scripts/dev.sh infinite-streaming-pifi.local               -> live data from a real Pi
     proxy: {
       '/api': {
         target: process.env.PIFI_API || 'http://localhost:8099',

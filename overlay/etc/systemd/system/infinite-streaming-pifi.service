@@ -1,5 +1,5 @@
 [Unit]
-Description=pifi per-client network link conditioner
+Description=infinite-streaming-pifi per-client network link conditioner
 Documentation=https://github.com/jonathaneoliver/infinite-streaming-pifi
 # The bridge must exist before queueing disciplines can be attached to its
 # ports, and NetworkManager is what creates it.
@@ -8,8 +8,8 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-EnvironmentFile=/etc/default/pifi
-ExecStart=/usr/local/bin/pifid \
+EnvironmentFile=/etc/default/infinite-streaming-pifi
+ExecStart=/usr/local/bin/infinite-streaming-pifid \
   -addr ${PIFI_ADDR} \
   -bridge ${PIFI_BRIDGE} \
   -wan ${PIFI_WAN_PORT} \
@@ -26,7 +26,7 @@ User=root
 NoNewPrivileges=false
 ProtectHome=yes
 ProtectSystem=strict
-ReadWritePaths=/var/lib/pifi
+ReadWritePaths=/var/lib/infinite-streaming-pifi
 PrivateTmp=yes
 
 [Install]

@@ -1,4 +1,4 @@
-// Command pifid is the pifi link-conditioner daemon.
+// Command infinite-streaming-pifid is the infinite-streaming-pifi link-conditioner daemon.
 //
 // It runs on a Raspberry Pi configured as a transparent bridge, conditions each
 // client's traffic independently, and serves a web interface for control and
@@ -32,7 +32,7 @@ func main() {
 		"bridge port cabled to the existing network; uplink is shaped here")
 	flag.StringVar(&cfg.WlanPort, "wlan", "wlan0", "wireless AP interface")
 	flag.StringVar(&cfg.LanPort, "lan", "lan0", "downstream wired port (USB adapter)")
-	flag.StringVar(&cfg.StatePath, "state", "/var/lib/pifi/policies.json",
+	flag.StringVar(&cfg.StatePath, "state", "/var/lib/infinite-streaming-pifi/policies.json",
 		"where operator policy is persisted")
 	flag.IntVar(&tickMs, "tick", 1000, "telemetry poll interval in milliseconds")
 	flag.BoolVar(&cfg.Demo, "demo", false,
@@ -45,7 +45,7 @@ func main() {
 	// far kinder than starting up and conditioning nothing.
 	if os.Geteuid() != 0 && !cfg.Demo {
 		fmt.Fprintln(os.Stderr,
-			"pifid must run as root: it configures queueing disciplines and "+
+			"infinite-streaming-pifid must run as root: it configures queueing disciplines and "+
 				"opens a packet socket")
 		os.Exit(1)
 	}
@@ -63,9 +63,9 @@ func main() {
 
 	go func() {
 		if cfg.Demo {
-			fmt.Printf("pifi: DEMO MODE on %s -- synthetic clients, nothing is shaped\n", addr)
+			fmt.Printf("infinite-streaming-pifi: DEMO MODE on %s -- synthetic clients, nothing is shaped\n", addr)
 		} else {
-			fmt.Printf("pifi: serving on %s (wan=%s bridge=%s)\n",
+			fmt.Printf("infinite-streaming-pifi: serving on %s (wan=%s bridge=%s)\n",
 				addr, cfg.WANPort, cfg.Bridge)
 		}
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
@@ -82,7 +82,7 @@ func main() {
 	// mean a stopped daemon silently continues to condition traffic, which is
 	// the single most confusing failure this box could present.
 	if !cfg.Demo {
-		fmt.Println("pifi: shutting down, removing traffic conditioning")
+		fmt.Println("infinite-streaming-pifi: shutting down, removing traffic conditioning")
 		eng.Shaper().Teardown()
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

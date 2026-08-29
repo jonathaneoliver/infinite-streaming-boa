@@ -44,7 +44,7 @@ cp .env.example .env      # set your SSID, passphrase and country
 ```
 
 Cable the Pi's `eth0` to your existing network, optionally plug a USB ethernet
-adapter in for a wired device under test, and open **http://pifi.local/**.
+adapter in for a wired device under test, and open **http://infinite-streaming-pifi.local/**.
 
 The build bakes in everything the Pi needs. It never downloads anything on first
 boot, so it works on an air-gapped bench.
@@ -161,7 +161,7 @@ Throughput responds to the sliders, so the controls feel live.
 ### 2. Interface against a real Pi — sub-second, real data
 
 ```sh
-./scripts/dev.sh pifi.local
+./scripts/dev.sh infinite-streaming-pifi.local
 ```
 
 Same hot reload, but the API calls proxy to a running Pi. Note this is
@@ -170,7 +170,7 @@ read-write: moving a slider really does condition that device's traffic.
 ### 3. Full deploy to a Pi — about ten seconds
 
 ```sh
-./scripts/deploy.sh                    # pifi@pifi.local
+./scripts/deploy.sh                    # pifi@infinite-streaming-pifi.local
 ./scripts/deploy.sh pifi@192.168.1.9
 ```
 
@@ -185,7 +185,7 @@ work never touches the card.
 Set up a key first, since this runs often:
 
 ```sh
-ssh-copy-id pifi@pifi.local
+ssh-copy-id pifi@infinite-streaming-pifi.local
 ```
 
 ### Useful
@@ -193,8 +193,8 @@ ssh-copy-id pifi@pifi.local
 ```sh
 cd ui && npm run typecheck              # vue-tsc, no build
 cd daemon && go vet ./...               # daemon also compiles on macOS
-ssh pifi@pifi.local 'journalctl -u pifid -f'
-ssh pifi@pifi.local 'tc -s class show dev wlan0'   # what the kernel really has
+ssh pifi@infinite-streaming-pifi.local 'journalctl -u infinite-streaming-pifi -f'
+ssh pifi@infinite-streaming-pifi.local 'tc -s class show dev wlan0'   # what the kernel really has
 ```
 
 ## Licence

@@ -8,7 +8,7 @@
 # to rebuild.
 #
 #   ./scripts/dev.sh              synthetic clients
-#   ./scripts/dev.sh pifi.local   live data from a real Pi (read-write: writes
+#   ./scripts/dev.sh infinite-streaming-pifi.local   live data from a real Pi (read-write: writes
 #                                 to the UI really do condition its traffic)
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
@@ -24,7 +24,7 @@ if [ -n "$PI" ]; then
   log "Changes you make WILL condition that device's traffic"
 else
   log "Starting daemon in demo mode on :${API_PORT} (synthetic clients)"
-  ( cd daemon && go run . -demo -addr ":${API_PORT}" -state /tmp/pifi-demo.json ) &
+  ( cd daemon && go run . -demo -addr ":${API_PORT}" -state /tmp/infinite-streaming-pifi-demo.json ) &
   DAEMON=$!
   # Kill the daemon whenever this script ends, however it ends -- otherwise a
   # stale one holds the port and the next run silently talks to old code.

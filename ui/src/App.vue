@@ -25,7 +25,7 @@ const rev = (c: Client) => c.policy.rev;
 <template>
   <div class="wrap">
     <header class="top">
-      <h1>pifi</h1>
+      <h1>infinite-streaming-pifi</h1>
       <span class="sub">per-client network link conditioner</span>
       <span class="spacer"></span>
 

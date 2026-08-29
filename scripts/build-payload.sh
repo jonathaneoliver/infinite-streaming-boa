@@ -31,8 +31,8 @@ mkdir -p overlay/usr/local/bin
   # -s -w strips the symbol table and DWARF data: the binary lives on an SD
   # card and nobody debugs it with gdb.
   CGO_ENABLED=0 GOOS=linux GOARCH=arm64 \
-    go build -trimpath -ldflags='-s -w' -o ../overlay/usr/local/bin/pifid .
+    go build -trimpath -ldflags='-s -w' -o ../overlay/usr/local/bin/infinite-streaming-pifid .
 )
-chmod 0755 overlay/usr/local/bin/pifid
+chmod 0755 overlay/usr/local/bin/infinite-streaming-pifid
 
-log "Payload ready: $(du -h overlay/usr/local/bin/pifid | cut -f1) binary"
+log "Payload ready: $(du -h overlay/usr/local/bin/infinite-streaming-pifid | cut -f1) binary"

@@ -92,7 +92,7 @@ export interface Capabilities {
  * Build a deep link into ntopng.
  *
  * The host comes from the current page rather than being hardcoded, so links
- * work however you reached pifi -- pifi.local, its DHCP address, or the rescue
+ * work however you reached it -- infinite-streaming-pifi.local, its DHCP address, or the rescue
  * address. Only the port is fixed.
  *
  * ifid=0 is br-lan: ntopng watches the bridge, the one interface that sees
