@@ -1,9 +1,34 @@
 import { defineConfig } from 'vite';
 import vue from '@vitejs/plugin-vue';
 import { fileURLToPath, URL } from 'node:url';
+import { mkdirSync, writeFileSync } from 'node:fs';
+
+/**
+ * Restore the //go:embed marker after every build.
+ *
+ * `emptyOutDir` wipes daemon/web/dist, which removes the tracked .gitkeep that
+ * exists solely so `//go:embed all:dist` has something to match. A later
+ * `git add -A` then commits that deletion, and a fresh clone stops compiling:
+ *
+ *     web/embed.go: pattern all:dist: no matching files found
+ *
+ * That is exactly what happened once and reached main. Recreating the marker as
+ * part of the build makes the arrangement self-healing rather than a rule
+ * someone has to remember.
+ */
+function keepEmbedMarker() {
+  return {
+    name: 'keep-embed-marker',
+    closeBundle() {
+      const dir = fileURLToPath(new URL('../daemon/web/dist', import.meta.url));
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(`${dir}/.gitkeep`, '');
+    },
+  };
+}
 
 export default defineConfig({
-  plugins: [vue()],
+  plugins: [vue(), keepEmbedMarker()],
   resolve: { alias: { '@': fileURLToPath(new URL('./src', import.meta.url)) } },
   build: {
     // Straight into the Go module, where //go:embed picks it up. The daemon
