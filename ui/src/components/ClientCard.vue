@@ -46,22 +46,23 @@ const conditioned = computed(() => {
 });
 
 /**
- * A folded row opens on a click anywhere in it, not only on the chevron.
+ * The card title toggles the fold, in both directions.
  *
- * Clicks that land on something interactive are left alone: the name is an
- * editable input, and a device that is absent carries a "forget" button. Both
- * live in the folded row, and swallowing their clicks to expand the card would
- * make them unusable.
+ * Two things are deliberately excluded:
  *
- * Only the FOLDED state responds. Making an expanded header collapse on a bare
- * click would fire while selecting a MAC address to copy, which is a normal
- * thing to do there. The chevron still toggles both ways, and remains the
- * keyboard-accessible control.
+ * Clicks on something interactive. The name is an editable input and an absent
+ * device carries a "forget" button, both of which sit in the title; swallowing
+ * their clicks would make them unusable.
+ *
+ * Clicks that conclude a text selection. Dragging across a MAC address to copy
+ * it ends in a click on the header, and folding the card away underneath that
+ * would be infuriating. Checking the selection is emptier than disabling the
+ * interaction, which was the first attempt.
  */
 function onHeadClick(e: MouseEvent) {
-  if (!props.collapsed) return;
   const el = e.target as HTMLElement | null;
   if (el?.closest('input, button, a, select, textarea')) return;
+  if ((window.getSelection()?.toString() ?? '').length > 0) return;
   emit('toggle');
 }
 
@@ -80,7 +81,73 @@ function fmtBytes(n: number): string {
 
 <template>
   <div :class="['card', { absent: !client.present }]">
-    <div class="card-head" :class="{ folded: collapsed }" @click="onHeadClick">
+    <!-- The folded row is its own markup rather than the full header with
+         pieces hidden. A grid only lines up if every row has the SAME cells,
+         and the optional fields -- medium, address, conditioned -- would drop
+         out and shift everything after them. Each slot is always rendered here
+         and simply left empty when it does not apply. -->
+    <div v-if="collapsed" class="card-head folded" @click="onHeadClick">
+      <span
+        class="dot" :class="client.present ? 'live' : 'off'"
+        :title="client.present ? 'Connected now' : 'Not currently connected'"
+      ></span>
+
+      <input
+        class="name" :value="client.label"
+        @change="emit('label', ($event.target as HTMLInputElement).value)"
+      />
+
+      <span class="cell">
+        <span v-if="client.medium" class="badge" :class="client.medium">
+          {{ client.medium }}
+        </span>
+      </span>
+
+      <span class="cell meta num addr">
+        {{ client.ip || (client.ipv6?.length ? client.ipv6[0] : 'no address yet') }}
+      </span>
+
+      <span class="cell spark">
+        <TrafficChart
+          :data="series?.down ?? []" color="var(--down)" label="Downlink"
+          :cap="client.policy.down.rate_mbps" :height="24" compact
+        />
+      </span>
+      <span class="cell num val" style="color: var(--down)">
+        &darr;{{ client.down_counters.throughput_mbps.toFixed(2) }}
+      </span>
+
+      <span class="cell spark">
+        <TrafficChart
+          :data="series?.up ?? []" color="var(--up)" label="Uplink"
+          :cap="client.policy.up.rate_mbps" :height="24" compact
+        />
+      </span>
+      <span class="cell num val" style="color: var(--up)">
+        &uarr;{{ client.up_counters.throughput_mbps.toFixed(2) }}
+      </span>
+
+      <span class="cell meta unit">Mbps</span>
+
+      <span class="cell">
+        <span v-if="conditioned" class="badge" style="color: var(--warn)">
+          conditioned
+        </span>
+      </span>
+
+      <span class="cell">
+        <button v-if="!client.present" class="ghost" @click="emit('forget')">
+          forget
+        </button>
+      </span>
+
+      <button
+        class="fold-toggle ghost" @click="emit('toggle')"
+        title="Expand this device" :aria-expanded="false"
+      >&#9656;</button>
+    </div>
+
+    <div v-else class="card-head" @click="onHeadClick">
       <span
         class="dot"
         :class="client.present ? 'live' : 'off'"
@@ -95,12 +162,12 @@ function fmtBytes(n: number): string {
       <span v-if="client.medium" class="badge" :class="client.medium">
         {{ client.medium }}
       </span>
-      <span v-if="!collapsed" class="meta num">{{ client.mac }}</span>
+      <span class="meta num">{{ client.mac }}</span>
       <span v-if="client.ip" class="meta num">{{ client.ip }}</span>
       <!-- Privacy extensions give a device several v6 addresses at once, so
            the count matters more than any one value; all of them are shaped. -->
       <span
-        v-if="!collapsed && client.ipv6?.length" class="meta num"
+        v-if="client.ipv6?.length" class="meta num"
         :title="'IPv6, all conditioned:\n' + client.ipv6.join('\n')"
       >+{{ client.ipv6.length }} IPv6</span>
       <!-- An explicit condition, not a v-else. Inserting the IPv6 badge above
@@ -114,15 +181,15 @@ function fmtBytes(n: number): string {
       <!-- Only shown when the driver actually reports it. The Pi's Broadcom
            chip gives no per-station RSSI in AP mode, and printing "0 dBm" is
            a confident-looking lie. -->
-      <span v-if="!collapsed && client.station?.signal_dbm" class="meta num" :class="signalClass">
+      <span v-if="client.station?.signal_dbm" class="meta num" :class="signalClass">
         {{ client.station.signal_dbm }} dBm
       </span>
       <span
-        v-else-if="!collapsed && client.station" class="meta num"
+        v-else-if="client.station" class="meta num"
         title="This radio reports no per-station signal level in AP mode; transmit failures stand in as the link-quality indicator"
       >tx-fail {{ client.station.tx_failed.toLocaleString() }}</span>
       <span
-        v-if="!collapsed && client.station"
+        v-if="client.station"
         class="meta num"
         title="Negotiated radio modulation rate, NOT achieved throughput"
       >
@@ -131,36 +198,10 @@ function fmtBytes(n: number): string {
 
       <span class="spacer"></span>
 
-      <!-- Folded summary: enough to answer "is this device doing anything, and
-           is it being conditioned" without expanding. Uses the same chart
-           component in compact mode, so direction colour and scaling cannot
-           drift from the full charts below. -->
-      <span v-if="collapsed" class="fold-summary">
-        <span class="fold-spark">
-          <TrafficChart
-            :data="series?.down ?? []" color="var(--down)" label="Downlink"
-            :cap="client.policy.down.rate_mbps" :height="24" compact
-          />
-        </span>
-        <span class="fold-val num" style="color: var(--down)">
-          &darr;{{ client.down_counters.throughput_mbps.toFixed(2) }}
-        </span>
-        <span class="fold-spark">
-          <TrafficChart
-            :data="series?.up ?? []" color="var(--up)" label="Uplink"
-            :cap="client.policy.up.rate_mbps" :height="24" compact
-          />
-        </span>
-        <span class="fold-val num" style="color: var(--up)">
-          &uarr;{{ client.up_counters.throughput_mbps.toFixed(2) }}
-        </span>
-        <span class="meta">Mbps</span>
-      </span>
-
       <!-- Deep links into ntopng for THIS device. Shown only when ntopng is
            answering and the client has an address, since both are required
            for the filtered view to resolve to anything. -->
-      <template v-if="!collapsed && ntopngPort && client.ip">
+      <template v-if="ntopngPort && client.ip">
         <a
           class="ntop-link"
           :href="ntopngUrl(ntopngPort, '/lua/host_details.lua', { host: client.ip })"
@@ -178,7 +219,7 @@ function fmtBytes(n: number): string {
       <span v-if="conditioned" class="badge" style="color: var(--warn)">
         conditioned
       </span>
-      <button v-if="conditioned && !collapsed" @click="emit('reset')">reset</button>
+      <button v-if="conditioned" @click="emit('reset')">reset</button>
       <!-- Only offered for a device that is not here: forgetting one that is
            present just makes it reappear unconfigured a second later. -->
       <button v-if="!client.present" class="ghost" @click="emit('forget')">
@@ -322,10 +363,38 @@ function fmtBytes(n: number): string {
 .fold-summary { display: flex; align-items: center; gap: 6px; flex: none; }
 /* A folded row must not wrap. A ragged two-line list is harder to scan than a
    dense one-line one, which is the entire reason for folding. */
-.card-head.folded { flex-wrap: nowrap; overflow: hidden; cursor: pointer; }
-.card-head.folded:hover { background: var(--panel); }
+.card-head { cursor: pointer; }
 /* The name stays a text field, so it must not inherit the row's pointer. */
-.card-head.folded .name { cursor: text; }
+.card-head .name { cursor: text; }
+
+/* Fixed columns so every folded row lines up. Flex sized each row to its own
+   content, which made a list of devices impossible to scan down. */
+.card-head.folded {
+  display: grid;
+  grid-template-columns:
+    14px                  /* presence */
+    minmax(96px, 1.3fr)   /* name */
+    58px                  /* medium */
+    minmax(104px, 1fr)    /* address */
+    76px 68px             /* downlink: shape, then figure -- 68px fits a
+                             three-digit rate such as 103.66 without touching
+                             the next column */
+    76px 68px             /* uplink */
+    38px                  /* unit */
+    92px                  /* conditioned */
+    56px                  /* actions */
+    30px;                 /* toggle */
+  align-items: center;
+  gap: 8px;
+  overflow: hidden;
+}
+.card-head.folded:hover { background: var(--panel); }
+.card-head.folded .cell { min-width: 0; overflow: hidden; }
+.card-head.folded .addr,
+.card-head.folded .name { text-overflow: ellipsis; white-space: nowrap; }
+.card-head.folded .val { text-align: right; font-size: 12px; font-weight: 600; }
+.card-head.folded .unit { font-size: 11px; }
+.card-head.folded .spark { display: block; }
 .card-head.folded .name { flex: 0 1 auto; min-width: 90px; }
 .fold-spark { width: 84px; display: block; }
 .fold-val { font-size: 12px; font-weight: 600; }
