@@ -142,12 +142,43 @@ func ParseMDNS(msg []byte) map[string]string {
 	return out
 }
 
-// tidyName turns "Jons-iPhone.local" into "Jons-iPhone". The .local suffix is
-// on every record here and carries no information.
+// tidyName turns "Jons-iPhone.local" into "Jons-iPhone", and rejects names that
+// carry no meaning for a human.
+//
+// iOS publishes a per-network RANDOM UUID hostname alongside its friendly one,
+// as a privacy measure that pairs with Private Wi-Fi Address. Whichever record
+// arrives last would otherwise win, and a device would flip between
+// "Jons-iPhone" and "b38b77bd-3b57-4cc3-9474-ef67aebf801f". A raw UUID is worse
+// than a MAC as a label -- longer, equally meaningless, and it changes -- so it
+// is discarded and a real name is kept.
 func tidyName(n string) string {
 	n = strings.TrimSuffix(n, ".")
 	n = strings.TrimSuffix(n, ".local")
+	if isUUIDName(n) {
+		return ""
+	}
 	return n
+}
+
+// isUUIDName reports whether a name is nothing but a UUID: 8-4-4-4-12 hex.
+func isUUIDName(n string) bool {
+	groups := strings.Split(n, "-")
+	if len(groups) != 5 {
+		return false
+	}
+	for i, want := range []int{8, 4, 4, 4, 12} {
+		if len(groups[i]) != want {
+			return false
+		}
+		for _, c := range groups[i] {
+			isHex := (c >= '0' && c <= '9') ||
+				(c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')
+			if !isHex {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 // udpPayload returns the UDP payload of an IPv4 or IPv6 packet when it is

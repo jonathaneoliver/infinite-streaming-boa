@@ -93,6 +93,15 @@ hand-assembled BPF program to avoid taking a dependency.
 In practice names do resolve once a device announces while its address is known;
 this is about making it reliable rather than likely.
 
+### Read names from service instances, not just address records
+**Size: S.** Names currently come from A/AAAA record owners. iOS publishes a
+random per-network UUID hostname there alongside its friendly one (a privacy
+measure pairing with Private Wi-Fi Address), so the useful name is present only
+sometimes. The richer source is the service instance label in PTR and SRV
+records -- "Jon's iPhone" in `Jon's iPhone._companion-link._tcp.local` -- which
+is the human name by construction. UUID hostnames are discarded today; reading
+instance labels would mean not depending on the friendly A record appearing.
+
 ## Impairment realism
 
 All mechanisms below were confirmed present on this kernel.

@@ -106,3 +106,34 @@ func TestUDPPayload(t *testing.T) {
 		t.Fatal("must reject a runt packet")
 	}
 }
+
+// iOS publishes a random UUID hostname per network alongside its friendly one.
+// Whichever record arrived last used to win, so a device flipped between a real
+// name and a UUID -- which is a worse label than the MAC it replaced.
+func TestParseMDNS_RejectsUUIDHostname(t *testing.T) {
+	body := append(name("b38b77bd-3b57-4cc3-9474-ef67aebf801f", "local"),
+		0, dnsTypeA, 0x80, 1, 0, 0, 0, 120, 0, 4, 192, 168, 0, 214)
+	got := ParseMDNS(buildMsg(0, 1, 0, 0, body))
+	if v, ok := got["192.168.0.214"]; ok && v != "" {
+		t.Fatalf("a bare UUID must not be used as a name, got %q", v)
+	}
+}
+
+func TestIsUUIDName(t *testing.T) {
+	for _, s := range []string{
+		"b38b77bd-3b57-4cc3-9474-ef67aebf801f",
+		"B38B77BD-3B57-4CC3-9474-EF67AEBF801F",
+	} {
+		if !isUUIDName(s) {
+			t.Errorf("%q should be recognised as a UUID", s)
+		}
+	}
+	for _, s := range []string{
+		"Jonathans-iPhone", "appletv", "Graces-MacBook-Air-2",
+		"HP9CB654502EE1", "a-b-c-d-e", "",
+	} {
+		if isUUIDName(s) {
+			t.Errorf("%q must not be treated as a UUID", s)
+		}
+	}
+}

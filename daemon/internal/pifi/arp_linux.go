@@ -461,6 +461,11 @@ func (l *Learner) Names() map[string]string {
 	defer l.namesMu.RUnlock()
 	out := make(map[string]string, len(l.names))
 	for k, v := range l.names {
+		// Filter here as well as at parse time, so a UUID already sitting in
+		// memory or restored from disk can never reach the interface.
+		if v == "" || isUUIDName(v) {
+			continue
+		}
 		out[k] = v
 	}
 	return out
