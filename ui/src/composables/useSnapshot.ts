@@ -11,9 +11,10 @@ import type { Snapshot, Client, Series } from '@/types';
  * often, with no reconciliation logic on either path.
  */
 
-// 5 minutes at a 1s tick. Long enough to show a video player's segment
-// cadence and its adaptation after a cap changes, which two minutes clipped.
-const HISTORY = 300;
+// One hour at a 1s tick -- the longest selectable range. Shorter ranges are
+// drawn as a slice of this, so switching between them is instant and needs no
+// round trip; only lengthening the range refetches.
+const HISTORY = 3600;
 
 export function useSnapshot() {
   const snap = shallowRef<Snapshot | null>(null);
@@ -26,13 +27,23 @@ export function useSnapshot() {
   // wears out its storage, and any viewer can rebuild it in two minutes.
   const series = ref<Record<string, Series>>({});
 
+  // What one seeded point covers, so the chart can say "6s avg" on a long range
+  // rather than implying every range is raw 1 Hz data.
+  const bucketMs = ref(1000);
+  // The longest range fetched so far. Ranges shorter than this are served from
+  // what is already in memory.
+  const loadedSec = ref(300);
+
   function record(clients: Client[]) {
+    const now = Date.now();
     const next = { ...series.value };
     for (const c of clients) {
-      const s = next[c.mac] ?? { down: [], up: [] };
-      s.down = [...s.down, c.down_counters.throughput_mbps].slice(-HISTORY);
-      s.up = [...s.up, c.up_counters.throughput_mbps].slice(-HISTORY);
-      next[c.mac] = s;
+      const s = next[c.mac] ?? { t: [], down: [], up: [] };
+      next[c.mac] = {
+        t: [...s.t, now].slice(-HISTORY),
+        down: [...s.down, c.down_counters.throughput_mbps].slice(-HISTORY),
+        up: [...s.up, c.up_counters.throughput_mbps].slice(-HISTORY),
+      };
     }
     series.value = next;
   }
@@ -48,51 +59,80 @@ export function useSnapshot() {
    * Seed the charts from the server's history so a reload does not start from a
    * blank plot and take five minutes to become useful again.
    *
-   * Samples are placed by TIMESTAMP rather than appended in order. The chart's
-   * x-axis assumes a contiguous 1 Hz series, so a gap -- a daemon restart, a
-   * sleeping laptop, a device that went away -- would otherwise be squeezed out
-   * and the plot would misrepresent when things happened. Missing slots are
-   * filled with zero, which keeps the time axis truthful; distinguishing "no
-   * traffic" from "not observed" would need the chart to handle nulls, and the
-   * timestamps are there to make that possible later.
+   * Only the window being drawn is fetched. An hour at full resolution is
+   * around 140 KB of JSON per client, and this page is routinely served over a
+   * link the operator has just throttled on purpose -- so the server decimates
+   * to at most 600 points and reports the bucket width it used.
+   *
+   * Samples arrive with their own timestamps and are stored as they are. The
+   * previous version rebuilt a fixed 300-slot 1 Hz array and zero-filled the
+   * gaps, which quietly turned "not observed" into "no traffic"; now the
+   * timestamps are kept and the chart positions by time, so a gap looks like a
+   * gap.
    */
-  async function seedFromServer() {
+  async function seedFromServer(windowSec: number) {
     try {
-      const r = await fetch('/api/history');
+      const r = await fetch(`/api/history?window=${windowSec}&points=600`);
       if (!r.ok) return;
       const body = await r.json();
-      const now: number = body.now ?? Date.now();
-      const step: number = body.interval_ms ?? 1000;
-      const next: Record<string, Series> = {};
+      bucketMs.value = body.bucket_ms ?? 1000;
 
+      const next: Record<string, Series> = {};
       for (const [mac, samples] of Object.entries(
         (body.clients ?? {}) as Record<string, { t: number; down: number; up: number }[]>,
       )) {
-        const down = new Array<number>(HISTORY).fill(0);
-        const up = new Array<number>(HISTORY).fill(0);
-        for (const s of samples) {
-          const slot = HISTORY - 1 - Math.round((now - s.t) / step);
-          if (slot >= 0 && slot < HISTORY) {
-            down[slot] = s.down;
-            up[slot] = s.up;
-          }
-        }
-        next[mac] = { down, up };
+        next[mac] = {
+          t: samples.map((x) => x.t),
+          down: samples.map((x) => x.down),
+          up: samples.map((x) => x.up),
+        };
       }
-      // The seed WINS over anything the live stream has already appended.
-      //
-      // The obvious-looking `{...next, ...series.value}` is wrong: the stream
-      // connects immediately and has already created a one-sample entry by the
-      // time this fetch resolves, so that entry sorts last and discards the
-      // entire seed -- the guard threw away exactly what it was meant to
-      // protect. The seed already runs up to `now`, so the handful of live
-      // samples it replaces cover the same instants.
-      series.value = { ...series.value, ...next };
+
+      // The seed replaces history up to its last sample and LIVE DATA WINS
+      // after it. Both halves matter: the stream connects immediately, so by
+      // the time this resolves it has already appended samples that the seed
+      // does not contain (an earlier version let a one-sample live entry
+      // discard the entire seed, and the guard threw away what it was meant to
+      // protect). Splicing on the timestamp keeps both without duplicating the
+      // overlap.
+      const merged = { ...series.value };
+      for (const [mac, seed] of Object.entries(next)) {
+        const live = series.value[mac];
+        const edge = seed.t[seed.t.length - 1] ?? 0;
+        if (!live) {
+          merged[mac] = seed;
+          continue;
+        }
+        const from = live.t.findIndex((t) => t > edge);
+        merged[mac] =
+          from < 0
+            ? seed
+            : {
+                t: [...seed.t, ...live.t.slice(from)],
+                down: [...seed.down, ...live.down.slice(from)],
+                up: [...seed.up, ...live.up.slice(from)],
+              };
+      }
+      series.value = merged;
     } catch {
       /* history is a convenience; its absence must not break the page */
     }
   }
-  void seedFromServer();
+
+  /**
+   * Refetch for a newly chosen range.
+   *
+   * Shortening never refetches: the client already holds an hour, so a shorter
+   * window is a slice of it drawn at full 1 Hz resolution, which is strictly
+   * better than the decimated version the server would return.
+   */
+  function setRange(sec: number) {
+    if (sec <= loadedSec.value) return;
+    loadedSec.value = sec;
+    void seedFromServer(sec);
+  }
+
+  void seedFromServer(loadedSec.value);
 
   let es: EventSource | null = null;
   let pollTimer: number | undefined;
@@ -161,5 +201,5 @@ export function useSnapshot() {
     if (retry) window.clearTimeout(retry);
   });
 
-  return { snap, connected, transport, error, series };
+  return { snap, connected, transport, error, series, bucketMs, setRange };
 }

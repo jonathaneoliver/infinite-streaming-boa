@@ -189,8 +189,54 @@ export const PRESETS: Preset[] = [
   },
 ];
 
-/** Client-side throughput history for the sparklines, in Mbps per tick. */
+/**
+ * Throughput history for one client, in Mbps.
+ *
+ * Parallel arrays sharing an index rather than an array of objects: at 3600
+ * points per client per direction this is the difference between three arrays
+ * and 3600 short-lived objects rebuilt on every tick.
+ *
+ * `t` carries the wall-clock time of each sample. The x-axis was formerly an
+ * implied 1 Hz sequence, which cannot represent either of the two things that
+ * now happen routinely: a long range arriving pre-averaged into wider buckets,
+ * and a gap where the daemon restarted or the device went away. Without real
+ * timestamps both are silently squeezed into a continuous line and the chart
+ * misreports when things happened.
+ */
 export interface Series {
+  t: number[];
   down: number[];
   up: number[];
+}
+
+/** Chart time ranges, in the `{ v, label }` shape the streaming dashboard uses. */
+export const RANGES = [
+  { v: 60, label: '1m' },
+  { v: 300, label: '5m' },
+  { v: 900, label: '15m' },
+  { v: 3600, label: '1h' },
+] as const;
+
+/**
+ * How the y-axis maximum is chosen.
+ *
+ * - `auto`   — follow the data (and the cap), rescaling as traffic changes.
+ * - `cap`    — lock to the configured cap, so the headroom between what a
+ *              device is doing and what it is allowed to do stays a constant
+ *              distance. That gap is the question these charts exist to answer,
+ *              and an axis that rescales hides it.
+ * - `manual` — a fixed ceiling, so two devices an order of magnitude apart can
+ *              be compared on one scale instead of both filling their panes.
+ *
+ * Linear throughout, deliberately: zero is a real and frequent value here (a
+ * player that has filled its buffer stops requesting), and a log axis has no
+ * position for it. See the note in TrafficChart.
+ */
+export type YMode = 'auto' | 'cap' | 'manual';
+
+export interface ChartPrefs {
+  rangeSec: number;
+  yMode: YMode;
+  /** Ceiling in Mbps for `manual`; ignored in the other modes. */
+  yManual: number;
 }

@@ -119,8 +119,20 @@ device card. Optional: the image builds without it.
 
 - State arrives as **complete snapshots** over server-sent events, with polling
   as an equivalent fallback. A dropped frame cannot cause drift.
-- Charts hold five minutes at 1 Hz, seeded from the server on load so a refresh
-  does not start blank.
+- Charts hold up to one hour at 1 Hz, seeded from the server on load so a
+  refresh does not start blank. The visible range is selectable (1m / 5m / 15m /
+  1h) and applies to every device at once, because the reason to change it is
+  comparison. Long ranges are averaged into buckets on the way out and the
+  interface says so rather than implying raw resolution.
+- The y-axis is chosen the same way for every chart: follow the data, lock to
+  the configured cap, or a fixed ceiling the operator sets. Locking to the cap
+  keeps the headroom between delivered and allowed a constant distance; a fixed
+  ceiling makes two devices comparable. The axis is linear in all three: zero is
+  a real and frequent reading here, and a log axis has no position for it.
+- Where a fixed ceiling sits below the traffic the plot is marked as clipped,
+  so a line resting on the top of the pane is never mistaken for a plateau.
+- Both settings persist, and the plot's right-hand edge stops advancing while a
+  chart is being read, so the point under the pointer stays the point measured.
 - Device cards fold when there is more than one device, keeping a sparkline and
   current figure per direction on the fold title. Folding is presentation only;
   a folded card stays live.
