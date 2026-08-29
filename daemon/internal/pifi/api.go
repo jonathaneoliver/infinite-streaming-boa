@@ -32,6 +32,7 @@ func (a *API) Routes() *http.ServeMux {
 	mux.HandleFunc("GET /api/state", a.getState)
 	mux.HandleFunc("GET /api/state/stream", a.stream)
 	mux.HandleFunc("GET /api/health", a.health)
+	mux.HandleFunc("GET /api/history", a.getHistory)
 	mux.HandleFunc("PATCH /api/devices/{mac}/policy", a.patchPolicy)
 	mux.HandleFunc("POST /api/devices/{mac}/sub", a.postSub)
 	mux.HandleFunc("PATCH /api/devices/{mac}/sub/{id}", a.patchSub)
@@ -59,6 +60,20 @@ func (a *API) health(w http.ResponseWriter, r *http.Request) {
 	s := a.e.Snapshot()
 	writeJSON(w, http.StatusOK, map[string]any{
 		"ok": s.Caps.Shaping, "caps": s.Caps, "revision": s.Revision,
+	})
+}
+
+// getHistory serves the per-client throughput series.
+//
+// A separate endpoint rather than part of the snapshot: including it in every
+// server-sent event, once a second, would multiply the stream roughly a
+// hundredfold to re-send data the client already has. The UI fetches this once
+// on load and appends from the live stream thereafter.
+func (a *API) getHistory(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]any{
+		"interval_ms": 1000,
+		"now":         nowMs(),
+		"clients":     a.e.History().Snapshot(),
 	})
 }
 

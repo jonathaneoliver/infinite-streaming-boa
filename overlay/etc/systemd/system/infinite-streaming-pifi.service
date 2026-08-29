@@ -26,6 +26,13 @@ User=root
 NoNewPrivileges=false
 ProtectHome=yes
 ProtectSystem=strict
+# ProtectSystem=strict makes the WHOLE hierarchy read-only apart from /dev,
+# /proc and /sys, so every writable path has to be named. Chart history goes to
+# a RuntimeDirectory (tmpfs): it must survive a daemon restart, which happens on
+# every deploy, but writing a time series to the SD card every few seconds is
+# how a Pi appliance wears out its storage.
+RuntimeDirectory=infinite-streaming-pifi
+RuntimeDirectoryPreserve=restart
 ReadWritePaths=/var/lib/infinite-streaming-pifi
 PrivateTmp=yes
 

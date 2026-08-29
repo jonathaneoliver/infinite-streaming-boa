@@ -44,6 +44,50 @@ export function useSnapshot() {
     record(s.clients ?? []);
   }
 
+  /**
+   * Seed the charts from the server's history so a reload does not start from a
+   * blank plot and take five minutes to become useful again.
+   *
+   * Samples are placed by TIMESTAMP rather than appended in order. The chart's
+   * x-axis assumes a contiguous 1 Hz series, so a gap -- a daemon restart, a
+   * sleeping laptop, a device that went away -- would otherwise be squeezed out
+   * and the plot would misrepresent when things happened. Missing slots are
+   * filled with zero, which keeps the time axis truthful; distinguishing "no
+   * traffic" from "not observed" would need the chart to handle nulls, and the
+   * timestamps are there to make that possible later.
+   */
+  async function seedFromServer() {
+    try {
+      const r = await fetch('/api/history');
+      if (!r.ok) return;
+      const body = await r.json();
+      const now: number = body.now ?? Date.now();
+      const step: number = body.interval_ms ?? 1000;
+      const next: Record<string, Series> = {};
+
+      for (const [mac, samples] of Object.entries(
+        (body.clients ?? {}) as Record<string, { t: number; down: number; up: number }[]>,
+      )) {
+        const down = new Array<number>(HISTORY).fill(0);
+        const up = new Array<number>(HISTORY).fill(0);
+        for (const s of samples) {
+          const slot = HISTORY - 1 - Math.round((now - s.t) / step);
+          if (slot >= 0 && slot < HISTORY) {
+            down[slot] = s.down;
+            up[slot] = s.up;
+          }
+        }
+        next[mac] = { down, up };
+      }
+      // Only seed series the live stream has not already started, so a slow
+      // history fetch cannot overwrite fresher data.
+      series.value = { ...next, ...series.value };
+    } catch {
+      /* history is a convenience; its absence must not break the page */
+    }
+  }
+  void seedFromServer();
+
   let es: EventSource | null = null;
   let pollTimer: number | undefined;
   let retry: number | undefined;

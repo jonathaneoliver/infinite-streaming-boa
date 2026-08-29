@@ -62,6 +62,10 @@ type Engine struct {
 
 	namesPath string
 
+	// hist is the per-client throughput series a reloading browser seeds from.
+	hist     *History
+	histPath string
+
 	subs map[chan Snapshot]struct{}
 }
 
@@ -77,6 +81,7 @@ func NewEngine(cfg Config) *Engine {
 		prev:      map[string]counterSample{},
 		demo:      newDemoFleet(),
 		demoBytes: map[string]uint64{},
+		hist:      NewHistory(),
 		subs:      map[chan Snapshot]struct{}{},
 	}
 }
@@ -110,6 +115,12 @@ func (e *Engine) Start() {
 	// drops every client back to a bare MAC until the next announcement,
 	// which can be many minutes away. From outside that is indistinguishable
 	// from the feature breaking.
+	// tmpfs, not the state directory: history must survive a daemon restart --
+	// which happens on every deploy -- but writing a time series to the SD card
+	// every second is how a Pi appliance kills its storage.
+	e.histPath = "/run/infinite-streaming-pifi/history.json"
+	e.hist.Load(e.histPath)
+
 	e.namesPath = filepath.Join(filepath.Dir(e.cfg.StatePath), "names.json")
 	namesPath := e.namesPath
 	e.learn.LoadNames(namesPath)
@@ -118,6 +129,7 @@ func (e *Engine) Start() {
 		defer t.Stop()
 		for range t.C {
 			e.learn.SaveNames(namesPath)
+			e.hist.Save(e.histPath)
 		}
 	}()
 	go func() {
@@ -415,6 +427,20 @@ func (e *Engine) tick() {
 		}
 	}
 
+	// Record the series before publishing, so a browser that loads in this
+	// instant gets history consistent with the snapshot it also receives.
+	for i := range clients {
+		c := &clients[i]
+		e.hist.Add(c.MAC, Sample{
+			T:    now.UnixMilli(),
+			Down: c.DownCounters.ThroughputMbps,
+			Up:   c.UpCounters.ThroughputMbps,
+		})
+	}
+	if e.rev%60 == 0 {
+		e.hist.Prune(now)
+	}
+
 	e.rev++
 	ready, reason := e.sh.Ready()
 	snap := Snapshot{
@@ -499,4 +525,10 @@ func (e *Engine) FlushNames() {
 	if e.namesPath != "" {
 		e.learn.SaveNames(e.namesPath)
 	}
+	if e.histPath != "" {
+		e.hist.Save(e.histPath)
+	}
 }
+
+// History exposes the per-client series for the API.
+func (e *Engine) History() *History { return e.hist }

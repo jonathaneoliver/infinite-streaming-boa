@@ -26,6 +26,7 @@ for a in "$@"; do
   esac
 done
 TARGET="${TARGET:-pifi@infinite-streaming-pifi.local}"
+NEW=infinite-streaming-pifi
 
 # Fail early with a clear message rather than midway through a build.
 log "Checking $TARGET"
@@ -53,6 +54,21 @@ log "Copying ${SIZE} binary"
 # ETXTBSY, and a partial copy over the real path would leave the Pi with a
 # broken binary if the transfer were interrupted.
 scp -q overlay/usr/local/bin/infinite-streaming-pifid "$TARGET:/tmp/infinite-streaming-pifid.new"
+
+# The systemd unit is part of the deployable payload too. Shipping only the
+# binary meant a unit change silently required a reflash to take effect -- which
+# is exactly how a RuntimeDirectory fix sat inert while its feature looked
+# broken.
+UNIT="overlay/etc/systemd/system/${NEW}.service"
+if [ -f "$UNIT" ]; then
+  if ! ssh "$TARGET" "cmp -s /etc/systemd/system/${NEW}.service -" < "$UNIT" 2>/dev/null; then
+    log "Unit file changed; updating it"
+    scp -q "$UNIT" "$TARGET:/tmp/${NEW}.service"
+    ssh "$TARGET" "sudo install -m 0644 /tmp/${NEW}.service \
+      /etc/systemd/system/${NEW}.service && sudo systemctl daemon-reload \
+      && rm -f /tmp/${NEW}.service"
+  fi
+fi
 
 log "Installing and restarting"
 ssh "$TARGET" 'sudo install -m 0755 /tmp/infinite-streaming-pifid.new /usr/local/bin/infinite-streaming-pifid \
