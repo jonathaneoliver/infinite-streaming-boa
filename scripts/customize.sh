@@ -48,7 +48,19 @@ log "Decompressing to ${OUT_NAME} (takes a minute)"
 rm -f "$IMG"
 xz -dc "/cache/${XZ_NAME}" > "$IMG"
 
-## 2. Attach and mount ------------------------------------------------------
+## 2. Grow, attach and mount -------------------------------------------------
+# Raspberry Pi OS Lite ships with only tens of megabytes free in its root
+# filesystem -- sized to be small, on the assumption it expands on first boot.
+# That is too late for us: everything installed here happens at BUILD time, and
+# without headroom apt fails with "not enough free space in
+# /var/cache/apt/archives" partway through, leaving a half-populated image.
+#
+# Growing costs nothing at runtime. The Pi still expands the partition to fill
+# the card on first boot regardless of the size it started at.
+GROW_MB="${GROW_MB:-1600}"
+log "Growing image by ${GROW_MB}MB for build-time installs"
+truncate -s "+${GROW_MB}M" "$IMG"
+
 LOOP=$(losetup -f --show -P "$IMG")
 log "Attached $IMG at $LOOP"
 
@@ -60,10 +72,25 @@ for _ in $(seq 1 50); do
 done
 [ -b "${LOOP}p2" ] || die "partitions never appeared under $LOOP"
 
+# Extend the root partition into the space just added, then the filesystem
+# inside it. resize2fs insists on a clean check first, and both must happen
+# while the filesystem is unmounted.
+parted -s "$LOOP" resizepart 2 100%
+partprobe "$LOOP" 2>/dev/null || true
+losetup -c "$LOOP" 2>/dev/null || true
+for _ in $(seq 1 50); do
+  [ -b "${LOOP}p2" ] && break
+  sleep 0.1
+done
+e2fsck -fy "${LOOP}p2" >/dev/null 2>&1 || true
+resize2fs "${LOOP}p2" >/dev/null 2>&1 \
+  || warn "could not grow the root filesystem; build-time installs may fail"
+
 mkdir -p "$BOOT" "$ROOT"
 mount "${LOOP}p2" "$ROOT"
 mount "${LOOP}p1" "$BOOT"
 log "Mounted boot ($(findmnt -no FSTYPE "$BOOT")) and root ($(findmnt -no FSTYPE "$ROOT"))"
+log "Root filesystem free space: $(df -h "$ROOT" | awk 'NR==2{print $4}')"
 
 ## 3. Headless access -------------------------------------------------------
 # An empty /ssh on the boot partition switches sshd on at first boot.
@@ -431,9 +458,35 @@ UNIT
     mapfile -t NTOPDEPS < <(grep -vE '^[[:space:]]*(#|$)' /cache/ntopng-runtime-deps.txt)
     if [ ${#NTOPDEPS[@]} -gt 0 ]; then
       log "Installing ntopng runtime libraries (${#NTOPDEPS[@]} packages)"
+      # Refresh the index first. The package step above deletes
+      # /var/lib/apt/lists/*, so without this apt works from the base image's
+      # index -- months old by the time anyone builds -- and 404s on any
+      # version the mirror has since superseded.
+      # Tolerant of partial failure: apt exits non-zero when any index file is
+      # missing, including the translation catalogues that are routinely absent
+      # from a mirror. Under `set -e` that aborted the whole image build over a
+      # file nothing needs. The package index is what matters, and the library
+      # check below is the real verdict.
+      chroot "$ROOT" env DEBIAN_FRONTEND=noninteractive apt-get -qq update \
+        || warn "apt index refresh reported errors (usually absent translation files)"
       chroot "$ROOT" env DEBIAN_FRONTEND=noninteractive \
         apt-get -qq install -y --no-install-recommends redis-server "${NTOPDEPS[@]}" \
         || warn "some ntopng runtime packages could not be installed"
+
+      # Verify rather than assume. A missing shared library does not surface
+      # until the Pi boots and ntopng silently fails to start, which is a
+      # miserable thing to discover from a flashed card.
+      # `|| true` is load-bearing: grep exits non-zero when it finds nothing, so
+      # under `set -e` this check aborted the build on the SUCCESS path -- the
+      # case where every library resolved.
+      MISSING_LIBS=$(chroot "$ROOT" ldd /usr/local/bin/ntopng 2>/dev/null \
+        | grep "not found" | awk '{print $1}' | tr '\n' ' ' || true)
+      if [ -n "$MISSING_LIBS" ]; then
+        warn "ntopng is missing shared libraries and will NOT start: $MISSING_LIBS"
+        warn "the access point and conditioner are unaffected"
+      else
+        log "ntopng library check: all shared libraries resolve"
+      fi
       chroot "$ROOT" apt-get -qq clean
       rm -rf "$ROOT/var/lib/apt/lists/"*
     fi

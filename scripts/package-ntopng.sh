@@ -49,10 +49,16 @@ scp -q "$TARGET:/tmp/ntopng-arm64.tar.gz" "$OUT"
 # expensive. Resolving them from the binary means the package list cannot drift
 # from what was actually built.
 log "Resolving runtime library packages from the built binary"
+#
+# readlink -f is essential, not tidiness: on a usrmerge system ldd reports
+# libraries under /lib/... while dpkg knows the same files as /usr/lib/...,
+# so every lookup misses and the dependency list comes back empty -- which
+# would graft a binary into an image whose shared libraries are absent.
 ssh "$TARGET" '
   BIN=$(command -v ntopng || echo /usr/local/bin/ntopng)
-  ldd "$BIN" 2>/dev/null | awk "{print \$3}" | grep "^/" | sort -u |
-    xargs -r dpkg -S 2>/dev/null | cut -d: -f1 | sort -u
+  ldd "$BIN" 2>/dev/null | awk "{print \$3}" | grep "^/" |
+    xargs -r readlink -f | sort -u |
+    xargs -r dpkg -S 2>/dev/null | cut -d: -f1 | tr -d " " | sort -u
 ' > "$DEPS"
 
 ssh "$TARGET" 'rm -f /tmp/ntopng-arm64.tar.gz; rm -rf /tmp/ntopng-stage' || true
