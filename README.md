@@ -1,5 +1,9 @@
 # pifi
 
+Part of the infinite-streaming family. The repository is
+`infinite-streaming-pifi`; `pifi` is the appliance itself -- the binary, the
+hostname, the SSID.
+
 A Raspberry Pi that sits invisibly in your network and conditions each client's
 internet connection independently — rate, latency, jitter and packet loss, per
 device, in each direction, adjustable live from a web interface.

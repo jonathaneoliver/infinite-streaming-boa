@@ -17,8 +17,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/jonathaneoliver/pifi/daemon/internal/pifi"
-	"github.com/jonathaneoliver/pifi/daemon/web"
+	"github.com/jonathaneoliver/infinite-streaming-pifi/daemon/internal/pifi"
+	"github.com/jonathaneoliver/infinite-streaming-pifi/daemon/web"
 )
 
 func main() {

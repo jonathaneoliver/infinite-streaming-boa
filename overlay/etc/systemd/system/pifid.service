@@ -1,6 +1,6 @@
 [Unit]
 Description=pifi per-client network link conditioner
-Documentation=https://github.com/jonathaneoliver/pifi
+Documentation=https://github.com/jonathaneoliver/infinite-streaming-pifi
 # The bridge must exist before queueing disciplines can be attached to its
 # ports, and NetworkManager is what creates it.
 After=network-online.target NetworkManager.service
