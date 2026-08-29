@@ -45,6 +45,26 @@ const conditioned = computed(() => {
   return p.enabled && (dirty(p.down) || dirty(p.up));
 });
 
+/**
+ * A folded row opens on a click anywhere in it, not only on the chevron.
+ *
+ * Clicks that land on something interactive are left alone: the name is an
+ * editable input, and a device that is absent carries a "forget" button. Both
+ * live in the folded row, and swallowing their clicks to expand the card would
+ * make them unusable.
+ *
+ * Only the FOLDED state responds. Making an expanded header collapse on a bare
+ * click would fire while selecting a MAC address to copy, which is a normal
+ * thing to do there. The chevron still toggles both ways, and remains the
+ * keyboard-accessible control.
+ */
+function onHeadClick(e: MouseEvent) {
+  if (!props.collapsed) return;
+  const el = e.target as HTMLElement | null;
+  if (el?.closest('input, button, a, select, textarea')) return;
+  emit('toggle');
+}
+
 function fmtBytes(n: number): string {
   if (n < 1024) return `${n} B`;
   const u = ['KB', 'MB', 'GB', 'TB'];
@@ -60,7 +80,7 @@ function fmtBytes(n: number): string {
 
 <template>
   <div :class="['card', { absent: !client.present }]">
-    <div class="card-head" :class="{ folded: collapsed }">
+    <div class="card-head" :class="{ folded: collapsed }" @click="onHeadClick">
       <span
         class="dot"
         :class="client.present ? 'live' : 'off'"
@@ -302,7 +322,10 @@ function fmtBytes(n: number): string {
 .fold-summary { display: flex; align-items: center; gap: 6px; flex: none; }
 /* A folded row must not wrap. A ragged two-line list is harder to scan than a
    dense one-line one, which is the entire reason for folding. */
-.card-head.folded { flex-wrap: nowrap; overflow: hidden; }
+.card-head.folded { flex-wrap: nowrap; overflow: hidden; cursor: pointer; }
+.card-head.folded:hover { background: var(--panel); }
+/* The name stays a text field, so it must not inherit the row's pointer. */
+.card-head.folded .name { cursor: text; }
 .card-head.folded .name { flex: 0 1 auto; min-width: 90px; }
 .fold-spark { width: 84px; display: block; }
 .fold-val { font-size: 12px; font-weight: 600; }
