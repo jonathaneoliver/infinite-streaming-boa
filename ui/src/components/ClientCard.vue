@@ -60,7 +60,7 @@ function fmtBytes(n: number): string {
 
 <template>
   <div :class="['card', { absent: !client.present }]">
-    <div class="card-head">
+    <div class="card-head" :class="{ folded: collapsed }">
       <span
         class="dot"
         :class="client.present ? 'live' : 'off'"
@@ -75,12 +75,12 @@ function fmtBytes(n: number): string {
       <span v-if="client.medium" class="badge" :class="client.medium">
         {{ client.medium }}
       </span>
-      <span class="meta num">{{ client.mac }}</span>
+      <span v-if="!collapsed" class="meta num">{{ client.mac }}</span>
       <span v-if="client.ip" class="meta num">{{ client.ip }}</span>
       <!-- Privacy extensions give a device several v6 addresses at once, so
            the count matters more than any one value; all of them are shaped. -->
       <span
-        v-if="client.ipv6?.length" class="meta num"
+        v-if="!collapsed && client.ipv6?.length" class="meta num"
         :title="'IPv6, all conditioned:\n' + client.ipv6.join('\n')"
       >+{{ client.ipv6.length }} IPv6</span>
       <!-- An explicit condition, not a v-else. Inserting the IPv6 badge above
@@ -94,15 +94,15 @@ function fmtBytes(n: number): string {
       <!-- Only shown when the driver actually reports it. The Pi's Broadcom
            chip gives no per-station RSSI in AP mode, and printing "0 dBm" is
            a confident-looking lie. -->
-      <span v-if="client.station?.signal_dbm" class="meta num" :class="signalClass">
+      <span v-if="!collapsed && client.station?.signal_dbm" class="meta num" :class="signalClass">
         {{ client.station.signal_dbm }} dBm
       </span>
       <span
-        v-else-if="client.station" class="meta num"
+        v-else-if="!collapsed && client.station" class="meta num"
         title="This radio reports no per-station signal level in AP mode; transmit failures stand in as the link-quality indicator"
       >tx-fail {{ client.station.tx_failed.toLocaleString() }}</span>
       <span
-        v-if="client.station"
+        v-if="!collapsed && client.station"
         class="meta num"
         title="Negotiated radio modulation rate, NOT achieved throughput"
       >
@@ -140,7 +140,7 @@ function fmtBytes(n: number): string {
       <!-- Deep links into ntopng for THIS device. Shown only when ntopng is
            answering and the client has an address, since both are required
            for the filtered view to resolve to anything. -->
-      <template v-if="ntopngPort && client.ip">
+      <template v-if="!collapsed && ntopngPort && client.ip">
         <a
           class="ntop-link"
           :href="ntopngUrl(ntopngPort, '/lua/host_details.lua', { host: client.ip })"
@@ -158,7 +158,7 @@ function fmtBytes(n: number): string {
       <span v-if="conditioned" class="badge" style="color: var(--warn)">
         conditioned
       </span>
-      <button v-if="conditioned" @click="emit('reset')">reset</button>
+      <button v-if="conditioned && !collapsed" @click="emit('reset')">reset</button>
       <!-- Only offered for a device that is not here: forgetting one that is
            present just makes it reappear unconfigured a second later. -->
       <button v-if="!client.present" class="ghost" @click="emit('forget')">
@@ -299,7 +299,11 @@ function fmtBytes(n: number): string {
 </template>
 
 <style scoped>
-.fold-summary { display: flex; align-items: center; gap: 6px; }
+.fold-summary { display: flex; align-items: center; gap: 6px; flex: none; }
+/* A folded row must not wrap. A ragged two-line list is harder to scan than a
+   dense one-line one, which is the entire reason for folding. */
+.card-head.folded { flex-wrap: nowrap; overflow: hidden; }
+.card-head.folded .name { flex: 0 1 auto; min-width: 90px; }
 .fold-spark { width: 84px; display: block; }
 .fold-val { font-size: 12px; font-weight: 600; }
 .fold-toggle { font-size: 13px; line-height: 1; padding: 3px 8px; }
