@@ -59,6 +59,11 @@ type Learner struct {
 	fd     int
 	mdnsFd int
 
+	// downstream is the set of ports a CLIENT of this box can be on. A frame
+	// that arrived anywhere else came from upstream, and upstream is not what
+	// this box is for.
+	downstream map[string]bool
+
 	ifnames sync.Map // ifindex -> name
 
 	// local is the set of subnets on the bridge. A frame from upstream carries
@@ -118,12 +123,32 @@ const (
 
 func htons(v uint16) uint16 { return v<<8 | v>>8 }
 
-func NewLearner(bridge string) *Learner {
+func NewLearner(bridge, wlanPort, lanPort string) *Learner {
+	// The same test the client list uses: a device is a client of this box only
+	// if its traffic arrives on a downstream port. An absent port -- lan0 with
+	// no USB adapter fitted -- is not a port anything can arrive on.
+	down := map[string]bool{}
+	for _, p := range []string{wlanPort, lanPort} {
+		if p != "" {
+			down[p] = true
+		}
+	}
 	return &Learner{
 		seen: map[string]learned{}, names: map[string]string{},
-		macNames: map[string]string{},
-		bridge:   bridge, fd: -1, mdnsFd: -1,
+		macNames: map[string]string{}, downstream: down,
+		bridge: bridge, fd: -1, mdnsFd: -1,
 	}
+}
+
+// fromClient reports whether a frame arriving on this interface came from a
+// device downstream of the box.
+//
+// With ETH_P_ALL the arrival interface is the physical port, before the bridge
+// rewrites it, so this is the real answer rather than an inference. It also
+// excludes the bridge's own copy of a multicast frame, which is delivered a
+// second time with the interface rewritten to the bridge itself.
+func (l *Learner) fromClient(ifindex int) bool {
+	return l.downstream[l.ifname(ifindex)]
 }
 
 // nameTable is the on-disk form of both name tables.
@@ -262,7 +287,7 @@ func (l *Learner) Run() error {
 		}
 	}()
 
-	// DEDICATED listeners for mDNS, not the sampled packet stream below.
+	// A DEDICATED path for mDNS, not the sampled packet stream below.
 	//
 	// The sampler is tuned for volume: it catches any packet from a device that
 	// is doing something, which is the right shape for learning addresses. mDNS
@@ -270,16 +295,24 @@ func (l *Learner) Run() error {
 	// would routinely discard the one packet carrying the name. Reading every
 	// announcement costs almost nothing, because that traffic is tiny.
 	//
-	// The filtered packet socket is the one that matters, because it is the
-	// only path that carries the SENDER'S MAC. The two multicast listeners are
-	// kept behind it: they need no privileges beyond the join, so they still
-	// learn names by address if the packet socket cannot be set up.
+	// The filtered packet socket is preferred over joining the multicast group,
+	// for two reasons. It carries the SENDER'S MAC, which is what a name has to
+	// be keyed by; and it reports the arrival PORT, so an announcement from
+	// upstream can be told apart from one made by a client. A multicast
+	// listener bound to the bridge can do neither: it is handed a payload, and
+	// the frame that carried it is gone.
 	//
-	// All three are passive: nothing is queried, nothing is sent, the box stays
-	// invisible.
-	l.startMDNSCapture()
-	go l.listenMDNS("udp4", &net.UDPAddr{IP: net.IPv4(224, 0, 0, 251), Port: mdnsPort})
-	go l.listenMDNS("udp6", &net.UDPAddr{IP: net.ParseIP("ff02::fb"), Port: mdnsPort})
+	// So the listeners run only when the packet socket could not be opened.
+	// They learn names by address for the whole segment, upstream included,
+	// which is worse -- but it is what shipped before, and a box that shows
+	// slightly too many names is better than one that shows none.
+	//
+	// Either way this is passive: nothing is queried, nothing is sent, the box
+	// stays invisible.
+	if !l.startMDNSCapture() {
+		go l.listenMDNS("udp4", &net.UDPAddr{IP: net.IPv4(224, 0, 0, 251), Port: mdnsPort})
+		go l.listenMDNS("udp6", &net.UDPAddr{IP: net.ParseIP("ff02::fb"), Port: mdnsPort})
+	}
 
 	fd, err := syscall.Socket(syscall.AF_PACKET, syscall.SOCK_DGRAM, int(htons(ethPALL)))
 	if err != nil {
@@ -331,14 +364,14 @@ func (l *Learner) Run() error {
 				// Source MAC from the sockaddr, source IP from the header.
 				mac = net.HardwareAddr(ll.Addr[:6]).String()
 				ip = net.IP(buf[ipSrc : ipSrc+4])
-				l.recordMDNS(mac, buf[:n])
+				l.recordMDNS(mac, buf[:n], ll.Ifindex)
 			case htons(ethPIPV6):
 				if n < ip6MinLen || ll.Halen < 6 {
 					continue
 				}
 				mac = net.HardwareAddr(ll.Addr[:6]).String()
 				ip = net.IP(buf[ip6Src : ip6Src+16])
-				l.recordMDNS(mac, buf[:n])
+				l.recordMDNS(mac, buf[:n], ll.Ifindex)
 			default:
 				continue
 			}
@@ -460,15 +493,22 @@ func (l *Learner) Table(ttl time.Duration) map[string]Seen {
 //
 // Multicast announcements are addressed to the group, not to this box, but a
 // bridge sees them anyway -- which is the whole reason this works without
-// querying anything.
-//
-// mac may be empty, for a path that has no link-layer header to read it from.
-func (l *Learner) recordMDNS(mac string, pkt []byte) {
+// querying anything. It also means this box hears every device on the segment,
+// most of which are UPSTREAM and are not its clients. Those are dropped here,
+// on the arrival port, rather than filtered out at the point of display: their
+// names are of no use to anyone, they are what would push a real client's name
+// out of a full table, and a test appliance has no business writing the names
+// of the neighbouring network's devices to its disk.
+func (l *Learner) recordMDNS(mac string, pkt []byte, ifindex int) {
+	if !l.fromClient(ifindex) {
+		return
+	}
 	byAddr, sender := ParseMDNSFrame(pkt)
 	l.storeNames(mac, byAddr, sender)
 }
 
-// storeNames merges one announcement into both tables.
+// storeNames merges one announcement into both tables. mac may be empty, for a
+// path that has no link-layer header to read it from.
 func (l *Learner) storeNames(mac string, byAddr map[string]string, sender string) {
 	if len(byAddr) == 0 && sender == "" {
 		return

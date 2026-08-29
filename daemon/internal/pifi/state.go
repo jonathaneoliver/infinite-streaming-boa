@@ -77,7 +77,7 @@ func NewEngine(cfg Config) *Engine {
 		cfg:       cfg,
 		sh:        NewShaper(cfg.WANPort, cfg.Bridge),
 		st:        NewStore(cfg.StatePath),
-		learn:     NewLearner(cfg.Bridge),
+		learn:     NewLearner(cfg.Bridge, cfg.WlanPort, cfg.LanPort),
 		prev:      map[string]counterSample{},
 		demo:      newDemoFleet(),
 		demoBytes: map[string]uint64{},

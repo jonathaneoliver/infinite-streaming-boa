@@ -158,19 +158,23 @@ func openMDNSSocket() (int, error) {
 // is stored by the same goroutine that owns the learner's other one, and Close
 // can shut both down.
 //
-// Failure is non-fatal but never silent: names fall back to the address-keyed
-// path, which is what shipped before this, and the reason has to be visible or
-// the box just quietly shows MAC addresses forever.
-func (l *Learner) startMDNSCapture() {
+// It reports whether the socket opened, because that decides whether the
+// caller needs the weaker multicast fallback.
+//
+// Failure is non-fatal but never silent: the reason has to be visible, or the
+// box just quietly shows MAC addresses forever.
+func (l *Learner) startMDNSCapture() bool {
 	fd, err := openMDNSSocket()
 	if err != nil {
 		fmt.Printf("infinite-streaming-pifi: mDNS capture unavailable: %v "+
-			"(names will only be learned for addresses already seen)\n", err)
-		return
+			"(falling back to multicast listeners: names by address, and the "+
+			"whole segment rather than this box's clients)\n", err)
+		return false
 	}
 	l.mdnsFd = fd
 	fmt.Println("infinite-streaming-pifi: mDNS capture running (names keyed by MAC)")
 	go l.snoopMDNS(fd)
+	return true
 }
 
 // snoopMDNS records the name each mDNS frame's SENDER announces, against the
@@ -195,14 +199,11 @@ func (l *Learner) snoopMDNS(fd int) {
 		if ll.Pkttype == syscall.PACKET_OUTGOING {
 			continue
 		}
-		// A multicast frame is delivered here TWICE: once at ingress on the
-		// physical port, and again when the bridge delivers a copy locally
-		// with skb->dev rewritten to itself. Measured in a container: every
-		// announcement arrived on both v1 and br0. The second copy says
-		// nothing new, so the announcement is parsed once.
-		if l.ifname(ll.Ifindex) == l.bridge {
-			continue
-		}
-		l.recordMDNS(net.HardwareAddr(ll.Addr[:6]).String(), buf[:n])
+		// recordMDNS drops anything that did not arrive on a downstream port.
+		// That is both filters at once: upstream devices are not clients of
+		// this box, and the bridge's own second copy of every multicast frame
+		// -- delivered again with skb->dev rewritten to itself, measured in a
+		// container -- is not a port a client can be on either.
+		l.recordMDNS(net.HardwareAddr(ll.Addr[:6]).String(), buf[:n], ll.Ifindex)
 	}
 }

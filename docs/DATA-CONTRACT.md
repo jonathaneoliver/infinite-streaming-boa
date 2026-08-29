@@ -282,8 +282,9 @@ nothing injected onto a network pifi is meant to be invisible on.
 
 **VERIFIED** in a container on 2026-08-29, against a bridge with two namespaces
 hanging off it. An `AF_PACKET`/`SOCK_DGRAM` socket opened with `ETH_P_ALL` and a
-hand-assembled classic BPF program passing UDP port 5353, plus multicast
-listeners on 224.0.0.251 and ff02::fb as a fallback.
+hand-assembled classic BPF program passing UDP port 5353. Multicast listeners on
+224.0.0.251 and ff02::fb are the fallback, and run only when that socket cannot
+be opened.
 
 Devices announce themselves unprompted on the mDNS group, and a bridge sees
 every one of those frames. Nothing is queried and nothing is injected. Only A
@@ -313,6 +314,17 @@ and AAAA answers are read: `name` → the address the record binds it to.
 - **Every multicast frame arrives twice**: once at ingress on the physical port,
   once when the bridge delivers a copy locally with `skb->dev` rewritten to
   itself. The bridge's copy is skipped.
+- **Only announcements arriving on a downstream port are recorded.** A bridge
+  hears the whole segment, and on a real network most of what announces is
+  upstream — measured on 2026-08-29, 11 devices named in ten minutes, of which
+  one was a client. Upstream names are useless to a per-client conditioner, they
+  are what would evict a real client's name from a full table, and writing the
+  neighbouring network's device names to the SD card is not this box's business.
+  This is the same downstream test the client list uses, applied at the arrival
+  port, which `ETH_P_ALL` reports before the bridge rewrites it.
+- The multicast listeners cannot make that distinction: they are handed a
+  payload, with no MAC and no arrival port. That is why they are the fallback
+  rather than the primary path.
 - The name in a packet is not always the sender's. Bonjour Sleep Proxy answers
   on behalf of a sleeping device, so only a record matching the packet's own
   source address is attributed to the sender.

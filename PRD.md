@@ -86,6 +86,9 @@ device card. Optional: the image builds without it.
   keyed by **MAC**: a name is bound to the device that announced it, not to the
   address it announced on. A device is named even when it announces on an
   address this box has never otherwise seen — the common case on IPv6.
+- Only announcements arriving on a **downstream port** are learned. The bridge
+  hears the whole segment, but a device upstream is not a client of this box and
+  its name is not recorded or stored.
 - A name is taken only from a device announcing an address it is sending from.
   A name announced on another host's behalf is not attributed to the sender: a
   bare MAC is an honest label and a confidently wrong name is not.
