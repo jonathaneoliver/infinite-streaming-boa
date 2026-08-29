@@ -6,13 +6,19 @@ import ShapeSliders from './ShapeSliders.vue';
 import SubClasses from './SubClasses.vue';
 import TrafficChart from './TrafficChart.vue';
 
-const props = defineProps<{ client: Client; series?: Series; ntopngPort?: number }>();
+const props = defineProps<{
+  client: Client;
+  series?: Series;
+  ntopngPort?: number;
+  collapsed?: boolean;
+}>();
 const emit = defineEmits<{
   shape: [dir: 'down' | 'up', shape: Shape];
   preset: [down: Shape, up: Shape];
   label: [string];
   reset: [];
   forget: [];
+  toggle: [];
   addSub: [];
   removeSub: [string];
   patchSub: [string, Record<string, unknown>];
@@ -105,6 +111,32 @@ function fmtBytes(n: number): string {
 
       <span class="spacer"></span>
 
+      <!-- Folded summary: enough to answer "is this device doing anything, and
+           is it being conditioned" without expanding. Uses the same chart
+           component in compact mode, so direction colour and scaling cannot
+           drift from the full charts below. -->
+      <span v-if="collapsed" class="fold-summary">
+        <span class="fold-spark">
+          <TrafficChart
+            :data="series?.down ?? []" color="var(--down)" label="Downlink"
+            :cap="client.policy.down.rate_mbps" :height="24" compact
+          />
+        </span>
+        <span class="fold-val num" style="color: var(--down)">
+          &darr;{{ client.down_counters.throughput_mbps.toFixed(2) }}
+        </span>
+        <span class="fold-spark">
+          <TrafficChart
+            :data="series?.up ?? []" color="var(--up)" label="Uplink"
+            :cap="client.policy.up.rate_mbps" :height="24" compact
+          />
+        </span>
+        <span class="fold-val num" style="color: var(--up)">
+          &uarr;{{ client.up_counters.throughput_mbps.toFixed(2) }}
+        </span>
+        <span class="meta">Mbps</span>
+      </span>
+
       <!-- Deep links into ntopng for THIS device. Shown only when ntopng is
            answering and the client has an address, since both are required
            for the filtered view to resolve to anything. -->
@@ -132,8 +164,16 @@ function fmtBytes(n: number): string {
       <button v-if="!client.present" class="ghost" @click="emit('forget')">
         forget
       </button>
+      <button
+        class="fold-toggle ghost" @click="emit('toggle')"
+        :title="collapsed ? 'Expand this device' : 'Fold this device away'"
+        :aria-expanded="!collapsed"
+      >{{ collapsed ? '▸' : '▾' }}</button>
     </div>
 
+    <!-- Folding is presentation only: the card keeps receiving live updates,
+         so the summary above stays current and expanding shows no gap. -->
+    <template v-if="!collapsed">
     <div v-if="!client.shapeable && client.present" class="notice bad" style="margin: 10px 14px">
       This device has no IP address yet, so it cannot be conditioned. Traffic
       filters match on addresses, and there is nothing to match on until it
@@ -161,7 +201,7 @@ function fmtBytes(n: number): string {
         </h3>
         <TrafficChart
           :data="series?.down ?? []" color="var(--down)" label="Downlink"
-          :cap="client.policy.down.rate_mbps"
+          :cap="client.policy.down.rate_mbps" :height="196"
         />
         <ShapeSliders
           :shape="client.policy.down" dir="down" :disabled="!client.shapeable"
@@ -179,7 +219,7 @@ function fmtBytes(n: number): string {
         </h3>
         <TrafficChart
           :data="series?.up ?? []" color="var(--up)" label="Uplink"
-          :cap="client.policy.up.rate_mbps"
+          :cap="client.policy.up.rate_mbps" :height="196"
         />
         <ShapeSliders
           :shape="client.policy.up" dir="up" :disabled="!client.shapeable"
@@ -254,10 +294,15 @@ function fmtBytes(n: number): string {
         @shape="(id, dir, s) => emit('subShape', id, dir, s)"
       />
     </div>
+    </template>
   </div>
 </template>
 
 <style scoped>
+.fold-summary { display: flex; align-items: center; gap: 6px; }
+.fold-spark { width: 84px; display: block; }
+.fold-val { font-size: 12px; font-weight: 600; }
+.fold-toggle { font-size: 13px; line-height: 1; padding: 3px 8px; }
 .ntop-link {
   font-size: 11px;
   color: var(--ink-dim);

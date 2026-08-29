@@ -27,8 +27,19 @@ const props = withDefaults(
     height?: number;
     /** Render the heading. Off when the surrounding card already names it. */
     titled?: boolean;
+    /**
+     * Strip the chrome: no axes, no ticks, no cap label, no hover. For the
+     * summary on a folded card, where the job is to show SHAPE in a couple of
+     * centimetres, not to be read off.
+     *
+     * A mode on this component rather than a second sparkline component, so
+     * direction colour and scaling cannot drift between the two places a
+     * device's traffic is drawn -- direction is the most confusable property
+     * in a bidirectional conditioner.
+     */
+    compact?: boolean;
   }>(),
-  { cap: 0, interval: 1, height: 132, titled: false },
+  { cap: 0, interval: 1, height: 132, titled: false, compact: false },
 );
 
 // Room for y labels on the left, the endpoint value on the right, and the time
@@ -37,7 +48,11 @@ const props = withDefaults(
 // r is sized for the cap label ("cap 100.0" at 10px monospace is ~54px plus its
 // 6px offset). Too small and the last character is clipped, which is worse than
 // no label at all.
-const PAD = { l: 40, r: 68, t: 10, b: 20 };
+const PAD = computed(() =>
+  props.compact
+    ? { l: 0, r: 0, t: 2, b: 2 }
+    : { l: 40, r: 68, t: 10, b: 20 },
+);
 
 const wrap = ref<HTMLElement | null>(null);
 const w = ref(200);
@@ -53,8 +68,8 @@ onMounted(() => {
 });
 onBeforeUnmount(() => ro?.disconnect());
 
-const plotW = computed(() => Math.max(40, w.value - PAD.l - PAD.r));
-const plotH = computed(() => props.height - PAD.t - PAD.b);
+const plotW = computed(() => Math.max(40, w.value - PAD.value.l - PAD.value.r));
+const plotH = computed(() => props.height - PAD.value.t - PAD.value.b);
 
 /**
  * Round a maximum up to a clean number so the ticks read as round values.
@@ -81,24 +96,24 @@ const yMax = computed(() => {
 
 const ticks = computed(() => {
   const m = yMax.value;
-  return [0, m / 2, m].map((v) => ({ v, y: PAD.t + plotH.value - (v / m) * plotH.value }));
+  return [0, m / 2, m].map((v) => ({ v, y: PAD.value.t + plotH.value - (v / m) * plotH.value }));
 });
 
 const xAt = (i: number) => {
   const n = props.data.length;
-  if (n < 2) return PAD.l;
-  return PAD.l + (i / (n - 1)) * plotW.value;
+  if (n < 2) return PAD.value.l;
+  return PAD.value.l + (i / (n - 1)) * plotW.value;
 };
 const yAt = (v: number) =>
-  PAD.t + plotH.value - Math.min(1, v / yMax.value) * plotH.value;
+  PAD.value.t + plotH.value - Math.min(1, v / yMax.value) * plotH.value;
 
 const linePts = computed(() =>
   props.data.map((v, i) => `${xAt(i).toFixed(1)},${yAt(v).toFixed(1)}`).join(' '),
 );
 const areaPts = computed(() => {
   if (props.data.length < 2) return '';
-  const base = PAD.t + plotH.value;
-  return `${PAD.l},${base} ${linePts.value} ${xAt(props.data.length - 1).toFixed(1)},${base}`;
+  const base = PAD.value.t + plotH.value;
+  return `${PAD.value.l},${base} ${linePts.value} ${xAt(props.data.length - 1).toFixed(1)},${base}`;
 });
 
 const capY = computed(() => (props.cap > 0 ? yAt(props.cap) : null));
@@ -124,7 +139,7 @@ function onMove(e: PointerEvent) {
   const n = props.data.length;
   if (n < 2 || !wrap.value) return;
   const x = e.clientX - wrap.value.getBoundingClientRect().left;
-  const frac = (x - PAD.l) / plotW.value;
+  const frac = (x - PAD.value.l) / plotW.value;
   hoverIdx.value = Math.max(0, Math.min(n - 1, Math.round(frac * (n - 1))));
 }
 
@@ -146,7 +161,7 @@ const gid = `g${Math.random().toString(36).slice(2, 8)}`;
 
 <template>
   <div class="chart" ref="wrap">
-    <div class="chart-head">
+    <div v-if="!compact" class="chart-head">
       <span v-if="titled" class="chart-title">{{ label }}</span>
       <span class="stats num">
         peak {{ fmt(peak) }} · avg {{ fmt(avg) }} · {{ spanLabel }}
@@ -155,7 +170,8 @@ const gid = `g${Math.random().toString(36).slice(2, 8)}`;
 
     <svg
       :width="w" :height="height" class="plot"
-      @pointermove="onMove" @pointerleave="hoverIdx = null"
+      @pointermove="compact ? undefined : onMove($event)"
+      @pointerleave="hoverIdx = null"
       role="img" :aria-label="`${label}: ${fmt(last)} megabits per second`"
     >
       <defs>
@@ -168,13 +184,13 @@ const gid = `g${Math.random().toString(36).slice(2, 8)}`;
 
       <!-- Gridlines: solid hairlines one step off the surface, recessive.
            Dashing here would read as "threshold" when it is only a grid. -->
-      <g class="grid">
+      <g v-if="!compact" class="grid">
         <line
           v-for="t in ticks" :key="'g' + t.v"
           :x1="PAD.l" :x2="PAD.l + plotW" :y1="t.y" :y2="t.y"
         />
       </g>
-      <g class="tick-text num">
+      <g v-if="!compact" class="tick-text num">
         <text
           v-for="t in ticks" :key="'t' + t.v"
           :x="PAD.l - 8" :y="t.y + 3" text-anchor="end"
@@ -189,7 +205,7 @@ const gid = `g${Math.random().toString(36).slice(2, 8)}`;
 
       <!-- The configured cap. Dashed deliberately: this IS a threshold, which is
            exactly the meaning a dashed rule carries. -->
-      <g v-if="capY !== null" class="cap">
+      <g v-if="capY !== null && !compact" class="cap">
         <line :x1="PAD.l" :x2="PAD.l + plotW" :y1="capY" :y2="capY" :stroke="color" />
         <text :x="PAD.l + plotW + 6" :y="capY + 3" class="cap-text num">
           cap {{ fmt(cap) }}
@@ -215,7 +231,7 @@ const gid = `g${Math.random().toString(36).slice(2, 8)}`;
         />
       </g>
 
-      <g class="axis-text">
+      <g v-if="!compact" class="axis-text">
         <text :x="PAD.l" :y="height - 6">−{{ spanLabel }}</text>
         <text :x="PAD.l + plotW" :y="height - 6" text-anchor="end">now</text>
       </g>
@@ -224,7 +240,7 @@ const gid = `g${Math.random().toString(36).slice(2, 8)}`;
     <!-- Value leads, label follows: the reader already knows the series and
          wants the number. -->
     <div
-      v-if="hover" class="tip num"
+      v-if="hover && !compact" class="tip num"
       :style="{ left: Math.min(Math.max(hover.x - 46, 0), w - 96) + 'px' }"
     >
       <span class="tip-val">{{ fmt(hover.value) }} Mbps</span>
