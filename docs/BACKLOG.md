@@ -68,6 +68,31 @@ whether this is the product or a distraction.
 
 ---
 
+## Known weaknesses
+
+### Device names are keyed by address, not MAC
+**Size: M.** mDNS names are stored against the address in the announcement, and
+joined to a client by matching one of the addresses pifi has observed for it. A
+device that announces on an address pifi has not otherwise seen therefore shows
+a bare MAC even though its name was heard.
+
+This bites hardest on IPv6. Measured on a real network 2026-08-29: 16 of 22
+learned bindings were IPv6, versus 6 IPv4 — devices announce themselves
+overwhelmingly over v6. But pifi learns a client's IPv6 addresses only by
+observing its traffic, and the kernel neighbour table is no help (it held three
+entries, none for the client under test). So an idle device announcing on IPv6
+while known only by IPv4 cannot be joined to its own name.
+
+The robust fix is to key names by MAC. The source MAC is available on the
+AF_PACKET path, which already calls into the mDNS parser, but that path is
+sampled — so under load the one packet carrying the name can be dropped. A
+second packet socket carrying a BPF filter for UDP 5353 would give every mDNS
+frame with its MAC at negligible cost, since that traffic is tiny. It needs a
+hand-assembled BPF program to avoid taking a dependency.
+
+In practice names do resolve once a device announces while its address is known;
+this is about making it reliable rather than likely.
+
 ## Impairment realism
 
 All mechanisms below were confirmed present on this kernel.
