@@ -76,9 +76,13 @@ function fmtBytes(n: number): string {
         v-if="client.ipv6?.length" class="meta num"
         :title="'IPv6, all conditioned:\n' + client.ipv6.join('\n')"
       >+{{ client.ipv6.length }} IPv6</span>
-      <span v-else class="meta" title="Associated, but has not taken an address yet">
-        no address yet
-      </span>
+      <!-- An explicit condition, not a v-else. Inserting the IPv6 badge above
+           re-paired the v-else with the IPv6 test, so a client with an IPv4
+           address but no v6 rendered "192.168.0.214  no address yet". -->
+      <span
+        v-if="!client.ip && !client.ipv6?.length" class="meta"
+        title="Associated, but has not taken an address yet"
+      >no address yet</span>
 
       <!-- Only shown when the driver actually reports it. The Pi's Broadcom
            chip gives no per-station RSSI in AP mode, and printing "0 dBm" is

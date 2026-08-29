@@ -79,9 +79,15 @@ export function useSnapshot() {
         }
         next[mac] = { down, up };
       }
-      // Only seed series the live stream has not already started, so a slow
-      // history fetch cannot overwrite fresher data.
-      series.value = { ...next, ...series.value };
+      // The seed WINS over anything the live stream has already appended.
+      //
+      // The obvious-looking `{...next, ...series.value}` is wrong: the stream
+      // connects immediately and has already created a one-sample entry by the
+      // time this fetch resolves, so that entry sorts last and discards the
+      // entire seed -- the guard threw away exactly what it was meant to
+      // protect. The seed already runs up to `now`, so the handful of live
+      // samples it replaces cover the same instants.
+      series.value = { ...series.value, ...next };
     } catch {
       /* history is a convenience; its absence must not break the page */
     }
