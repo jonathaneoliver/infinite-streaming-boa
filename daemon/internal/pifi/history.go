@@ -40,12 +40,24 @@ type Sample struct {
 }
 
 const (
-	// Matches the chart window: 300 samples at the 1 Hz tick.
-	historyLen = 300
+	// Sized to the LONGEST selectable chart range: 3600 samples at the 1 Hz
+	// tick is one hour. Shorter ranges are a slice of this, so switching to 1m
+	// or 5m costs the server nothing.
+	//
+	// One hour at full resolution rather than coarse buckets because the whole
+	// point of this box is watching a player react to a cap, and a rendition
+	// switch is a step that lasts a couple of seconds. Bucketing at source
+	// would erase exactly the event being looked for. The API decimates on the
+	// way out instead, so the fine detail is still there for short ranges.
+	historyLen = 3600
 	// Clients quiet for longer than this are dropped, so a network with many
 	// transient devices cannot grow the table without bound.
-	historyIdle       = 30 * time.Minute
-	historyMaxClients = 256
+	historyIdle = 30 * time.Minute
+	// Lowered from 256 alongside the twelvefold ring: a Sample is 24 bytes, so
+	// the worst case is 64 x 3600 x 24 = 5.5 MB resident, against 22 MB at the
+	// old ceiling. A per-client link conditioner with more than 64 devices on
+	// it is not the machine this was built for.
+	historyMaxClients = 64
 )
 
 func NewHistory() *History {
@@ -105,6 +117,86 @@ func (h *History) Snapshot() map[string][]Sample {
 		out[mac] = cp
 	}
 	return out
+}
+
+// Window returns each client's series over the last `dur`, decimated so no
+// series exceeds maxPoints. It also reports the bucket width used.
+//
+// Decimation exists because of the link this page is served over: the operator
+// may have just throttled it to 1 Mbps on purpose. An undecimated hour is 3600
+// samples per client -- around 140 KB of JSON each -- which is a visible stall
+// on a page whose job is to look responsive while the network is being ruined.
+//
+// Buckets carry the MEAN, not the peak. The y-axis is Mbps and the plot is a
+// filled area, so the area under it should correspond to bytes moved; taking
+// the maximum would inflate a quiet minute with one burst into a solid block.
+// The cost is that a long range smooths short spikes, which is why bucketMS is
+// returned: the interface labels the axis with it rather than implying every
+// range is raw 1 Hz data.
+func (h *History) Window(dur time.Duration, maxPoints int) (series map[string][]Sample, bucketMS int64) {
+	if maxPoints < 1 {
+		maxPoints = 1
+	}
+	cut := time.Now().Add(-dur).UnixMilli()
+
+	// One bucket per sample until the range no longer fits, so short ranges are
+	// returned untouched rather than being averaged for no reason.
+	//
+	// Divided by maxPoints-1, not maxPoints: buckets are aligned to absolute
+	// time, so a window almost always straddles one extra boundary and a naive
+	// division returns maxPoints+1 points -- breaking the very budget the
+	// caller asked for. Reserving one point for the straddle is exact.
+	bucketMS = 1000
+	if maxPoints > 1 {
+		if want := dur.Milliseconds() / int64(maxPoints-1); want > bucketMS {
+			bucketMS = want
+		}
+	}
+
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+
+	series = make(map[string][]Sample, len(h.byMAC))
+	for mac, all := range h.byMAC {
+		var out []Sample
+		var sumD, sumU float64
+		var n int
+		var slot int64 = -1
+
+		flush := func() {
+			if n == 0 {
+				return
+			}
+			out = append(out, Sample{
+				T:    slot * bucketMS,
+				Down: sumD / float64(n),
+				Up:   sumU / float64(n),
+			})
+			sumD, sumU, n = 0, 0, 0
+		}
+
+		for _, sm := range all {
+			if sm.T < cut {
+				continue
+			}
+			if b := sm.T / bucketMS; b != slot {
+				flush()
+				slot = b
+			}
+			sumD += sm.Down
+			sumU += sm.Up
+			n++
+		}
+		flush()
+
+		// A client with nothing in the window is omitted entirely rather than
+		// sent as an empty array: the interface treats "no key" as "no history
+		// yet" and starts accumulating live, which is the truthful state.
+		if len(out) > 0 {
+			series[mac] = out
+		}
+	}
+	return series, bucketMS
 }
 
 // Load restores a previously saved series.

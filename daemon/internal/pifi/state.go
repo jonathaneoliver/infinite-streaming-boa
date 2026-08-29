@@ -97,6 +97,10 @@ func (e *Engine) Start() {
 	if e.cfg.Demo {
 		// No shaper, no packet socket: demo mode must run unprivileged on a
 		// developer's laptop.
+		//
+		// An hour of synthetic history first, so the long ranges and the reload
+		// seed can be judged on the first page load rather than an hour in.
+		e.demoBackfill()
 		go func() {
 			t := time.NewTicker(e.cfg.Tick)
 			defer t.Stop()
