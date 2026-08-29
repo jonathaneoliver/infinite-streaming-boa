@@ -87,6 +87,11 @@ function fmtBytes(n: number): string {
          out and shift everything after them. Each slot is always rendered here
          and simply left empty when it does not apply. -->
     <div v-if="collapsed" class="card-head folded" @click="onHeadClick">
+      <button
+        class="fold-toggle ghost" @click="emit('toggle')"
+        title="Expand this device" :aria-expanded="false"
+      >&#9656;</button>
+
       <span
         class="dot" :class="client.present ? 'live' : 'off'"
         :title="client.present ? 'Connected now' : 'Not currently connected'"
@@ -141,13 +146,14 @@ function fmtBytes(n: number): string {
         </button>
       </span>
 
-      <button
-        class="fold-toggle ghost" @click="emit('toggle')"
-        title="Expand this device" :aria-expanded="false"
-      >&#9656;</button>
     </div>
 
     <div v-else class="card-head" @click="onHeadClick">
+      <button
+        class="fold-toggle ghost" @click="emit('toggle')"
+        title="Fold this device away" :aria-expanded="true"
+      >&#9662;</button>
+
       <span
         class="dot"
         :class="client.present ? 'live' : 'off'"
@@ -225,11 +231,6 @@ function fmtBytes(n: number): string {
       <button v-if="!client.present" class="ghost" @click="emit('forget')">
         forget
       </button>
-      <button
-        class="fold-toggle ghost" @click="emit('toggle')"
-        :title="collapsed ? 'Expand this device' : 'Fold this device away'"
-        :aria-expanded="!collapsed"
-      >{{ collapsed ? '▸' : '▾' }}</button>
     </div>
 
     <!-- Folding is presentation only: the card keeps receiving live updates,
@@ -372,6 +373,8 @@ function fmtBytes(n: number): string {
 .card-head.folded {
   display: grid;
   grid-template-columns:
+    30px                  /* fold toggle -- first, so it is in the same place
+                             on every row and does not shift with content */
     14px                  /* presence */
     minmax(96px, 1.3fr)   /* name */
     58px                  /* medium */
@@ -382,8 +385,7 @@ function fmtBytes(n: number): string {
     76px 68px             /* uplink */
     38px                  /* unit */
     92px                  /* conditioned */
-    56px                  /* actions */
-    30px;                 /* toggle */
+    56px;                 /* actions */
   align-items: center;
   gap: 8px;
   overflow: hidden;
