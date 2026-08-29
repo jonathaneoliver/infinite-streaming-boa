@@ -132,10 +132,14 @@ type Counters struct {
 // radio; the address is decoration and may legitimately be absent while a
 // client is associated but has not finished DHCP.
 type Client struct {
-	MAC      string `json:"mac"`
-	IP       string `json:"ip,omitempty"`
-	Hostname string `json:"hostname,omitempty"`
-	Label    string `json:"label"`
+	MAC string `json:"mac"`
+	IP  string `json:"ip,omitempty"`
+	// IPv6 is every routable v6 address the client currently holds. Privacy
+	// extensions mean a device usually has more than one, and each needs its
+	// own filter or part of its traffic escapes conditioning entirely.
+	IPv6     []string `json:"ipv6,omitempty"`
+	Hostname string   `json:"hostname,omitempty"`
+	Label    string   `json:"label"`
 	// Medium is "wifi" or "wired". It affects only what telemetry exists --
 	// conditioning is identical for both, because policy is keyed by MAC and
 	// filters match on IP, neither of which knows about the physical layer.

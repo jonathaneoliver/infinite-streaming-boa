@@ -74,6 +74,7 @@ type Shaper struct {
 type rule struct {
 	minor    int
 	ip       string
+	v6       string // the address set, joined, for cheap change detection
 	downPort string // where the downlink class currently lives
 	match    Match
 	down, up Shape
@@ -88,8 +89,14 @@ const (
 	// Sub-class filters must be evaluated BEFORE the device default, or the
 	// default's match-anything-to-this-address rule would swallow traffic a
 	// more specific rule was meant to claim. Lower number wins in tc.
-	prefSubBase     = 10000
-	prefDefaultBase = 40000
+	//
+	// Each class owns a BLOCK of priorities rather than a single one, because
+	// it needs one filter per address: one IPv4 plus up to eight IPv6, since a
+	// device holds several v6 addresses at once under privacy extensions.
+	// Deleting a class deletes its whole block.
+	prefSlots       = 12
+	prefSubBase     = 1000
+	prefDefaultBase = 30000
 
 	// HTB is a container here, never a limiter, so its rate is set high enough
 	// never to bind on any interface a Pi has.
@@ -358,29 +365,99 @@ func matchArgs(clientIP string, m Match, downlink bool) []string {
 	return a
 }
 
-// pref gives every class a unique filter priority, so one filter can be deleted
-// by priority alone without first discovering its kernel-assigned handle.
-func pref(minor int, isSub bool) int {
+// prefBase is the first priority in a class's block. Filters within the block
+// are base+0 for IPv4 and base+1.. for each IPv6 address, so any one of them
+// can be deleted by priority alone without discovering kernel handles.
+func prefBase(minor int, isSub bool) int {
+	base := prefDefaultBase
 	if isSub {
-		return prefSubBase + minor
+		base = prefSubBase
 	}
-	return prefDefaultBase + minor
+	return base + (minor-firstMinor)*prefSlots
 }
 
-func (s *Shaper) writeFilter(dev string, minor int, ip string, m Match, isSub, downlink bool) error {
-	p := fmt.Sprint(pref(minor, isSub))
-	tcQuiet("filter", "del", "dev", dev, "parent", "1:", "pref", p)
-	args := append([]string{"filter", "add", "dev", dev, "protocol", "ip",
-		"parent", "1:", "prio", p, "u32"}, matchArgs(ip, m, downlink)...)
-	return tc(append(args, "flowid", fmt.Sprintf("1:%x", minor))...)
+// matchArgs6 is the IPv6 equivalent of matchArgs. The direction flip is the
+// same; only the selector keywords and the address width differ.
+//
+// A service matcher written as an IPv4 CIDR cannot be applied to an IPv6 filter
+// (and vice versa), so a mismatched one is dropped rather than producing a
+// filter tc would reject -- the port and protocol parts still apply.
+func matchArgs6(clientIP string, m Match, downlink bool) []string {
+	cidrUsable := m.DstCIDR != "" && strings.Contains(m.DstCIDR, ":")
+	var a []string
+	if downlink {
+		a = append(a, "match", "ip6", "dst", clientIP+"/128")
+		if cidrUsable {
+			a = append(a, "match", "ip6", "src", m.DstCIDR)
+		}
+		if m.DstPort != 0 {
+			a = append(a, "match", "ip6", "sport", fmt.Sprint(m.DstPort), "0xffff")
+		}
+	} else {
+		a = append(a, "match", "ip6", "src", clientIP+"/128")
+		if cidrUsable {
+			a = append(a, "match", "ip6", "dst", m.DstCIDR)
+		}
+		if m.DstPort != 0 {
+			a = append(a, "match", "ip6", "dport", fmt.Sprint(m.DstPort), "0xffff")
+		}
+	}
+	switch strings.ToLower(m.Protocol) {
+	case "tcp":
+		a = append(a, "match", "ip6", "protocol", "6", "0xff")
+	case "udp":
+		a = append(a, "match", "ip6", "protocol", "17", "0xff")
+	}
+	return a
+}
+
+// writeFilters installs every filter for one class on one interface: the IPv4
+// selector, then one per IPv6 address.
+//
+// Both families are installed because a client that prefers IPv6 was otherwise
+// neither shaped nor counted while the interface showed its policy applied --
+// silent, and the worst failure this box can have.
+func (s *Shaper) writeFilters(dev string, minor int, ip string, v6 []string,
+	m Match, isSub, downlink bool) error {
+	base := prefBase(minor, isSub)
+	// Clear the whole block first: the address set changes as leases and
+	// privacy addresses rotate, and a filter left behind would keep matching
+	// an address that has moved to another device.
+	for i := 0; i < prefSlots; i++ {
+		tcQuiet("filter", "del", "dev", dev, "parent", "1:", "pref", fmt.Sprint(base+i))
+	}
+	flow := fmt.Sprintf("1:%x", minor)
+
+	if ip != "" {
+		args := append([]string{"filter", "add", "dev", dev, "protocol", "ip",
+			"parent", "1:", "prio", fmt.Sprint(base), "u32"},
+			matchArgs(ip, m, downlink)...)
+		if err := tc(append(args, "flowid", flow)...); err != nil {
+			return err
+		}
+	}
+	for i, a6 := range v6 {
+		if i >= prefSlots-1 {
+			break
+		}
+		args := append([]string{"filter", "add", "dev", dev, "protocol", "ipv6",
+			"parent", "1:", "prio", fmt.Sprint(base + 1 + i), "u32"},
+			matchArgs6(a6, m, downlink)...)
+		if err := tc(append(args, "flowid", flow)...); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (s *Shaper) delOn(dev string, minor int, isSub bool) {
 	if dev == "" {
 		return
 	}
-	tcQuiet("filter", "del", "dev", dev, "parent", "1:", "pref",
-		fmt.Sprint(pref(minor, isSub)))
+	base := prefBase(minor, isSub)
+	for i := 0; i < prefSlots; i++ {
+		tcQuiet("filter", "del", "dev", dev, "parent", "1:", "pref", fmt.Sprint(base+i))
+	}
 	tcQuiet("qdisc", "del", "dev", dev, "parent", fmt.Sprintf("1:%x", minor))
 	tcQuiet("class", "del", "dev", dev, "classid", fmt.Sprintf("1:%x", minor))
 }
@@ -388,8 +465,11 @@ func (s *Shaper) delOn(dev string, minor int, isSub bool) {
 // Desired is one entity the caller wants conditioned: a device's default class,
 // or one of its sub-classes.
 type Desired struct {
-	Key      string // stable identity: MAC, or MAC/subclass-id
-	IP       string
+	Key string // stable identity: MAC, or MAC/subclass-id
+	IP  string
+	// IPv6 is every routable v6 address the client currently holds. Each gets
+	// its own filter pointing at the same class.
+	IPv6     []string
 	Port     string // the client's current bridge port; downlink is shaped here
 	Match    Match
 	Down, Up Shape
@@ -422,7 +502,7 @@ func (s *Shaper) Apply(want []Desired) []error {
 	sort.Slice(want, func(i, j int) bool { return want[i].Key < want[j].Key })
 
 	for _, w := range want {
-		if w.IP == "" {
+		if w.IP == "" && len(w.IPv6) == 0 {
 			continue // not shapeable: a u32 filter needs an address to match
 		}
 		seen[w.Key] = true
@@ -450,13 +530,14 @@ func (s *Shaper) Apply(want []Desired) []error {
 			s.delOn(prev.downPort, minor, w.IsSub)
 		}
 
-		unchanged := existed && !moved && prev.ip == w.IP &&
+		v6key := strings.Join(w.IPv6, ",")
+		unchanged := existed && !moved && prev.ip == w.IP && prev.v6 == v6key &&
 			prev.match == w.Match && prev.down == w.Down && prev.up == w.Up
 		if unchanged {
 			continue
 		}
 
-		next := rule{minor: minor, ip: w.IP, downPort: downPort,
+		next := rule{minor: minor, ip: w.IP, v6: v6key, downPort: downPort,
 			match: w.Match, down: w.Down, up: w.Up}
 
 		// --- downlink, on the client's own port -------------------------
@@ -469,8 +550,10 @@ func (s *Shaper) Apply(want []Desired) []error {
 				if next.haveDown, err = s.writeNetem(downPort, minor, w.Down, hadDown); err != nil {
 					errs = append(errs, err)
 				}
-				if moved || !existed || prev.ip != w.IP || prev.match != w.Match {
-					if err := s.writeFilter(downPort, minor, w.IP, w.Match, w.IsSub, true); err != nil {
+				if moved || !existed || prev.ip != w.IP || prev.v6 != v6key ||
+					prev.match != w.Match {
+					if err := s.writeFilters(downPort, minor, w.IP, w.IPv6,
+						w.Match, w.IsSub, true); err != nil {
 						errs = append(errs, err)
 					}
 				}
@@ -485,8 +568,9 @@ func (s *Shaper) Apply(want []Desired) []error {
 			if next.haveUp, err = s.writeNetem(s.wan, minor, w.Up, prev.haveUp); err != nil {
 				errs = append(errs, err)
 			}
-			if !existed || prev.ip != w.IP || prev.match != w.Match {
-				if err := s.writeFilter(s.wan, minor, w.IP, w.Match, w.IsSub, false); err != nil {
+			if !existed || prev.ip != w.IP || prev.v6 != v6key || prev.match != w.Match {
+				if err := s.writeFilters(s.wan, minor, w.IP, w.IPv6,
+					w.Match, w.IsSub, false); err != nil {
 					errs = append(errs, err)
 				}
 			}

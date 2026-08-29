@@ -171,8 +171,17 @@ packet crosses before leaving pifi:
 
 | Direction | Where | Filter matches |
 |---|---|---|
-| Downlink (internet → client) | egress of the **client's own port** (wlan0/lan0) | dest IP |
-| Uplink (client → internet) | egress of the **WAN port** | source IP |
+| Downlink (internet → client) | egress of the **client's own port** (wlan0/lan0) | dest address |
+| Uplink (client → internet) | egress of the **WAN port** | source address |
+
+**Both address families.** Every class carries an IPv4 filter plus one IPv6
+filter per routable v6 address the client holds. Filtering IPv4 alone left a
+client that prefers IPv6 entirely unconditioned and reporting zero throughput
+while the interface showed its policy applied. Privacy extensions mean a device
+usually holds several v6 addresses at once and rotates them, so the address set
+is tracked and each member gets its own filter — shaping one of them would shape
+only part of the traffic. Link-local addresses are excluded: they never leave
+the segment.
 
 Downlink accuracy is the priority, because the primary use is throttling
 streaming video on its way to a player. Shaping on the client's own port means

@@ -73,8 +73,12 @@ func (e *Engine) demoTick() {
 			label = d.mac
 		}
 
+		var v6 []string
+		if d.ip != "" && d.medium == "wifi" {
+			v6 = []string{"fdd5:a04f:f953:4412::" + d.mac[len(d.mac)-2:]}
+		}
 		c := Client{
-			MAC: d.mac, IP: d.ip, Label: label, Medium: d.medium, Port: d.port,
+			MAC: d.mac, IP: d.ip, IPv6: v6, Label: label, Medium: d.medium, Port: d.port,
 			Present: d.present, Shapeable: d.ip != "" && d.present,
 			Policy: pol, LastSeen: now.UnixMilli(),
 			RTTAddedMs:  pol.Down.DelayMs + pol.Up.DelayMs,

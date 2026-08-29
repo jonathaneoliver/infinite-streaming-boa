@@ -14,6 +14,7 @@ type Learner struct{ bridge string }
 
 type Seen struct {
 	IP   string
+	IPv6 []string
 	Port string
 }
 

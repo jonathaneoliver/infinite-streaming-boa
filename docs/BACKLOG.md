@@ -68,27 +68,6 @@ whether this is the product or a distraction.
 
 ---
 
-## Correctness gaps
-
-### IPv6 traffic is neither shaped nor counted
-**Size: M. Highest-priority defect.** Every `tc` filter is installed as
-`protocol ip`, which matches IPv4 only. A client using IPv6 is therefore
-completely unconditioned and reports zero throughput, while the interface shows
-its policy applied — the same silent failure mode as the earlier discovery and
-counter bugs, and the worst kind this box can have.
-
-Confirmed on 2026-08-29: all nine filters on wlan0 were `protocol ip`, and the
-test network carries IPv6 (ULA prefix `fdd5:…/64` with router advertisements).
-
-The fix is a parallel set of `protocol ipv6` filters matching on the IPv6
-source/destination address, pointing at the same classes — so one policy covers
-both families. The address is 16 bytes rather than 4, at a different header
-offset, so `matchArgs` needs an IPv6 branch. Client discovery also currently
-learns IPv4 bindings only; a dual-stack client would need its v6 address learned
-alongside its v4 one.
-
-Until this is fixed, a client that prefers IPv6 will appear to be doing nothing.
-
 ## Impairment realism
 
 All mechanisms below were confirmed present on this kernel.

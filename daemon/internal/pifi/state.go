@@ -138,7 +138,7 @@ func (e *Engine) BumpControl() {
 func (e *Engine) desired(clients []Client) []Desired {
 	var want []Desired
 	for _, c := range clients {
-		if c.IP == "" {
+		if c.IP == "" && len(c.IPv6) == 0 {
 			continue // not shapeable, and nothing to attach a filter to
 		}
 		// Sub-classes first: they are more specific, and the Shaper installs
@@ -148,7 +148,7 @@ func (e *Engine) desired(clients []Client) []Desired {
 				continue
 			}
 			want = append(want, Desired{
-				Key: c.MAC + "/" + sub.ID, IP: c.IP, Port: c.Port,
+				Key: c.MAC + "/" + sub.ID, IP: c.IP, IPv6: c.IPv6, Port: c.Port,
 				Match: sub.Match, Down: sub.Down, Up: sub.Up, IsSub: true,
 			})
 		}
@@ -165,7 +165,7 @@ func (e *Engine) desired(clients []Client) []Desired {
 			down, up = Shape{}, Shape{}
 		}
 		want = append(want, Desired{
-			Key: c.MAC, IP: c.IP, Port: c.Port, Down: down, Up: up,
+			Key: c.MAC, IP: c.IP, IPv6: c.IPv6, Port: c.Port, Down: down, Up: up,
 		})
 	}
 	return want
@@ -302,6 +302,7 @@ func (e *Engine) tick() {
 		if ip == "" {
 			ip = neigh[mac]
 		}
+		v6 := arp[mac].IPv6
 		pol, hasPol := policies[mac]
 		if !hasPol {
 			pol = Policy{MAC: mac, Enabled: true}
@@ -311,8 +312,9 @@ func (e *Engine) tick() {
 			label = mac
 		}
 		c := Client{
-			MAC: mac, IP: ip, Label: label, Medium: a.medium, Port: a.port,
-			Present: a.present, Shapeable: ip != "",
+			MAC: mac, IP: ip, IPv6: v6, Label: label, Medium: a.medium, Port: a.port,
+			// Either family is enough to attach a filter to.
+			Present: a.present, Shapeable: ip != "" || len(v6) > 0,
 			Station: stations[mac], Policy: pol, LastSeen: now.UnixMilli(),
 			RTTAddedMs:  pol.Down.DelayMs + pol.Up.DelayMs,
 			SubCounters: map[string]Counters{},

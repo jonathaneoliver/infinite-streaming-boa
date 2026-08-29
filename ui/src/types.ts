@@ -60,6 +60,8 @@ export interface Counters {
 export interface Client {
   mac: string;
   ip?: string;
+  /** Routable IPv6 addresses; a device usually holds several at once. */
+  ipv6?: string[];
   hostname?: string;
   label: string;
   medium: string;

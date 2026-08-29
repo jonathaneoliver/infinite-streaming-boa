@@ -70,6 +70,12 @@ function fmtBytes(n: number): string {
       </span>
       <span class="meta num">{{ client.mac }}</span>
       <span v-if="client.ip" class="meta num">{{ client.ip }}</span>
+      <!-- Privacy extensions give a device several v6 addresses at once, so
+           the count matters more than any one value; all of them are shaped. -->
+      <span
+        v-if="client.ipv6?.length" class="meta num"
+        :title="'IPv6, all conditioned:\n' + client.ipv6.join('\n')"
+      >+{{ client.ipv6.length }} IPv6</span>
       <span v-else class="meta" title="Associated, but has not taken an address yet">
         no address yet
       </span>

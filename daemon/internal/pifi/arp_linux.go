@@ -4,6 +4,7 @@ package pifi
 
 import (
 	"net"
+	"sort"
 	"sync"
 	"syscall"
 	"time"
@@ -61,18 +62,24 @@ type Learner struct {
 	// attribute half the internet to one device.
 	localMu sync.RWMutex
 	local   []*net.IPNet
+	local6  []*net.IPNet
 }
 
 type learned struct {
-	ip   string
+	ip string
+	// v6 is a SET, not a single address. Privacy extensions mean a device holds
+	// several valid IPv6 addresses at once and rotates them, so shaping one is
+	// shaping a fraction of its traffic.
+	v6   map[string]time.Time
 	port string
 	at   time.Time
 }
 
 const (
-	ethPALL = 0x0003
-	ethPARP = 0x0806
-	ethPIP  = 0x0800
+	ethPALL  = 0x0003
+	ethPARP  = 0x0806
+	ethPIP   = 0x0800
+	ethPIPV6 = 0x86DD
 
 	arpLen        = 28
 	arpSenderMAC  = 8
@@ -80,6 +87,14 @@ const (
 
 	ipMinLen = 20
 	ipSrc    = 12
+
+	// IPv6 fixed header: 8 bytes of preamble, then a 16-byte source address.
+	ip6MinLen = 40
+	ip6Src    = 8
+
+	// Cap the filters a single device can demand. A misbehaving stack cycling
+	// through addresses should not be able to fill the filter table.
+	maxV6PerMAC = 8
 
 	// One packet per MAC every few seconds is ample, so the sampler stays well
 	// below any rate that would cost measurable CPU on a Pi.
@@ -113,18 +128,43 @@ func (l *Learner) ifname(idx int) string {
 // refreshLocal keeps the bridge's own subnets current. The bridge takes its
 // management address by DHCP, so this can change while running.
 func (l *Learner) refreshLocal() {
-	var nets []*net.IPNet
+	var nets, nets6 []*net.IPNet
 	if ifi, err := net.InterfaceByName(l.bridge); err == nil {
 		addrs, _ := ifi.Addrs()
 		for _, ad := range addrs {
-			if n, ok := ad.(*net.IPNet); ok && n.IP.To4() != nil {
+			n, ok := ad.(*net.IPNet)
+			if !ok {
+				continue
+			}
+			if n.IP.To4() != nil {
 				nets = append(nets, n)
+			} else if !n.IP.IsLinkLocalUnicast() {
+				// Link-local prefixes are excluded: fe80::/64 covers the whole
+				// segment, so accepting it would match every device rather than
+				// identifying the ones sharing our routable prefix.
+				nets6 = append(nets6, n)
 			}
 		}
 	}
 	l.localMu.Lock()
 	l.local = nets
+	l.local6 = nets6
 	l.localMu.Unlock()
+}
+
+// isLocal6 reports whether an IPv6 address sits in a prefix the bridge is on.
+// Unlike the v4 case this fails CLOSED when no prefix is known: every device on
+// the segment has a link-local address, so accepting anything would sweep up
+// the whole network.
+func (l *Learner) isLocal6(ip net.IP) bool {
+	l.localMu.RLock()
+	defer l.localMu.RUnlock()
+	for _, n := range l.local6 {
+		if n.Contains(ip) {
+			return true
+		}
+	}
+	return false
 }
 
 // isLocal reports whether an address belongs to a subnet the bridge is on.
@@ -204,6 +244,12 @@ func (l *Learner) Run() error {
 				// Source MAC from the sockaddr, source IP from the header.
 				mac = net.HardwareAddr(ll.Addr[:6]).String()
 				ip = net.IP(buf[ipSrc : ipSrc+4])
+			case htons(ethPIPV6):
+				if n < ip6MinLen || ll.Halen < 6 {
+					continue
+				}
+				mac = net.HardwareAddr(ll.Addr[:6]).String()
+				ip = net.IP(buf[ip6Src : ip6Src+16])
 			default:
 				continue
 			}
@@ -215,15 +261,31 @@ func (l *Learner) Run() error {
 }
 
 func (l *Learner) record(recent map[string]time.Time, mac string, ip net.IP, ifindex int) {
-	if ip.IsUnspecified() || ip.IsLoopback() || ip.IsMulticast() || !l.isLocal(ip) {
+	if ip.IsUnspecified() || ip.IsLoopback() || ip.IsMulticast() {
+		return
+	}
+	v6 := ip.To4() == nil
+	if v6 {
+		// Link-local is skipped: it never leaves the segment, so conditioning
+		// it would shape nothing anyone is testing.
+		if ip.IsLinkLocalUnicast() || !l.isLocal6(ip) {
+			return
+		}
+	} else if !l.isLocal(ip) {
 		return
 	}
 	mac = normMAC(mac)
 	now := time.Now()
-	if t, ok := recent[mac]; ok && now.Sub(t) < dedupeWindow {
+	// The dedupe window is keyed per address family so a chatty IPv4 flow does
+	// not mask the first sighting of a device's IPv6 address.
+	rk := mac
+	if v6 {
+		rk = mac + "/6"
+	}
+	if t, ok := recent[rk]; ok && now.Sub(t) < dedupeWindow {
 		return
 	}
-	recent[mac] = now
+	recent[rk] = now
 
 	// With ETH_P_ALL the arrival interface is the physical port, which is what
 	// the downlink shaper needs. The bridge's own copy is ignored so it cannot
@@ -237,7 +299,27 @@ func (l *Learner) record(recent map[string]time.Time, mac string, ip net.IP, ifi
 	if port == "" {
 		port = prev.port // keep a previously known port
 	}
-	l.seen[mac] = learned{ip: ip.String(), port: port, at: now}
+	e := learned{ip: prev.ip, v6: prev.v6, port: port, at: now}
+	if e.v6 == nil {
+		e.v6 = map[string]time.Time{}
+	}
+	if v6 {
+		e.v6[ip.String()] = now
+		// Drop the oldest once past the cap.
+		for len(e.v6) > maxV6PerMAC {
+			var oldest string
+			var oldestAt time.Time
+			for a, t := range e.v6 {
+				if oldest == "" || t.Before(oldestAt) {
+					oldest, oldestAt = a, t
+				}
+			}
+			delete(e.v6, oldest)
+		}
+	} else {
+		e.ip = ip.String()
+	}
+	l.seen[mac] = e
 	l.mu.Unlock()
 }
 
@@ -249,7 +331,11 @@ func (l *Learner) Close() {
 
 // Seen is one learned client: where it is and what address it holds.
 type Seen struct {
-	IP   string
+	IP string
+	// IPv6 holds every routable v6 address recently seen for this MAC. A
+	// device commonly has several at once because of privacy extensions, and
+	// shaping only one would shape only part of its traffic.
+	IPv6 []string
 	Port string
 }
 
@@ -262,9 +348,17 @@ func (l *Learner) Table(ttl time.Duration) map[string]Seen {
 	out := make(map[string]Seen, len(l.seen))
 	cut := time.Now().Add(-ttl)
 	for mac, e := range l.seen {
-		if e.at.After(cut) {
-			out[mac] = Seen{IP: e.ip, Port: e.port}
+		if !e.at.After(cut) {
+			continue
 		}
+		var v6 []string
+		for a, t := range e.v6 {
+			if t.After(cut) {
+				v6 = append(v6, a)
+			}
+		}
+		sort.Strings(v6) // deterministic filter ordering
+		out[mac] = Seen{IP: e.ip, IPv6: v6, Port: e.port}
 	}
 	return out
 }
