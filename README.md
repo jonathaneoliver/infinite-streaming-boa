@@ -1,8 +1,10 @@
 # pifi
 
 Part of the infinite-streaming family. The repository is
-`infinite-streaming-pifi`; `pifi` is the appliance itself -- the binary, the
+`infinite-streaming-pifi`; `pifi` is the appliance itself — the binary, the
 hostname, the SSID.
+
+[`PRD.md`](PRD.md) is the product behaviour source of truth.
 
 A Raspberry Pi that sits invisibly in your network and conditions each client's
 internet connection independently — rate, latency, jitter and packet loss, per
@@ -30,6 +32,20 @@ is there.
                     conditioned identically
 ```
 
+## What it does
+
+- **Conditions each client independently** — rate, latency, jitter and loss, per
+  device and per direction, live from a web interface. Both IPv4 and IPv6.
+- **Stays invisible.** Clients keep their existing addresses on your existing
+  subnet; the Pi is not a hop and does not appear in `traceroute`.
+- **Names devices from mDNS**, so the list reads as devices rather than MACs.
+- **Folds the list** when there are several, keeping a sparkline and current
+  throughput per direction on each folded row.
+- **Keeps five minutes of history server-side**, so a browser refresh does not
+  start from a blank chart.
+- **Ships ntopng** on `:3000`, watching the bridge, with per-device deep links
+  from each card for traffic breakdown and nDPI-labelled flows.
+
 ## Build an image
 
 Needs `curl`, `docker`, `go` and `npm`. On macOS the Docker engine can come from
@@ -44,10 +60,28 @@ cp .env.example .env      # set your SSID, passphrase and country
 ```
 
 Cable the Pi's `eth0` to your existing network, optionally plug a USB ethernet
-adapter in for a wired device under test, and open **http://infinite-streaming-pifi.local/**.
+adapter in for a wired device under test, then:
+
+| | |
+|---|---|
+| Web interface | `http://infinite-streaming-pifi.local/` |
+| ntopng | `http://infinite-streaming-pifi.local:3000/` — `admin` / `PIFI_PASSWORD` |
+| SSH | `ssh pifi@infinite-streaming-pifi.local` |
+| Rescue | `http://<PIFI_RESCUE_IP>/` when upstream DHCP is absent |
+
+**The WAN port must be connected.** Being invisible means pifi issues no
+addresses: with no live upstream, clients associate to the Wi-Fi and then sit
+there without one.
 
 The build bakes in everything the Pi needs. It never downloads anything on first
 boot, so it works on an air-gapped bench.
+
+**ntopng is optional and prebuilt.** It has to be compiled for arm64 — ntop ships
+x86-64 binaries only, Docker Hub's image is amd64 only, and Debian dropped the
+package after buster. `scripts/package-ntopng.sh` captures a source build into
+`cache/`, which `build.sh` then grafts into every image, so a reflash costs
+seconds rather than a recompile. Without that artifact the image simply builds
+without it.
 
 ## Configuration
 
@@ -92,6 +126,10 @@ delay measured 200.6 ms RTT.
 Policies are keyed by **MAC**, not IP, so they survive a DHCP renewal, a reboot,
 and a client roaming between the wireless and wired ports.
 
+**Both address families are conditioned by one policy.** A device usually holds
+several routable IPv6 addresses at once under privacy extensions; each gets its
+own filter, because shaping one of them would shape only part of its traffic.
+
 ### Sub-classes
 
 Each device can carry rules that condition part of its traffic differently —
@@ -129,8 +167,10 @@ scripts/customize.sh  all image surgery; runs in a privileged arm64 container
 scripts/build-payload.sh  builds the UI and cross-compiles the daemon
 daemon/               Go daemon; embeds the compiled UI, ships as one binary
 ui/                   Vue 3 + TypeScript interface
+PRD.md                product behaviour source of truth
 docs/DATA-CONTRACT.md where every displayed number comes from and what it means
 docs/LICENSING.md     what may be redistributed, and what may not
+docs/BACKLOG.md       accepted limitations; candidate work lives in issues
 overlay/              staged files grafted into the image root
 ```
 

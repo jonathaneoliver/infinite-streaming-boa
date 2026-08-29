@@ -42,6 +42,13 @@ way; the rest is specific to this appliance.
   close keyword in the PR body does auto-close.
 - One concern per PR; split large refactors from behaviour changes.
 
+## Product behaviour
+
+[`PRD.md`](PRD.md) is the product behaviour source of truth, mirroring the
+convention in `smashing`. **A change to user-facing behaviour aligns with it or
+updates it in the same PR.** It describes what the product does, not what it
+might do — candidate work lives in GitHub issues.
+
 ## Build and run
 
 ```sh
