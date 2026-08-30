@@ -108,6 +108,30 @@ export function useDevice() {
     return send(`/api/devices/${mac}/sub/${id}`, 'DELETE', undefined);
   }
 
+  /**
+   * Start a ladder sweep.
+   *
+   * Not debounced and not carrying base_revision: this is a command, not an
+   * edit to the policy the operator is looking at. It starts a measurement
+   * process; nothing about the stored device configuration changes, so there is
+   * no concurrent-edit to lose.
+   */
+  function startSweep(mac: string, service: string) {
+    return send(`/api/devices/${mac}/sweep`, 'POST', { service });
+  }
+
+  function stopSweep(mac: string) {
+    return send(`/api/devices/${mac}/sweep`, 'DELETE', undefined);
+  }
+
+  function removeLadder(mac: string, service: string) {
+    return send(
+      `/api/devices/${mac}/ladders/${encodeURIComponent(service)}`,
+      'DELETE',
+      undefined,
+    );
+  }
+
   function reset(mac: string) {
     return send(`/api/devices/${mac}/reset`, 'POST', undefined);
   }
@@ -125,6 +149,9 @@ export function useDevice() {
     addSub,
     patchSub,
     deleteSub,
+    startSweep,
+    stopSweep,
+    removeLadder,
     reset,
     forget,
   };

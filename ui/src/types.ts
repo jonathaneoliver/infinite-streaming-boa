@@ -24,6 +24,29 @@ export interface SubClass {
   enabled: boolean;
 }
 
+export interface Rung {
+  mbps: number;
+  /** The window behind this rung drifted: its two halves disagreed. */
+  unstable?: boolean;
+}
+
+/**
+ * One service's rendition ladder as seen by one device.
+ *
+ * Keyed by service, never by device alone: the same box streaming Netflix and
+ * YouTube produces two ladders with nothing in common, so storing one per
+ * device would have each sweep silently overwrite the last.
+ */
+export interface Ladder {
+  service: string;
+  rungs: Rung[];
+  /** 'typed' | 'fetched' | 'measured' | 'inferred' -- rendered differently,
+   *  because they are different strengths of claim. */
+  provenance: string;
+  measured_at?: number;
+  note?: string;
+}
+
 export interface Policy {
   mac: string;
   rev: number;
@@ -32,6 +55,31 @@ export interface Policy {
   down: Shape;
   up: Shape;
   sub: SubClass[] | null;
+  ladders?: Ladder[] | null;
+}
+
+export interface SweepLevel {
+  level: number;
+  cap_mbps: number;
+  rate_mbps: number;
+  drift: number;
+  saturated: boolean;
+  new_rung: boolean;
+  samples: number;
+}
+
+/** Live progress of a ladder sweep. Absent unless one has run this session. */
+export interface SweepView {
+  state: 'running' | 'done' | 'failed';
+  phase: string;
+  service: string;
+  level: number;
+  cap_mbps: number;
+  ceiling_mbps: number;
+  found?: Rung[];
+  levels?: SweepLevel[];
+  reason?: string;
+  started_at: number;
 }
 
 export interface Station {
@@ -75,6 +123,7 @@ export interface Client {
   up_counters: Counters;
   sub_counters?: Record<string, Counters>;
   rtt_added_ms: number;
+  sweep?: SweepView;
 }
 
 export interface Capabilities {
