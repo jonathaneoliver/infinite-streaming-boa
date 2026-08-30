@@ -131,13 +131,20 @@ function when(ms?: number): string {
         <tr v-for="l in ladders" :key="l.service">
           <td><b>{{ l.service }}</b></td>
           <td class="rungs">
+            <!-- The cap that produced a rendition is shown beside its cost,
+                 because the cost alone will not hold a player there: it wants
+                 headroom, so capping at the rung's own bitrate drops it. -->
             <span
               v-for="r in l.rungs" :key="r.mbps"
               class="rung" :class="{ shaky: r.unstable }"
-              :title="r.unstable
-                ? 'Measured off a noisy window — treat this rung as approximate'
-                : ''"
-            >{{ r.mbps.toFixed(2) }}</span>
+              :title="[
+                r.unstable ? 'Measured off a noisy window — approximate' : '',
+                r.up_at_mbps ? `climbed into it at a ${r.up_at_mbps.toFixed(2)} Mbps cap` : '',
+                r.down_at_mbps ? `fell out of it at ${r.down_at_mbps.toFixed(2)} Mbps` : '',
+              ].filter(Boolean).join(' · ')"
+            >{{ r.mbps.toFixed(2) }}<small
+              v-if="r.up_at_mbps" class="at"
+            >@{{ r.up_at_mbps.toFixed(2) }}</small></span>
           </td>
           <!-- Provenance is rendered, not hidden: a swept ladder and a
                hand-typed one are different claims and must not look alike. -->
@@ -203,6 +210,12 @@ function when(ms?: number): string {
   padding: 1px 6px;
   border: 1px solid var(--line);
   border-radius: 4px;
+}
+/* The cap is secondary to the cost, so it reads as an annotation rather than
+   competing with the number it qualifies. */
+.rung .at {
+  opacity: 0.65;
+  margin-left: 2px;
 }
 /* An approximate rung must not read as an exact one. */
 .rung.shaky {

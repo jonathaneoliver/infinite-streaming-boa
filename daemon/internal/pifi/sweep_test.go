@@ -2,6 +2,7 @@ package pifi
 
 import (
 	"math"
+	"strings"
 	"testing"
 	"time"
 )
@@ -343,6 +344,43 @@ func TestAPlateauSittingAtTheCapIsNotARung(t *testing.T) {
 	}
 }
 
+func TestARungRecordsTheCapThatCausedTheSwitch(t *testing.T) {
+	// The rung's own bitrate cannot drive a pattern. A player does not select a
+	// rendition merely because its bitrate fits -- measured on an iPhone, it
+	// took a variant only when the cap was 1.5x to 1.9x that variant's cost.
+	// Cap AT a rung's bitrate and the player drops below it, so the useful
+	// number is the cap that produces the rendition, not the rendition's cost.
+	r := &sweepRun{params: testParams(), phase: phaseClimb}
+
+	// Climbed into 1.0 with the cap at 1.6, then into 2.0 with the cap at 3.2.
+	if !r.addRung(1.0, 0.05, 1.6) {
+		t.Fatal("first rung rejected")
+	}
+	if !r.addRung(2.0, 0.05, 3.2) {
+		t.Fatal("second rung rejected")
+	}
+	l := r.ladder()
+	if len(l.Rungs) != 2 {
+		t.Fatalf("got %d rungs, want 2", len(l.Rungs))
+	}
+
+	low, high := l.Rungs[0], l.Rungs[1]
+	if low.UpAtMbps != 1.6 || high.UpAtMbps != 3.2 {
+		t.Errorf("climb-in caps = %.2f, %.2f; want 1.60, 3.20",
+			low.UpAtMbps, high.UpAtMbps)
+	}
+	// Reaching 2.0 means 1.0 was left behind, and 3.2 is the cap that did it.
+	if low.DownAtMbps != 3.2 {
+		t.Errorf("lower rung's departure cap = %.2f, want 3.20", low.DownAtMbps)
+	}
+	if h := low.Headroom(); h < 1.59 || h > 1.61 {
+		t.Errorf("headroom = %.2f, want 1.60 (cap over cost)", h)
+	}
+	if !strings.Contains(l.Note, "before") {
+		t.Errorf("ladder note does not report the measured headroom: %q", l.Note)
+	}
+}
+
 func TestSweepCapAdmitsOnlyOneRungAtATime(t *testing.T) {
 	// The no-skip guarantee is structural, not a bet on the player being
 	// polite: the cap sits just above the rung the client occupies, so the next
@@ -491,10 +529,10 @@ func TestSweepMergeKeepsTheLowerDriftSighting(t *testing.T) {
 	// 14.3, and then anchored later merges on it, splitting one rendition in
 	// two on real hardware.
 	r := &sweepRun{params: testParams()}
-	if !r.addRung(16.40, 0.45) { // contaminated: high drift
+	if !r.addRung(16.40, 0.45, 26.24) { // contaminated: high drift
 		t.Fatal("first rung rejected")
 	}
-	if r.addRung(14.90, 0.05) { // clean: low drift, same rendition
+	if r.addRung(14.90, 0.05, 23.84) { // clean: low drift, same rendition
 		t.Error("recorded a second rung for one rendition")
 	}
 	if len(r.rungs) != 1 {
@@ -573,13 +611,13 @@ func TestSweepMergesRungsItCannotResolve(t *testing.T) {
 	// Two renditions 100 kbps apart cannot be told apart by a sweep whose
 	// smallest step is 250 kbps. Reporting both would invent resolution.
 	r := &sweepRun{params: testParams()}
-	if !r.addRung(3.0, 0.1) {
+	if !r.addRung(3.0, 0.1, 4.80) {
 		t.Fatal("first rung rejected")
 	}
-	if r.addRung(3.1, 0.1) {
+	if r.addRung(3.1, 0.1, 4.96) {
 		t.Error("accepted a rung 100 kbps from an existing one")
 	}
-	if !r.addRung(3.4, 0.1) {
+	if !r.addRung(3.4, 0.1, 5.44) {
 		t.Error("rejected a rung 400 kbps away, which is resolvable")
 	}
 }
@@ -590,17 +628,17 @@ func TestSweepMergeThresholdGrowsWithRate(t *testing.T) {
 	// 5.8 read as 5.57 and 5.87. A flat 250 kbps threshold reported each as two
 	// rungs. Median error scales with the rate, so the threshold has to as well.
 	r := &sweepRun{params: testParams()}
-	if !r.addRung(9.38, 0.1) {
+	if !r.addRung(9.38, 0.1, 15.01) {
 		t.Fatal("first rung rejected")
 	}
-	if r.addRung(9.65, 0.1) {
+	if r.addRung(9.65, 0.1, 15.44) {
 		t.Error("9.38 and 9.65 recorded as separate rungs; that is one rendition")
 	}
 	r2 := &sweepRun{params: testParams()}
-	if !r2.addRung(5.57, 0.1) {
+	if !r2.addRung(5.57, 0.1, 8.91) {
 		t.Fatal("first rung rejected")
 	}
-	if r2.addRung(5.87, 0.1) {
+	if r2.addRung(5.87, 0.1, 9.39) {
 		t.Error("5.57 and 5.87 recorded as separate rungs; that is one rendition")
 	}
 	// The tolerance is RELATIVE. It used to take max(MinStepMbps, pct), which
@@ -615,15 +653,15 @@ func TestSweepMergeThresholdGrowsWithRate(t *testing.T) {
 	// 0.23 apart in absolute terms, under the old 0.25 floor, and were merged
 	// into one. The bottom of the ladder vanished from the saved result.
 	low := &sweepRun{params: testParams()}
-	if !low.addRung(0.28, 0.05) {
+	if !low.addRung(0.28, 0.05, 0.45) {
 		t.Fatal("first rung rejected")
 	}
-	if !low.addRung(0.51, 0.05) {
+	if !low.addRung(0.51, 0.05, 0.82) {
 		t.Error("0.28 and 0.51 merged; those are 234p and 360p, 1.9x apart")
 	}
 	// The margin that makes the tolerance safe: real ladders are never spaced
 	// tighter than about 25%, so a genuine neighbouring rung must survive.
-	if !r.addRung(12.0, 0.1) {
+	if !r.addRung(12.0, 0.1, 19.20) {
 		t.Error("merged a rung 28% above an existing one; that is a real rung")
 	}
 }

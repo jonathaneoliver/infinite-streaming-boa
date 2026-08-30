@@ -325,6 +325,10 @@ type SweepLevel struct {
 type mapped struct {
 	mbps  float64
 	drift float64
+	// upAt is the cap in force when the client climbed into this rendition;
+	// downAt the cap that pushed it out. See Rung.
+	upAt   float64
+	downAt float64
 }
 
 type sweepRun struct {
@@ -668,7 +672,7 @@ func (r *sweepRun) evaluate(samples []Sample, now time.Time) {
 	// observed to differ by a few percent.
 	climbed := r.current <= 0 || rate > r.current*(1+r.params.NewRungPct/100)
 	if climbed {
-		lv.NewRung = r.addRung(rate, drift)
+		lv.NewRung = r.addRung(rate, drift, r.capMbps)
 		prev := r.current
 		r.current = rate
 		if prev > 0 && rate > prev*r.params.SkipRatio {
@@ -786,17 +790,31 @@ func (r *sweepRun) nextCap() float64 {
 // the contaminated value -- the first sighting of a rung is the level where the
 // player was mid-transition -- and then anchored every later merge on it, which
 // split one real 14.3 Mbps rendition into "16.40" and "14.20" on hardware.
-func (r *sweepRun) addRung(mbps, drift float64) bool {
+func (r *sweepRun) addRung(mbps, drift, atCap float64) bool {
 	for i, existing := range r.rungs {
 		if math.Abs(existing.mbps-mbps) >= r.mergeWithin(existing.mbps) {
 			continue
 		}
 		if drift < existing.drift {
-			r.rungs[i] = mapped{mbps: mbps, drift: drift}
+			// Take the cleaner rate but keep the threshold already learned: the
+			// first sighting is where the switch actually happened, and a later,
+			// steadier look at the same rendition did not cause it.
+			r.rungs[i].mbps, r.rungs[i].drift = mbps, drift
 		}
 		return false
 	}
-	r.rungs = append(r.rungs, mapped{mbps: mbps, drift: drift})
+	m := mapped{mbps: mbps, drift: drift}
+	if r.phase == phaseClimb {
+		m.upAt = atCap
+	}
+	r.rungs = append(r.rungs, m)
+
+	// Getting here means the client left whatever it was on, and this cap is
+	// what moved it. Climbing, the threshold belongs to the rendition departed:
+	// this is the cap at which that one became untenable.
+	if r.phase == phaseClimb && len(r.rungs) > 1 {
+		r.rungs[len(r.rungs)-2].downAt = atCap
+	}
 	return true
 }
 
@@ -976,7 +994,12 @@ func (r *sweepRun) ladder() Ladder {
 		if r.ceilingLinkLimited && math.Abs(m.mbps-r.ceiling) < 1e-9 {
 			unstable = true
 		}
-		rungs = append(rungs, Rung{Mbps: round2(m.mbps), Unstable: unstable})
+		rungs = append(rungs, Rung{
+			Mbps:       round2(m.mbps),
+			UpAtMbps:   round2(m.upAt),
+			DownAtMbps: round2(m.downAt),
+			Unstable:   unstable,
+		})
 	}
 	sort.Slice(rungs, func(i, j int) bool { return rungs[i].Mbps < rungs[j].Mbps })
 	note := fmt.Sprintf("climbed from %.2f Mbps in %.0f%% steps towards a %.2f Mbps ceiling, %ds windows",
@@ -991,6 +1014,18 @@ func (r *sweepRun) ladder() Ladder {
 		note += "; the top rung is UNRELIABLE -- the client never stopped fetching " +
 			"continuously while unconditioned, so the link may have set the ceiling " +
 			"rather than the player's own top rendition"
+	}
+	var hsum float64
+	var hn int
+	for _, x := range rungs {
+		if h := x.Headroom(); h > 0 {
+			hsum += h
+			hn++
+		}
+	}
+	if hn > 0 {
+		note += fmt.Sprintf("; the client wanted %.2fx a rendition's cost before "+
+			"selecting it, over %d observed switches", hsum/float64(hn), hn)
 	}
 	if len(r.throttle) > 0 {
 		worst := 0.0
@@ -1029,7 +1064,10 @@ func (s *Sweeper) View(mac string) *SweepView {
 	}
 	found := make([]Rung, 0, len(r.rungs))
 	for _, m := range r.rungs {
-		found = append(found, Rung{Mbps: round2(m.mbps), Unstable: m.drift > unstableDrift})
+		found = append(found, Rung{
+			Mbps: round2(m.mbps), UpAtMbps: round2(m.upAt),
+			DownAtMbps: round2(m.downAt), Unstable: m.drift > unstableDrift,
+		})
 	}
 	sort.Slice(found, func(i, j int) bool { return found[i].Mbps < found[j].Mbps })
 	return &SweepView{
