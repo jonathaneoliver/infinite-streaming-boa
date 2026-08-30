@@ -90,7 +90,12 @@ const anyExpanded = computed(() => clients.value.some((c) => !isFolded(c.mac)));
  * it forgets what you were doing.
  */
 const CHART_KEY = 'pifi.chart';
-const CHART_DEFAULTS: ChartPrefs = { rangeSec: 300, yMode: 'auto', yManual: 10 };
+const CHART_DEFAULTS: ChartPrefs = {
+  rangeSec: 300, yMode: 'auto', yManual: 10,
+  // Both on by default: the live trace is the record, and the mean is the
+  // answer to the question most often being asked of it.
+  showLive: true, showSustained: true,
+};
 
 function loadChart(): ChartPrefs {
   try {
@@ -179,9 +184,12 @@ onUnmounted(() => window.clearInterval(ticker));
       v-if="clients.length"
       :range-sec="chart.rangeSec" :y-mode="chart.yMode" :y-manual="chart.yManual"
       :bucket-ms="bucketMs"
+      :show-live="chart.showLive" :show-sustained="chart.showSustained"
       @range="(v: number) => (chart = { ...chart, rangeSec: v })"
       @y-mode="(v: YMode) => (chart = { ...chart, yMode: v })"
       @y-manual="(v: number) => (chart = { ...chart, yManual: v })"
+      @show-live="(v: boolean) => (chart = { ...chart, showLive: v })"
+      @show-sustained="(v: boolean) => (chart = { ...chart, showSustained: v })"
     />
 
     <ClientCard
