@@ -48,6 +48,7 @@ type Engine struct {
 	cfg   Config
 	sh    *Shaper
 	st    *Store
+	pat   *PatternStore
 	learn *Learner
 
 	rev, ctrlRev uint64
@@ -103,6 +104,7 @@ func NewEngine(cfg Config) *Engine {
 		cfg:       cfg,
 		sh:        NewShaper(cfg.WANPort, cfg.Bridge, managementPorts(cfg.Addr)),
 		st:        NewStore(cfg.StatePath),
+		pat:       NewPatternStore(patternsPathFor(cfg.StatePath)),
 		learn:     NewLearner(cfg.Bridge, cfg.WlanPort, cfg.LanPort),
 		prev:      map[string]counterSample{},
 		demo:      newDemoFleet(),
@@ -114,7 +116,17 @@ func NewEngine(cfg Config) *Engine {
 	}
 }
 
+func patternsPathFor(statePath string) string {
+	return filepath.Join(filepath.Dir(statePath), "patterns.json")
+}
+
 func (e *Engine) Store() *Store     { return e.st }
+
+// PatternStore holds the box's saved patterns. Beside policy.json rather than
+// inside it: policies persist as a bare object keyed by MAC, and folding
+// patterns in would change that file's shape and need a migration on every
+// existing box for no benefit over a second small file.
+func (e *Engine) PatternStore() *PatternStore { return e.pat }
 func (e *Engine) Shaper() *Shaper   { return e.sh }
 func (e *Engine) Sweeper() *Sweeper { return e.sweep }
 func (e *Engine) Player() *Player   { return e.player }

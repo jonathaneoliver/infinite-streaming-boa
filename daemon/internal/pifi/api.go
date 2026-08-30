@@ -45,6 +45,10 @@ func (a *API) Routes() *http.ServeMux {
 	mux.HandleFunc("DELETE /api/devices/{mac}/pattern", a.deletePattern)
 	mux.HandleFunc("POST /api/devices/{mac}/pattern/play", a.playPattern)
 	mux.HandleFunc("DELETE /api/devices/{mac}/pattern/play", a.stopPattern)
+	mux.HandleFunc("GET /api/patterns", a.listPatterns)
+	mux.HandleFunc("PUT /api/patterns/{name}", a.savePattern)
+	mux.HandleFunc("DELETE /api/patterns/{name}", a.deleteSavedPattern)
+	mux.HandleFunc("POST /api/devices/{mac}/pattern/select", a.selectPattern)
 	mux.HandleFunc("GET /api/config", a.getConfig)
 	mux.HandleFunc("POST /api/config", a.postConfig)
 	mux.HandleFunc("PUT /api/devices/{mac}/ladders/{service}", a.putLadder)
@@ -607,9 +611,208 @@ func (a *API) stopSweep(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"stopped": mac})
 }
 
+// patternEntry is one row of the pattern list.
+type patternEntry struct {
+	Name    string  `json:"name"`
+	Builtin bool    `json:"builtin"`
+	DurSec  float64 `json:"dur_sec"`
+	Keys    int     `json:"keys"`
+	Loop    bool    `json:"loop"`
+	// Selected marks the pattern currently loaded on the device the list was
+	// asked for. The list is single-select: a device runs one pattern, so the
+	// UI needs to know which row is the live one.
+	Selected bool `json:"selected,omitempty"`
+	// LadderService names the ladder a built-in was generated from, and Ladder
+	// says whether that ladder was real. A pattern built from the stand-in
+	// ladder is a plausibly-shaped test rather than a test of this content, and
+	// the difference must be visible rather than inferred from the rates.
+	LadderService string `json:"ladder_service,omitempty"`
+	Ladder        string `json:"ladder,omitempty"`
+	// Unavailable explains why a built-in could not be generated, instead of
+	// omitting the row. A pattern that silently vanishes from a list reads as a
+	// missing feature; one that says why reads as a thing to fix.
+	Unavailable string `json:"unavailable,omitempty"`
+}
+
+// resolveBuiltin generates a built-in for a device, reporting which ladder it
+// came from.
+func (a *API) resolveBuiltin(name string, p Policy, service string) (
+	Pattern, Ladder, bool, error) {
+
+	l, ok := pickLadder(p, service)
+	if !ok {
+		l = DefaultLadder()
+	}
+	pat, err := LadderPattern(name, l, 0)
+	return pat, l, ok, err
+}
+
+// listPatterns returns the built-ins and every saved pattern.
+//
+// Built-ins are GENERATED per request rather than stored, so they always
+// describe the ladder the device has now: re-sweep it and they reshape
+// themselves. That is also why they cannot be edited in place -- see
+// PatternStore.Put.
+func (a *API) listPatterns(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	mac := normMAC(q.Get("mac"))
+	service := q.Get("service")
+
+	var p Policy
+	if mac != "" {
+		p = a.load(mac)
+	}
+	current := ""
+	if p.Pattern != nil {
+		current = normPatternName(p.Pattern.Name)
+	}
+
+	out := []patternEntry{}
+	for _, name := range BuiltinNames {
+		e := patternEntry{Name: name, Builtin: true, Loop: true,
+			Selected: current == name}
+		if mac == "" {
+			// Without a device there is no ladder, so a built-in has no rates.
+			// Listed anyway, so the UI can show what exists.
+			e.Unavailable = "choose a device: a built-in is built from its ladder"
+			out = append(out, e)
+			continue
+		}
+		pat, l, real, err := a.resolveBuiltin(name, p, service)
+		if err != nil {
+			e.Unavailable = err.Error()
+			out = append(out, e)
+			continue
+		}
+		e.DurSec, e.Keys = pat.DurSec(), len(pat.Keys)
+		e.LadderService = l.Service
+		if real {
+			e.Ladder = string(l.Provenance)
+		} else {
+			e.Ladder = "default"
+		}
+		out = append(out, e)
+	}
+	for _, sp := range a.e.PatternStore().All() {
+		out = append(out, patternEntry{
+			Name: sp.Name, DurSec: sp.DurSec(), Keys: len(sp.Keys),
+			Loop: sp.Loop, Selected: current == sp.Name,
+		})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"patterns": out})
+}
+
+// savePattern stores an authored pattern under a name.
+//
+// Editing a built-in and saving it is a "save as": the name in the path must be
+// a new one, because a built-in is derived and a frozen copy wearing its label
+// would make the same name mean different things on different boxes.
+func (a *API) savePattern(w http.ResponseWriter, r *http.Request) {
+	var in patternPut
+	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+		writeErr(w, http.StatusBadRequest, "malformed body: "+err.Error())
+		return
+	}
+	if in.Pattern == nil {
+		writeErr(w, http.StatusBadRequest, "a pattern is required")
+		return
+	}
+	pat := *in.Pattern
+	pat.Name = r.PathValue("name")
+	if err := a.e.PatternStore().Put(pat); err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	a.e.BumpControl()
+	writeJSON(w, http.StatusOK, map[string]any{
+		"saved": normPatternName(pat.Name)})
+}
+
+func (a *API) deleteSavedPattern(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	if IsBuiltin(name) {
+		writeErr(w, http.StatusBadRequest,
+			"built-in patterns are generated, not stored; there is nothing to delete")
+		return
+	}
+	ok, err := a.e.PatternStore().Delete(name)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if !ok {
+		writeErr(w, http.StatusNotFound, "no saved pattern named "+name)
+		return
+	}
+	a.e.BumpControl()
+	writeJSON(w, http.StatusOK, map[string]any{"deleted": normPatternName(name)})
+}
+
+// patternSelect names the pattern to load onto a device.
+type patternSelect struct {
+	BaseRevision *uint64 `json:"base_revision"`
+	Name         string  `json:"name"`
+	// Service picks which of the device's ladders a built-in is built from. A
+	// device holds one per service and they share nothing, so "the ladder" only
+	// means something once a service is named; empty takes the most recently
+	// measured.
+	Service string `json:"service"`
+}
+
+// selectPattern loads a named pattern onto a device.
+//
+// Selecting is not playing: it fills the device's pattern slot, and
+// POST /pattern/play starts it. Keeping them separate means the list can be
+// changed without conditioning traffic the moment a row is ticked.
+//
+// A built-in is resolved to concrete rates HERE, at selection, and the device
+// stores the result. So a device keeps running the shape it was given even if
+// the ladder is re-swept underneath it -- re-select to pick up the new one.
+// The alternative, resolving on every tick, means a sweep silently rewrites a
+// pattern mid-run and the trace no longer matches what was requested.
+func (a *API) selectPattern(w http.ResponseWriter, r *http.Request) {
+	var in patternSelect
+	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+		writeErr(w, http.StatusBadRequest, "malformed body: "+err.Error())
+		return
+	}
+	mac := normMAC(r.PathValue("mac"))
+	p := a.load(mac)
+	if !a.checkRev(w, p, in.BaseRevision) {
+		return
+	}
+
+	name := normPatternName(in.Name)
+	switch {
+	case name == "":
+		// Deselecting is a legitimate request: it stops the run and clears the
+		// slot, which is what the "none" row in the list does.
+		a.e.Player().Stop(mac)
+		p.Pattern = nil
+	case IsBuiltin(name):
+		pat, _, _, err := a.resolveBuiltin(name, p, in.Service)
+		if err != nil {
+			writeErr(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		a.e.Player().Stop(mac)
+		p.Pattern = &pat
+	default:
+		sp, ok := a.e.PatternStore().Get(name)
+		if !ok {
+			writeErr(w, http.StatusNotFound, "no pattern named "+in.Name)
+			return
+		}
+		a.e.Player().Stop(mac)
+		p.Pattern = &sp
+	}
+	a.commit(w, p)
+}
+
 // getConfig exports every device's operator intent as one document.
 func (a *API) getConfig(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, ExportConfig(a.e.Store().All()))
+	writeJSON(w, http.StatusOK,
+		ExportConfig(a.e.Store().All(), a.e.PatternStore().All()))
 }
 
 // configPost carries a configuration to import.
@@ -652,6 +855,16 @@ func (a *API) postConfig(w http.ResponseWriter, r *http.Request) {
 	if err := a.e.Store().ReplaceAll(next); err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
+	}
+	// The library is replaced wholesale whenever the document carries one. It
+	// is box-level rather than per-device, so there is no subset of it that a
+	// merge could sensibly leave alone -- and a document with no patterns key
+	// at all is one exported before the library existed, which must not wipe it.
+	if in.Patterns != nil {
+		if err := a.e.PatternStore().ReplaceAll(in.Patterns); err != nil {
+			writeErr(w, http.StatusInternalServerError, err.Error())
+			return
+		}
 	}
 	// Every imported device's conditioning may have changed, and a pattern that
 	// was mid-run now belongs to a policy nobody in this session authored.
