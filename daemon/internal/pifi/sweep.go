@@ -85,8 +85,19 @@ type SweepParams struct {
 	// This is the whole no-skip guarantee, so it matters more than it looks. A
 	// cap only a little above the current rung admits the NEXT rendition and
 	// nothing beyond it, so the player cannot climb two at once however
-	// aggressive its policy is. Real ladders are spaced at least ~1.3x, so 35%
-	// clears the next rung while staying well under 1.3^2 = 1.69.
+	// aggressive its policy is.
+	//
+	// The window is narrower than it first appears, because the player keeps
+	// headroom of its own -- it will not select a variant costing more than
+	// about 95% of what it has. Against the tightest real spacing measured,
+	// 1.3x, the cap must therefore exceed 1.3/0.95 = 1.37x the current rung to
+	// admit the next one at all, and stay under 1.69/0.95 = 1.78x to exclude the
+	// one after. 45% sits in that band with margin at both ends.
+	//
+	// 35% was tried first and is on the wrong side of it: it yields
+	// 1.35 x 0.95 = 1.28, just short of a rung 1.3x up. That went unnoticed
+	// because the cap was separately running away, which inflated it enough to
+	// work by accident.
 	ClimbPct float64 `json:"climb_pct"`
 	// DwellSec is how long to hold a raised cap before concluding the client is
 	// not going to climb into it.
@@ -162,7 +173,7 @@ type SweepParams struct {
 func DefaultSweepParams() SweepParams {
 	return SweepParams{
 		StartMbps: 0.3,
-		ClimbPct:  35, DwellSec: 75, ObserveSec: 60, RecoverSec: 60,
+		ClimbPct:  45, DwellSec: 75, ObserveSec: 60, RecoverSec: 60,
 		NewRungPct: 12, SkipRatio: 1.9,
 		MinStepMbps: 0.25, MergePct: rungMergeDefault, MaxLevels: 40,
 	}
@@ -178,6 +189,12 @@ const (
 	// sitting within 15% of the cap being read as saturation -- it is found a
 	// level or two later instead, once the cap has moved further below it.
 	saturatedFrac = 0.85
+
+	// mergeFloorMbps stops the merge tolerance collapsing to nothing at very low
+	// rates. Well below the spacing of any real ladder -- the tightest measured
+	// gap between adjacent variants was 1.3x -- so it never decides anything on
+	// its own.
+	mergeFloorMbps = 0.02
 
 	// rungMergeDefault is the default rung-merge tolerance, as a percentage of
 	// the rate. It sits above the MinStepMbps floor, because the error in a
@@ -209,6 +226,27 @@ const (
 	// idleSampleFrac is the share of a window's mean below which a sample counts
 	// as an idle gap between segment fetches rather than part of one.
 	idleSampleFrac = 0.25
+	// pinnedToCap is the share of the cap above which a plateau is the SHAPER
+	// rather than a rendition.
+	//
+	// A player only selects a variant it can serve with headroom, so a rung it
+	// actually chose arrives at roughly 0.95 of the cap or less. A client that
+	// cannot serve anything takes the whole cap. The gap between those is small
+	// but it is real, and it catches a case the duty-cycle test cannot: a player
+	// that fetches, fails to start, and retries has gaps in its traffic, so it
+	// looks settled while delivering exactly the cap.
+	//
+	// Observed on hardware: capped at 0.30 Mbps -- 12% above the bottom
+	// rendition's wire cost, too tight for playback to start from cold -- the
+	// sweep recorded "rung at 0.30 Mbps", which is the cap, not a rendition.
+	pinnedToCap = 0.97
+
+	// capHolds is how many extra dwells a cap is held at when the client has not
+	// taken the headroom it already has. Two gives a slow adapter three chances
+	// in total before the cap moves, without letting a genuinely-too-low cap
+	// stall the run.
+	capHolds = 2
+
 	// starvedDuty is the duty cycle above which a client is taken to be PINNED
 	// to its cap rather than playing a rendition that sits close under it.
 	//
@@ -322,6 +360,11 @@ type sweepRun struct {
 
 	// pinned records that this level timed out still fetching continuously.
 	pinned bool
+	// holds counts consecutive levels the cap has been held at while waiting
+	// for the client to take headroom it already has.
+	holds int
+	// throttle accumulates what the starved levels revealed about the shaper.
+	throttle []ThrottlePoint
 
 	state  string // "running", "done", "failed"
 	reason string
@@ -600,12 +643,21 @@ func (r *sweepRun) evaluate(samples []Sample, now time.Time) {
 	// Never stopped fetching continuously, even after the longest dwell. Its
 	// buffer was not filling, so this rate is the cap talking rather than a
 	// rendition. Record the level, raise the cap, and try again.
-	if r.capMbps > 0 && r.pinned {
+	if r.capMbps > 0 && (r.pinned || rate >= r.capMbps*pinnedToCap) {
 		lv.Saturated = true
 		r.levels = append(r.levels, lv)
+		// Free calibration. Pinned to the cap, the client is measuring the
+		// shaper rather than the content, so this reading qualifies every rung
+		// the sweep goes on to report.
+		cv := variation(samples)
+		r.throttle = append(r.throttle, ThrottlePoint{
+			CapMbps: round2(r.capMbps), DeliveredMbps: round2(rate),
+			Ratio: round3(rate / r.capMbps), Variation: round3(cv),
+		})
 		fmt.Printf("infinite-streaming-pifi: sweep %s: level %d, cap %.2f Mbps: "+
-			"starved at %.2f Mbps, no rendition fits under this cap\n",
-			r.mac, lv.Level, lv.CapMbps, rate)
+			"starved at %.2f Mbps (%.1f%% of cap, %.1f%% variation), "+
+			"no rendition fits under this cap\n",
+			r.mac, lv.Level, lv.CapMbps, rate, 100*rate/r.capMbps, 100*cv)
 		r.nextLevel(now)
 		return
 	}
@@ -689,12 +741,36 @@ func (r *sweepRun) setCap(cap float64, now time.Time) {
 // while staying under 1.3^2 = 1.69. When nothing climbed, the cap is raised
 // again from ITSELF rather than from the rung, so the search creeps upward
 // until the next rendition comes within reach.
+// nextCap keeps the cap just above the rung the client currently occupies.
+//
+// The cap must not run away from the player. It used to raise from
+// max(cap, current), so a level where the client did not climb still inflated
+// the cap by ClimbPct -- and since a player needs recovery time between
+// upshifts, the cap outran it steadily.
+//
+// Measured: by level 13 the cap was 19.10 while the client sat at 8.04, and the
+// run then hit its "cap far past the ceiling" stop with two renditions still
+// unclimbed. The top of the ladder was lost, not because the client would not
+// climb but because the sweep ran out of budget waiting.
+//
+// So: catch up when the cap is BEHIND the client, and HOLD when it is already
+// ahead. When a client has headroom it has not taken, more headroom is not the
+// missing ingredient -- time is. Holding is bounded, so a cap that genuinely is
+// too low still rises rather than stalling forever.
 func (r *sweepRun) nextCap() float64 {
-	base := r.capMbps
-	if r.current > 0 && r.current > base {
-		base = r.current
+	if r.current > 0 {
+		if target := r.current * (1 + r.params.ClimbPct/100); target > r.capMbps {
+			r.holds = 0
+			return target
+		}
+		// Already above the client. Give it another dwell before adding more.
+		if r.holds < capHolds {
+			r.holds++
+			return r.capMbps
+		}
 	}
-	next := base * (1 + r.params.ClimbPct/100)
+	r.holds = 0
+	next := r.capMbps * (1 + r.params.ClimbPct/100)
 	if next < r.capMbps+r.params.MinStepMbps {
 		next = r.capMbps + r.params.MinStepMbps
 	}
@@ -724,12 +800,26 @@ func (r *sweepRun) addRung(mbps, drift float64) bool {
 	return true
 }
 
+// mergeWithin is how close two plateaus must be to count as one rendition.
+//
+// PURELY RELATIVE, plus a floor small enough never to bind on a real ladder.
+// It used to take max(MinStepMbps, ...), which conflated two unrelated things:
+// MinStepMbps sizes the CAP STEP, and reusing it as rung resolution swamped the
+// relative term at the bottom of the range.
+//
+// Measured: a real 234p rung at 0.28 Mbps and a real 360p rung at 0.51 -- two
+// variants 1.9x apart -- were 0.23 apart in absolute terms, under the 0.25
+// floor, and got merged into one. The bottom of the ladder was silently lost.
+//
+// A percentage cannot make that mistake: 10% of 0.28 is 0.028, and nothing in a
+// real ladder sits that close. The absolute floor remains only to stop the
+// tolerance collapsing to nothing near zero.
 func (r *sweepRun) mergeWithin(mbps float64) float64 {
 	pct := r.params.MergePct
 	if pct <= 0 {
 		pct = rungMergeDefault
 	}
-	return math.Max(r.params.MinStepMbps, mbps*pct/100)
+	return math.Max(mergeFloorMbps, mbps*pct/100)
 }
 
 func (r *sweepRun) finish(reason string) {
@@ -815,6 +905,22 @@ func dutyCycle(samples []Sample) float64 {
 	return meanDown(samples) / peak
 }
 
+// variation is the coefficient of variation of a window: standard deviation
+// over the mean. On a starved client this is the shaper's own jitter, which is
+// the floor on how precisely any rung can be measured at that rate.
+func variation(samples []Sample) float64 {
+	m := meanDown(samples)
+	if m <= 0 || len(samples) < 2 {
+		return 0
+	}
+	var sum float64
+	for _, s := range samples {
+		d := s.Down - m
+		sum += d * d
+	}
+	return math.Sqrt(sum/float64(len(samples))) / m
+}
+
 func meanDown(samples []Sample) float64 {
 	var sum float64
 	for _, s := range samples {
@@ -886,12 +992,23 @@ func (r *sweepRun) ladder() Ladder {
 			"continuously while unconditioned, so the link may have set the ceiling " +
 			"rather than the player's own top rendition"
 	}
+	if len(r.throttle) > 0 {
+		worst := 0.0
+		for _, t := range r.throttle {
+			if d := math.Abs(1 - t.Ratio); d > worst {
+				worst = d
+			}
+		}
+		note += fmt.Sprintf("; throttle measured %.0f%% off configured at its worst "+
+			"across %d starved level(s)", 100*worst, len(r.throttle))
+	}
 	return Ladder{
 		Service:    r.service,
 		Rungs:      rungs,
 		Provenance: LadderMeasured,
 		MeasuredAt: r.started.UnixMilli(),
 		Note:       note,
+		Throttle:   r.throttle,
 	}
 }
 
@@ -925,3 +1042,4 @@ func (s *Sweeper) View(mac string) *SweepView {
 }
 
 func round2(v float64) float64 { return math.Round(v*100) / 100 }
+func round3(v float64) float64 { return math.Round(v*1000) / 1000 }

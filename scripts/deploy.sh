@@ -17,10 +17,12 @@ log()  { printf '\033[36m==>\033[0m %s\n' "$*"; }
 die()  { printf '\033[31merror:\033[0m %s\n' "$*" >&2; exit 1; }
 
 UI_ONLY=0
+FORCE=0
 TARGET=""
 for a in "$@"; do
   case "$a" in
     --ui-only) UI_ONLY=1 ;;
+    --force)   FORCE=1 ;;
     -*) die "unknown option: $a" ;;
     *) TARGET="$a" ;;
   esac
@@ -35,6 +37,31 @@ ssh -o ConnectTimeout=8 -o BatchMode=yes "$TARGET" true 2>/dev/null \
   If it asks for a password, set up a key first:
       ssh-copy-id $TARGET
   A key is worth it -- this script runs many times an hour."
+
+# A deploy restarts the unit, and a ladder sweep lives only in the daemon's
+# memory -- deliberately, so a crash cannot leave a device throttled with
+# nothing to unwind. The cost is that deploying mid-sweep destroys it silently.
+#
+# That has happened twice: once to the person running the sweep, and once to
+# someone else on a shared box who had no way of knowing a half-hour
+# measurement was in progress. A sweep can run for thirty minutes and gives no
+# sign from outside, so this asks before throwing one away.
+#
+# Best effort by design: an unreachable or too-old daemon must not block a
+# deploy, since deploying is how you FIX a broken daemon.
+if [ "$FORCE" = "0" ]; then
+  sweeping=$(ssh -o ConnectTimeout=5 -o BatchMode=yes "$TARGET" \
+    "curl -s --max-time 4 localhost/api/state" 2>/dev/null \
+    | tr ',' '\n' | grep -c '"state":"running"' || true)
+  if [ "${sweeping:-0}" -gt 0 ]; then
+    die "a ladder sweep is running on $TARGET.
+  Deploying restarts the daemon, which ends the sweep and loses its results --
+  it keeps no state on disk until it finishes.
+
+  Wait for it, stop it from the interface, or:
+      ./scripts/deploy.sh --force"
+  fi
+fi
 
 log "Building web interface"
 ( cd ui && { [ -d node_modules ] || npm install --silent; } && npm run build --silent )

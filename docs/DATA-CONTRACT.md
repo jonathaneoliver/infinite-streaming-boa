@@ -453,3 +453,126 @@ delivered rendition bitrate holds only once the buffer is full, and rests on the
 player fetching one segment of media per segment duration. Startup and buffer
 fill both run at line rate and would read high, which is what the settle phase
 exists to exclude.
+
+---
+
+## Measured — throttle accuracy across the range
+
+**VERIFIED** on the Pi on 2026-08-30, over 5 GHz Wi-Fi, against a bulk HTTPS
+transfer pulled by a laptop associated to the AP. Measured from BOTH ends: the
+box's own `tc` class counters, and the bytes the client's application actually
+received.
+
+Transfers are sized the way the content is: for each cap, the variant a player
+would actually choose, fetched segment by segment on one kept-alive connection.
+That matters more than it sounds -- see *the artefact that had to be removed*.
+
+| configured cap | variant fetched | client payload | client ÷ cap | worst gap |
+|---|---|---|---|---|
+| 0.25 Mbps | 234p | 0.235 | 0.939 | 0.66 s |
+| 0.50 Mbps | 360p | 0.474 | 0.949 | 0.44 s |
+| 1.00 Mbps | 396p | 0.938 | 0.938 | 0.41 s |
+| 2.00 Mbps | 432p | 1.901 | 0.950 | 0.16 s |
+| 4.00 Mbps | 594p | 3.756 | 0.939 | 0.31 s |
+| unshaped | — | 28.75 | — | — |
+
+The box's own class counters read the configured rate exactly at every level:
+0.250, 0.500, 1.048, 2.000, 4.000.
+
+**Repeatability**, four runs per rate with no other client on the radio (each
+run's contention was recorded, not assumed):
+
+| cap | mean | sd | spread | runs |
+|---|---|---|---|---|
+| 0.25 | 0.900 | 0.076 | 0.181 | 0.767, 0.948, 0.942, 0.942 |
+| 0.50 | 0.947 | 0.002 | 0.006 | |
+| 1.00 | 0.949 | 0.001 | 0.004 | |
+| 2.00 | 0.951 | 0.001 | 0.002 | |
+| 4.00 | 0.952 | 0.000 | 0.001 | 0.952, 0.951, 0.952, 0.952 |
+
+The figure rises monotonically with rate and the spread shrinks, which is the
+signature of a systematic effect rather than noise: the per-request round trip
+at each segment boundary costs relatively less as more bytes move between
+requests, so the ratio converges on the 0.956 framing limit instead of
+wandering.
+
+0.25 Mbps was chased down separately, because one run in four had come in at
+0.767 and two explanations fitted equally well: the shaper stumbling at its
+lowest rate, or a short window concentrating a rare transport event. Fifteen
+further runs at two window lengths:
+
+| window | runs | mean | sd | min | runs with a >1 s stall |
+|---|---|---|---|---|---|
+| 20 s | 10 | 0.943 | 0.003 | 0.934 | **0** |
+| 60 s | 5 | 0.943 | 0.001 | 0.942 | **0** |
+
+Neither explanation survives. The shaper is steady (0.943 throughout), and
+window length changes nothing — 20 s and 60 s agree to three decimals — so it
+was not short-window fragility either. The outlier did not reproduce and is
+recorded as an unattributed transient.
+
+The largest inter-arrival gap was 0.58 to 0.67 s in every one of the fifteen
+runs, against 13.3 s when the same rate was measured with an oversized
+transfer. That is the difference the traffic shape makes.
+
+An earlier pass reported 0.942 +/- 0.003 at 0.25 and was about to be written up
+as "the shaper repeats to a third of a percent". The next pass at the same rate
+spread 0.026. Four samples show a spread; they do not pin one.
+
+The client sits a little under the 0.956 the framing arithmetic predicts because
+each segment boundary costs a request round trip, and seven to ten segments
+across a 30 s window is two to three percent of idle.
+
+**The shaper itself is exact.** The box counters match the configured rate at
+every level. An earlier run with no stalls put the client at 0.953–0.957
+uniformly across 0.25–4 Mbps, which is the framing arithmetic: a client counts
+TCP payload while the cap counts wire bytes, and 66 bytes of header per
+1448-byte payload is +4.6%, so payload ÷ cap should read 1/1.046 = 0.956.
+
+**There is no accuracy penalty at low rates.** The concern that opened this —
+that sub-1.5 Mbps was unverified and the netem queue floor predicted trouble —
+was unfounded as far as *throughput* goes.
+
+### The artefact that had to be removed
+
+The first version of this measurement pulled a **2160p segment -- 19 MB -- at
+every cap**, including 0.25 Mbps. It reported multi-second stalls: 13.3 s at
+0.25, 2.8 s at 1, 5.5 s at 4 Mbps, and those were written up as bufferbloat from
+the queue floor.
+
+They were the harness. No player fetches 19 MB at 0.25 Mbps; it fetches the
+234p segment, about 190 KB. The oversized transfer put roughly ten minutes of
+data in flight against a 48-second queue and filled it, which is a pathology the
+test created rather than found. Sizing each transfer to its rate, the worst gap
+across the whole range is **0.66 s** and the stalls do not occur.
+
+The lesson generalises: a conditioner has to be measured under the traffic shape
+it exists to condition. A single enormous bulk transfer is a workload this box
+will never see, and testing with one produced a confident, wrong conclusion
+about the kernel.
+
+### What a client cannot measure
+
+Sub-second delivery smoothness is **not observable from an HTTPS client**. TLS
+delivers whole records, so arrival is quantised at one record however the shaper
+paced the packets underneath. Measured median read was 16384 bytes at every
+rate, and the inter-arrival gaps matched `16 KB ÷ rate` to within a few percent:
+
+| cap | 16 KB ÷ rate | measured p50 gap |
+|---|---|---|
+| 0.25 | 524 ms | 538 ms |
+| 0.50 | 262 ms | 268 ms |
+| 2.00 | 65.5 ms | 65.6 ms |
+| 4.00 | 32.8 ms | 32.5 ms |
+
+So any "burstiness" figure taken from a client at bin widths below one record
+period is measuring TLS framing, not the shaper.
+
+Past that quantisation the pacing is even. At 1-second bins the 99th-percentile
+bin carried 0.99x to 1.45x the nominal rate across 0.25-4 Mbps; at 200 ms,
+1.31x to 2.97x, improving as the rate rises and the record period shrinks
+relative to the bin. The shaper paces well at every timescale a TLS client can
+observe.
+
+Measuring the shaper's own pacing requires a packet capture at the egress
+interface, before the radio.

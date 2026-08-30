@@ -274,6 +274,13 @@ player does *through* a transition is the question this box exists to answer.
   player never selects — wrong codec, wrong viewport, skipped by its own logic —
   is never delivered and so never appears. Two devices can produce different
   ladders from identical content.
+- **The netem queue is deep at low caps, but segmented traffic does not fill
+  it.** `netemLimit` floors the queue at 1000 packets: 0.24 s of buffering at
+  50 Mbps, but 48 s at 0.25 Mbps. A single bulk transfer large enough to fill it
+  does stall — 13 s observed — but that requires putting minutes of data in
+  flight, which no player does. Fetching the variant a player would actually
+  choose at that cap (190 KB at 0.25 Mbps, not 19 MB) the worst gap is 0.66 s
+  and pacing is even.
 - **Rung resolution is a merge tolerance.** Two renditions closer together than
   the larger of 250 kbps and 10% of the rate cannot be told apart and are
   reported as one. Real ladders are never spaced tighter than about 25%, which
@@ -290,7 +297,24 @@ player does *through* a transition is the question this box exists to answer.
 ## 8) Success Criteria
 
 - A configured cap is delivered within the framing overhead of a real link of
-  that speed — measured −4.5% at caps from 1.5 to 50 Mbps.
+  that speed. Measured −4.5% at caps from 1.5 to 50 Mbps. Separately measured at
+  **0.25, 0.5, 1, 2 and 4 Mbps** downlink over Wi-Fi, from both the kernel's own
+  counters and an independent client: the counters read the configured rate
+  exactly, and the client sees 0.94–0.95 of it, which is the Ethernet, IP and
+  TCP framing the cap counts and a client's payload does not.
+
+  Four runs per rate with the radio otherwise quiet: 0.943 at 0.25 Mbps, 0.947
+  at 0.5, 0.949 at 1, 0.951 at 2, 0.952 at 4, each repeating to within 0.006 or better and the
+  best to 0.001. The figure rises monotonically with rate because the per-request
+  round trip costs relatively less as more bytes move between requests, so it
+  converges on the framing limit rather than drifting.
+
+  0.25 Mbps sits at 0.943, measured over fifteen further runs at two window
+  lengths — 0.943 ± 0.003 over 20 s and 0.943 ± 0.001 over 60 s, with no stall
+  in any of them. An earlier single run of 0.767 did not reproduce and is taken
+  as a transient rather than a property of the rate.
+
+  **Uplink is untested at any rate.**
 - A configured one-way delay appears as that delay in round-trip time —
   measured 200.6 ms for a 200 ms setting.
 - A device under test cannot tell the box is present: no extra hop, no address
