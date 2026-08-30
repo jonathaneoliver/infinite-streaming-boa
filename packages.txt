@@ -5,3 +5,7 @@ nftables
 avahi-daemon
 rfkill
 iw
+# Measures what the link can do UNSHAPED. Traffic to and from this box is exempt
+# from conditioning, so this answers "what is the ceiling", never "is the cap
+# being enforced" -- see overlay/etc/systemd/system/iperf3.service.
+iperf3

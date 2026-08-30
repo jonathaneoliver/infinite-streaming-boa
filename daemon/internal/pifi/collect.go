@@ -3,6 +3,8 @@ package pifi
 import (
 	"bufio"
 	"encoding/json"
+	"fmt"
+	"os"
 	"os/exec"
 	"strconv"
 	"strings"
@@ -175,6 +177,40 @@ func DefaultRouteIface() string {
 // showing nothing.
 func LinkExists(name string) bool {
 	return exec.Command("ip", "link", "show", name).Run() == nil
+}
+
+// PortListening reports whether anything holds a listening TCP socket on a
+// local port.
+//
+// Deliberately NOT a dial. Connecting to an iperf3 server starts a control
+// session it then waits on, so a liveness probe every few seconds would leave
+// a trail of "the client has unexpectedly closed the connection" in the
+// journal -- the health check inventing the noise it exists to detect. The
+// kernel already publishes the answer.
+//
+// Reading /proc means this is Linux-only in practice; elsewhere the file is
+// absent and the answer is a plain false, which is correct for a box that is
+// not the appliance.
+func PortListening(port int) bool {
+	// 0A is TCP_LISTEN. The local address column is HEX_ADDR:HEX_PORT.
+	want := fmt.Sprintf(":%04X", port)
+	for _, f := range []string{"/proc/net/tcp", "/proc/net/tcp6"} {
+		raw, err := os.ReadFile(f)
+		if err != nil {
+			continue
+		}
+		sc := bufio.NewScanner(strings.NewReader(string(raw)))
+		for sc.Scan() {
+			fields := strings.Fields(sc.Text())
+			if len(fields) < 4 || fields[3] != "0A" {
+				continue
+			}
+			if strings.HasSuffix(fields[1], want) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func normMAC(s string) string { return strings.ToLower(strings.TrimSpace(s)) }

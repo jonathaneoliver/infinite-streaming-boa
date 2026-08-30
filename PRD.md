@@ -187,6 +187,20 @@ device card. Optional: the image builds without it.
   conditioning is additive on top of it; that `overlimits` is not an error; that
   PHY rate is not throughput.
 
+### 6.5 Measuring the link
+
+- An **iperf3 server** runs on the box, so the ceiling a cap has to sit under
+  can be measured on demand without installing anything on the device under
+  test. The interface shows the command, addressed to whatever host the
+  interface itself was reached on.
+- It measures the **unshaped** link, and says so where it offers it. Traffic to
+  and from the box is exempt from conditioning in both directions, so a test
+  against it reports the full link against any policy. Presenting that number
+  as throttle verification would be the most misleading thing this box could
+  do.
+- Measuring what conditioning delivers needs load arriving **through the WAN
+  port** from a host that is not the box.
+
 ## 7) Constraints & Accepted Limitations
 
 - **Clients depend on upstream DHCP.** Being invisible means issuing no

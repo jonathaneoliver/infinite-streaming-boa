@@ -251,6 +251,15 @@ func (e *Engine) rate(key string, bytes uint64, now time.Time) float64 {
 
 const ntopngPort = 3000
 
+// iperfPort is where overlay/etc/systemd/system/iperf3.service listens.
+//
+// The target address is deliberately NOT computed here. The bridge holds
+// several -- a DHCP address and a fixed rescue address on a private /24 that
+// clients cannot reach -- and picking between them would be guessing at which
+// one the reader can get to. The interface knows for certain: it is being
+// served over one of them.
+const iperfPort = 5201
+
 // ntopngUp reports whether ntopng is answering on the loopback. Probing the
 // port rather than checking for the binary means the UI reflects "you can
 // click this", not "something is installed somewhere".
@@ -509,6 +518,7 @@ func (e *Engine) tick() {
 			Leases:    false, // transparent bridge: upstream owns DHCP
 			WlanIface: e.cfg.WlanPort, UplinkIf: e.cfg.WANPort,
 			Ntopng: e.ntopngUp(), NtopngPort: ntopngPort,
+			Iperf: PortListening(iperfPort), IperfPort: iperfPort,
 			NamesLearned: len(names), NamesByMAC: len(macNames),
 		},
 		Notices: e.notices(ready, reason),

@@ -308,8 +308,10 @@ func (e *Engine) demoTick() {
 		Caps: Capabilities{
 			Shaping: true, Uplink: true, Radio: true,
 			WlanIface: "wlan0", UplinkIf: "eth0",
-			// On so the deep links are visible during UI development.
+			// On so the deep links and the measurement note are visible
+			// during UI development; neither is actually running here.
 			Ntopng: true, NtopngPort: ntopngPort,
+			Iperf: true, IperfPort: iperfPort,
 		},
 		Notices: []Notice{
 			{"error", "DEMO MODE - these clients are synthetic. No traffic is being conditioned."},

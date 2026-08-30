@@ -14,6 +14,18 @@ const clients = computed(() => snap.value?.clients ?? []);
 const caps = computed(() => snap.value?.caps);
 const presentCount = computed(() => clients.value.filter((c) => c.present).length);
 
+/**
+ * The command that points a device at the box's iperf3 server.
+ *
+ * The host comes from the browser, not the server: the bridge holds several
+ * addresses -- a DHCP one and a fixed rescue one on a private /24 clients
+ * cannot reach -- and the box has no way to know which of them the reader can
+ * get to. Whatever address this page was served over demonstrably works.
+ */
+const iperfCmd = computed(() =>
+  caps.value?.iperf ? `iperf3 -c ${location.hostname}` : '',
+);
+
 const notices = computed(() => snap.value?.notices ?? []);
 const errorNotices = computed(() => notices.value.filter((n) => n.level === 'error'));
 const infoNotices = computed(() => notices.value.filter((n) => n.level !== 'error'));
@@ -205,9 +217,21 @@ onUnmounted(() => window.clearInterval(ticker));
     <!-- Standing truths about how the box behaves. They never change and never
          need acting on, so they read as footnotes rather than pushing the
          devices -- the actual content -- below the fold. -->
-    <footer v-if="infoNotices.length" class="notes">
+    <footer v-if="infoNotices.length || iperfCmd" class="notes">
       <div v-for="n in infoNotices" :key="n.text" class="notice info">
         {{ n.text }}
+      </div>
+      <!-- Stated as a limit rather than a feature, because the number it
+           produces is the one most likely to be misread: a test against this
+           box is exempt from conditioning in both directions, so it reports
+           line rate against any cap. -->
+      <div v-if="iperfCmd" class="notice info">
+        Measure the unshaped link from a device with
+        <code>{{ iperfCmd }}</code> (add <code>-R</code> for downlink). This is
+        what the radio and the bridge can do, not what conditioning delivers —
+        traffic to and from this box is exempt from shaping, so it will report
+        the full link against any limit set here. To see a policy enforced, the
+        load has to come from a host beyond the {{ caps?.uplink_if }} port.
       </div>
     </footer>
   </div>

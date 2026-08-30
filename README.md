@@ -48,6 +48,9 @@ is there.
   per service, because no two streaming services share a ladder.
 - **Ships ntopng** on `:3000`, watching the bridge, with per-device deep links
   from each card for traffic breakdown and nDPI-labelled flows.
+- **Ships an iperf3 server** on `:5201`, so the ceiling a cap has to sit under
+  can be measured without installing anything on the device under test. It
+  measures the link **unshaped** — see below.
 
 ## Build an image
 
@@ -69,8 +72,18 @@ adapter in for a wired device under test, then:
 |---|---|
 | Web interface | `http://infinite-streaming-pifi.local/` |
 | ntopng | `http://infinite-streaming-pifi.local:3000/` — `admin` / `PIFI_PASSWORD` |
+| iperf3 | `iperf3 -c infinite-streaming-pifi.local` from a device under test |
 | SSH | `ssh pifi@infinite-streaming-pifi.local` |
 | Rescue | `http://<PIFI_RESCUE_IP>/` when upstream DHCP is absent |
+
+**iperf3 measures the link, not the conditioner.** Traffic to and from the box
+is exempt from shaping in both directions — downlink by an explicit filter, so
+the web interface cannot throttle itself off the network, and uplink because it
+never reaches the WAN port where uplink shaping lives. So a test against the box
+reports the full radio and bridge against any limit you have set. That is the
+number worth knowing before choosing a cap, and it is the wrong number for
+checking a cap is being enforced: for that the load has to come from a host
+beyond `eth0`.
 
 **The WAN port must be connected.** Being invisible means pifi issues no
 addresses: with no live upstream, clients associate to the Wi-Fi and then sit

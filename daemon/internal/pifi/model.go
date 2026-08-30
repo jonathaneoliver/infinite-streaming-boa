@@ -294,6 +294,11 @@ type Capabilities struct {
 	// image without the prebuilt artifact would otherwise show dead links.
 	Ntopng     bool `json:"ntopng"`
 	NtopngPort int  `json:"ntopng_port"`
+	// Iperf reports whether the iperf3 server is LISTENING, so a script can
+	// check the box can measure its own link without parsing the notices.
+	// It measures the unshaped link only; see the unit file for why.
+	Iperf     bool `json:"iperf"`
+	IperfPort int  `json:"iperf_port"`
 	// NamesLearned is how many address-to-name bindings mDNS has yielded, and
 	// NamesByMAC how many of the MAC-keyed bindings that actually label a
 	// client. Zero means nothing is being heard; a healthy number while a
