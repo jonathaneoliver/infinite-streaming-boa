@@ -66,8 +66,26 @@ type Engine struct {
 	hist     *History
 	histPath string
 
+	// sweep discovers rendition ladders by stepping a device's cap down. It
+	// holds its own lock and never reaches back into the engine, so calling it
+	// from the tick is safe in either order.
+	sweep *Sweeper
+
 	subs map[chan Snapshot]struct{}
 }
+
+// sweepObserver is the engine's answer to what a sweep needs to see: the recent
+// throughput series, and which devices are still there to measure. Rebuilt each
+// tick from that tick's client list, so presence is never stale.
+type sweepObserver struct {
+	hist *History
+	live map[string]bool
+}
+
+func (o sweepObserver) Window(mac string, from, to time.Time) []Sample {
+	return o.hist.Between(mac, from, to)
+}
+func (o sweepObserver) Live(mac string) bool { return o.live[mac] }
 
 func NewEngine(cfg Config) *Engine {
 	if cfg.Tick == 0 {
@@ -82,12 +100,14 @@ func NewEngine(cfg Config) *Engine {
 		demo:      newDemoFleet(),
 		demoBytes: map[string]uint64{},
 		hist:      NewHistory(),
+		sweep:     &Sweeper{},
 		subs:      map[chan Snapshot]struct{}{},
 	}
 }
 
-func (e *Engine) Store() *Store   { return e.st }
-func (e *Engine) Shaper() *Shaper { return e.sh }
+func (e *Engine) Store() *Store     { return e.st }
+func (e *Engine) Shaper() *Shaper   { return e.sh }
+func (e *Engine) Sweeper() *Sweeper { return e.sweep }
 
 // Start brings up the kernel scaffolding and the passive listeners, then ticks
 // forever. Shaping failure is reported through capabilities rather than being
@@ -197,6 +217,14 @@ func (e *Engine) desired(clients []Client) []Desired {
 		if !c.Policy.Enabled {
 			// Disabled means "do not condition", not "do not measure".
 			down, up = Shape{}, Shape{}
+		}
+		// A running ladder sweep drives the downlink cap itself, overriding
+		// stored policy for the duration. Applied here rather than written to
+		// the Store, so nothing has to be unwound: the override vanishes with
+		// the run, and a daemon that dies mid-sweep comes back conditioning the
+		// device exactly as the operator left it.
+		if s, ok := e.sweep.Override(c.MAC); ok {
+			down = s
 		}
 		want = append(want, Desired{
 			Key: c.MAC, IP: c.IP, IPv6: c.IPv6, Port: c.Port, Down: down, Up: up,
@@ -395,6 +423,17 @@ func (e *Engine) tick() {
 		return clients[i].Label < clients[j].Label
 	})
 
+	// Advance any ladder sweep BEFORE reconciling, so a level change reaches
+	// the kernel on the tick it was decided rather than a second later.
+	// Presence comes from the list just built: a device that left cannot be
+	// measured, and continuing would record its absence as a rung.
+	live := make(map[string]bool, len(clients))
+	for _, c := range clients {
+		live[c.MAC] = c.Present && c.Shapeable
+	}
+	e.sweep.Advance(now, sweepObserver{hist: e.hist, live: live})
+	e.storeSweepResult()
+
 	if ready, _ := e.sh.Ready(); ready {
 		for _, err := range e.sh.Apply(e.desired(clients)) {
 			fmt.Printf("infinite-streaming-pifi: shaping: %v\n", err)
@@ -424,6 +463,7 @@ func (e *Engine) tick() {
 	e.mu.Lock()
 	for i := range clients {
 		c := &clients[i]
+		c.Sweep = e.sweep.View(c.MAC)
 		if m, ok := e.sh.MinorFor(c.MAC); ok {
 			c.DownCounters = readPort(e.sh.DownPortFor(c.MAC))[m]
 			c.DownCounters.ThroughputMbps = e.rate(
@@ -489,6 +529,41 @@ func (e *Engine) tick() {
 		default:
 		}
 	}
+}
+
+// storeSweepResult persists a finished sweep's ladder against the device that
+// produced it, keyed by the service that was being streamed.
+//
+// Reported rather than best-effort-silent: a sweep costs minutes of a person's
+// time and a device's playback, and losing the result to a write failure with
+// nothing on the console is the expensive kind of quiet.
+func (e *Engine) storeSweepResult() {
+	mac, ladder, ok := e.sweep.TakeResult()
+	if !ok {
+		return
+	}
+	p, found := e.st.Get(mac)
+	if !found {
+		p = Policy{MAC: mac, Enabled: true}
+	}
+	p.PutLadder(ladder)
+	p.Rev++
+	if err := e.st.Put(p); err != nil {
+		fmt.Printf("infinite-streaming-pifi: sweep %s: ladder measured but NOT saved: %v\n",
+			mac, err)
+		return
+	}
+	rungs := make([]float64, 0, len(ladder.Rungs))
+	for _, r := range ladder.Rungs {
+		rungs = append(rungs, r.Mbps)
+	}
+	fmt.Printf("infinite-streaming-pifi: sweep %s: saved ladder for %q: %v Mbps\n",
+		mac, ladder.Service, rungs)
+	// The ladder is operator-visible configuration, so the UI must resync
+	// rather than wait for its next full reload.
+	e.mu.Lock()
+	e.ctrlRev++
+	e.mu.Unlock()
 }
 
 // notices are operational truths the UI is required to surface. They exist

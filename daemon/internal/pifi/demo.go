@@ -29,16 +29,106 @@ type demoClient struct {
 	baseMbps float64
 	signal   float64
 	wired    bool
+	// ladder makes this client behave as an ABR player rather than as a
+	// generic bulk transfer: it delivers the highest rung that fits inside its
+	// cap, and rebuffers against the cap when none does.
+	//
+	// Without one, a ladder sweep in demo mode has nothing to discover -- the
+	// generic model just tracks the cap, so every level reads as saturated and
+	// the whole feature is undevelopable without hardware.
+	ladder []float64
+}
+
+// demoSegmentSec is the synthetic content's segment duration. It sets the
+// cadence of the fetch bursts, and therefore how many segments an observation
+// window has to span before its mean means anything.
+const demoSegmentSec = 6.0
+
+// abrThroughput is what the wire actually carries: bursts, not a steady rate.
+//
+// A player does not trickle its rendition out at the encoding bitrate. It
+// fetches a segment as fast as the link allows and then goes idle until the
+// next one, so the 1 Hz series is bimodal -- line rate, then zero. Over a whole
+// segment period the MEAN is the rendition; no individual sample is.
+//
+// Modelling this matters. The first version of this fleet emitted a continuous
+// rendition rate, which is a shape real traffic never has, and it let a sweep
+// that took the MEDIAN of its window pass every test here and then read 16.75
+// Mbps off a real iPhone that was delivering 13.52.
+func (d *demoClient) abrThroughput(capMbps, t float64) float64 {
+	rendition := d.abrRate(capMbps)
+
+	// During a fetch the link delivers whatever it can, capped if there is one.
+	burst := d.baseMbps
+	if capMbps > 0 && capMbps < burst {
+		burst = capMbps
+	}
+	// A rendition needing the whole link leaves no idle time: the fetch never
+	// finishes early, so throughput is continuous rather than bursty. This is
+	// also what a rebuffering player looks like.
+	duty := rendition / burst
+	if duty >= 0.95 {
+		return burst * (0.93 + 0.05*rand.Float64())
+	}
+	// The fetch occupies the first `duty` of each segment period, idle for the
+	// rest. Fractional rather than a binary on/off, because a 1 Hz sample is an
+	// average over its second: a fetch ending mid-second gives a partial value,
+	// and pretending otherwise quantises the duty cycle to whole seconds.
+	return burst * onFraction(t+d.phase, demoSegmentSec, duty*demoSegmentSec) *
+		(0.9 + 0.2*rand.Float64())
+}
+
+// onFraction is how much of the one-second sample beginning at t falls inside
+// the fetch phase of a segment period: the fetch occupies the first onSec of
+// every periodSec.
+//
+// Fractional, NOT a binary on/off. A 1 Hz throughput sample is an AVERAGE over
+// its second, so a fetch that ends mid-second yields a partial value. Modelling
+// it as all-or-nothing quantises the duty cycle to whole seconds -- a 0.56 duty
+// over a 6 s period realises as 4/6 = 0.67 -- which shows up as a rate-dependent
+// over-read that looks exactly like a detector bias but is not one.
+func onFraction(t, periodSec, onSec float64) float64 {
+	start := math.Mod(t, periodSec)
+	end := start + 1
+	covered := math.Max(0, math.Min(math.Min(end, periodSec), onSec)-math.Min(start, onSec))
+	if end > periodSec { // the sample straddles into the next period
+		covered += math.Max(0, math.Min(end-periodSec, onSec))
+	}
+	return covered
+}
+
+// abrRate is the demo player's rendition choice: the highest rung that fits
+// inside the cap with a little headroom. Below the bottom rung it rebuffers,
+// which consumes the cap rather than going quiet.
+func (d *demoClient) abrRate(capMbps float64) float64 {
+	top := d.ladder[len(d.ladder)-1]
+	if capMbps <= 0 {
+		return top
+	}
+	best := -1.0
+	for _, r := range d.ladder {
+		if r <= capMbps*0.95 {
+			best = r
+		}
+	}
+	if best < 0 {
+		return capMbps * 0.95
+	}
+	return best
 }
 
 func newDemoFleet() []*demoClient {
 	return []*demoClient{
 		{mac: "a4:83:e7:2c:19:04", label: "iPhone 15", medium: "wifi", port: "wlan0",
 			ip: "192.168.1.42", present: true, phase: 0, baseMbps: 45, signal: -52},
+		// Two ABR players with deliberately different ladders, because the
+		// point of keying a ladder by service is that no two are alike.
 		{mac: "dc:a6:32:6b:80:11", label: "Apple TV", medium: "wifi", port: "wlan0",
-			ip: "192.168.1.51", present: true, phase: 2.1, baseMbps: 78, signal: -61},
+			ip: "192.168.1.51", present: true, phase: 2.1, baseMbps: 78, signal: -61,
+			ladder: []float64{0.4, 0.9, 1.8, 3.2, 5.8, 9.5, 15}},
 		{mac: "00:1a:2b:3c:4d:5e", label: "Test rig (wired)", medium: "wired", port: "lan0",
-			ip: "192.168.1.77", present: true, phase: 4.2, baseMbps: 94, signal: 0, wired: true},
+			ip: "192.168.1.77", present: true, phase: 4.2, baseMbps: 94, signal: 0, wired: true,
+			ladder: []float64{0.3, 0.75, 1.5, 3, 6, 12}},
 		{mac: "f0:18:98:1d:aa:7c", label: "Pixel 8", medium: "wifi", port: "wlan0",
 			ip: "192.168.1.63", present: true, phase: 1.1, baseMbps: 22, signal: -74},
 		// Associated but has not completed DHCP: real, common, and the state
@@ -143,18 +233,34 @@ func (e *Engine) demoTick() {
 		if d.present && d.ip != "" {
 			offer := demoOffer(d, t) * (0.85 + 0.3*rand.Float64())
 
+			// A running sweep drives the cap itself, exactly as it does in
+			// production, so the dev loop exercises the real code path rather
+			// than a demo-only imitation of it.
+			downShape := pol.Down
+			if !pol.Enabled {
+				downShape = Shape{}
+			}
+			if sh, ok := e.sweep.Override(d.mac); ok {
+				downShape = sh
+			}
+
 			down := offer
-			if pol.Enabled && pol.Down.RateMbps > 0 {
+			if len(d.ladder) > 0 {
+				// An ABR player delivers a rendition, not "whatever fits" --
+				// but it delivers it in bursts with idle gaps between, which is
+				// the shape the sweep's statistic has to survive.
+				down = d.abrThroughput(downShape.RateMbps, t)
+			} else if downShape.RateMbps > 0 {
 				// Sit just under the cap the way a real TCP flow does, rather
 				// than pinning exactly to it.
-				down = math.Min(offer, pol.Down.RateMbps*(0.93+0.05*rand.Float64()))
+				down = math.Min(offer, downShape.RateMbps*(0.93+0.05*rand.Float64()))
 			}
 			up := offer * 0.12
 			if pol.Enabled && pol.Up.RateMbps > 0 {
 				up = math.Min(up, pol.Up.RateMbps*(0.93+0.05*rand.Float64()))
 			}
 
-			c.DownCounters = e.demoCounters("d/"+d.mac, down, pol.Down, now)
+			c.DownCounters = e.demoCounters("d/"+d.mac, down, downShape, now)
 			c.UpCounters = e.demoCounters("u/"+d.mac, up, pol.Up, now)
 
 			for _, sub := range pol.Sub {
@@ -172,13 +278,26 @@ func (e *Engine) demoTick() {
 	}
 
 	// Recorded before publishing, exactly as the real tick does, so the demo
-	// exercises the same history path the interface reads back.
+	// exercises the same history path the interface reads back -- and so the
+	// sweep's detector has real telemetry to work from here too.
 	for i := range clients {
 		e.hist.Add(clients[i].MAC, Sample{
 			T:    now.UnixMilli(),
 			Down: clients[i].DownCounters.ThroughputMbps,
 			Up:   clients[i].UpCounters.ThroughputMbps,
 		})
+	}
+	live := make(map[string]bool, len(clients))
+	for _, c := range clients {
+		live[c.MAC] = c.Present && c.Shapeable
+	}
+	e.sweep.Advance(now, sweepObserver{hist: e.hist, live: live})
+	e.storeSweepResult()
+	// Read the view AFTER advancing, as production does, or demo would show a
+	// sweep one tick behind the one it is actually running and the two would
+	// disagree about when a level changed.
+	for i := range clients {
+		clients[i].Sweep = e.sweep.View(clients[i].MAC)
 	}
 
 	e.mu.Lock()

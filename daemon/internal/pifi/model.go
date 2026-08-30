@@ -15,7 +15,11 @@
 // instead of being scattered across the collectors.
 package pifi
 
-import "time"
+import (
+	"sort"
+	"strings"
+	"time"
+)
 
 // Shape is one direction's worth of conditioning. Zero values mean "no
 // conditioning of this kind", which is why RateMbps == 0 reads as unlimited
@@ -72,6 +76,48 @@ type SubClass struct {
 	classMin int    // kernel class minor, assigned by the shaper; not serialised
 }
 
+// Rung is one rendition's delivered bitrate.
+type Rung struct {
+	Mbps float64 `json:"mbps"`
+	// Unstable marks a rung whose observation window drifted: its two halves
+	// disagreed, so its mean describes neither.
+	// Reported rather than dropped, so the operator can see which number to
+	// distrust instead of being handed a uniformly confident list.
+	Unstable bool `json:"unstable,omitempty"`
+}
+
+// Ladder provenance values, ordered by how much they can be trusted.
+const (
+	LadderTyped    = "typed"    // the operator entered the rungs
+	LadderFetched  = "fetched"  // read from a manifest
+	LadderMeasured = "measured" // every rung observed by a sweep
+	LadderInferred = "inferred" // one rung observed, the rest synthesised
+)
+
+// Ladder is one service's rendition ladder as seen by one device.
+//
+// Keyed by service, not just by device. A ladder is a property of the content
+// and the player that fetched it, not of the hardware: the same set-top box
+// streaming two services produces two ladders with nothing in common, so a
+// device holds a list of these rather than one.
+//
+// Service is typed by the operator. Inferring it from SNI or DNS would decay --
+// ECH removes SNI, QUIC buries the handshake, DoH removes the DNS -- and would
+// decay by silently mislabelling a ladder rather than by failing.
+type Ladder struct {
+	// Service is the operator's name for what was being streamed, e.g.
+	// "netflix". Together with the device MAC it is the ladder's identity.
+	Service string `json:"service"`
+	// Rungs ascend.
+	Rungs []Rung `json:"rungs"`
+	// Provenance is one of the Ladder* constants. It exists so the UI can show
+	// a measured ladder and a synthesised one with different confidence: they
+	// are different claims and must not render alike.
+	Provenance string `json:"provenance"`
+	MeasuredAt int64  `json:"measured_at,omitempty"`
+	Note       string `json:"note,omitempty"`
+}
+
 // Policy is everything the operator has configured for one device. It is keyed
 // by MAC and persists across DHCP renewal, disconnection and reboot -- an IP is
 // too unstable to hang configuration from.
@@ -82,13 +128,43 @@ type Policy struct {
 	// device in the meantime and the write is refused rather than silently
 	// clobbering them. Per-device rather than global, so two operators editing
 	// two different clients never collide.
-	Rev      uint64     `json:"rev"`
-	Label    string     `json:"label"`
-	Enabled  bool       `json:"enabled"`
-	Down     Shape      `json:"down"`
-	Up       Shape      `json:"up"`
-	Sub      []SubClass `json:"sub"`
-	classMin int        // kernel class minor for the device default class
+	Rev     uint64     `json:"rev"`
+	Label   string     `json:"label"`
+	Enabled bool       `json:"enabled"`
+	Down    Shape      `json:"down"`
+	Up      Shape      `json:"up"`
+	Sub     []SubClass `json:"sub"`
+	// Ladders is every rendition ladder measured or entered for this device,
+	// one per service. Persisted with the policy because it is a durable input
+	// the operator owns and edits -- unlike telemetry, it is written once per
+	// sweep rather than once per tick, so it costs the SD card nothing.
+	Ladders  []Ladder `json:"ladders,omitempty"`
+	classMin int      // kernel class minor for the device default class
+}
+
+// LadderFor returns this device's ladder for one service.
+func (p Policy) LadderFor(service string) (Ladder, bool) {
+	for _, l := range p.Ladders {
+		if strings.EqualFold(l.Service, service) {
+			return l, true
+		}
+	}
+	return Ladder{}, false
+}
+
+// PutLadder inserts or replaces the ladder for a service, keeping the list
+// sorted by name so the UI order does not depend on measurement order.
+func (p *Policy) PutLadder(l Ladder) {
+	for i := range p.Ladders {
+		if strings.EqualFold(p.Ladders[i].Service, l.Service) {
+			p.Ladders[i] = l
+			return
+		}
+	}
+	p.Ladders = append(p.Ladders, l)
+	sort.Slice(p.Ladders, func(i, j int) bool {
+		return p.Ladders[i].Service < p.Ladders[j].Service
+	})
 }
 
 // Station is the radio's view of a client: the authority on who is actually
@@ -167,6 +243,40 @@ type Client struct {
 	// RTTAddedMs is Down.DelayMs + Up.DelayMs, computed here so the UI cannot
 	// get the round-trip arithmetic wrong.
 	RTTAddedMs float64 `json:"rtt_added_ms"`
+
+	// Sweep is the ladder sweep running on this device, or the outcome of the
+	// last one. Absent when the device has never been swept this daemon run.
+	Sweep *SweepView `json:"sweep,omitempty"`
+}
+
+// SweepView is a ladder sweep's progress, carried in every snapshot so the UI
+// can show a run that takes minutes without polling a second endpoint.
+//
+// Live only: a sweep is transient, and a daemon restart cancels it. What
+// survives a restart is the Ladder it produced, on the device's policy.
+type SweepView struct {
+	// State is "running", "done" or "failed".
+	State string `json:"state"`
+	// Phase is "settling" while a new cap beds in, "observing" while the
+	// plateau is being measured, and mirrors State once the run has ended.
+	Phase string `json:"phase"`
+	// Pass is "map" while finding where the rungs are, "measure" while
+	// measuring what they are. The two want opposite window lengths, which is
+	// why they are separate passes rather than one compromise.
+	Pass    string `json:"pass"`
+	Service string `json:"service"`
+	Level   int    `json:"level"`
+	// CapMbps is the cap being held right now. 0 is the opening unconditioned
+	// probe that establishes the ceiling.
+	CapMbps     float64 `json:"cap_mbps"`
+	CeilingMbps float64 `json:"ceiling_mbps"`
+	// Found is the rungs discovered so far, ascending. It grows during the run.
+	Found []Rung `json:"found,omitempty"`
+	// Levels is every level's outcome, so a surprising ladder can be read back
+	// to the observation that produced it rather than being taken on trust.
+	Levels    []SweepLevel `json:"levels,omitempty"`
+	Reason    string       `json:"reason,omitempty"`
+	StartedAt int64        `json:"started_at"`
 }
 
 // Capabilities tells the UI which parts of the system are actually working, so

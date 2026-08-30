@@ -80,6 +80,30 @@ func (h *History) Add(mac string, s Sample) {
 	h.byMAC[mac] = append(series, s)
 }
 
+// Between returns one client's RAW samples falling in [from, to].
+//
+// Distinct from Window, which serves the charts: that one covers every client
+// and decimates into buckets to keep the payload small. A ladder sweep needs
+// the opposite -- one client, a short span, and no bucketing at all. Bucketing
+// averages away the burst-and-idle structure of a segment fetch, which is
+// precisely the shape the sweep reads to tell a full buffer from a starved
+// client.
+//
+// It is also asked for every tick, so copying every series to read a
+// 60-second window would be waste that scales with the size of the network.
+func (h *History) Between(mac string, from, to time.Time) []Sample {
+	lo, hi := from.UnixMilli(), to.UnixMilli()
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	var out []Sample
+	for _, s := range h.byMAC[mac] {
+		if s.T >= lo && s.T <= hi {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
 // Prune drops clients that have gone quiet, and caps the table.
 func (h *History) Prune(now time.Time) {
 	h.mu.Lock()
