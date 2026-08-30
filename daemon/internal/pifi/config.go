@@ -29,6 +29,12 @@ type ConfigExport struct {
 	// ExportedAt is informational. Import never reads it -- a configuration is
 	// applied because the operator asked, not because it is recent.
 	ExportedAt int64 `json:"exported_at"`
+	// Patterns is the box's saved pattern library, sorted by name. Built-ins
+	// are absent on purpose: they are generated from whichever ladder a device
+	// has, so storing them would freeze a shape that is meant to track the
+	// content, and restoring one onto another box would describe that box's
+	// ladders wrongly.
+	Patterns []Pattern `json:"patterns,omitempty"`
 	// Devices is sorted by MAC. Go randomises map iteration, and these
 	// documents are meant to be committed to a repository and diffed, where
 	// unstable ordering turns a no-op export into a whole-file change.
@@ -54,8 +60,16 @@ const (
 // edit history: exporting it invites a restore to carry a stale value that
 // belongs to a different timeline, and it would churn the diff of a committed
 // file on every unrelated edit.
-func ExportConfig(all map[string]Policy) ConfigExport {
+func ExportConfig(all map[string]Policy, patterns []Pattern) ConfigExport {
 	out := ConfigExport{Version: ConfigVersion, ExportedAt: nowMs()}
+	for _, pat := range patterns {
+		if !IsBuiltin(pat.Name) {
+			out.Patterns = append(out.Patterns, pat)
+		}
+	}
+	sort.Slice(out.Patterns, func(i, j int) bool {
+		return out.Patterns[i].Name < out.Patterns[j].Name
+	})
 	for _, p := range all {
 		p.Rev = 0
 		out.Devices = append(out.Devices, p)
@@ -78,6 +92,25 @@ func (c ConfigExport) Validate() error {
 	}
 	if len(c.Devices) == 0 {
 		return fmt.Errorf("config contains no devices")
+	}
+	seenPattern := map[string]bool{}
+	for i, pat := range c.Patterns {
+		name := normPatternName(pat.Name)
+		if name == "" {
+			return fmt.Errorf("pattern %d: a saved pattern needs a name", i)
+		}
+		if IsBuiltin(name) {
+			return fmt.Errorf(
+				"pattern %q is a built-in name; built-ins are generated, not stored",
+				name)
+		}
+		if seenPattern[name] {
+			return fmt.Errorf("pattern %q appears twice", name)
+		}
+		seenPattern[name] = true
+		if err := validPattern(pat); err != nil {
+			return fmt.Errorf("pattern %q: %w", name, err)
+		}
 	}
 	seen := map[string]bool{}
 	for i, p := range c.Devices {

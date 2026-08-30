@@ -31,7 +31,7 @@ func TestExportOrdersDevicesByMAC(t *testing.T) {
 		"bb:bb:bb:bb:bb:bb": devPolicy("bb:bb:bb:bb:bb:bb", 2),
 	}
 	for i := 0; i < 8; i++ {
-		got := ExportConfig(all)
+		got := ExportConfig(all, nil)
 		if len(got.Devices) != 3 {
 			t.Fatalf("got %d devices, want 3", len(got.Devices))
 		}
@@ -58,7 +58,7 @@ func TestExportDropsTheRevisionCounter(t *testing.T) {
 	all := map[string]Policy{"aa:aa:aa:aa:aa:aa": {
 		MAC: "aa:aa:aa:aa:aa:aa", Rev: 47, Enabled: true,
 	}}
-	if got := ExportConfig(all).Devices[0].Rev; got != 0 {
+	if got := ExportConfig(all, nil).Devices[0].Rev; got != 0 {
 		t.Fatalf("exported rev %d, want 0", got)
 	}
 }
@@ -70,7 +70,7 @@ func TestExportDropsTheRevisionCounter(t *testing.T) {
 func TestImportPreservesLadderProvenance(t *testing.T) {
 	p := devPolicy("aa:aa:aa:aa:aa:aa", 0)
 	p.Ladders = []Ladder{measuredLadder()}
-	doc := ExportConfig(map[string]Policy{p.MAC: p})
+	doc := ExportConfig(map[string]Policy{p.MAC: p}, nil)
 
 	next, _, _ := doc.Apply(map[string]Policy{}, ImportMerge)
 	got := next["aa:aa:aa:aa:aa:aa"].Ladders[0]
@@ -183,7 +183,7 @@ func TestExportRoundTripsThroughImport(t *testing.T) {
 		kf(0, 12, EaseHold), kf(30, 1.5, EaseHold)}, Loop: true}
 	orig := map[string]Policy{p.MAC: p}
 
-	doc := ExportConfig(orig)
+	doc := ExportConfig(orig, nil)
 	if err := doc.Validate(); err != nil {
 		t.Fatalf("the box rejected its own export: %v", err)
 	}
