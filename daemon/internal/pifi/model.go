@@ -138,7 +138,12 @@ type Policy struct {
 	// one per service. Persisted with the policy because it is a durable input
 	// the operator owns and edits -- unlike telemetry, it is written once per
 	// sweep rather than once per tick, so it costs the SD card nothing.
-	Ladders  []Ladder `json:"ladders,omitempty"`
+	Ladders []Ladder `json:"ladders,omitempty"`
+	// Pattern is the timeline the operator has authored for this device, if
+	// any. Stored with the policy because it is intent, not telemetry: it is
+	// written when someone edits a keyframe, never once per tick. Storing it
+	// does not run it -- see Player.
+	Pattern  *Pattern `json:"pattern,omitempty"`
 	classMin int      // kernel class minor for the device default class
 }
 
@@ -247,6 +252,12 @@ type Client struct {
 	// Sweep is the ladder sweep running on this device, or the outcome of the
 	// last one. Absent when the device has never been swept this daemon run.
 	Sweep *SweepView `json:"sweep,omitempty"`
+
+	// PatternRun is the pattern playing on this device, if one is. Named apart
+	// from Policy.Pattern deliberately: that is the timeline as authored, this
+	// is a playhead moving along it, and a UI that confused the two would edit
+	// the wrong object.
+	PatternRun *PatternView `json:"pattern_run,omitempty"`
 }
 
 // SweepView is a ladder sweep's progress, carried in every snapshot so the UI

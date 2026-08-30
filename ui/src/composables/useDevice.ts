@@ -1,5 +1,5 @@
 import { ref } from 'vue';
-import type { Policy, Shape, Match } from '@/types';
+import type { Policy, Shape, Match, Pattern } from '@/types';
 
 /**
  * Writes to a device's policy.
@@ -132,6 +132,40 @@ export function useDevice() {
     );
   }
 
+  /**
+   * Store a device's timeline.
+   *
+   * Debounced on the same reasoning as patchShape: editing a keyframe IS a
+   * slider drag, so an undebounced write would fire per pixel, and every
+   * request after the first would be refused as stale and roll the keyframe
+   * back to where the drag started.
+   *
+   * The whole pattern goes every time. A keyframe list is only meaningful as an
+   * ordered whole, and a per-keyframe patch would let two edits interleave into
+   * a timeline neither operator authored.
+   */
+  function putPattern(mac: string, rev: number, pattern: Pattern) {
+    debounced(`${mac}:pattern`, () => {
+      void send(`/api/devices/${mac}/pattern`, 'PUT', {
+        base_revision: rev,
+        pattern,
+      });
+    });
+  }
+
+  function deletePattern(mac: string) {
+    return send(`/api/devices/${mac}/pattern`, 'DELETE', undefined);
+  }
+
+  /** Start the stored pattern, or resume a run paused by a manual edit. */
+  function playPattern(mac: string) {
+    return send(`/api/devices/${mac}/pattern/play`, 'POST', undefined);
+  }
+
+  function stopPattern(mac: string) {
+    return send(`/api/devices/${mac}/pattern/play`, 'DELETE', undefined);
+  }
+
   function reset(mac: string) {
     return send(`/api/devices/${mac}/reset`, 'POST', undefined);
   }
@@ -152,6 +186,10 @@ export function useDevice() {
     startSweep,
     stopSweep,
     removeLadder,
+    putPattern,
+    deletePattern,
+    playPattern,
+    stopPattern,
     reset,
     forget,
   };

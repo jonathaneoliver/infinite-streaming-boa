@@ -75,6 +75,10 @@ type Engine struct {
 	// from the tick is safe in either order.
 	sweep *Sweeper
 
+	// player drives devices along authored patterns. Same contract as sweep --
+	// own lock, no reach back into the engine, stepped from the tick.
+	player *Player
+
 	subs map[chan Snapshot]struct{}
 }
 
@@ -105,6 +109,7 @@ func NewEngine(cfg Config) *Engine {
 		demoBytes: map[string]uint64{},
 		hist:      NewHistory(),
 		sweep:     &Sweeper{},
+		player:    &Player{},
 		subs:      map[chan Snapshot]struct{}{},
 	}
 }
@@ -112,6 +117,7 @@ func NewEngine(cfg Config) *Engine {
 func (e *Engine) Store() *Store     { return e.st }
 func (e *Engine) Shaper() *Shaper   { return e.sh }
 func (e *Engine) Sweeper() *Sweeper { return e.sweep }
+func (e *Engine) Player() *Player   { return e.player }
 
 // Start brings up the kernel scaffolding and the passive listeners, then ticks
 // forever. Shaping failure is reported through capabilities rather than being
@@ -229,6 +235,14 @@ func (e *Engine) desired(clients []Client) []Desired {
 		// device exactly as the operator left it.
 		if s, ok := e.sweep.Override(c.MAC); ok {
 			down = s
+		}
+		// A running pattern drives both directions along its timeline, on the
+		// same terms: applied here, never written to the Store, gone the
+		// moment the run is. A sweep and a pattern both want the cap, so the
+		// API refuses to start one while the other is running rather than
+		// leaving the winner to whichever line of this function came last.
+		if d, u, ok := e.player.Override(c.MAC); ok {
+			down, up = d, u
 		}
 		want = append(want, Desired{
 			Key: c.MAC, IP: c.IP, IPv6: c.IPv6, Port: c.Port, Down: down, Up: up,
@@ -477,6 +491,7 @@ func (e *Engine) tick() {
 	}
 	e.sweep.Advance(now, sweepObserver{hist: e.hist, live: live})
 	e.storeSweepResult()
+	e.player.Advance(now)
 
 	if ready, _ := e.sh.Ready(); ready {
 		for _, err := range e.sh.Apply(e.desired(clients)) {
@@ -508,6 +523,7 @@ func (e *Engine) tick() {
 	for i := range clients {
 		c := &clients[i]
 		c.Sweep = e.sweep.View(c.MAC)
+		c.PatternRun = e.player.View(c.MAC)
 		if m, ok := e.sh.MinorFor(c.MAC); ok {
 			c.DownCounters = readPort(e.sh.DownPortFor(c.MAC))[m]
 			c.DownCounters.ThroughputMbps = e.rate(

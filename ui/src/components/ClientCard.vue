@@ -1,10 +1,11 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue';
-import type { Client, Shape, Series, ChartPrefs } from '@/types';
-import { PRESETS, SUSTAINED_SEC, ntopngUrl } from '@/types';
+import { computed, ref, watch } from 'vue';
+import type { Client, Shape, Series, ChartPrefs, Pattern } from '@/types';
+import { PRESETS, SUSTAINED_SEC, ntopngUrl, patternFromPolicy } from '@/types';
 import ShapeSliders from './ShapeSliders.vue';
 import SubClasses from './SubClasses.vue';
 import LadderPanel from './LadderPanel.vue';
+import PatternPanel from './PatternPanel.vue';
 import TrafficChart from './TrafficChart.vue';
 
 const props = defineProps<{
@@ -32,6 +33,10 @@ const emit = defineEmits<{
   sweep: [service: string];
   stopSweep: [];
   removeLadder: [service: string];
+  patternUpdate: [pattern: Pattern];
+  patternRemove: [];
+  patternPlay: [];
+  patternStop: [];
 }>();
 
 // The chart props every plot on this card shares. Spread rather than repeated
@@ -73,26 +78,135 @@ const signalClass = computed(() => {
  * dishonest. The charts follow what is enforced.
  */
 const sweeping = computed(() => props.client.sweep?.state === 'running');
-const downCap = computed(() =>
-  sweeping.value ? (props.client.sweep?.cap_mbps ?? 0) : props.client.policy.down.rate_mbps,
+const patRun = computed(() => props.client.pattern_run);
+const playing = computed(() => patRun.value?.state === 'running');
+const downCap = computed(() => {
+  if (sweeping.value) return props.client.sweep?.cap_mbps ?? 0;
+  // A playing pattern drives the cap along its timeline without writing it, on
+  // the same terms as a sweep, so the chart's cap line has to follow the run
+  // rather than the policy. This is what makes a step-down visible AGAINST the
+  // moment the cap moved -- the one thing the timeline exists to show.
+  if (playing.value) return patRun.value?.down.rate_mbps ?? 0;
+  return props.client.policy.down.rate_mbps;
+});
+
+/*
+ * The pattern being edited, which is not always what the server has yet.
+ *
+ * Keyframe edits arrive as slider drags and are debounced like any other, so
+ * between the first movement and the write landing the card must draw its own
+ * pending version -- otherwise every drag snaps back for 200 ms, and an edit
+ * made inside that window would be computed from a timeline missing the edit
+ * before it. The draft is dropped once the server's copy matches it.
+ */
+const patDraft = ref<Pattern | null>(null);
+const pattern = computed<Pattern | null>(
+  () => patDraft.value ?? props.client.policy.pattern ?? null,
+);
+watch(
+  () => JSON.stringify(props.client.policy.pattern ?? null),
+  (stored) => {
+    if (patDraft.value && JSON.stringify(patDraft.value) === stored) {
+      patDraft.value = null;
+    }
+  },
 );
 
 /**
- * What the downlink controls display.
+ * Which keyframe the sliders are editing, or null for the stored policy.
  *
- * During a sweep this is the ENFORCED shape, not the stored one, so the rate
- * control tracks the cap down the ladder as each level is applied. The sweep's
- * override is clean apart from the cap -- it suspends delay, jitter and loss for
- * the duration -- so those read zero, because that is what the kernel has.
- *
- * The controls are read-only while this is happening: they are reporting, not
- * accepting input, and the stored policy underneath is untouched.
+ * Never a keyframe while a run is playing: the controls are then reporting what
+ * is enforced, and accepting an edit into a keyframe while displaying the
+ * enforced value would write one thing where the operator could see another.
  */
-const downShape = computed<Shape>(() =>
-  sweeping.value
-    ? { rate_mbps: downCap.value, delay_ms: 0, jitter_ms: 0, loss_pct: 0 }
-    : props.client.policy.down,
+const patSelected = ref<number | null>(null);
+const editKey = computed(() =>
+  !playing.value && patSelected.value != null
+    ? (pattern.value?.keys[patSelected.value] ?? null)
+    : null,
 );
+
+function applyPattern(next: Pattern) {
+  patDraft.value = next;
+  emit('patternUpdate', next);
+}
+
+function createPattern() {
+  applyPattern(patternFromPolicy(props.client.policy.down, props.client.policy.up));
+}
+
+function removePattern() {
+  patDraft.value = null;
+  patSelected.value = null;
+  emit('patternRemove');
+}
+
+/** Route a slider to the selected keyframe, or to the stored policy. */
+function onShape(dir: 'down' | 'up', s: Shape) {
+  if (editKey.value && pattern.value && patSelected.value != null) {
+    const next = JSON.parse(JSON.stringify(pattern.value)) as Pattern;
+    next.keys[patSelected.value][dir] = s;
+    applyPattern(next);
+    return;
+  }
+  emit('shape', dir, s);
+}
+
+// Presets follow the sliders: with a keyframe selected, "3G" means "this
+// moment is 3G", which is the shortest route from a named link to a timeline.
+function onPreset(down: Shape, up: Shape) {
+  if (editKey.value && pattern.value && patSelected.value != null) {
+    const next = JSON.parse(JSON.stringify(pattern.value)) as Pattern;
+    next.keys[patSelected.value].down = down;
+    next.keys[patSelected.value].up = up;
+    applyPattern(next);
+    return;
+  }
+  emit('preset', down, up);
+}
+
+// Both a sweep and a pattern drive the cap. The daemon refuses the second one
+// rather than letting them fight; the card says so before the click.
+const patBlocked = computed(() => {
+  if (!props.client.present || !props.client.shapeable) {
+    return 'The device has to be connected and addressed before a pattern can condition it.';
+  }
+  if (sweeping.value) {
+    return 'A ladder sweep is driving this device. Stop it before playing a pattern.';
+  }
+  return '';
+});
+
+/**
+ * What the controls display, which is one of three different things.
+ *
+ * ENFORCED, while a sweep or a pattern is driving this device. Neither writes
+ * to stored policy -- so that an abandoned or crashed run restores the
+ * operator's settings by being forgotten -- and drawing the policy in that
+ * state would have the interface claim a cap is not applied when it is. The
+ * controls are read-only here: reporting, not accepting input.
+ *
+ * A KEYFRAME, when one is selected on the timeline. The sliders are the
+ * keyframe editor; the playhead chooses which moment they describe.
+ *
+ * The STORED POLICY otherwise, which is the ordinary case.
+ *
+ * A sweep's override is clean apart from the cap -- it suspends delay, jitter
+ * and loss for the duration -- so those read zero, because that is what the
+ * kernel has.
+ */
+const downShape = computed<Shape>(() => {
+  if (sweeping.value) {
+    return { rate_mbps: downCap.value, delay_ms: 0, jitter_ms: 0, loss_pct: 0 };
+  }
+  if (playing.value) return patRun.value!.down;
+  return editKey.value ? editKey.value.down : props.client.policy.down;
+});
+
+const upShape = computed<Shape>(() => {
+  if (playing.value) return patRun.value!.up;
+  return editKey.value ? editKey.value.up : props.client.policy.up;
+});
 
 const conditioned = computed(() => {
   const p = props.client.policy;
@@ -306,7 +420,7 @@ function fmtBytes(n: number): string {
       <button
         v-for="p in PRESETS" :key="p.name"
         :title="p.note"
-        @click="emit('preset', { ...p.down }, { ...p.up })"
+        @click="onPreset({ ...p.down }, { ...p.up })"
       >
         {{ p.name }}
       </button>
@@ -335,10 +449,18 @@ function fmtBytes(n: number): string {
           These controls are showing what the sweep is enforcing, not your saved
           settings — those are untouched and return when it ends.
         </p>
+        <p v-else-if="playing" class="meta swept-note">
+          These controls are showing what the pattern is enforcing, not your
+          saved settings. Move one and playback pauses.
+        </p>
+        <p v-else-if="editKey" class="meta editing-note">
+          Editing keyframe {{ (patSelected ?? 0) + 1 }} at
+          {{ editKey.at_sec }}s, not this device's saved settings.
+        </p>
         <ShapeSliders
           :shape="downShape" dir="down"
-          :disabled="!client.shapeable || sweeping"
-          @update="(s) => emit('shape', 'down', s)"
+          :disabled="!client.shapeable || sweeping || playing"
+          @update="(s) => onShape('down', s)"
         />
       </div>
 
@@ -354,15 +476,34 @@ function fmtBytes(n: number): string {
           v-bind="chartProps"
           :t="series?.t ?? []" :data="series?.up ?? []"
           color="var(--up)" label="Uplink"
-          :cap="client.policy.up.rate_mbps" :height="196"
+          :cap="playing ? (patRun?.up.rate_mbps ?? 0) : client.policy.up.rate_mbps"
+          :height="196"
           @hovering="(v: boolean) => emit('hovering', v)"
         />
         <ShapeSliders
-          :shape="client.policy.up" dir="up" :disabled="!client.shapeable"
-          @update="(s) => emit('shape', 'up', s)"
+          :shape="upShape" dir="up"
+          :disabled="!client.shapeable || playing"
+          @update="(s) => onShape('up', s)"
         />
       </div>
     </div>
+
+    <!-- The timeline sits directly under the controls that author it. The
+         sliders above ARE the keyframe editor, and putting the playhead
+         anywhere else would separate the control from the thing it edits. -->
+    <PatternPanel
+      :pattern="pattern"
+      :run="client.pattern_run"
+      :selected="patSelected"
+      :can-play="patBlocked === ''"
+      :blocked="patBlocked"
+      @update="applyPattern"
+      @create="createPattern"
+      @remove="removePattern"
+      @play="emit('patternPlay')"
+      @stop="emit('patternStop')"
+      @select="(i: number | null) => (patSelected = i)"
+    />
 
     <!-- Ladders sit above the fold, not behind the counters toggle: a sweep is
          a deliberate action someone came to the page to start, and one that
@@ -450,6 +591,13 @@ function fmtBytes(n: number): string {
    move. Dimmed, not hidden. */
 .swept-note {
   color: var(--warn);
+  margin: 6px 0 0;
+}
+/* Editing a keyframe is not a warning -- nothing is being enforced differently
+   -- but it does change what the sliders write, so it is coloured rather than
+   left as ordinary dimmed text. */
+.editing-note {
+  color: var(--down);
   margin: 6px 0 0;
 }
 

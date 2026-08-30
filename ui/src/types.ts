@@ -47,6 +47,61 @@ export interface Ladder {
   note?: string;
 }
 
+/**
+ * How a segment arrives at its closing keyframe.
+ *
+ * Both are real links: a handover or a lift door is a step, walking out of
+ * range is a ramp. A timeline that could only express one of them would be
+ * describing half of what happens on a radio.
+ */
+export type Ease = 'hold' | 'ramp';
+
+/** The whole conditioning policy at one instant on a pattern's timeline. */
+export interface Keyframe {
+  /** Offset from the start, on half-second boundaries. */
+  at_sec: number;
+  down: Shape;
+  up: Shape;
+  /** How the run gets HERE from the keyframe before it. Meaningless on the first. */
+  ease?: Ease;
+}
+
+/**
+ * A timeline of keyframes.
+ *
+ * There is no wrap mode: a loop restarts at the first keyframe, so a pattern
+ * that loops smoothly is one whose last keyframe holds the same values as its
+ * first — visible on the timeline, unlike a flag whose effect only shows up
+ * during playback.
+ */
+export interface Pattern {
+  name: string;
+  keys: Keyframe[];
+  loop: boolean;
+}
+
+/**
+ * Live progress of a pattern run.
+ *
+ * Distinct from `Policy.pattern`, which is the timeline as authored: this is a
+ * playhead moving along it, and only one of the two is editable.
+ */
+export interface PatternView {
+  state: 'running' | 'paused' | 'done';
+  name: string;
+  pos_sec: number;
+  dur_sec: number;
+  loop: boolean;
+  laps: number;
+  /** The keyframe currently in force — the one last passed, not the next. */
+  index: number;
+  /** What is ENFORCED now, which during a ramp equals no keyframe. */
+  down: Shape;
+  up: Shape;
+  reason?: string;
+  started_at: number;
+}
+
 export interface Policy {
   mac: string;
   rev: number;
@@ -56,6 +111,7 @@ export interface Policy {
   up: Shape;
   sub: SubClass[] | null;
   ladders?: Ladder[] | null;
+  pattern?: Pattern | null;
 }
 
 export interface SweepLevel {
@@ -124,6 +180,7 @@ export interface Client {
   sub_counters?: Record<string, Counters>;
   rtt_added_ms: number;
   sweep?: SweepView;
+  pattern_run?: PatternView;
 }
 
 export interface Capabilities {
@@ -300,6 +357,138 @@ export type YMode = 'auto' | 'cap' | 'manual';
  * so a cap change takes ~15s to be fully reflected.
  */
 export const SUSTAINED_SEC = 30;
+
+/*
+ * The rate scale, shared by the slider and the pattern timeline.
+ *
+ * A linear 0-200 Mbps control puts every interesting mobile-network rate --
+ * 0.5 to 5 Mbps -- inside the first three pixels of travel, which makes the
+ * most-used part of the range unusable. Position 0 is reserved for
+ * "unlimited", which has no place on a log scale at all.
+ *
+ * The timeline plots its curve on the same scale for the same reason, and so
+ * that a ramp authored as a straight line on the slider draws as a straight
+ * line on the chart.
+ */
+export const RATE_MIN = 0.1;
+export const RATE_MAX = 200;
+
+export function posToRate(p: number): number {
+  if (p <= 0) return 0;
+  const r = RATE_MIN * Math.pow(RATE_MAX / RATE_MIN, (p - 1) / 99);
+  return r < 1 ? Math.round(r * 100) / 100 : Math.round(r * 10) / 10;
+}
+
+export function rateToPos(r: number): number {
+  if (r <= 0) return 0;
+  return Math.round(1 + (99 * Math.log(r / RATE_MIN)) / Math.log(RATE_MAX / RATE_MIN));
+}
+
+/**
+ * Starting timelines.
+ *
+ * Absolute Mbps, deliberately: pifi cannot read a manifest, so it does not know
+ * where this device's renditions sit. A step at "4 Mbps" says a player got
+ * 4 Mbps; a step at "just above rung 3" would say which rendition it should
+ * have sustained, which is the better question — and the one #28 exists to
+ * answer by generating these from a measured ladder instead.
+ *
+ * Every keyframe time lands on a whole second. Throughput is sampled once a
+ * second, so a transition finer than that could be configured but never
+ * observed.
+ */
+export interface PatternTemplate {
+  name: string;
+  note: string;
+  make: () => Pattern;
+}
+
+const clean = (): Shape => ({ ...CLEAN });
+const at = (
+  at_sec: number,
+  down: Partial<Shape>,
+  ease: Ease = 'hold',
+): Keyframe => ({
+  at_sec,
+  down: { ...CLEAN, ...down },
+  up: { ...CLEAN, ...down, rate_mbps: 0 },
+  ease,
+});
+
+export const PATTERN_TEMPLATES: PatternTemplate[] = [
+  {
+    name: 'valley',
+    note: 'good, degrading to poor and back — the ABR step-down and recovery',
+    make: () => ({
+      name: 'valley',
+      loop: true,
+      keys: [
+        at(0, { rate_mbps: 12 }),
+        at(20, { rate_mbps: 12 }),
+        at(50, { rate_mbps: 1.5 }),
+        at(80, { rate_mbps: 1.5 }),
+        at(110, { rate_mbps: 12 }),
+        at(130, { rate_mbps: 12 }),
+      ],
+    }),
+  },
+  {
+    name: 'tunnel',
+    note: 'clean, then the link all but disappears for 15s, then clean',
+    make: () => ({
+      name: 'tunnel',
+      loop: true,
+      keys: [
+        at(0, { rate_mbps: 25 }),
+        at(30, { rate_mbps: 25 }),
+        at(31, { rate_mbps: 0.2, delay_ms: 400, jitter_ms: 200, loss_pct: 15 }),
+        at(46, { rate_mbps: 0.2, delay_ms: 400, jitter_ms: 200, loss_pct: 15 }),
+        at(47, { rate_mbps: 25 }),
+        at(70, { rate_mbps: 25 }),
+      ],
+    }),
+  },
+  {
+    name: 'congested cell',
+    note: 'a sawtooth: capacity bleeds away, then the cell empties',
+    make: () => ({
+      name: 'congested cell',
+      loop: true,
+      keys: [
+        at(0, { rate_mbps: 20, delay_ms: 30, jitter_ms: 10 }),
+        at(45, { rate_mbps: 2, delay_ms: 120, jitter_ms: 60, loss_pct: 1 }),
+        at(46, { rate_mbps: 20, delay_ms: 30, jitter_ms: 10 }),
+      ],
+    }),
+  },
+  {
+    name: 'handover',
+    note: 'a clean step between two cells, with a latency spike across it',
+    make: () => ({
+      name: 'handover',
+      loop: true,
+      keys: [
+        at(0, { rate_mbps: 15, delay_ms: 30, jitter_ms: 5 }),
+        at(25, { rate_mbps: 15, delay_ms: 30, jitter_ms: 5 }),
+        at(26, { rate_mbps: 0.5, delay_ms: 600, jitter_ms: 300, loss_pct: 5 }),
+        at(29, { rate_mbps: 6, delay_ms: 80, jitter_ms: 20 }),
+        at(55, { rate_mbps: 6, delay_ms: 80, jitter_ms: 20 }),
+      ],
+    }),
+  },
+];
+
+/** A first pattern for a device with none: its current policy, held, twice. */
+export function patternFromPolicy(down: Shape, up: Shape): Pattern {
+  return {
+    name: 'pattern',
+    loop: true,
+    keys: [
+      { at_sec: 0, down: { ...down }, up: { ...up } },
+      { at_sec: 30, down: { ...down }, up: { ...up }, ease: 'hold' },
+    ],
+  };
+}
 
 export interface ChartPrefs {
   rangeSec: number;
