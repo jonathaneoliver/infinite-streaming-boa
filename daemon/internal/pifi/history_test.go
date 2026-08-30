@@ -53,9 +53,17 @@ func TestWindowDecimatesLongRangesToTheMean(t *testing.T) {
 	// decimating by max, which would draw a flat 10 and claim twice the data
 	// actually moved -- and that the series as a whole still averages 5.
 	var sum float64
-	for _, s := range got["aa"] {
-		if s.Down > 9 {
-			t.Fatalf("bucket = %v, looks like a peak rather than a mean", s.Down)
+	pts := got["aa"]
+	for i, s := range pts {
+		// Buckets are aligned to ABSOLUTE time, so the first and last are
+		// partial: whichever samples fall either side of the window edge can
+		// leave a boundary bucket holding a single sample. A lone 10 there is
+		// genuinely that bucket's mean, not a peak, so asserting on it made this
+		// test depend on what time of day it ran -- it passed alone and failed
+		// in the suite purely because the preceding tests took longer.
+		if i > 0 && i < len(pts)-1 && s.Down > 9 {
+			t.Fatalf("interior bucket = %v, looks like a peak rather than a mean",
+				s.Down)
 		}
 		sum += s.Down
 	}

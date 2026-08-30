@@ -42,12 +42,27 @@ type fakePlayer struct {
 	// buffer: fetching continuously at link rate, with no idle gaps, pulling
 	// faster than the rendition it is playing.
 	fillUntil float64
+	// upshiftSec is the minimum time between upshifts. A real player does not
+	// climb the instant headroom appears -- it wants to be confident first --
+	// so a cap held steady eventually produces a climb that the same cap did
+	// not produce a moment earlier.
+	//
+	// Without this the model only ever reacts to cap CHANGES, which makes
+	// holding a cap pointless by construction and leaves the hold logic
+	// untested. Measured on hardware: the client declined to climb at levels 2,
+	// 5, 8 and 13 and then took the same headroom a level later.
+	upshiftSec float64
+	lastClimb  float64
 }
 
 const playerHeadroom = 0.95
 
-// applyCap moves the player in response to a new cap, asymmetrically.
-func (p *fakePlayer) applyCap(capMbps float64) {
+// applyCap moves the player, asymmetrically and in its own time.
+//
+// Called on every observation, not only when the cap changes, because a real
+// player's decision depends on how long it has had the headroom as well as on
+// how much.
+func (p *fakePlayer) applyCap(capMbps, now float64) {
 	if len(p.ladder) == 0 {
 		return
 	}
@@ -62,12 +77,19 @@ func (p *fakePlayer) applyCap(capMbps float64) {
 	}
 	switch {
 	case fit < p.cur:
-		p.cur = fit - p.downSkip // drop hard
+		// Losing bandwidth is urgent: drop at once, and hard.
+		p.cur = fit - p.downSkip
 		if p.cur < 0 {
 			p.cur = 0
 		}
+		p.lastClimb = now
 	case fit > p.cur:
-		p.cur++ // climb politely, one rung
+		// Gaining it is not: wait until confident, then take one rung.
+		if now-p.lastClimb < p.upshiftSec {
+			return
+		}
+		p.cur++
+		p.lastClimb = now
 	}
 }
 
@@ -144,8 +166,8 @@ func (o *fakeObs) Window(mac string, from, to time.Time) []Sample {
 	if !o.started || capMbps != o.curCap {
 		o.prevRate = o.player.rateAt(o.curCap)
 		o.curCap, o.capSince, o.started = capMbps, float64(from.Unix()), true
-		o.player.applyCap(capMbps)
 	}
+	o.player.applyCap(capMbps, float64(to.Unix()))
 	var out []Sample
 	for t := from; !t.After(to); t = t.Add(time.Second) {
 		ts := float64(t.Unix())
@@ -232,6 +254,9 @@ func TestSweepRecoversEveryRungOfAKnownLadder(t *testing.T) {
 	sw := &Sweeper{}
 	player := newPlayer(want)
 	player.downSkip = 1
+	// Needs a while before it will take headroom, which is what the cap-hold
+	// logic exists to wait out.
+	player.upshiftSec = 40
 	obs := &fakeObs{sw: sw, player: player}
 	if err := sw.Start("aa:bb", "avplayer", testParams(), time.Unix(1700000000, 0)); err != nil {
 		t.Fatal(err)
@@ -272,24 +297,82 @@ func TestSweepRecoversEveryRungOfAKnownLadder(t *testing.T) {
 	}
 }
 
+func TestAPlateauSittingAtTheCapIsNotARung(t *testing.T) {
+	// Observed on hardware. Capped at 0.30 Mbps -- only 12% above the bottom
+	// rendition's wire cost, too tight for playback to start from cold -- the
+	// client fetched, failed to start, and retried. Those retries left gaps in
+	// its traffic, so the duty-cycle test saw a settled client and the sweep
+	// recorded "rung at 0.30 Mbps": the cap, not a rendition.
+	//
+	// A player only selects a variant it can serve with headroom, so a rung it
+	// actually chose arrives at about 0.95 of the cap or below. Taking the whole
+	// cap means nothing fits.
+	r := &sweepRun{
+		params: testParams(), phase: phaseClimb,
+		level: 1, capMbps: 0.30, state: "running",
+	}
+	var pinned []Sample
+	for i := 0; i < 40; i++ {
+		pinned = append(pinned, Sample{Down: 0.30}) // exactly the cap
+	}
+	r.evaluate(pinned, time.Unix(1700000000, 0))
+
+	if len(r.rungs) != 0 {
+		t.Errorf("recorded %v as a rung; that is the shaper, not a rendition", r.rungs)
+	}
+	if len(r.levels) != 1 || !r.levels[0].Saturated {
+		t.Errorf("level not marked starved: %+v", r.levels)
+	}
+	if len(r.throttle) != 1 {
+		t.Fatalf("got %d throttle points, want 1 -- a client pinned to the cap "+
+			"is a free measurement of the shaper", len(r.throttle))
+	}
+
+	// A rung the player genuinely chose sits below the cap and must survive.
+	r2 := &sweepRun{
+		params: testParams(), phase: phaseClimb,
+		level: 1, capMbps: 0.30, state: "running",
+	}
+	var chosen []Sample
+	for i := 0; i < 40; i++ {
+		chosen = append(chosen, Sample{Down: 0.264}) // 234p, 88% of the cap
+	}
+	r2.evaluate(chosen, time.Unix(1700000000, 0))
+	if len(r2.rungs) != 1 {
+		t.Errorf("a rung at 88%% of the cap was discarded: %v", r2.rungs)
+	}
+}
+
 func TestSweepCapAdmitsOnlyOneRungAtATime(t *testing.T) {
 	// The no-skip guarantee is structural, not a bet on the player being
 	// polite: the cap sits just above the rung the client occupies, so the next
 	// rendition fits under it and the one after does not.
 	r := &sweepRun{params: testParams(), phase: phaseClimb, current: 4, capMbps: 4.2}
 	next := r.nextCap()
-	// Real ladders are spaced at least ~1.3x, so the rung above 4 is at 5.2 or
-	// higher, and the one above that at 6.8 or higher.
+	// Real ladders are spaced at least ~1.3x, so the rung above 4 sits at 5.2 or
+	// higher and the one above that at 6.8 or higher. The player keeps ~5%
+	// headroom of its own, which is what makes this window narrow.
 	if next*playerHeadroom < 4*1.3 {
-		t.Errorf("cap %.2f cannot admit the next rung at 5.2", next)
+		t.Errorf("cap %.2f cannot admit the next rung at 5.2 through the "+
+			"player's own headroom", next)
 	}
 	if next*playerHeadroom >= 4*1.3*1.3 {
 		t.Errorf("cap %.2f could admit two rungs at once, so a skip is possible", next)
 	}
-	// Nothing climbed: the cap must still rise, or the search stalls.
-	r.capMbps, r.current = next, 4
-	if again := r.nextCap(); again <= next {
-		t.Errorf("cap did not rise when no rung appeared: %.2f then %.2f", next, again)
+
+	// The client has not climbed and the cap is already above it. Raising
+	// further does not help -- the constraint is the client's confidence, not
+	// the cap -- so it HOLDS, for a bounded number of levels.
+	r.capMbps = next
+	for i := 0; i < capHolds; i++ {
+		if got := r.nextCap(); got != r.capMbps {
+			t.Errorf("hold %d: cap moved to %.2f, should have held at %.2f",
+				i, got, r.capMbps)
+		}
+	}
+	// ...then stops waiting, so a cap that genuinely is too low still rises.
+	if got := r.nextCap(); got <= r.capMbps {
+		t.Errorf("cap never rose after %d holds: %.2f", capHolds, got)
 	}
 }
 
@@ -520,9 +603,23 @@ func TestSweepMergeThresholdGrowsWithRate(t *testing.T) {
 	if r2.addRung(5.87, 0.1) {
 		t.Error("5.57 and 5.87 recorded as separate rungs; that is one rendition")
 	}
-	// The floor still governs at the bottom, where the percentage is smaller.
-	if got, want := r.mergeWithin(1.0), 0.25; math.Abs(got-want) > 1e-9 {
-		t.Errorf("mergeWithin(1.0) = %.3f, want the %.2f floor", got, want)
+	// The tolerance is RELATIVE. It used to take max(MinStepMbps, pct), which
+	// conflated cap-step size with rung resolution and swamped the percentage at
+	// low rates.
+	if got, want := r.mergeWithin(1.0), 0.10; math.Abs(got-want) > 1e-9 {
+		t.Errorf("mergeWithin(1.0) = %.3f, want %.2f (10%%)", got, want)
+	}
+
+	// Regression for the rung this cost. Measured on hardware: a real 234p rung
+	// at 0.28 and a real 360p rung at 0.51 -- two variants 1.9x apart -- sat
+	// 0.23 apart in absolute terms, under the old 0.25 floor, and were merged
+	// into one. The bottom of the ladder vanished from the saved result.
+	low := &sweepRun{params: testParams()}
+	if !low.addRung(0.28, 0.05) {
+		t.Fatal("first rung rejected")
+	}
+	if !low.addRung(0.51, 0.05) {
+		t.Error("0.28 and 0.51 merged; those are 234p and 360p, 1.9x apart")
 	}
 	// The margin that makes the tolerance safe: real ladders are never spaced
 	// tighter than about 25%, so a genuine neighbouring rung must survive.
