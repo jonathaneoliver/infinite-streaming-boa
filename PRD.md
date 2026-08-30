@@ -181,9 +181,21 @@ device card. Optional: the image builds without it.
   so a line resting on the top of the pane is never mistaken for a plateau.
 - Both settings persist, and the plot's right-hand edge stops advancing while a
   chart is being read, so the point under the pointer stays the point measured.
+- Each direction is drawn as two series: the **live** trace, and a **sustained**
+  line — the bytes delivered over the trailing 30 seconds divided by that time.
+  An adaptive player fetches a segment then idles, so the live trace is a square
+  wave between roughly the cap and zero and neither extreme answers "what is
+  this device getting". A legend names both and switches either off; the choice
+  persists. Both are the same colour, because colour means direction here —
+  they are told apart by weight.
+- The sustained line is withheld rather than guessed: nothing is drawn across a
+  gap in the record, nothing until the window is at least half full, and nothing
+  once the server's own averaging approaches the window, where it would be a
+  mean of means.
 - Device cards fold when there is more than one device, keeping a sparkline and
   current figure per direction on the fold title. Folding is presentation only;
-  a folded card stays live.
+  a folded card stays live. The fold sparkline shows the live trace only —
+  its job is shape in a couple of centimetres.
 - Downlink is blue and uplink orange, consistently, everywhere. Direction is the
   most confusable property in a bidirectional conditioner.
 - The interface states its own limits: that Wi-Fi airtime is shared and

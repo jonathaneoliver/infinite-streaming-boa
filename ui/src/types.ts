@@ -286,9 +286,28 @@ export const RANGES = [
  */
 export type YMode = 'auto' | 'cap' | 'manual';
 
+/**
+ * Window for the sustained line, in seconds.
+ *
+ * An adaptive player does not consume bandwidth per second: it pulls a segment
+ * at whatever rate it can get, then idles while the buffer drains. The live
+ * trace is therefore a square wave between roughly the cap and zero, and
+ * neither extreme answers "what is this device actually getting".
+ *
+ * 30s spans five fetch cycles at the 6s segment duration that is the common
+ * case, and fifteen at a 2s cadence -- enough for the line to sit still rather
+ * than breathe with each fetch. The cost is a trailing lag of half the window,
+ * so a cap change takes ~15s to be fully reflected.
+ */
+export const SUSTAINED_SEC = 30;
+
 export interface ChartPrefs {
   rangeSec: number;
   yMode: YMode;
   /** Ceiling in Mbps for `manual`; ignored in the other modes. */
   yManual: number;
+  /** Draw the per-sample trace. */
+  showLive: boolean;
+  /** Draw the rolling mean over SUSTAINED_SEC. */
+  showSustained: boolean;
 }

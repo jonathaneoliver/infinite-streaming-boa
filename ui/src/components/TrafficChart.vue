@@ -60,10 +60,17 @@ const props = withDefaults(
      * in a bidirectional conditioner.
      */
     compact?: boolean;
+    /** Draw the per-sample trace. */
+    showLive?: boolean;
+    /** Draw the rolling mean over sustainedSec. */
+    showSustained?: boolean;
+    /** Window for the rolling mean, in seconds. */
+    sustainedSec?: number;
   }>(),
   {
     cap: 0, windowMs: 300_000, now: 0, yMode: 'auto', yManual: 10,
     height: 132, titled: false, compact: false,
+    showLive: true, showSustained: false, sustainedSec: 30,
   },
 );
 
@@ -105,8 +112,8 @@ const start = computed(() => edge.value - props.windowMs);
  * That extra point is what lets the line enter from the left edge instead of
  * starting in mid-air a few pixels in; it is clipped by the plot bounds.
  */
-const view = computed(() => {
-  const out: { t: number; v: number }[] = [];
+function viewOf(values: (number | null)[]) {
+  const out: { t: number; v: number | null }[] = [];
   let firstIn = -1;
   for (let i = 0; i < props.t.length; i++) {
     if (props.t[i] >= start.value) {
@@ -117,10 +124,14 @@ const view = computed(() => {
   if (firstIn < 0) return out;
   const from = Math.max(0, firstIn - 1);
   for (let i = from; i < props.t.length; i++) {
-    out.push({ t: props.t[i], v: props.data[i] ?? 0 });
+    out.push({ t: props.t[i], v: values[i] ?? null });
   }
   return out;
-});
+}
+
+const view = computed(() =>
+  viewOf(props.data).map((p) => ({ t: p.t, v: p.v ?? 0 })),
+);
 
 /**
  * Round a maximum up to a clean number so the ticks read as round values.
@@ -189,30 +200,120 @@ const stepMs = computed(() => {
   return Math.max(500, diffs[Math.floor(diffs.length / 2)]);
 });
 
-const segments = computed(() => {
+const segments = computed(() => segmentsOf(view.value));
+
+/**
+ * Split a series wherever the record stops: a real gap in time, or a point the
+ * series itself has no value for.
+ */
+function segmentsOf(points: { t: number; v: number | null }[]) {
   const out: { t: number; v: number }[][] = [];
   let cur: { t: number; v: number }[] = [];
   const gap = stepMs.value * 2.5;
-  for (const p of view.value) {
-    if (cur.length && p.t - cur[cur.length - 1].t > gap) {
+  for (const p of points) {
+    const broken = p.v === null || (cur.length && p.t - cur[cur.length - 1].t > gap);
+    if (broken && cur.length) {
       out.push(cur);
       cur = [];
     }
-    cur.push(p);
+    if (p.v !== null) cur.push({ t: p.t, v: p.v });
   }
   if (cur.length) out.push(cur);
   return out.filter((s) => s.length > 1);
-});
+}
 
-const paths = computed(() =>
-  segments.value.map((seg) => {
+function pathsOf(segs: { t: number; v: number }[][]) {
+  return segs.map((seg) => {
     const line = seg.map((p) => `${xAt(p.t).toFixed(1)},${yAt(p.v).toFixed(1)}`).join(' ');
     const base = PAD.value.t + plotH.value;
     return {
       line,
       area: `${xAt(seg[0].t).toFixed(1)},${base} ${line} ${xAt(seg[seg.length - 1].t).toFixed(1)},${base}`,
     };
-  }),
+  });
+}
+
+const paths = computed(() => pathsOf(segments.value));
+
+/**
+ * The sustained series: what the link delivered over the trailing window,
+ * rather than during the last sample.
+ *
+ * # Bytes over time, not a mean of rates
+ *
+ * Each sample is a rate the daemon derived over its own interval, so the bytes
+ * that sample represents are `rate x interval`. Summing those and dividing by
+ * the summed intervals is therefore the byte delta over the time delta -- the
+ * question actually being asked -- and it stays correct when the intervals are
+ * not all the same width.
+ *
+ * They frequently are not. The server decimates long ranges into wider buckets,
+ * so a window near a range boundary can straddle two widths, and any pause
+ * leaves an interval far longer than the rest. An unweighted mean of the rates
+ * would silently over-weight the short intervals. With uniform 1 Hz samples the
+ * two agree exactly, which is why the difference is easy to miss.
+ *
+ * Deriving from the rate series rather than from raw counters also inherits the
+ * daemon's counter-epoch handling: a class recreated by a policy write resets
+ * its bytes, and `rate` already reports 0 rather than a negative spike.
+ *
+ * # What it refuses to draw
+ *
+ * Nothing across an outage: an interval longer than the gap threshold restarts
+ * the accumulator, because averaging over time the box has no observations for
+ * would invent throughput. And nothing until the window is at least half full,
+ * so the line begins where it means something instead of opening on a mean of
+ * two samples that reads wildly high or low.
+ */
+const sustained = computed<(number | null)[]>(() => {
+  const t = props.t;
+  const d = props.data;
+  const win = props.sustainedSec * 1000;
+  const gap = stepMs.value * 2.5;
+  const out: (number | null)[] = new Array(t.length).fill(null);
+
+  let lo = 1; // first interval still inside the window
+  let bytes = 0; // rate x interval, summed
+  let dur = 0; // interval widths, summed
+
+  for (let i = 1; i < t.length; i++) {
+    const dt = t[i] - t[i - 1];
+    if (dt > gap) {
+      lo = i + 1;
+      bytes = 0;
+      dur = 0;
+      continue;
+    }
+    bytes += (d[i] ?? 0) * dt;
+    dur += dt;
+    while (lo < i && dur > win) {
+      const dlo = t[lo] - t[lo - 1];
+      bytes -= (d[lo] ?? 0) * dlo;
+      dur -= dlo;
+      lo++;
+    }
+    if (dur >= win / 2) out[i] = bytes / dur;
+  }
+  return out;
+});
+
+/**
+ * Whether a rolling mean still says anything.
+ *
+ * Once the server's buckets approach the window, each plotted point is already
+ * a mean over a comparable span and this line converges on the live one --
+ * drawing a mean of means while implying it is showing something new.
+ */
+const sustainedWorthDrawing = computed(
+  () => props.sustainedSec * 1000 >= stepMs.value * 2,
+);
+
+const showSustainedLine = computed(
+  () => props.showSustained && !props.compact && sustainedWorthDrawing.value,
+);
+
+const sustainedPaths = computed(() =>
+  showSustainedLine.value ? pathsOf(segmentsOf(viewOf(sustained.value))) : [],
 );
 
 const capY = computed(() => (props.cap > 0 ? yAt(props.cap) : null));
@@ -262,10 +363,14 @@ const hover = computed(() => {
   const i = hoverIdx.value;
   const v = view.value;
   if (i === null || i >= v.length) return null;
+  // The sustained value for the same instant, so the tooltip answers both
+  // "what was it doing" and "what was it sustaining" without a second gesture.
+  const s = showSustainedLine.value ? (viewOf(sustained.value)[i]?.v ?? null) : null;
   return {
     x: xAt(v[i].t),
     y: yAt(v[i].v),
     value: v[i].v,
+    sustained: s,
     ago: ago(edge.value - v[i].t),
   };
 });
@@ -330,6 +435,15 @@ const gid = `g${Math.random().toString(36).slice(2, 8)}`;
         >{{ fmt(tk.v) }}</text>
       </g>
 
+      <!-- Both series are the SAME hue: they are the same quantity over
+           different spans, and direction is what colour means everywhere else
+           on this page. They are told apart by weight instead -- the live trace
+           thins and fades when the mean is drawn over it, so the eye reads the
+           steady line as the trend and the spiky one as the detail. Not dashed:
+           a dashed rule already means "threshold" here, which is the cap.
+
+           When the mean is off the live trace returns to full weight, so
+           turning the feature off leaves the chart exactly as it was. -->
       <g :clip-path="`url(#${gid}c)`">
         <polygon
           v-for="(p, i) in paths" :key="'a' + i"
@@ -337,8 +451,18 @@ const gid = `g${Math.random().toString(36).slice(2, 8)}`;
         />
         <polyline
           v-for="(p, i) in paths" :key="'l' + i"
+          v-show="showLive"
           :points="p.line" fill="none"
-          :stroke="color" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"
+          :stroke="color"
+          :stroke-width="showSustainedLine ? 1.25 : 2"
+          :opacity="showSustainedLine ? 0.45 : 1"
+          stroke-linejoin="round" stroke-linecap="round"
+        />
+        <polyline
+          v-for="(p, i) in sustainedPaths" :key="'s' + i"
+          :points="p.line" fill="none"
+          :stroke="color" stroke-width="2.25"
+          stroke-linejoin="round" stroke-linecap="round"
         />
       </g>
 
@@ -383,6 +507,9 @@ const gid = `g${Math.random().toString(36).slice(2, 8)}`;
       :style="{ left: Math.min(Math.max(hover.x - 46, 0), w - 96) + 'px' }"
     >
       <span class="tip-val">{{ fmt(hover.value) }} Mbps</span>
+      <span v-if="hover.sustained !== null" class="tip-sus">
+        {{ fmt(hover.sustained) }} sustained
+      </span>
       <span class="tip-key"><i :style="{ background: color }"></i>{{ label }}</span>
       <span class="tip-ago">{{ hover.ago }}</span>
     </div>
@@ -429,5 +556,8 @@ const gid = `g${Math.random().toString(36).slice(2, 8)}`;
 /* A short stroke of the series colour keys the row -- at tooltip density a
    filled box is data-weight ink doing a label's job. */
 .tip-key i { width: 10px; height: 2px; border-radius: 1px; display: inline-block; }
+/* Subordinate to the instantaneous value above it, in the same order the two
+   lines sit in the plot's visual hierarchy. */
+.tip-sus { font-size: 11px; color: var(--ink-dim); }
 .tip-ago { font-size: 10px; color: var(--ink-faint); }
 </style>

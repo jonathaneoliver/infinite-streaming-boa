@@ -157,7 +157,26 @@ present       = appears in B, C2 or F     (NOT "has a lease")
 label         = user-set nickname, else G.name, else MAC
 policy        = keyed by MAC, persisted   (survives IP change and disconnect)
 counters      = D + E, keyed by classid   (epoch-bounded per policy write)
+throughput    = counter delta / measured elapsed, per poll  (a RATE, not a total)
+sustained     = SUM(rate_j x interval_j) / SUM(interval_j)  over the trailing 30s
 ```
+
+**`sustained` is a byte delta over a time delta, not a mean of rates.** Each
+sample is a rate the daemon derived over its own interval, so `rate x interval`
+is the bytes that sample stands for; summing those and dividing by the summed
+intervals answers "how much arrived, over how long".
+
+The two are identical when every interval is the same width, which is why the
+distinction is easy to miss — and they diverge exactly where it matters. Long
+ranges are decimated into wider buckets on the way out, so a window near a range
+boundary straddles two widths, and any pause leaves one interval far longer than
+the rest. An unweighted mean of the rates would quietly over-weight the short
+intervals.
+
+It is derived from the rate series rather than from raw counters deliberately:
+`rate` already reports 0 across a counter epoch, so a class recreated by a
+policy write cannot produce a negative spike. Averaging raw byte totals would
+have to solve that again.
 
 Join order is **B LEFT JOIN (A, C)**: presence comes from the radio, addresses
 are decoration. A client that is associated but has not completed DHCP is a real
