@@ -137,10 +137,15 @@ type SweepParams struct {
 	SkipRatio float64 `json:"skip_ratio"`
 
 	// MinStepMbps floors the per-level cap change so the climb always
-	// progresses, and floors rung resolution.
+	// progresses.
+	//
+	// It applies to the ESCAPE raise only, not to the creep -- see nextCap. It
+	// no longer floors rung resolution either; that is MergePct over
+	// mergeFloorMbps, after this floor was found merging two renditions 1.9x
+	// apart.
 	MinStepMbps float64 `json:"min_step_mbps"`
 	// MergePct is the rung-merge tolerance as a percentage of the rate, applied
-	// above the MinStepMbps floor.
+	// above the mergeFloorMbps floor.
 	MergePct float64 `json:"merge_pct"`
 	// MaxLevels bounds the run regardless of arithmetic.
 	MaxLevels int `json:"max_levels"`
@@ -953,9 +958,22 @@ func (r *sweepRun) nextCap() float64 {
 	// that is the right trade -- an undersized step costs a dwell, an oversized
 	// one costs a rung, and a lost rung cannot be recovered later in the run.
 	if !r.calibrated() {
+		// Purely multiplicative, with only a resolution floor under it.
+		//
+		// MinStepMbps must NOT apply here. It is an absolute 0.25 Mbps, which at
+		// the bottom of a ladder is a bigger step than the creep: at a 0.45 Mbps
+		// cap it turns a 22% rise into 56%, and the whole point of creeping is
+		// that the step is small enough that only one rendition can come within
+		// reach at a time. The floor silently suspended that guarantee over the
+		// first few levels -- exactly the levels it exists to protect, since the
+		// rungs are closest together down there and there is no measured spacing
+		// yet to fall back on.
+		//
+		// The real floor is the smallest cap change worth making at all, which
+		// is the same resolution limit the rung merge uses.
 		next := math.Max(r.capMbps, r.current) * creepStep
-		if next < r.capMbps+r.params.MinStepMbps {
-			next = r.capMbps + r.params.MinStepMbps
+		if next < r.capMbps+mergeFloorMbps {
+			next = r.capMbps + mergeFloorMbps
 		}
 		if next > r.capMbps {
 			r.holds = 0
@@ -1007,6 +1025,11 @@ func (r *sweepRun) nextCap() float64 {
 
 // raiseFromCap nudges the cap up when there is no rung to aim from, or when
 // aiming has not produced a climb.
+//
+// This one KEEPS the MinStepMbps floor. It is the escape from a level that has
+// already refused to move the client, so a step big enough to change something
+// is the point, and overshooting here costs a rung that was not being found
+// anyway.
 func (r *sweepRun) raiseFromCap() float64 {
 	next := r.capMbps * (1 + r.params.ClimbPct/100)
 	if next < r.capMbps+r.params.MinStepMbps {
