@@ -76,14 +76,20 @@ adapter in for a wired device under test, then:
 | SSH | `ssh pifi@infinite-streaming-pifi.local` |
 | Rescue | `http://<PIFI_RESCUE_IP>/` when upstream DHCP is absent |
 
-**iperf3 measures the link, not the conditioner.** Traffic to and from the box
-is exempt from shaping in both directions — downlink by an explicit filter, so
-the web interface cannot throttle itself off the network, and uplink because it
-never reaches the WAN port where uplink shaping lives. So a test against the box
-reports the full radio and bridge against any limit you have set. That is the
-number worth knowing before choosing a cap, and it is the wrong number for
-checking a cap is being enforced: for that the load has to come from a host
-beyond `eth0`.
+**The two directions measure different things.** `iperf3 -c <pi> -R` sends from
+the box to the device, which is that device's downlink — conditioned by its
+policy, so this is the cap being enforced. Without `-R` you are measuring upload
+*to* the box, which terminates there and never reaches the WAN port where uplink
+shaping lives; that reports what the link can do, not what the policy allows.
+Verifying uplink needs load from a host beyond `eth0`.
+
+Only the box's management ports — the interface, SSH and ntopng — are exempt
+from shaping, so a cap can never throttle the dashboard needed to undo it.
+Everything else the box sends is conditioned like any other traffic.
+
+**Bind the test to the path you mean.** A laptop on both Wi-Fi and ethernet has
+two addresses, and only the one pifi lists as a client is conditioned by that
+client's policy: `iperf3 -c <pi> -R -B <the address on that card>`.
 
 **The WAN port must be connected.** Being invisible means pifi issues no
 addresses: with no live upstream, clients associate to the Wi-Fi and then sit

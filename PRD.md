@@ -116,8 +116,11 @@ device card. Optional: the image builds without it.
   player starts a segment and measures throughput. HTB is a classifier and byte
   counter only.
 - Both IPv4 and IPv6 are conditioned by one policy.
-- Traffic **sourced by the box itself** is exempt, so the interface cannot
-  throttle itself on a device it is conditioning.
+- The box's **management traffic** — the interface, SSH, ntopng — is exempt, so
+  it cannot throttle itself on a device it is conditioning. The exemption is
+  scoped to those ports, not to the box as a whole: everything else the box
+  sends is conditioned like any other traffic, which is what lets the box
+  measure the downlink it is enforcing.
 - The netem queue is sized from rate x delay. netem's 1000-packet default would
   silently discard traffic on high-delay profiles while reporting zero loss.
 - Every discovered client gets a counting class even when unconditioned, so
@@ -187,19 +190,22 @@ device card. Optional: the image builds without it.
   conditioning is additive on top of it; that `overlimits` is not an error; that
   PHY rate is not throughput.
 
-### 6.5 Measuring the link
+### 6.5 Measuring
 
-- An **iperf3 server** runs on the box, so the ceiling a cap has to sit under
-  can be measured on demand without installing anything on the device under
-  test. The interface shows the command, addressed to whatever host the
-  interface itself was reached on.
-- It measures the **unshaped** link, and says so where it offers it. Traffic to
-  and from the box is exempt from conditioning in both directions, so a test
-  against it reports the full link against any policy. Presenting that number
-  as throttle verification would be the most misleading thing this box could
-  do.
-- Measuring what conditioning delivers needs load arriving **through the WAN
-  port** from a host that is not the box.
+- An **iperf3 server** runs on the box, so a device can be measured without a
+  second host and without installing anything but a client. The interface shows
+  the command, addressed to whatever host the interface itself was reached on.
+- **Downlink is measured against the policy.** Traffic from the box to a client
+  is conditioned like any other, so the reverse-direction test reports the cap
+  as it is actually enforced.
+- **Uplink is not, and cannot be, measured this way.** A client's upload to the
+  box terminates at the bridge and never reaches the WAN port where uplink
+  shaping lives. That direction reports what the link can do, not what the
+  policy allows, and the interface says so where it offers the command.
+  Verifying uplink needs load from a host beyond the WAN port.
+- A test is bound to the address the client is measured on. A device attached by
+  both Wi-Fi and cable is two paths, and only the one carrying the client's own
+  address is conditioned by that client's policy.
 
 ## 7) Constraints & Accepted Limitations
 

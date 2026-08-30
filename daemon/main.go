@@ -23,10 +23,9 @@ import (
 
 func main() {
 	cfg := pifi.Config{}
-	var addr string
 	var tickMs int
 
-	flag.StringVar(&addr, "addr", ":80", "address to serve the web interface on")
+	flag.StringVar(&cfg.Addr, "addr", ":80", "address to serve the web interface on")
 	flag.StringVar(&cfg.Bridge, "bridge", "br-lan", "bridge interface")
 	flag.StringVar(&cfg.WANPort, "wan", "eth0",
 		"bridge port cabled to the existing network; uplink is shaped here")
@@ -54,7 +53,7 @@ func main() {
 	eng.Start()
 
 	srv := &http.Server{
-		Addr:              addr,
+		Addr:              cfg.Addr,
 		Handler:           pifi.NewAPI(eng, web.FS()).Routes(),
 		ReadHeaderTimeout: 10 * time.Second,
 		// No WriteTimeout: server-sent event streams are long-lived by design
@@ -63,10 +62,10 @@ func main() {
 
 	go func() {
 		if cfg.Demo {
-			fmt.Printf("infinite-streaming-pifi: DEMO MODE on %s -- synthetic clients, nothing is shaped\n", addr)
+			fmt.Printf("infinite-streaming-pifi: DEMO MODE on %s -- synthetic clients, nothing is shaped\n", cfg.Addr)
 		} else {
 			fmt.Printf("infinite-streaming-pifi: serving on %s (wan=%s bridge=%s)\n",
-				addr, cfg.WANPort, cfg.Bridge)
+				cfg.Addr, cfg.WANPort, cfg.Bridge)
 		}
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			fmt.Fprintln(os.Stderr, "pifi:", err)

@@ -221,17 +221,18 @@ onUnmounted(() => window.clearInterval(ticker));
       <div v-for="n in infoNotices" :key="n.text" class="notice info">
         {{ n.text }}
       </div>
-      <!-- Stated as a limit rather than a feature, because the number it
-           produces is the one most likely to be misread: a test against this
-           box is exempt from conditioning in both directions, so it reports
-           line rate against any cap. -->
+      <!-- The two directions measure different things, and which is which is
+           the easiest thing here to get backwards. Said explicitly rather than
+           left to be discovered from a number that looks wrong. -->
       <div v-if="iperfCmd" class="notice info">
-        Measure the unshaped link from a device with
-        <code>{{ iperfCmd }}</code> (add <code>-R</code> for downlink). This is
-        what the radio and the bridge can do, not what conditioning delivers —
-        traffic to and from this box is exempt from shaping, so it will report
-        the full link against any limit set here. To see a policy enforced, the
-        load has to come from a host beyond the {{ caps?.uplink_if }} port.
+        Measure a device with <code>{{ iperfCmd }} -R</code>: the reverse
+        direction is that device's <strong>downlink</strong>, and it is
+        conditioned by the policy set here, so this is the cap being enforced.
+        Without <code>-R</code> you are measuring upload to this box, which ends
+        here and never reaches the {{ caps?.uplink_if }} queue where uplink
+        shaping lives — that reports what the link can do, not what the policy
+        allows. Verifying <strong>uplink</strong> needs load from a host beyond
+        {{ caps?.uplink_if }}.
       </div>
     </footer>
   </div>
