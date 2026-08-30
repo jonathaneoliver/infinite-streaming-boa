@@ -56,7 +56,19 @@ type fakePlayer struct {
 	lastClimb  float64
 }
 
-const playerHeadroom = 0.95
+// playerDemand is how much more than a rendition's cost this client insists on
+// having before it will select that rendition.
+//
+// Measured, not assumed: across ten switches on an iPhone the ratio between the
+// cap in force and the variant taken ran 1.5x to 1.9x, and never below 1.5. The
+// model previously used 0.95 -- i.e. a player that grabs anything that fits --
+// which is a far more eager client than any real one, and it made cap sizing
+// that works on hardware look wrong here.
+//
+// Selection and delivery are separate: a client needs this much headroom to
+// CHOOSE a rendition, but once on one it delivers that rendition's bitrate
+// whenever it fits under the cap at all.
+const playerDemand = 1.6
 
 // applyCap moves the player, asymmetrically and in its own time.
 //
@@ -69,7 +81,7 @@ func (p *fakePlayer) applyCap(capMbps, now float64) {
 	}
 	fit := -1
 	for i, r := range p.ladder {
-		if capMbps <= 0 || r <= capMbps*playerHeadroom {
+		if capMbps <= 0 || r*playerDemand <= capMbps {
 			fit = i
 		}
 	}
@@ -99,11 +111,11 @@ func (p *fakePlayer) rateAt(capMbps float64) float64 {
 		return 0
 	}
 	r := p.ladder[p.cur]
-	if capMbps > 0 && capMbps*playerHeadroom < r {
-		// Cannot sustain this rendition, so it fetches without pause and TCP
-		// fills the shaper completely: the whole cap, continuously. The
-		// headroom above applies to CHOOSING a rendition, not to what a starved
-		// client receives -- it takes everything there is.
+	if capMbps > 0 && r > capMbps {
+		// Cannot even fit, so it fetches without pause and TCP fills the shaper
+		// completely: the whole cap, continuously. The demand factor governs
+		// which rendition gets CHOSEN, not what a starved client receives -- it
+		// takes everything there is.
 		return capMbps
 	}
 	return r
@@ -177,15 +189,15 @@ func (o *fakeObs) Window(mac string, from, to time.Time) []Sample {
 		case ts < o.capSince+o.player.adaptSec:
 			// The cap change has not taken effect yet.
 			v = o.prevRate
-			if capMbps > 0 && capMbps*playerHeadroom < v {
-				v = capMbps * playerHeadroom
+			if capMbps > 0 && v > capMbps {
+				v = capMbps
 			}
 		case ts < o.player.fillUntil:
 			// Filling: flat out, no gaps. Perfectly steady, and nothing to do
 			// with the rendition being played.
 			v = o.player.linkMbps
-			if capMbps > 0 && capMbps*playerHeadroom < v {
-				v = capMbps * playerHeadroom
+			if capMbps > 0 && v > capMbps {
+				v = capMbps
 			}
 		default:
 			v = o.player.throughputAt(capMbps, ts)
@@ -385,32 +397,49 @@ func TestSweepCapAdmitsOnlyOneRungAtATime(t *testing.T) {
 	// The no-skip guarantee is structural, not a bet on the player being
 	// polite: the cap sits just above the rung the client occupies, so the next
 	// rendition fits under it and the one after does not.
+	// Seeded with two rungs 1.3x apart, because the two-rung bound is
+	// data-driven: it is computed from the TIGHTEST spacing observed, and with
+	// nothing observed there is no honest basis for one. Early in a run the
+	// sweep accepts that exposure rather than inventing a bound that would
+	// block wide ladders -- a default lid stalls a client whose next rendition
+	// is 2x away, which is worse than the risk it avoids.
 	r := &sweepRun{params: testParams(), phase: phaseClimb, current: 4, capMbps: 4.2}
+	r.rungs = []mapped{
+		{mbps: 4 / 1.3, upAt: 4 / 1.3 * playerDemand},
+		{mbps: 4, upAt: 4 * playerDemand},
+	}
 	next := r.nextCap()
 	// Real ladders are spaced at least ~1.3x, so the rung above 4 sits at 5.2 or
 	// higher and the one above that at 6.8 or higher. The player keeps ~5%
 	// headroom of its own, which is what makes this window narrow.
-	if next*playerHeadroom < 4*1.3 {
-		t.Errorf("cap %.2f cannot admit the next rung at 5.2 through the "+
-			"player's own headroom", next)
+	if next/playerDemand < 4*1.3 {
+		t.Errorf("cap %.2f cannot admit the next rung at 5.2: the client wants "+
+			"%.2fx a rendition's cost before taking it", next, playerDemand)
 	}
-	if next*playerHeadroom >= 4*1.3*1.3 {
-		t.Errorf("cap %.2f could admit two rungs at once, so a skip is possible", next)
+	if next/playerDemand >= 4*1.3*1.3 {
+		t.Errorf("cap %.2f admits two rungs at once. The client takes the "+
+			"highest it will accept, so that is a skip", next)
 	}
 
 	// The client has not climbed and the cap is already above it. Raising
 	// further does not help -- the constraint is the client's confidence, not
 	// the cap -- so it HOLDS, for a bounded number of levels.
 	r.capMbps = next
-	for i := 0; i < capHolds; i++ {
-		if got := r.nextCap(); got != r.capMbps {
-			t.Errorf("hold %d: cap moved to %.2f, should have held at %.2f",
-				i, got, r.capMbps)
-		}
+	if got := r.nextCap(); got != r.capMbps {
+		t.Errorf("cap moved to %.2f on the first no-climb; it should hold once "+
+			"and give the client another dwell", got)
 	}
-	// ...then stops waiting, so a cap that genuinely is too low still rises.
-	if got := r.nextCap(); got <= r.capMbps {
-		t.Errorf("cap never rose after %d holds: %.2f", capHolds, got)
+	// ...then widens: two things explain a client that did not climb -- it
+	// needs longer, or the next rung is further off than assumed -- and they
+	// cannot be told apart. One dwell covers the first; after that the estimate
+	// is the thing more likely to be wrong, so the cap moves.
+	got := r.nextCap()
+	if got <= r.capMbps {
+		t.Errorf("cap did not widen after a wasted hold: %.2f", got)
+	}
+	// Widening must not overshoot into admitting two rungs.
+	if got/playerDemand >= 4*1.3*1.3 {
+		t.Errorf("widened cap %.2f admits two rungs at once", got)
 	}
 }
 

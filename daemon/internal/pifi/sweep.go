@@ -241,6 +241,18 @@ const (
 	// sweep recorded "rung at 0.30 Mbps", which is the cap, not a rendition.
 	pinnedToCap = 0.97
 
+	// defaultSpacing and defaultHeadroom are used until the run has measured its
+	// own. Both are mid-range values from a real ladder and a real player, not
+	// round numbers: spacings ran 1.30 to 1.87, and headroom 1.5 to 1.9.
+	defaultSpacing  = 1.45
+	defaultHeadroom = 1.6
+
+	// stepWiden is how much the spacing estimate grows each time a cap is held
+	// without the client climbing. The next rung is evidently further off than
+	// assumed, so widen rather than repeat the same guess. Ladder gaps reach
+	// 1.87x, so a timid widening just spends levels rediscovering that.
+	stepWiden = 1.35
+
 	// capHolds is how many extra dwells a cap is held at when the client has not
 	// taken the headroom it already has. Two gives a slow adapter three chances
 	// in total before the cap moves, without letting a genuinely-too-low cap
@@ -381,12 +393,56 @@ const (
 	phaseClimb   = "climb"   // the ascent, one rendition at a time
 )
 
+// headroomFactor is how much more than a rendition's cost this client demands
+// before it will select it, learned from the switches already observed.
+//
+// It is not a small number and it is not optional. Measured on an iPhone across
+// ten switches the ratio ran 1.5x to 1.9x, never below 1.5 -- so a cap set at a
+// rendition's own bitrate does not hold a player there, it pushes it off.
+// Sizing the climb without this was why levels kept passing with no climb: the
+// cap admitted the next rung arithmetically and the player declined it.
+func (r *sweepRun) headroomFactor() float64 {
+	var seen []float64
+	// Skip the first rung. The client did not CLIMB into that one -- it fell
+	// there when the cap dropped at the start of the run -- so the cap recorded
+	// against it is wherever the sweep began, not a threshold the client chose.
+	// Counting it dragged the estimate below what the client actually demands.
+	for i, m := range r.rungs {
+		if i > 0 && m.upAt > 0 && m.mbps > 0 {
+			seen = append(seen, m.upAt/m.mbps)
+		}
+	}
+	if len(seen) == 0 {
+		return defaultHeadroom
+	}
+	sort.Float64s(seen)
+	h := seen[len(seen)/2]
+	// Trust the client over the default, but not beyond reason.
+	return math.Max(1.2, math.Min(2.5, h))
+}
+
+// minRatio is the TIGHTEST spacing seen so far. The upper bound on a cap comes
+// from this rather than the median: admitting two rungs at once causes a skip,
+// and the pair most likely to be skipped over is the closest pair.
+func (r *sweepRun) minRatio() float64 {
+	best := 0.0
+	for i := 1; i < len(r.rungs); i++ {
+		lo, hi := r.rungs[i-1].mbps, r.rungs[i].mbps
+		if lo > 0 && hi > lo {
+			if x := hi / lo; best == 0 || x < best {
+				best = x
+			}
+		}
+	}
+	return best // zero when fewer than two rungs are known
+}
+
 // medianRatio is the typical spacing between the rungs found so far, used to
 // predict where the next one sits. Before there is data, a mid-range ladder
 // spacing is assumed.
 func (r *sweepRun) medianRatio() float64 {
 	if len(r.rungs) < 2 {
-		return 1.4
+		return defaultSpacing
 	}
 	var ratios []float64
 	for i := 1; i < len(r.rungs); i++ {
@@ -396,7 +452,7 @@ func (r *sweepRun) medianRatio() float64 {
 		}
 	}
 	if len(ratios) == 0 {
-		return 1.4
+		return defaultSpacing
 	}
 	sort.Float64s(ratios)
 	return ratios[len(ratios)/2]
@@ -675,6 +731,7 @@ func (r *sweepRun) evaluate(samples []Sample, now time.Time) {
 		lv.NewRung = r.addRung(rate, drift, r.capMbps)
 		prev := r.current
 		r.current = rate
+		r.holds = 0 // the estimate was good; stop widening it
 		if prev > 0 && rate > prev*r.params.SkipRatio {
 			// A hint, never a verdict. Natural ladder spacing and single-skip
 			// gaps overlap, so this cannot prove anything -- it marks a gap
@@ -719,7 +776,12 @@ func (r *sweepRun) nextLevel(now time.Time) {
 	next := r.nextCap()
 	// Once the cap is comfortably past the ceiling there is nothing left above
 	// to admit, so the client is at its top rendition whatever the rate says.
-	if r.ceiling > 0 && next > r.ceiling*1.5 {
+	// The stop must sit above the cap the TOP rendition needs, or the sweep
+	// terminates before it can reach its own target. The client wants roughly
+	// headroom x a rendition's cost before selecting it, so the ceiling rung
+	// requires ceiling x headroom -- a flat 1.5x ceiling was below that and made
+	// the top rung unreachable by construction.
+	if lim := r.ceiling * r.headroomFactor() * 1.3; r.ceiling > 0 && next > lim {
 		r.finish("cap raised well past the ceiling with no further rendition")
 		return
 	}
@@ -762,18 +824,49 @@ func (r *sweepRun) setCap(cap float64, now time.Time) {
 // missing ingredient -- time is. Holding is bounded, so a cap that genuinely is
 // too low still rises rather than stalling forever.
 func (r *sweepRun) nextCap() float64 {
-	if r.current > 0 {
-		if target := r.current * (1 + r.params.ClimbPct/100); target > r.capMbps {
-			r.holds = 0
-			return target
-		}
-		// Already above the client. Give it another dwell before adding more.
-		if r.holds < capHolds {
-			r.holds++
-			return r.capMbps
+	if r.current <= 0 {
+		return r.raiseFromCap()
+	}
+
+	// Where the next rung probably sits, and what the client will want before
+	// taking it. Both are measured from this run once there is anything to
+	// measure, so the sweep gets better at aiming as it goes.
+	spacing := r.medianRatio() * math.Pow(stepWiden, float64(r.holds))
+	head := r.headroomFactor()
+	target := r.current * spacing * head * 1.02
+
+	// Never admit two rungs. The client takes the HIGHEST rendition it will
+	// accept, so a cap clearing two of them skips one -- exactly the failure a
+	// descending sweep suffers from and this design exists to avoid. The bound
+	// uses the tightest spacing SEEN, since the closest pair is the one at risk.
+	//
+	// Only once there is something to see. Applying it with a default spacing
+	// clamped the cap below what the next rung needed and the run escaped only
+	// by timing out its holds -- a bound invented from no data blocking a step
+	// the data would have allowed.
+	if mr := r.minRatio(); mr > 0 {
+		if lid := r.current * mr * mr * head * 0.98; target > lid {
+			target = lid
 		}
 	}
-	r.holds = 0
+
+	if target > r.capMbps {
+		r.holds = 0
+		return target
+	}
+	// The cap already offers more than the client has taken. Waiting is the
+	// only thing that can help; raising cannot.
+	if r.holds < capHolds {
+		r.holds++
+		return r.capMbps
+	}
+	r.holds++
+	return r.raiseFromCap()
+}
+
+// raiseFromCap nudges the cap up when there is no rung to aim from, or when
+// aiming has not produced a climb.
+func (r *sweepRun) raiseFromCap() float64 {
 	next := r.capMbps * (1 + r.params.ClimbPct/100)
 	if next < r.capMbps+r.params.MinStepMbps {
 		next = r.capMbps + r.params.MinStepMbps
