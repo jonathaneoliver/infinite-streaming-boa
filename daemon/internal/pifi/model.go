@@ -78,12 +78,44 @@ type SubClass struct {
 
 // Rung is one rendition's delivered bitrate.
 type Rung struct {
+	// Mbps is what the rendition costs on the wire.
 	Mbps float64 `json:"mbps"`
+
+	// UpAtMbps is the cap at which the client CLIMBED INTO this rendition, and
+	// DownAtMbps the cap at which it FELL OUT of it. Both are recorded because
+	// the cost alone cannot drive a pattern.
+	//
+	// A player does not select a rendition merely because its bitrate fits. It
+	// wants headroom: measured on an iPhone, it took a variant only when the
+	// cap was around 1.5 to 1.9 times that variant's cost, never less than 1.5.
+	// So capping AT a rung's own bitrate does not hold a player on it -- it
+	// drops below. The cap that produces a given rendition is the useful
+	// number, and it is not the rendition's bitrate.
+	//
+	// The two differ from each other as well, because ABR players use
+	// hysteresis on purpose so they do not oscillate at a boundary. A sweep
+	// that climbs can only observe the up-switch thresholds; one that descends
+	// can only observe the down-switch ones. They are different measurements of
+	// the same ladder rather than competing attempts at one measurement.
+	//
+	// Zero means not observed in this run's direction.
+	UpAtMbps   float64 `json:"up_at_mbps,omitempty"`
+	DownAtMbps float64 `json:"down_at_mbps,omitempty"`
+
 	// Unstable marks a rung whose observation window drifted: its two halves
 	// disagreed, so its mean describes neither.
 	// Reported rather than dropped, so the operator can see which number to
 	// distrust instead of being handed a uniformly confident list.
 	Unstable bool `json:"unstable,omitempty"`
+}
+
+// Headroom is how much more than its own cost this rendition needed before the
+// client would select it. Zero when the climb-in cap was not observed.
+func (r Rung) Headroom() float64 {
+	if r.Mbps <= 0 || r.UpAtMbps <= 0 {
+		return 0
+	}
+	return r.UpAtMbps / r.Mbps
 }
 
 // Ladder provenance values, ordered by how much they can be trusted.

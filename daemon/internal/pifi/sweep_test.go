@@ -2,6 +2,7 @@ package pifi
 
 import (
 	"math"
+	"strings"
 	"testing"
 	"time"
 )
@@ -55,7 +56,19 @@ type fakePlayer struct {
 	lastClimb  float64
 }
 
-const playerHeadroom = 0.95
+// playerDemand is how much more than a rendition's cost this client insists on
+// having before it will select that rendition.
+//
+// Measured, not assumed: across ten switches on an iPhone the ratio between the
+// cap in force and the variant taken ran 1.5x to 1.9x, and never below 1.5. The
+// model previously used 0.95 -- i.e. a player that grabs anything that fits --
+// which is a far more eager client than any real one, and it made cap sizing
+// that works on hardware look wrong here.
+//
+// Selection and delivery are separate: a client needs this much headroom to
+// CHOOSE a rendition, but once on one it delivers that rendition's bitrate
+// whenever it fits under the cap at all.
+const playerDemand = 1.6
 
 // applyCap moves the player, asymmetrically and in its own time.
 //
@@ -68,7 +81,7 @@ func (p *fakePlayer) applyCap(capMbps, now float64) {
 	}
 	fit := -1
 	for i, r := range p.ladder {
-		if capMbps <= 0 || r <= capMbps*playerHeadroom {
+		if capMbps <= 0 || r*playerDemand <= capMbps {
 			fit = i
 		}
 	}
@@ -98,11 +111,11 @@ func (p *fakePlayer) rateAt(capMbps float64) float64 {
 		return 0
 	}
 	r := p.ladder[p.cur]
-	if capMbps > 0 && capMbps*playerHeadroom < r {
-		// Cannot sustain this rendition, so it fetches without pause and TCP
-		// fills the shaper completely: the whole cap, continuously. The
-		// headroom above applies to CHOOSING a rendition, not to what a starved
-		// client receives -- it takes everything there is.
+	if capMbps > 0 && r > capMbps {
+		// Cannot even fit, so it fetches without pause and TCP fills the shaper
+		// completely: the whole cap, continuously. The demand factor governs
+		// which rendition gets CHOSEN, not what a starved client receives -- it
+		// takes everything there is.
 		return capMbps
 	}
 	return r
@@ -176,15 +189,15 @@ func (o *fakeObs) Window(mac string, from, to time.Time) []Sample {
 		case ts < o.capSince+o.player.adaptSec:
 			// The cap change has not taken effect yet.
 			v = o.prevRate
-			if capMbps > 0 && capMbps*playerHeadroom < v {
-				v = capMbps * playerHeadroom
+			if capMbps > 0 && v > capMbps {
+				v = capMbps
 			}
 		case ts < o.player.fillUntil:
 			// Filling: flat out, no gaps. Perfectly steady, and nothing to do
 			// with the rendition being played.
 			v = o.player.linkMbps
-			if capMbps > 0 && capMbps*playerHeadroom < v {
-				v = capMbps * playerHeadroom
+			if capMbps > 0 && v > capMbps {
+				v = capMbps
 			}
 		default:
 			v = o.player.throughputAt(capMbps, ts)
@@ -343,36 +356,96 @@ func TestAPlateauSittingAtTheCapIsNotARung(t *testing.T) {
 	}
 }
 
+func TestARungRecordsTheCapThatCausedTheSwitch(t *testing.T) {
+	// The rung's own bitrate cannot drive a pattern. A player does not select a
+	// rendition merely because its bitrate fits -- measured on an iPhone, it
+	// took a variant only when the cap was 1.5x to 1.9x that variant's cost.
+	// Cap AT a rung's bitrate and the player drops below it, so the useful
+	// number is the cap that produces the rendition, not the rendition's cost.
+	r := &sweepRun{params: testParams(), phase: phaseClimb}
+
+	// Climbed into 1.0 with the cap at 1.6, then into 2.0 with the cap at 3.2.
+	if !r.addRung(1.0, 0.05, 1.6) {
+		t.Fatal("first rung rejected")
+	}
+	if !r.addRung(2.0, 0.05, 3.2) {
+		t.Fatal("second rung rejected")
+	}
+	l := r.ladder()
+	if len(l.Rungs) != 2 {
+		t.Fatalf("got %d rungs, want 2", len(l.Rungs))
+	}
+
+	low, high := l.Rungs[0], l.Rungs[1]
+	if low.UpAtMbps != 1.6 || high.UpAtMbps != 3.2 {
+		t.Errorf("climb-in caps = %.2f, %.2f; want 1.60, 3.20",
+			low.UpAtMbps, high.UpAtMbps)
+	}
+	// Reaching 2.0 means 1.0 was left behind, and 3.2 is the cap that did it.
+	if low.DownAtMbps != 3.2 {
+		t.Errorf("lower rung's departure cap = %.2f, want 3.20", low.DownAtMbps)
+	}
+	if h := low.Headroom(); h < 1.59 || h > 1.61 {
+		t.Errorf("headroom = %.2f, want 1.60 (cap over cost)", h)
+	}
+	if !strings.Contains(l.Note, "before") {
+		t.Errorf("ladder note does not report the measured headroom: %q", l.Note)
+	}
+}
+
 func TestSweepCapAdmitsOnlyOneRungAtATime(t *testing.T) {
 	// The no-skip guarantee is structural, not a bet on the player being
 	// polite: the cap sits just above the rung the client occupies, so the next
 	// rendition fits under it and the one after does not.
+	// Seeded with two rungs 1.3x apart, because the two-rung bound is
+	// data-driven: it is computed from the TIGHTEST spacing observed, and with
+	// nothing observed there is no honest basis for one. Early in a run the
+	// sweep accepts that exposure rather than inventing a bound that would
+	// block wide ladders -- a default lid stalls a client whose next rendition
+	// is 2x away, which is worse than the risk it avoids.
 	r := &sweepRun{params: testParams(), phase: phaseClimb, current: 4, capMbps: 4.2}
+	// Three trusted gaps, because aiming does not begin until the run has that
+	// many: two samples of a spacing that ranges 1.30x to 1.87x can both sit at
+	// one end and mislead. Below that it creeps instead, which is a different
+	// code path and not what this test is about.
+	r.rungs = []mapped{
+		{mbps: 4 / 1.3 / 1.3 / 1.3, upAt: 4 / 1.3 / 1.3 / 1.3 * playerDemand},
+		{mbps: 4 / 1.3 / 1.3, upAt: 4 / 1.3 / 1.3 * playerDemand},
+		{mbps: 4 / 1.3, upAt: 4 / 1.3 * playerDemand},
+		{mbps: 4, upAt: 4 * playerDemand},
+	}
 	next := r.nextCap()
 	// Real ladders are spaced at least ~1.3x, so the rung above 4 sits at 5.2 or
 	// higher and the one above that at 6.8 or higher. The player keeps ~5%
 	// headroom of its own, which is what makes this window narrow.
-	if next*playerHeadroom < 4*1.3 {
-		t.Errorf("cap %.2f cannot admit the next rung at 5.2 through the "+
-			"player's own headroom", next)
+	if next/playerDemand < 4*1.3 {
+		t.Errorf("cap %.2f cannot admit the next rung at 5.2: the client wants "+
+			"%.2fx a rendition's cost before taking it", next, playerDemand)
 	}
-	if next*playerHeadroom >= 4*1.3*1.3 {
-		t.Errorf("cap %.2f could admit two rungs at once, so a skip is possible", next)
+	if next/playerDemand >= 4*1.3*1.3 {
+		t.Errorf("cap %.2f admits two rungs at once. The client takes the "+
+			"highest it will accept, so that is a skip", next)
 	}
 
 	// The client has not climbed and the cap is already above it. Raising
 	// further does not help -- the constraint is the client's confidence, not
 	// the cap -- so it HOLDS, for a bounded number of levels.
 	r.capMbps = next
-	for i := 0; i < capHolds; i++ {
-		if got := r.nextCap(); got != r.capMbps {
-			t.Errorf("hold %d: cap moved to %.2f, should have held at %.2f",
-				i, got, r.capMbps)
-		}
+	if got := r.nextCap(); got != r.capMbps {
+		t.Errorf("cap moved to %.2f on the first no-climb; it should hold once "+
+			"and give the client another dwell", got)
 	}
-	// ...then stops waiting, so a cap that genuinely is too low still rises.
-	if got := r.nextCap(); got <= r.capMbps {
-		t.Errorf("cap never rose after %d holds: %.2f", capHolds, got)
+	// ...then widens: two things explain a client that did not climb -- it
+	// needs longer, or the next rung is further off than assumed -- and they
+	// cannot be told apart. One dwell covers the first; after that the estimate
+	// is the thing more likely to be wrong, so the cap moves.
+	got := r.nextCap()
+	if got <= r.capMbps {
+		t.Errorf("cap did not widen after a wasted hold: %.2f", got)
+	}
+	// Widening must not overshoot into admitting two rungs.
+	if got/playerDemand >= 4*1.3*1.3 {
+		t.Errorf("widened cap %.2f admits two rungs at once", got)
 	}
 }
 
@@ -491,10 +564,10 @@ func TestSweepMergeKeepsTheLowerDriftSighting(t *testing.T) {
 	// 14.3, and then anchored later merges on it, splitting one rendition in
 	// two on real hardware.
 	r := &sweepRun{params: testParams()}
-	if !r.addRung(16.40, 0.45) { // contaminated: high drift
+	if !r.addRung(16.40, 0.45, 26.24) { // contaminated: high drift
 		t.Fatal("first rung rejected")
 	}
-	if r.addRung(14.90, 0.05) { // clean: low drift, same rendition
+	if r.addRung(14.90, 0.05, 23.84) { // clean: low drift, same rendition
 		t.Error("recorded a second rung for one rendition")
 	}
 	if len(r.rungs) != 1 {
@@ -573,13 +646,13 @@ func TestSweepMergesRungsItCannotResolve(t *testing.T) {
 	// Two renditions 100 kbps apart cannot be told apart by a sweep whose
 	// smallest step is 250 kbps. Reporting both would invent resolution.
 	r := &sweepRun{params: testParams()}
-	if !r.addRung(3.0, 0.1) {
+	if !r.addRung(3.0, 0.1, 4.80) {
 		t.Fatal("first rung rejected")
 	}
-	if r.addRung(3.1, 0.1) {
+	if r.addRung(3.1, 0.1, 4.96) {
 		t.Error("accepted a rung 100 kbps from an existing one")
 	}
-	if !r.addRung(3.4, 0.1) {
+	if !r.addRung(3.4, 0.1, 5.44) {
 		t.Error("rejected a rung 400 kbps away, which is resolvable")
 	}
 }
@@ -590,17 +663,17 @@ func TestSweepMergeThresholdGrowsWithRate(t *testing.T) {
 	// 5.8 read as 5.57 and 5.87. A flat 250 kbps threshold reported each as two
 	// rungs. Median error scales with the rate, so the threshold has to as well.
 	r := &sweepRun{params: testParams()}
-	if !r.addRung(9.38, 0.1) {
+	if !r.addRung(9.38, 0.1, 15.01) {
 		t.Fatal("first rung rejected")
 	}
-	if r.addRung(9.65, 0.1) {
+	if r.addRung(9.65, 0.1, 15.44) {
 		t.Error("9.38 and 9.65 recorded as separate rungs; that is one rendition")
 	}
 	r2 := &sweepRun{params: testParams()}
-	if !r2.addRung(5.57, 0.1) {
+	if !r2.addRung(5.57, 0.1, 8.91) {
 		t.Fatal("first rung rejected")
 	}
-	if r2.addRung(5.87, 0.1) {
+	if r2.addRung(5.87, 0.1, 9.39) {
 		t.Error("5.57 and 5.87 recorded as separate rungs; that is one rendition")
 	}
 	// The tolerance is RELATIVE. It used to take max(MinStepMbps, pct), which
@@ -615,15 +688,15 @@ func TestSweepMergeThresholdGrowsWithRate(t *testing.T) {
 	// 0.23 apart in absolute terms, under the old 0.25 floor, and were merged
 	// into one. The bottom of the ladder vanished from the saved result.
 	low := &sweepRun{params: testParams()}
-	if !low.addRung(0.28, 0.05) {
+	if !low.addRung(0.28, 0.05, 0.45) {
 		t.Fatal("first rung rejected")
 	}
-	if !low.addRung(0.51, 0.05) {
+	if !low.addRung(0.51, 0.05, 0.82) {
 		t.Error("0.28 and 0.51 merged; those are 234p and 360p, 1.9x apart")
 	}
 	// The margin that makes the tolerance safe: real ladders are never spaced
 	// tighter than about 25%, so a genuine neighbouring rung must survive.
-	if !r.addRung(12.0, 0.1) {
+	if !r.addRung(12.0, 0.1, 19.20) {
 		t.Error("merged a rung 28% above an existing one; that is a real rung")
 	}
 }

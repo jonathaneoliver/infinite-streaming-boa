@@ -25,7 +25,17 @@ export interface SubClass {
 }
 
 export interface Rung {
+  /** What the rendition costs on the wire. */
   mbps: number;
+  /**
+   * The caps at which the client climbed INTO this rendition and fell OUT of
+   * it. Both matter, because the cost alone cannot drive a pattern: a player
+   * wants headroom, so capping at a rung's own bitrate does not hold it there.
+   * They differ from each other because ABR players use hysteresis on purpose.
+   * Absent when not observed in this run's direction.
+   */
+  up_at_mbps?: number;
+  down_at_mbps?: number;
   /** The window behind this rung drifted: its two halves disagreed. */
   unstable?: boolean;
 }

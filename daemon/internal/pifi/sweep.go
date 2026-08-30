@@ -117,8 +117,15 @@ type SweepParams struct {
 	RecoverSec int `json:"recover_sec"`
 
 	// NewRungPct is how much the rate must rise over the current rung to count
-	// as having climbed rather than as measurement noise. Repeated windows on
-	// one rendition were measured 4.6% apart, so this sits well clear of that.
+	// as having climbed rather than as measurement noise.
+	//
+	// It has to sit in the gap between two things: how much a re-measurement of
+	// ONE rendition can vary, and how far apart two real renditions are. VBR
+	// moves a window by 15-20% on high-motion content, while the tightest
+	// spacing in a real ladder is about 30%. Below the noise, the same rung
+	// registers twice at slightly different rates -- observed splitting a 2.5
+	// Mbps rendition into 2.32 and 2.69. Above the spacing, a genuine climb is
+	// dismissed as noise.
 	NewRungPct float64 `json:"new_rung_pct"`
 	// SkipRatio flags a possible skipped rendition: a new rung more than this
 	// multiple of the previous one.
@@ -130,10 +137,15 @@ type SweepParams struct {
 	SkipRatio float64 `json:"skip_ratio"`
 
 	// MinStepMbps floors the per-level cap change so the climb always
-	// progresses, and floors rung resolution.
+	// progresses.
+	//
+	// It applies to the ESCAPE raise only, not to the creep -- see nextCap. It
+	// no longer floors rung resolution either; that is MergePct over
+	// mergeFloorMbps, after this floor was found merging two renditions 1.9x
+	// apart.
 	MinStepMbps float64 `json:"min_step_mbps"`
 	// MergePct is the rung-merge tolerance as a percentage of the rate, applied
-	// above the MinStepMbps floor.
+	// above the mergeFloorMbps floor.
 	MergePct float64 `json:"merge_pct"`
 	// MaxLevels bounds the run regardless of arithmetic.
 	MaxLevels int `json:"max_levels"`
@@ -174,7 +186,7 @@ func DefaultSweepParams() SweepParams {
 	return SweepParams{
 		StartMbps: 0.3,
 		ClimbPct:  45, DwellSec: 75, ObserveSec: 60, RecoverSec: 60,
-		NewRungPct: 12, SkipRatio: 1.9,
+		NewRungPct: 20, SkipRatio: 1.9,
 		MinStepMbps: 0.25, MergePct: rungMergeDefault, MaxLevels: 40,
 	}
 }
@@ -240,6 +252,38 @@ const (
 	// rendition's wire cost, too tight for playback to start from cold -- the
 	// sweep recorded "rung at 0.30 Mbps", which is the cap, not a rendition.
 	pinnedToCap = 0.97
+
+	// defaultSpacing and defaultHeadroom are used until the run has measured its
+	// own. Both are mid-range values from a real ladder and a real player, not
+	// round numbers: spacings ran 1.30 to 1.87, and headroom 1.5 to 1.9.
+	defaultSpacing = 1.45
+	// defaultHeadroom is only a starting point now that the climb creeps until
+	// calibrated, and it is deliberately at the LOW end of what has been seen.
+	//
+	// 1.6 was used first, taken from a run whose caps were separately running
+	// away -- so every cap-over-rung ratio measured there was inflated by the
+	// bug rather than telling us anything about the client. Measured against a
+	// cap that was not running away, the same player accepted renditions at
+	// 1.11x, 1.32x, 1.76x and 1.91x, and declined one at 1.26x. There is no
+	// constant here: it moves with buffer state. Erring low costs a dwell;
+	// erring high costs a rendition.
+	defaultHeadroom = 1.25
+
+	// aimPct is where in the observed spread a cap is aimed. Low on purpose --
+	// see lowPct. A quarter of the way up means most gaps are wider than the
+	// estimate, so the usual error is a wasted dwell rather than a lost rung.
+	aimPct = 0.25
+
+	// creepStep is the cap rise per level before the run has calibrated. Small
+	// enough that only one rendition can come within reach at a time, even if
+	// the client turns out to accept anything that merely fits.
+	creepStep = 1.22
+
+	// stepWiden is how much the spacing estimate grows each time a cap is held
+	// without the client climbing. The next rung is evidently further off than
+	// assumed, so widen rather than repeat the same guess. Ladder gaps reach
+	// 1.87x, so a timid widening just spends levels rediscovering that.
+	stepWiden = 1.35
 
 	// capHolds is how many extra dwells a cap is held at when the client has not
 	// taken the headroom it already has. Two gives a slow adapter three chances
@@ -325,6 +369,14 @@ type SweepLevel struct {
 type mapped struct {
 	mbps  float64
 	drift float64
+	// upAt is the cap in force when the client climbed into this rendition;
+	// downAt the cap that pushed it out. See Rung.
+	upAt   float64
+	downAt float64
+	// suspect marks a rung reached by a jump wide enough that something was
+	// probably stepped over. The GAP below it is then not evidence of this
+	// ladder's spacing, and must not be learned from.
+	suspect bool
 }
 
 type sweepRun struct {
@@ -377,25 +429,148 @@ const (
 	phaseClimb   = "climb"   // the ascent, one rendition at a time
 )
 
-// medianRatio is the typical spacing between the rungs found so far, used to
-// predict where the next one sits. Before there is data, a mid-range ladder
-// spacing is assumed.
-func (r *sweepRun) medianRatio() float64 {
-	if len(r.rungs) < 2 {
-		return 1.4
-	}
-	var ratios []float64
-	for i := 1; i < len(r.rungs); i++ {
-		lo, hi := r.rungs[i-1].mbps, r.rungs[i].mbps
-		if lo > 0 && hi > lo {
-			ratios = append(ratios, hi/lo)
+// headroomFactor is how much more than a rendition's cost this client demands
+// before it will select it, learned from the switches already observed.
+//
+// It is not a small number and it is not optional. Measured on an iPhone across
+// ten switches the ratio ran 1.5x to 1.9x, never below 1.5 -- so a cap set at a
+// rendition's own bitrate does not hold a player there, it pushes it off.
+// Sizing the climb without this was why levels kept passing with no climb: the
+// cap admitted the next rung arithmetically and the player declined it.
+func (r *sweepRun) headroomFactor() float64 {
+	var seen []float64
+	// Skip the first rung. The client did not CLIMB into that one -- it fell
+	// there when the cap dropped at the start of the run -- so the cap recorded
+	// against it is wherever the sweep began, not a threshold the client chose.
+	// Counting it dragged the estimate below what the client actually demands.
+	for i, m := range r.rungs {
+		if i > 0 && m.upAt > 0 && m.mbps > 0 {
+			seen = append(seen, m.upAt/m.mbps)
 		}
 	}
+	if len(seen) == 0 {
+		return defaultHeadroom
+	}
+	sort.Float64s(seen)
+	h := lowPct(seen, aimPct)
+	// Trust the client over the default, but not beyond reason.
+	return math.Max(1.2, math.Min(2.5, h))
+}
+
+// lowPct is the value below which `frac` of the samples fall, on an already
+// sorted slice.
+//
+// Aiming a cap uses a LOW percentile of what has been seen, not the middle one,
+// because the two ways of being wrong do not cost the same. Aim too low and the
+// client does not climb: one wasted dwell, recovered on the next level. Aim too
+// high and the cap admits two renditions at once, the client takes the higher,
+// and a rung is gone -- no later level revisits it, because the climb only goes
+// one way.
+//
+// A median is wrong here for a reason no amount of tuning fixes: by
+// construction half the gaps are wider than it, so half of them overshoot. The
+// estimate should sit under most of what it has seen and creep up on the rest.
+func lowPct(sorted []float64, frac float64) float64 {
+	if len(sorted) == 0 {
+		return 0
+	}
+	i := int(frac * float64(len(sorted)-1))
+	if i < 0 {
+		i = 0
+	}
+	return sorted[i]
+}
+
+// trustedRatios is the spacing between adjacent rungs, EXCLUDING any gap the
+// skip detector flagged.
+//
+// Without that exclusion the estimator trains on its own errors: a skipped
+// rendition doubles an observed gap, the inflated spacing aims the next cap
+// further ahead, that causes another skip, and the estimate runs away. Measured
+// on hardware -- two skips at the bottom of a ladder pushed the median spacing
+// to 2.02 where the real one is about 1.5.
+func (r *sweepRun) trustedRatios() []float64 {
+	var out []float64
+	for i := 1; i < len(r.rungs); i++ {
+		if r.rungs[i].suspect {
+			continue
+		}
+		lo, hi := r.rungs[i-1].mbps, r.rungs[i].mbps
+		if lo > 0 && hi > lo {
+			out = append(out, hi/lo)
+		}
+	}
+	return out
+}
+
+// suspectAbove is the gap ratio beyond which a jump is worth flagging as a
+// possible skipped rendition.
+//
+// Relative to what THIS ladder does, not an absolute number. A fixed 1.9x cries
+// skip on every gap of a ladder whose genuine spacing is 2x -- and because a
+// flagged gap is then excluded from the spacing estimate, that starves the very
+// estimate it feeds, the run never calibrates, and it creeps to the top. Seen
+// on a synthetic ladder spaced 1.58x to 2.25x: three real gaps flagged, twenty
+// levels where ten would do.
+//
+// So the bar is the widest gap already accepted, with room above it. Until
+// there is one, fall back to the configured absolute.
+func (r *sweepRun) suspectAbove() float64 {
+	widest := 0.0
+	for _, x := range r.trustedRatios() {
+		if x > widest {
+			widest = x
+		}
+	}
+	if widest == 0 {
+		return r.params.SkipRatio
+	}
+	return math.Max(r.params.SkipRatio, widest*1.4)
+}
+
+// calibrated reports whether the run has learned enough about THIS ladder to
+// aim a cap at the next rung rather than creep towards it.
+//
+// THREE trusted gaps, not two. With two the median is merely their average, and
+// measured spacings on one real ladder ran 1.30x to 1.87x -- two samples can sit
+// at one end of that and mislead with complete confidence. Three gives a middle
+// value that is an actual observation rather than a blend of the extremes.
+//
+// The cost is a few more creeping levels before aiming starts. That is the
+// cheaper error: creeping loses time, and aiming on a bad estimate loses
+// renditions that no later level can recover.
+func (r *sweepRun) calibrated() bool {
+	return len(r.trustedRatios()) >= 3
+}
+
+// minRatio is the TIGHTEST spacing seen so far. The upper bound on a cap comes
+// from this rather than the median: admitting two rungs at once causes a skip,
+// and the pair most likely to be skipped over is the closest pair.
+func (r *sweepRun) minRatio() float64 {
+	best := 0.0
+	for _, x := range r.trustedRatios() {
+		if best == 0 || x < best {
+			best = x
+		}
+	}
+	return best // zero when fewer than two rungs are known
+}
+
+// spacingEstimate predicts how far above the current rung the next one sits,
+// from the gaps already measured on THIS ladder. Before there is data, a
+// mid-range ladder spacing is assumed.
+//
+// Deliberately a low percentile rather than the middle: see lowPct.
+func (r *sweepRun) spacingEstimate() float64 {
+	if len(r.rungs) < 2 {
+		return defaultSpacing
+	}
+	ratios := r.trustedRatios()
 	if len(ratios) == 0 {
-		return 1.4
+		return defaultSpacing
 	}
 	sort.Float64s(ratios)
-	return ratios[len(ratios)/2]
+	return lowPct(ratios, aimPct)
 }
 
 // ready reports whether the client is in steady state and can be measured.
@@ -668,14 +843,18 @@ func (r *sweepRun) evaluate(samples []Sample, now time.Time) {
 	// observed to differ by a few percent.
 	climbed := r.current <= 0 || rate > r.current*(1+r.params.NewRungPct/100)
 	if climbed {
-		lv.NewRung = r.addRung(rate, drift)
+		lv.NewRung = r.addRung(rate, drift, r.capMbps)
 		prev := r.current
 		r.current = rate
-		if prev > 0 && rate > prev*r.params.SkipRatio {
+		r.holds = 0 // the estimate was good; stop widening it
+		if prev > 0 && rate > prev*r.suspectAbove() {
 			// A hint, never a verdict. Natural ladder spacing and single-skip
 			// gaps overlap, so this cannot prove anything -- it marks a gap
 			// worth a closer look.
 			lv.SuspectSkip = true
+			if n := len(r.rungs); n > 0 {
+				r.rungs[n-1].suspect = true
+			}
 			fmt.Printf("infinite-streaming-pifi: sweep %s: level %d: %.2f -> %.2f Mbps "+
 				"is a %.2fx jump; a rendition may sit between them\n",
 				r.mac, r.level, prev, rate, rate/prev)
@@ -715,7 +894,12 @@ func (r *sweepRun) nextLevel(now time.Time) {
 	next := r.nextCap()
 	// Once the cap is comfortably past the ceiling there is nothing left above
 	// to admit, so the client is at its top rendition whatever the rate says.
-	if r.ceiling > 0 && next > r.ceiling*1.5 {
+	// The stop must sit above the cap the TOP rendition needs, or the sweep
+	// terminates before it can reach its own target. The client wants roughly
+	// headroom x a rendition's cost before selecting it, so the ceiling rung
+	// requires ceiling x headroom -- a flat 1.5x ceiling was below that and made
+	// the top rung unreachable by construction.
+	if lim := r.ceiling * r.headroomFactor() * 1.3; r.ceiling > 0 && next > lim {
 		r.finish("cap raised well past the ceiling with no further rendition")
 		return
 	}
@@ -758,18 +942,95 @@ func (r *sweepRun) setCap(cap float64, now time.Time) {
 // missing ingredient -- time is. Holding is bounded, so a cap that genuinely is
 // too low still rises rather than stalling forever.
 func (r *sweepRun) nextCap() float64 {
-	if r.current > 0 {
-		if target := r.current * (1 + r.params.ClimbPct/100); target > r.capMbps {
-			r.holds = 0
-			return target
+	if r.current <= 0 {
+		return r.raiseFromCap()
+	}
+
+	// Until this run has measured the ladder it is on, CREEP rather than aim.
+	//
+	// Aiming needs two numbers -- how far apart the rungs are, and how much
+	// headroom this client wants -- and at the start it has neither, only
+	// defaults. Both skips observed on hardware happened in the first two
+	// levels, taken on those defaults, before there was anything to learn from.
+	//
+	// A small step cannot skip: it brings at most one rendition within reach at
+	// a time whatever the client's policy turns out to be. It is slower, and
+	// that is the right trade -- an undersized step costs a dwell, an oversized
+	// one costs a rung, and a lost rung cannot be recovered later in the run.
+	if !r.calibrated() {
+		// Purely multiplicative, with only a resolution floor under it.
+		//
+		// MinStepMbps must NOT apply here. It is an absolute 0.25 Mbps, which at
+		// the bottom of a ladder is a bigger step than the creep: at a 0.45 Mbps
+		// cap it turns a 22% rise into 56%, and the whole point of creeping is
+		// that the step is small enough that only one rendition can come within
+		// reach at a time. The floor silently suspended that guarantee over the
+		// first few levels -- exactly the levels it exists to protect, since the
+		// rungs are closest together down there and there is no measured spacing
+		// yet to fall back on.
+		//
+		// The real floor is the smallest cap change worth making at all, which
+		// is the same resolution limit the rung merge uses.
+		next := math.Max(r.capMbps, r.current) * creepStep
+		if next < r.capMbps+mergeFloorMbps {
+			next = r.capMbps + mergeFloorMbps
 		}
-		// Already above the client. Give it another dwell before adding more.
+		if next > r.capMbps {
+			r.holds = 0
+			return next
+		}
 		if r.holds < capHolds {
 			r.holds++
 			return r.capMbps
 		}
+		r.holds = 0
+		return r.raiseFromCap()
 	}
-	r.holds = 0
+
+	// Where the next rung probably sits, and what the client will want before
+	// taking it. Both are measured from this run once there is anything to
+	// measure, so the sweep gets better at aiming as it goes.
+	spacing := r.spacingEstimate() * math.Pow(stepWiden, float64(r.holds))
+	head := r.headroomFactor()
+	target := r.current * spacing * head * 1.02
+
+	// Never admit two rungs. The client takes the HIGHEST rendition it will
+	// accept, so a cap clearing two of them skips one -- exactly the failure a
+	// descending sweep suffers from and this design exists to avoid. The bound
+	// uses the tightest spacing SEEN, since the closest pair is the one at risk.
+	//
+	// Only once there is something to see. Applying it with a default spacing
+	// clamped the cap below what the next rung needed and the run escaped only
+	// by timing out its holds -- a bound invented from no data blocking a step
+	// the data would have allowed.
+	if mr := r.minRatio(); mr > 0 {
+		if lid := r.current * mr * mr * head * 0.98; target > lid {
+			target = lid
+		}
+	}
+
+	if target > r.capMbps {
+		r.holds = 0
+		return target
+	}
+	// The cap already offers more than the client has taken. Waiting is the
+	// only thing that can help; raising cannot.
+	if r.holds < capHolds {
+		r.holds++
+		return r.capMbps
+	}
+	r.holds++
+	return r.raiseFromCap()
+}
+
+// raiseFromCap nudges the cap up when there is no rung to aim from, or when
+// aiming has not produced a climb.
+//
+// This one KEEPS the MinStepMbps floor. It is the escape from a level that has
+// already refused to move the client, so a step big enough to change something
+// is the point, and overshooting here costs a rung that was not being found
+// anyway.
+func (r *sweepRun) raiseFromCap() float64 {
 	next := r.capMbps * (1 + r.params.ClimbPct/100)
 	if next < r.capMbps+r.params.MinStepMbps {
 		next = r.capMbps + r.params.MinStepMbps
@@ -786,17 +1047,31 @@ func (r *sweepRun) nextCap() float64 {
 // the contaminated value -- the first sighting of a rung is the level where the
 // player was mid-transition -- and then anchored every later merge on it, which
 // split one real 14.3 Mbps rendition into "16.40" and "14.20" on hardware.
-func (r *sweepRun) addRung(mbps, drift float64) bool {
+func (r *sweepRun) addRung(mbps, drift, atCap float64) bool {
 	for i, existing := range r.rungs {
 		if math.Abs(existing.mbps-mbps) >= r.mergeWithin(existing.mbps) {
 			continue
 		}
 		if drift < existing.drift {
-			r.rungs[i] = mapped{mbps: mbps, drift: drift}
+			// Take the cleaner rate but keep the threshold already learned: the
+			// first sighting is where the switch actually happened, and a later,
+			// steadier look at the same rendition did not cause it.
+			r.rungs[i].mbps, r.rungs[i].drift = mbps, drift
 		}
 		return false
 	}
-	r.rungs = append(r.rungs, mapped{mbps: mbps, drift: drift})
+	m := mapped{mbps: mbps, drift: drift}
+	if r.phase == phaseClimb {
+		m.upAt = atCap
+	}
+	r.rungs = append(r.rungs, m)
+
+	// Getting here means the client left whatever it was on, and this cap is
+	// what moved it. Climbing, the threshold belongs to the rendition departed:
+	// this is the cap at which that one became untenable.
+	if r.phase == phaseClimb && len(r.rungs) > 1 {
+		r.rungs[len(r.rungs)-2].downAt = atCap
+	}
 	return true
 }
 
@@ -976,7 +1251,12 @@ func (r *sweepRun) ladder() Ladder {
 		if r.ceilingLinkLimited && math.Abs(m.mbps-r.ceiling) < 1e-9 {
 			unstable = true
 		}
-		rungs = append(rungs, Rung{Mbps: round2(m.mbps), Unstable: unstable})
+		rungs = append(rungs, Rung{
+			Mbps:       round2(m.mbps),
+			UpAtMbps:   round2(m.upAt),
+			DownAtMbps: round2(m.downAt),
+			Unstable:   unstable,
+		})
 	}
 	sort.Slice(rungs, func(i, j int) bool { return rungs[i].Mbps < rungs[j].Mbps })
 	note := fmt.Sprintf("climbed from %.2f Mbps in %.0f%% steps towards a %.2f Mbps ceiling, %ds windows",
@@ -991,6 +1271,18 @@ func (r *sweepRun) ladder() Ladder {
 		note += "; the top rung is UNRELIABLE -- the client never stopped fetching " +
 			"continuously while unconditioned, so the link may have set the ceiling " +
 			"rather than the player's own top rendition"
+	}
+	var hsum float64
+	var hn int
+	for _, x := range rungs {
+		if h := x.Headroom(); h > 0 {
+			hsum += h
+			hn++
+		}
+	}
+	if hn > 0 {
+		note += fmt.Sprintf("; the client wanted %.2fx a rendition's cost before "+
+			"selecting it, over %d observed switches", hsum/float64(hn), hn)
 	}
 	if len(r.throttle) > 0 {
 		worst := 0.0
@@ -1029,7 +1321,10 @@ func (s *Sweeper) View(mac string) *SweepView {
 	}
 	found := make([]Rung, 0, len(r.rungs))
 	for _, m := range r.rungs {
-		found = append(found, Rung{Mbps: round2(m.mbps), Unstable: m.drift > unstableDrift})
+		found = append(found, Rung{
+			Mbps: round2(m.mbps), UpAtMbps: round2(m.upAt),
+			DownAtMbps: round2(m.downAt), Unstable: m.drift > unstableDrift,
+		})
 	}
 	sort.Slice(found, func(i, j int) bool { return found[i].Mbps < found[j].Mbps })
 	return &SweepView{
