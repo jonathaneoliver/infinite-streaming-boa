@@ -479,6 +479,33 @@ That matters more than it sounds -- see *the artefact that had to be removed*.
 The box's own class counters read the configured rate exactly at every level:
 0.250, 0.500, 1.048, 2.000, 4.000.
 
+**Repeatability**, four runs per rate with no other client on the radio (each
+run's contention was recorded, not assumed):
+
+| cap | mean | sd | spread | runs |
+|---|---|---|---|---|
+| 0.25 | 0.900 | 0.076 | 0.181 | 0.767, 0.948, 0.942, 0.942 |
+| 0.50 | 0.947 | 0.002 | 0.006 | |
+| 1.00 | 0.949 | 0.001 | 0.004 | |
+| 2.00 | 0.951 | 0.001 | 0.002 | |
+| 4.00 | 0.952 | 0.000 | 0.001 | 0.952, 0.951, 0.952, 0.952 |
+
+The figure rises monotonically with rate and the spread shrinks, which is the
+signature of a systematic effect rather than noise: the per-request round trip
+at each segment boundary costs relatively less as more bytes move between
+requests, so the ratio converges on the 0.956 framing limit instead of
+wandering.
+
+0.25 Mbps has one outlier in four. It is left unresolved on purpose: a
+20-second window there carries only about three segments, so a single TCP
+timeout dominates it, and that is indistinguishable from the shaper itself
+stumbling at its lowest rate. Longer windows or more repeats at that rate would
+separate the two.
+
+An earlier pass reported 0.942 +/- 0.003 at 0.25 and was about to be written up
+as "the shaper repeats to a third of a percent". The next pass at the same rate
+spread 0.026. Four samples show a spread; they do not pin one.
+
 The client sits a little under the 0.956 the framing arithmetic predicts because
 each segment boundary costs a request round trip, and seven to ten segments
 across a 30 s window is two to three percent of idle.
