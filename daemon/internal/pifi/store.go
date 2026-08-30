@@ -80,6 +80,33 @@ func (s *Store) Put(p Policy) error {
 	return s.save()
 }
 
+// ReplaceAll swaps the whole policy set in a single write.
+//
+// One write, not one per device: save() rewrites the entire file each call, so
+// importing a configuration device-by-device would rewrite it N times and burn
+// N times the flash for the same result. The Store's own comment is that SD
+// card wear is the usual way a Pi appliance dies.
+//
+// It is also the only way an import can be all-or-nothing. Between two Put
+// calls the file on disk holds half the new configuration, and a power cut
+// there leaves the box conditioning by a state nobody chose.
+func (s *Store) ReplaceAll(pol map[string]Policy) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	next := make(map[string]Policy, len(pol))
+	for _, p := range pol {
+		p.MAC = normMAC(p.MAC)
+		next[p.MAC] = p
+	}
+	prev := s.pol
+	s.pol = next
+	if err := s.save(); err != nil {
+		s.pol = prev // keep memory and disk agreeing
+		return err
+	}
+	return nil
+}
+
 func (s *Store) Delete(mac string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()

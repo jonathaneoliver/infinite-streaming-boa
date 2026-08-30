@@ -45,6 +45,8 @@ func (a *API) Routes() *http.ServeMux {
 	mux.HandleFunc("DELETE /api/devices/{mac}/pattern", a.deletePattern)
 	mux.HandleFunc("POST /api/devices/{mac}/pattern/play", a.playPattern)
 	mux.HandleFunc("DELETE /api/devices/{mac}/pattern/play", a.stopPattern)
+	mux.HandleFunc("GET /api/config", a.getConfig)
+	mux.HandleFunc("POST /api/config", a.postConfig)
 	mux.HandleFunc("PUT /api/devices/{mac}/ladders/{service}", a.putLadder)
 	mux.HandleFunc("DELETE /api/devices/{mac}/ladders/{service}", a.deleteLadder)
 	mux.HandleFunc("POST /api/devices/{mac}/reset", a.resetDevice)
@@ -603,6 +605,63 @@ func (a *API) stopSweep(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"stopped": mac})
+}
+
+// getConfig exports every device's operator intent as one document.
+func (a *API) getConfig(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, ExportConfig(a.e.Store().All()))
+}
+
+// configPost carries a configuration to import.
+//
+// The document is the body itself, with mode alongside it, so that a file
+// written by GET /api/config can be POSTed straight back without being
+// rewrapped. Mode therefore comes from the query string.
+type configPost struct {
+	ConfigExport
+}
+
+// postConfig imports a configuration.
+//
+// Validated in full before anything is written, and written in one store
+// operation, so the box either ends up matching the document or is left exactly
+// as it was. Import is not a merge of individual fields: a device present in
+// the document replaces that device's policy wholesale, because a configuration
+// describes a state rather than a change.
+func (a *API) postConfig(w http.ResponseWriter, r *http.Request) {
+	var in configPost
+	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+		writeErr(w, http.StatusBadRequest, "malformed body: "+err.Error())
+		return
+	}
+	mode := ImportMerge
+	switch q := strings.TrimSpace(r.URL.Query().Get("mode")); q {
+	case "", string(ImportMerge):
+	case string(ImportReplace):
+		mode = ImportReplace
+	default:
+		writeErr(w, http.StatusBadRequest,
+			"mode must be \"merge\" or \"replace\"")
+		return
+	}
+	if err := in.Validate(); err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	next, wrote, removed := in.Apply(a.e.Store().All(), mode)
+	if err := a.e.Store().ReplaceAll(next); err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	// Every imported device's conditioning may have changed, and a pattern that
+	// was mid-run now belongs to a policy nobody in this session authored.
+	for _, mac := range wrote {
+		a.e.Player().Pause(mac, "paused: a configuration was imported")
+	}
+	a.e.BumpControl()
+	writeJSON(w, http.StatusOK, map[string]any{
+		"mode": string(mode), "wrote": wrote, "removed": removed,
+	})
 }
 
 type ladderPut struct {
