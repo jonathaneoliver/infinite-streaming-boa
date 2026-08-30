@@ -496,11 +496,24 @@ at each segment boundary costs relatively less as more bytes move between
 requests, so the ratio converges on the 0.956 framing limit instead of
 wandering.
 
-0.25 Mbps has one outlier in four. It is left unresolved on purpose: a
-20-second window there carries only about three segments, so a single TCP
-timeout dominates it, and that is indistinguishable from the shaper itself
-stumbling at its lowest rate. Longer windows or more repeats at that rate would
-separate the two.
+0.25 Mbps was chased down separately, because one run in four had come in at
+0.767 and two explanations fitted equally well: the shaper stumbling at its
+lowest rate, or a short window concentrating a rare transport event. Fifteen
+further runs at two window lengths:
+
+| window | runs | mean | sd | min | runs with a >1 s stall |
+|---|---|---|---|---|---|
+| 20 s | 10 | 0.943 | 0.003 | 0.934 | **0** |
+| 60 s | 5 | 0.943 | 0.001 | 0.942 | **0** |
+
+Neither explanation survives. The shaper is steady (0.943 throughout), and
+window length changes nothing — 20 s and 60 s agree to three decimals — so it
+was not short-window fragility either. The outlier did not reproduce and is
+recorded as an unattributed transient.
+
+The largest inter-arrival gap was 0.58 to 0.67 s in every one of the fifteen
+runs, against 13.3 s when the same rate was measured with an oversized
+transfer. That is the difference the traffic shape makes.
 
 An earlier pass reported 0.942 +/- 0.003 at 0.25 and was about to be written up
 as "the shaper repeats to a third of a percent". The next pass at the same rate

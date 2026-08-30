@@ -266,17 +266,16 @@ device card. Optional: the image builds without it.
   exactly, and the client sees 0.94–0.95 of it, which is the Ethernet, IP and
   TCP framing the cap counts and a client's payload does not.
 
-  Four runs per rate with the radio otherwise quiet: 0.947 at 0.5 Mbps, 0.949 at
-  1, 0.951 at 2, 0.952 at 4, each repeating to within 0.006 or better and the
+  Four runs per rate with the radio otherwise quiet: 0.943 at 0.25 Mbps, 0.947
+  at 0.5, 0.949 at 1, 0.951 at 2, 0.952 at 4, each repeating to within 0.006 or better and the
   best to 0.001. The figure rises monotonically with rate because the per-request
   round trip costs relatively less as more bytes move between requests, so it
   converges on the framing limit rather than drifting.
 
-  **0.25 Mbps is not yet settled.** Three runs of four agree with the rest
-  (0.942–0.948); one came in at 0.767. Whether that is the shaper stumbling at
-  its lowest rate or the measurement being fragile there — a 20-second window at
-  0.25 Mbps carries only about three segments, so one TCP timeout dominates it —
-  cannot be told apart from this data.
+  0.25 Mbps sits at 0.943, measured over fifteen further runs at two window
+  lengths — 0.943 ± 0.003 over 20 s and 0.943 ± 0.001 over 60 s, with no stall
+  in any of them. An earlier single run of 0.767 did not reproduce and is taken
+  as a transient rather than a property of the rate.
 
   **Uplink is untested at any rate.**
 - A configured one-way delay appears as that delay in round-trip time —
