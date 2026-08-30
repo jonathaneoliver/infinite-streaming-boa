@@ -404,7 +404,13 @@ func TestSweepCapAdmitsOnlyOneRungAtATime(t *testing.T) {
 	// block wide ladders -- a default lid stalls a client whose next rendition
 	// is 2x away, which is worse than the risk it avoids.
 	r := &sweepRun{params: testParams(), phase: phaseClimb, current: 4, capMbps: 4.2}
+	// Three trusted gaps, because aiming does not begin until the run has that
+	// many: two samples of a spacing that ranges 1.30x to 1.87x can both sit at
+	// one end and mislead. Below that it creeps instead, which is a different
+	// code path and not what this test is about.
 	r.rungs = []mapped{
+		{mbps: 4 / 1.3 / 1.3 / 1.3, upAt: 4 / 1.3 / 1.3 / 1.3 * playerDemand},
+		{mbps: 4 / 1.3 / 1.3, upAt: 4 / 1.3 / 1.3 * playerDemand},
 		{mbps: 4 / 1.3, upAt: 4 / 1.3 * playerDemand},
 		{mbps: 4, upAt: 4 * playerDemand},
 	}
