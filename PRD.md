@@ -260,11 +260,17 @@ device card. Optional: the image builds without it.
 ## 8) Success Criteria
 
 - A configured cap is delivered within the framing overhead of a real link of
-  that speed. **Verified 0.25 to 50 Mbps**: the kernel's own byte counters match
-  the configured rate at 0.25, 0.5, 1, 2 and 4 Mbps, and a client counting TCP
-  payload sees about −4.5%, which is exactly the Ethernet, IP and TCP headers
-  the cap counts and the payload does not. There is no accuracy penalty at the
-  bottom of the range.
+  that speed. Measured −4.5% at caps from 1.5 to 50 Mbps. Separately measured at
+  **0.25, 0.5, 1, 2 and 4 Mbps** downlink over Wi-Fi, from both the kernel's own
+  counters and an independent client: the counters read the configured rate
+  exactly, and the client sees 0.94–0.95 of it, which is the Ethernet, IP and
+  TCP framing the cap counts and a client's payload does not.
+
+  That low-rate figure is **one run per rate**, taken with another client
+  contending for airtime, and repeat runs at the same cap have differed by up to
+  1.8 points. It establishes that there is no gross penalty at the bottom of the
+  range — not that the number is 0.94 to a decimal place. **Uplink is untested
+  at any rate.**
 - A configured one-way delay appears as that delay in round-trip time —
   measured 200.6 ms for a 200 ms setting.
 - A device under test cannot tell the box is present: no extra hop, no address
