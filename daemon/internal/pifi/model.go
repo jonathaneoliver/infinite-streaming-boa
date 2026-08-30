@@ -116,6 +116,29 @@ type Ladder struct {
 	Provenance string `json:"provenance"`
 	MeasuredAt int64  `json:"measured_at,omitempty"`
 	Note       string `json:"note,omitempty"`
+	// Throttle is what the sweep incidentally learned about the SHAPER, at the
+	// caps where the client was pinned to it. It qualifies every rung above:
+	// rungs are a mean over a window, so they can be no more accurate or steady
+	// than the throttle that produced them.
+	Throttle []ThrottlePoint `json:"throttle,omitempty"`
+}
+
+// ThrottlePoint is a measurement of the conditioner itself, taken at a cap the
+// client could not live under.
+//
+// A starved client is a perfect instrument. It fetches back to back, so the
+// delivered rate is decided entirely by the shaper -- the player has no say,
+// the content has no say, VBR has no say. Every sweep passes through at least
+// one such level on its way up and would otherwise discard the reading.
+type ThrottlePoint struct {
+	CapMbps       float64 `json:"cap_mbps"`
+	DeliveredMbps float64 `json:"delivered_mbps"`
+	// Ratio is delivered over configured. Framing overhead puts a real link
+	// slightly under 1.
+	Ratio float64 `json:"ratio"`
+	// Variation is the coefficient of variation across the window: the jitter a
+	// rung measured at this rate inherits from the shaper.
+	Variation float64 `json:"variation"`
 }
 
 // Policy is everything the operator has configured for one device. It is keyed

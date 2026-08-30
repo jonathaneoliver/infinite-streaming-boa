@@ -237,6 +237,12 @@ device card. Optional: the image builds without it.
   player never selects — wrong codec, wrong viewport, skipped by its own logic —
   is never delivered and so never appears. Two devices can produce different
   ladders from identical content.
+- **A low cap can deliver its bytes late.** `netemLimit` floors the netem queue
+  at 1000 packets, which is 0.24 s of buffering at 50 Mbps but **48 s at
+  0.25 Mbps**. Throughput is unaffected — the rate is delivered exactly — but a
+  client-side measurement at 0.25 Mbps saw a 13-second stall, consistent with a
+  queue deep enough to drive TCP's retransmission timers. The bytes arrive; they
+  do not necessarily arrive usefully. See the open issue.
 - **Rung resolution is a merge tolerance.** Two renditions closer together than
   the larger of 250 kbps and 10% of the rate cannot be told apart and are
   reported as one. Real ladders are never spaced tighter than about 25%, which
@@ -253,7 +259,11 @@ device card. Optional: the image builds without it.
 ## 8) Success Criteria
 
 - A configured cap is delivered within the framing overhead of a real link of
-  that speed — measured −4.5% at caps from 1.5 to 50 Mbps.
+  that speed. **Verified 0.25 to 50 Mbps**: the kernel's own byte counters match
+  the configured rate at 0.25, 0.5, 1, 2 and 4 Mbps, and a client counting TCP
+  payload sees about −4.5%, which is exactly the Ethernet, IP and TCP headers
+  the cap counts and the payload does not. There is no accuracy penalty at the
+  bottom of the range.
 - A configured one-way delay appears as that delay in round-trip time —
   measured 200.6 ms for a 200 ms setting.
 - A device under test cannot tell the box is present: no extra hop, no address

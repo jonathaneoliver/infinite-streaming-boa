@@ -640,6 +640,64 @@ func TestSweepOverrideIsCleanAndEndsWithTheRun(t *testing.T) {
 	}
 }
 
+func TestStarvedLevelsCalibrateTheThrottle(t *testing.T) {
+	// A starved client is measuring the shaper and nothing else: it fetches
+	// back to back, so the delivered rate is decided entirely by the cap. Every
+	// climb passes through at least one such level and used to discard it.
+	//
+	// Here the shaper under-delivers by 6%, the way a real one does once
+	// framing is counted, and that has to reach the ladder rather than be
+	// silently folded into the rungs.
+	const shaperRatio = 0.94
+	r := &sweepRun{
+		params: testParams(), phase: phaseClimb,
+		level: 1, capMbps: 0.5, pinned: true, state: "running",
+	}
+	var samples []Sample
+	for i := 0; i < 40; i++ {
+		samples = append(samples, Sample{Down: 0.5 * shaperRatio})
+	}
+	r.evaluate(samples, time.Unix(1700000000, 0))
+
+	if len(r.throttle) != 1 {
+		t.Fatalf("got %d throttle points, want 1", len(r.throttle))
+	}
+	got := r.throttle[0]
+	if math.Abs(got.Ratio-shaperRatio) > 0.005 {
+		t.Errorf("ratio = %.3f, want %.3f", got.Ratio, shaperRatio)
+	}
+	if got.CapMbps != 0.5 {
+		t.Errorf("cap = %.2f, want 0.50", got.CapMbps)
+	}
+	if got.Variation > 0.01 {
+		t.Errorf("variation = %.3f on a flat window, want ~0", got.Variation)
+	}
+	if len(r.rungs) != 0 {
+		t.Errorf("recorded %v as rungs; a starved level is not a rendition", r.rungs)
+	}
+}
+
+func TestVariationIsTheJitterARungInherits(t *testing.T) {
+	flat := make([]Sample, 20)
+	for i := range flat {
+		flat[i] = Sample{Down: 4}
+	}
+	if v := variation(flat); v > 0.001 {
+		t.Errorf("flat window varied by %.3f", v)
+	}
+	noisy := make([]Sample, 20)
+	for i := range noisy {
+		noisy[i] = Sample{Down: 4}
+		if i%2 == 0 {
+			noisy[i] = Sample{Down: 6}
+		}
+	}
+	// +/-20% around a mean of 5.
+	if v := variation(noisy); math.Abs(v-0.2) > 0.01 {
+		t.Errorf("variation = %.3f, want ~0.20", v)
+	}
+}
+
 func TestPlateauUsesMeanNotMedian(t *testing.T) {
 	// Regression for the defect real hardware exposed. A player on an uncapped
 	// link bursts at line rate and then idles, so the series is bimodal. The

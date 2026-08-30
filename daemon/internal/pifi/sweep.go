@@ -322,6 +322,8 @@ type sweepRun struct {
 
 	// pinned records that this level timed out still fetching continuously.
 	pinned bool
+	// throttle accumulates what the starved levels revealed about the shaper.
+	throttle []ThrottlePoint
 
 	state  string // "running", "done", "failed"
 	reason string
@@ -603,9 +605,18 @@ func (r *sweepRun) evaluate(samples []Sample, now time.Time) {
 	if r.capMbps > 0 && r.pinned {
 		lv.Saturated = true
 		r.levels = append(r.levels, lv)
+		// Free calibration. Pinned to the cap, the client is measuring the
+		// shaper rather than the content, so this reading qualifies every rung
+		// the sweep goes on to report.
+		cv := variation(samples)
+		r.throttle = append(r.throttle, ThrottlePoint{
+			CapMbps: round2(r.capMbps), DeliveredMbps: round2(rate),
+			Ratio: round3(rate / r.capMbps), Variation: round3(cv),
+		})
 		fmt.Printf("infinite-streaming-pifi: sweep %s: level %d, cap %.2f Mbps: "+
-			"starved at %.2f Mbps, no rendition fits under this cap\n",
-			r.mac, lv.Level, lv.CapMbps, rate)
+			"starved at %.2f Mbps (%.1f%% of cap, %.1f%% variation), "+
+			"no rendition fits under this cap\n",
+			r.mac, lv.Level, lv.CapMbps, rate, 100*rate/r.capMbps, 100*cv)
 		r.nextLevel(now)
 		return
 	}
@@ -815,6 +826,22 @@ func dutyCycle(samples []Sample) float64 {
 	return meanDown(samples) / peak
 }
 
+// variation is the coefficient of variation of a window: standard deviation
+// over the mean. On a starved client this is the shaper's own jitter, which is
+// the floor on how precisely any rung can be measured at that rate.
+func variation(samples []Sample) float64 {
+	m := meanDown(samples)
+	if m <= 0 || len(samples) < 2 {
+		return 0
+	}
+	var sum float64
+	for _, s := range samples {
+		d := s.Down - m
+		sum += d * d
+	}
+	return math.Sqrt(sum/float64(len(samples))) / m
+}
+
 func meanDown(samples []Sample) float64 {
 	var sum float64
 	for _, s := range samples {
@@ -886,12 +913,23 @@ func (r *sweepRun) ladder() Ladder {
 			"continuously while unconditioned, so the link may have set the ceiling " +
 			"rather than the player's own top rendition"
 	}
+	if len(r.throttle) > 0 {
+		worst := 0.0
+		for _, t := range r.throttle {
+			if d := math.Abs(1 - t.Ratio); d > worst {
+				worst = d
+			}
+		}
+		note += fmt.Sprintf("; throttle measured %.0f%% off configured at its worst "+
+			"across %d starved level(s)", 100*worst, len(r.throttle))
+	}
 	return Ladder{
 		Service:    r.service,
 		Rungs:      rungs,
 		Provenance: LadderMeasured,
 		MeasuredAt: r.started.UnixMilli(),
 		Note:       note,
+		Throttle:   r.throttle,
 	}
 }
 
@@ -925,3 +963,4 @@ func (s *Sweeper) View(mac string) *SweepView {
 }
 
 func round2(v float64) float64 { return math.Round(v*100) / 100 }
+func round3(v float64) float64 { return math.Round(v*1000) / 1000 }

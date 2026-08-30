@@ -453,3 +453,63 @@ delivered rendition bitrate holds only once the buffer is full, and rests on the
 player fetching one segment of media per segment duration. Startup and buffer
 fill both run at line rate and would read high, which is what the settle phase
 exists to exclude.
+
+---
+
+## Measured — throttle accuracy across the range
+
+**VERIFIED** on the Pi on 2026-08-30, over 5 GHz Wi-Fi, against a bulk HTTPS
+transfer pulled by a laptop associated to the AP. Measured from BOTH ends: the
+box's own `tc` class counters, and the bytes the client's application actually
+received.
+
+| configured cap | box counters | client payload | client ÷ cap |
+|---|---|---|---|
+| 0.25 Mbps | 0.250 | 0.148* | 0.59* |
+| 0.50 Mbps | 0.500 | 0.483 | 0.965 |
+| 1.00 Mbps | 1.048 | 0.960 | 0.960 |
+| 2.00 Mbps | 2.000 | 1.438* | 0.72* |
+| 4.00 Mbps | 4.000 | 3.228* | 0.81* |
+| unshaped | 30.02 | 28.75 | — |
+
+\* depressed by multi-second stalls; see below.
+
+**The shaper itself is exact.** The box counters match the configured rate at
+every level. An earlier run with no stalls put the client at 0.953–0.957
+uniformly across 0.25–4 Mbps, which is the framing arithmetic: a client counts
+TCP payload while the cap counts wire bytes, and 66 bytes of header per
+1448-byte payload is +4.6%, so payload ÷ cap should read 1/1.046 = 0.956.
+
+**There is no accuracy penalty at low rates.** The concern that opened this —
+that sub-1.5 Mbps was unverified and the netem queue floor predicted trouble —
+was unfounded as far as *throughput* goes.
+
+**Delivery timing is another matter.** Client-side gaps reached 13.3 s at
+0.25 Mbps, 2.8 s at 1 Mbps and 5.5 s at 4 Mbps. `netemLimit` floors the queue at
+1000 packets, which is 48 s of buffering at 0.25 Mbps, and a queue that deep
+drives TCP's retransmission timers. Two confounds keep this from being a firm
+conclusion: another client was streaming ~28 Mbps and competing for airtime, and
+the stalls appear at 0.25/1/4 but not 0.5/2, which is not the clean
+rate-dependence bufferbloat alone would produce.
+
+### What a client cannot measure
+
+Sub-second delivery smoothness is **not observable from an HTTPS client**. TLS
+delivers whole records, so arrival is quantised at one record however the shaper
+paced the packets underneath. Measured median read was 16384 bytes at every
+rate, and the inter-arrival gaps matched `16 KB ÷ rate` to within a few percent:
+
+| cap | 16 KB ÷ rate | measured p50 gap |
+|---|---|---|
+| 0.25 | 524 ms | 538 ms |
+| 0.50 | 262 ms | 268 ms |
+| 2.00 | 65.5 ms | 65.6 ms |
+| 4.00 | 32.8 ms | 32.5 ms |
+
+So any "burstiness" figure taken from a client at bin widths below one record
+period is measuring TLS framing. At 1-second bins — past that quantisation — the
+99th-percentile bin carried 1.05x the nominal rate at 0.25 and 0.5 Mbps, which
+is close to perfect pacing.
+
+Measuring the shaper's own pacing requires a packet capture at the egress
+interface, before the radio.
