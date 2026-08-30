@@ -124,7 +124,43 @@ device card. Optional: the image builds without it.
   throughput is visible without setting a policy first.
 - Stopping the daemon removes all conditioning.
 
-### 6.4 Interface
+### 6.4 Rendition ladders
+
+- A **ladder** is the set of bitrates a player actually delivers. It is keyed by
+  **(device, service)**, never by device alone: two streaming services share no
+  rungs, so one ladder per device would have each measurement overwrite the last.
+- The service is **named by the operator**, not detected. SNI is being removed by
+  ECH, QUIC buries the handshake, and DoH removes the DNS — each would decay into
+  silently mislabelling a ladder rather than into failing.
+- A ladder is **measured by sweeping**: hold the device unconditioned to find the
+  ceiling, then place each cap just under the last rung the player demonstrated,
+  and record where throughput settles. Anchoring on the rung rather than stepping
+  the cap uniformly forces a downshift every level, so the sweep visits each rung
+  once instead of re-measuring rungs the player has not been pushed off.
+- **A level waits for the client, not for a clock.** While a player is still on a
+  rendition it can no longer afford it fetches continuously and stays pinned to
+  the cap; the moment it drops, idle gaps appear. The sweep waits for that, then
+  for the rate to steady, before measuring. A fixed wait cannot work: a real
+  device took 40 seconds to let go and 15 more to settle, and measuring through
+  the transition reports a confident rung that does not exist.
+- **A client that never drops has reached its lowest rendition.** That level ends
+  early rather than measuring the cap back.
+- **The sweep only ever descends.** Re-visiting a rung means raising the cap, and
+  a climb cannot be detected: a player that has not begun climbing looks exactly
+  like one that has finished.
+- The sweep drives the device's downlink cap for its duration and suspends the
+  operator's delay, jitter and loss. Nothing is written while it runs, so an
+  abandoned or crashed sweep restores stored policy by forgetting.
+- **One sweep at a time.** Wi-Fi airtime is shared, so two at once measure each
+  other.
+- A sweep that is stopped, or whose device leaves, yields **no ladder**. It cannot
+  know whether the ladder continues below where it stopped.
+- Every ladder carries its **provenance** — measured or typed — and the interface
+  renders them differently. Editing a rung by hand makes the ladder typed.
+- Rungs measured from a window too noisy to be flat are marked **approximate**
+  rather than dropped.
+
+### 6.5 Interface
 
 - State arrives as **complete snapshots** over server-sent events, with polling
   as an equivalent fallback. A dropped frame cannot cause drift.
@@ -165,6 +201,22 @@ device card. Optional: the image builds without it.
   per client port. See the open decision in the issues.
 - **Encrypted payloads stay encrypted.** Manifest-level inspection needs a proxy
   that is the origin path.
+- **A measured ladder is the effective one, not the manifest's.** A rendition the
+  player never selects — wrong codec, wrong viewport, skipped by its own logic —
+  is never delivered and so never appears. Two devices can produce different
+  ladders from identical content.
+- **Rung resolution is a merge tolerance.** Two renditions closer together than
+  the larger of 250 kbps and 10% of the rate cannot be told apart and are
+  reported as one. Real ladders are never spaced tighter than about 25%, which
+  is the margin that makes this safe.
+- **A rung is a window mean, over several segments.** Fetches arrive in bursts
+  with idle gaps, so no individual sample is ever a rendition rate — only the
+  mean over whole segment periods is. A window spanning too few segments reads
+  the burst pattern rather than the stream.
+- **A rung is a wire rate, not a media bitrate.** It counts what the kernel
+  counts, framing included, because that is what a cap limits — so it is the
+  right unit for setting one. Against a manifest's `AVERAGE-BANDWIDTH` expect
+  about +4.6% on IPv4 and +6% on IPv6, plus retransmissions.
 
 ## 8) Success Criteria
 

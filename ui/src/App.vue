@@ -189,6 +189,9 @@ onUnmounted(() => window.clearInterval(ticker));
       @remove-sub="(id: string) => dev.deleteSub(c.mac, id)"
       @patch-sub="(id: string, p: Record<string, unknown>) => dev.patchSub(c.mac, id, rev(c), p)"
       @sub-shape="(id: string, dir: 'down' | 'up', s: Shape) => dev.patchSub(c.mac, id, rev(c), { [dir]: s })"
+      @sweep="(svc: string) => dev.startSweep(c.mac, svc)"
+      @stop-sweep="dev.stopSweep(c.mac)"
+      @remove-ladder="(svc: string) => dev.removeLadder(c.mac, svc)"
     />
 
     <div v-if="!clients.length" class="empty">

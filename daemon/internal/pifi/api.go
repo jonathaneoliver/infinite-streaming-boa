@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io/fs"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -38,6 +39,10 @@ func (a *API) Routes() *http.ServeMux {
 	mux.HandleFunc("POST /api/devices/{mac}/sub", a.postSub)
 	mux.HandleFunc("PATCH /api/devices/{mac}/sub/{id}", a.patchSub)
 	mux.HandleFunc("DELETE /api/devices/{mac}/sub/{id}", a.deleteSub)
+	mux.HandleFunc("POST /api/devices/{mac}/sweep", a.startSweep)
+	mux.HandleFunc("DELETE /api/devices/{mac}/sweep", a.stopSweep)
+	mux.HandleFunc("PUT /api/devices/{mac}/ladders/{service}", a.putLadder)
+	mux.HandleFunc("DELETE /api/devices/{mac}/ladders/{service}", a.deleteLadder)
 	mux.HandleFunc("POST /api/devices/{mac}/reset", a.resetDevice)
 	mux.HandleFunc("DELETE /api/devices/{mac}", a.forgetDevice)
 	mux.Handle("/", http.FileServer(http.FS(a.ui)))
@@ -368,6 +373,171 @@ func (a *API) deleteSub(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	p.Sub = out
+	a.commit(w, p)
+}
+
+// sweepRequest starts a ladder sweep. Service is required and carries no
+// default: a ladder measured against an unnamed service is one nobody can
+// interpret later, and guessing "default" would quietly overwrite the previous
+// run's result the next time a different service was swept.
+type sweepRequest struct {
+	Service string       `json:"service"`
+	Params  *SweepParams `json:"params"`
+}
+
+func validSweepParams(p SweepParams) error {
+	switch {
+	case p.StartMbps <= 0 || p.StartMbps > 100:
+		return fmt.Errorf("start_mbps must be between 0 and 100")
+	case p.ClimbPct < 5 || p.ClimbPct > 100:
+		// Below 5 the climb creeps; above 100 the cap can admit two renditions
+		// at once and the no-skip guarantee is gone.
+		return fmt.Errorf("climb_pct must be between 5 and 100")
+	case p.DwellSec < 5 || p.DwellSec > 900:
+		return fmt.Errorf("dwell_sec must be between 5 and 900")
+	case p.ObserveSec < 5 || p.ObserveSec > 900:
+		return fmt.Errorf("observe_sec must be between 5 and 900")
+	case p.RecoverSec < 0 || p.RecoverSec > 900:
+		return fmt.Errorf("recover_sec must be between 0 and 900")
+	case p.NewRungPct < 1 || p.NewRungPct > 100:
+		return fmt.Errorf("new_rung_pct must be between 1 and 100")
+	case p.SkipRatio < 1.1 || p.SkipRatio > 10:
+		return fmt.Errorf("skip_ratio must be between 1.1 and 10")
+	case p.MinStepMbps <= 0 || p.MinStepMbps > 10:
+		return fmt.Errorf("min_step_mbps must be between 0 and 10")
+	case p.MergePct < 0 || p.MergePct > 25:
+		// Above 25 the tolerance starts to swallow genuine rungs: real ladders
+		// are never spaced tighter than about that.
+		return fmt.Errorf("merge_pct must be between 0 and 25")
+	case p.MaxLevels < 2 || p.MaxLevels > 200:
+		return fmt.Errorf("max_levels must be between 2 and 200")
+	}
+	return nil
+}
+
+// startSweep begins measuring a device's ladder for one service.
+//
+// The device must be streaming that service already: the sweep's opening level
+// is an unconditioned observation, and with nothing playing it measures nothing
+// and says so rather than reporting an empty ladder.
+func (a *API) startSweep(w http.ResponseWriter, r *http.Request) {
+	var in sweepRequest
+	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+		writeErr(w, http.StatusBadRequest, "malformed body: "+err.Error())
+		return
+	}
+	service := strings.TrimSpace(in.Service)
+	if service == "" {
+		writeErr(w, http.StatusBadRequest,
+			"service is required: name what the device is streaming, e.g. \"netflix\". "+
+				"A ladder belongs to a service, not to a device")
+		return
+	}
+	p := DefaultSweepParams()
+	if in.Params != nil {
+		p = *in.Params
+		if err := validSweepParams(p); err != nil {
+			writeErr(w, http.StatusBadRequest, err.Error())
+			return
+		}
+	}
+	mac := normMAC(r.PathValue("mac"))
+	// A sweep drives the kernel cap, so a device with no address has nothing to
+	// attach a filter to and the descent would silently do nothing.
+	shapeable := false
+	for _, c := range a.e.Snapshot().Clients {
+		if c.MAC == mac {
+			shapeable = c.Present && c.Shapeable
+			break
+		}
+	}
+	if !shapeable {
+		writeErr(w, http.StatusConflict,
+			"device is not present and shapeable; a sweep cannot condition it")
+		return
+	}
+	if err := a.e.Sweeper().Start(mac, service, p, time.Now()); err != nil {
+		writeErr(w, http.StatusConflict, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusAccepted, map[string]any{
+		"started": mac, "service": service, "params": p,
+	})
+}
+
+// stopSweep abandons a running sweep. The device returns to stored policy on
+// the next tick; nothing needs unwinding because nothing was written.
+func (a *API) stopSweep(w http.ResponseWriter, r *http.Request) {
+	mac := normMAC(r.PathValue("mac"))
+	if err := a.e.Sweeper().Stop(mac); err != nil {
+		writeErr(w, http.StatusConflict, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"stopped": mac})
+}
+
+type ladderPut struct {
+	BaseRevision *uint64 `json:"base_revision"`
+	Rungs        []Rung  `json:"rungs"`
+	Note         string  `json:"note"`
+}
+
+// putLadder writes a ladder by hand, or corrects a measured one.
+//
+// Any hand-edited ladder becomes "typed" regardless of what it was before.
+// Leaving it labelled "measured" after an operator moved a rung would attach
+// the authority of a measurement to a number nobody measured.
+func (a *API) putLadder(w http.ResponseWriter, r *http.Request) {
+	var in ladderPut
+	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+		writeErr(w, http.StatusBadRequest, "malformed body: "+err.Error())
+		return
+	}
+	service := strings.TrimSpace(r.PathValue("service"))
+	if service == "" {
+		writeErr(w, http.StatusBadRequest, "service is required")
+		return
+	}
+	if len(in.Rungs) == 0 {
+		writeErr(w, http.StatusBadRequest, "a ladder needs at least one rung")
+		return
+	}
+	for _, rung := range in.Rungs {
+		if rung.Mbps <= 0 || rung.Mbps > 10000 {
+			writeErr(w, http.StatusBadRequest, "each rung must be between 0 and 10000 Mbps")
+			return
+		}
+	}
+	p := a.load(r.PathValue("mac"))
+	if !a.checkRev(w, p, in.BaseRevision) {
+		return
+	}
+	rungs := append([]Rung(nil), in.Rungs...)
+	sort.Slice(rungs, func(i, j int) bool { return rungs[i].Mbps < rungs[j].Mbps })
+	p.PutLadder(Ladder{
+		Service: service, Rungs: rungs,
+		Provenance: LadderTyped, MeasuredAt: nowMs(), Note: in.Note,
+	})
+	a.commit(w, p)
+}
+
+func (a *API) deleteLadder(w http.ResponseWriter, r *http.Request) {
+	service := r.PathValue("service")
+	p := a.load(r.PathValue("mac"))
+	out := p.Ladders[:0]
+	found := false
+	for _, l := range p.Ladders {
+		if strings.EqualFold(l.Service, service) {
+			found = true
+			continue
+		}
+		out = append(out, l)
+	}
+	if !found {
+		writeErr(w, http.StatusNotFound, "no ladder for service: "+service)
+		return
+	}
+	p.Ladders = out
 	a.commit(w, p)
 }
 

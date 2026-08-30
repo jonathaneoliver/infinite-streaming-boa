@@ -331,3 +331,106 @@ and AAAA answers are read: `name` → the address the record binds it to.
 - Announcements are a trickle — a handful of packets every few minutes — so the
   sampled socket of Source F is the wrong instrument: it drops most of what it
   sees by design, which is precisely the one packet carrying a name.
+---
+
+## Derived — rendition ladders from a cap sweep
+
+**Source:** the per-client downlink throughput series (Source D, derived between
+`tc` class polls), sampled at the tick and held for 300 samples.
+
+Nothing new is collected. A ladder is arithmetic over numbers already on the
+page.
+
+| Field | Units | Meaning |
+|---|---|---|
+| `ladder.rungs[].mbps` | Mbps | Delivered bitrate of one rendition: the **mean** over one observation window |
+| `ladder.rungs[].unstable` | bool | The window's two halves disagreed by more than 20% of its mean |
+| `ladder.provenance` | enum | `measured` (swept), `typed` (hand-entered), `fetched`, `inferred` |
+| `sweep.cap_mbps` | Mbps | Cap held during the current level. **0 means unconditioned**, not zero |
+| `sweep.levels[].rate_mbps` | Mbps | The observed plateau at that level: the window mean |
+| `sweep.levels[].drift` | fraction | \|mean(first half) − mean(second half)\| **over** the window mean. Not a percentage |
+| `sweep.levels[].saturated` | bool | The mean was ≥ 85% of the cap: the client had not dropped below it |
+
+**When a level is measured.** Not after a fixed wait. A player still on a
+rendition it can no longer afford fetches back-to-back and stays pinned to the
+cap; when it drops, idle gaps appear and throughput falls away. The sweep waits
+for that departure, then for two consecutive windows to agree, and only then
+opens its observation window.
+
+Measured on a real iPhone at a 26.4 Mbps cap: forty seconds pinned to the cap
+with **zero idle samples**, then a fifteen-second transition, then a steady
+plateau. A 45 s fixed settle opened the window mid-transition and reported
+**16.4 Mbps for a rung that sat at 14.3** — and an under-settled level does not
+look noisy, it looks like a confident rung between two real ones.
+
+**Why the mean, and not a median.** A player does not deliver its rendition at a
+steady rate: it fetches a segment at line rate and then goes idle, so the 1 Hz
+series is **bimodal** — bursts separated by zeroes. A median over a bimodal
+sample lands on whichever mode holds more than half the samples, which is a rate
+the traffic never carried.
+
+Measured on a real iPhone over 120 samples: **mean 13.52 Mbps, median 16.75
+Mbps**, 18% of samples at idle. The mean is the delivered rendition; the median
+is an artefact of the duty cycle.
+
+The mean is also what the underlying claim says. "One segment of media per
+segment duration" is a statement about *bytes over time*, and bytes over time is
+the mean. VBR is handled by making the window span several segments — not by
+choosing a different statistic.
+
+**Why drift, and not a spread.** An interquartile spread is meaningless on
+bursty data: a duty-cycled fetch sitting rock steady on one rendition has a huge
+IQR, so every level would read as unstable. What matters is whether the rate is
+*steady across the window*, so the two halves are compared instead. Bursts do
+not disturb that — each half averages over its own bursts and idles — while a
+player still hunting between renditions does.
+
+**Why 85% is the saturation line.** A configured cap delivers at about −4.5%
+(see *Measured accuracy*), so a saturated client sits near 0.955 of its cap. The
+remaining gap absorbs the jitter of a mean over a short window. The cost is
+that a genuine rung within 15% of the cap reads as saturation — it is found a
+level or two later, once the cap has moved further below it.
+
+**What a plateau near zero means.** A rebuffering player consumes its whole cap,
+so near-zero is not a starved player: it is a stopped one. The sweep cannot tell
+"ended", "paused" and "the app went away" apart, so it stops and says so rather
+than recording the silence as a rung.
+
+**How long a window needs to be.** Consecutive 1 Hz throughput samples are not
+independent — a single segment fetch spans several of them — so the useful unit
+is *segments per window*, not seconds. A 20 s window over 6 s segments is closer
+to three independent observations than to twenty, which is why widening it buys
+much less than √(seconds) would suggest, and why the default is 45 s (roughly
+seven to eleven segments at common segment durations).
+
+**A rung is a WIRE rate, and deliberately so.** It counts bytes as the kernel
+counts them — Ethernet, IP and TCP headers included — because that is what a tc
+cap limits. The cap needed to sustain a rendition is its wire rate, so measuring
+and capping in the same unit is the point. Do not "correct" a rung down to media
+bitrate: the pattern engine would only have to convert it straight back.
+
+Against a manifest, expect:
+
+| | overhead |
+|---|---|
+| Ethernet 14 + IPv4 20 + TCP 32, per 1448-byte payload | **+4.6%** |
+| the same over IPv6 (+20 bytes of header) | **+6.0%** |
+| TLS 1.3 records (~22 bytes per 16 KB) and HTTP/2 framing | +0.1–0.3% |
+| retransmissions | variable; large on a lossy radio |
+
+So `measured ≈ AVERAGE-BANDWIDTH × 1.046` on IPv4. Note the comparison is
+against `AVERAGE-BANDWIDTH`, not `BANDWIDTH`: a steady-state mean over several
+segments lands near the average, and HLS `BANDWIDTH` is a **peak**. On measured
+content the two sat 5–7% apart, which is inside the rung-merge tolerance — so
+distinguishing them is not worth the segment-boundary detection it would need.
+
+Note also that `BANDWIDTH` already accounts for the container and, where a
+rendition group is declared with the audio codec in `CODECS`, for the audio. The
+gap above it is transport framing, not media.
+
+**Confidence.** High for the arithmetic; the units and thresholds above are
+exact. Medium for the interpretation — that a steady-state plateau equals the
+delivered rendition bitrate holds only once the buffer is full, and rests on the
+player fetching one segment of media per segment duration. Startup and buffer
+fill both run at line rate and would read high, which is what the settle phase
+exists to exclude.

@@ -4,6 +4,7 @@ import type { Client, Shape, Series, ChartPrefs } from '@/types';
 import { PRESETS, ntopngUrl } from '@/types';
 import ShapeSliders from './ShapeSliders.vue';
 import SubClasses from './SubClasses.vue';
+import LadderPanel from './LadderPanel.vue';
 import TrafficChart from './TrafficChart.vue';
 
 const props = defineProps<{
@@ -28,6 +29,9 @@ const emit = defineEmits<{
   patchSub: [string, Record<string, unknown>];
   subShape: [string, 'down' | 'up', Shape];
   hovering: [boolean];
+  sweep: [service: string];
+  stopSweep: [];
+  removeLadder: [service: string];
 }>();
 
 // The chart props every plot on this card shares. Spread rather than repeated
@@ -52,6 +56,40 @@ const signalClass = computed(() => {
   if (s > -75) return 'warn';
   return 'bad';
 });
+
+/**
+ * The downlink cap actually in force, which is NOT always the stored policy.
+ *
+ * A ladder sweep drives the cap itself and deliberately never writes to stored
+ * policy, so that an abandoned or crashed run restores the operator's settings
+ * by simply being forgotten. The cost is that the policy the UI usually draws
+ * from says "unlimited" while the kernel is throttling hard.
+ *
+ * Drawing the policy in that state makes the interface claim a cap is not
+ * applied when it is -- the inverse of the failure the PRD names, and just as
+ * dishonest. The charts follow what is enforced.
+ */
+const sweeping = computed(() => props.client.sweep?.state === 'running');
+const downCap = computed(() =>
+  sweeping.value ? (props.client.sweep?.cap_mbps ?? 0) : props.client.policy.down.rate_mbps,
+);
+
+/**
+ * What the downlink controls display.
+ *
+ * During a sweep this is the ENFORCED shape, not the stored one, so the rate
+ * control tracks the cap down the ladder as each level is applied. The sweep's
+ * override is clean apart from the cap -- it suspends delay, jitter and loss for
+ * the duration -- so those read zero, because that is what the kernel has.
+ *
+ * The controls are read-only while this is happening: they are reporting, not
+ * accepting input, and the stored policy underneath is untouched.
+ */
+const downShape = computed<Shape>(() =>
+  sweeping.value
+    ? { rate_mbps: downCap.value, delay_ms: 0, jitter_ms: 0, loss_pct: 0 }
+    : props.client.policy.down,
+);
 
 const conditioned = computed(() => {
   const p = props.client.policy;
@@ -132,7 +170,7 @@ function fmtBytes(n: number): string {
           v-bind="chartProps"
           :t="series?.t ?? []" :data="series?.down ?? []"
           color="var(--down)" label="Downlink"
-          :cap="client.policy.down.rate_mbps" :height="24" compact
+          :cap="downCap" :height="24" compact
         />
       </span>
       <span class="cell num val" style="color: var(--down)">
@@ -275,6 +313,9 @@ function fmtBytes(n: number): string {
       <div class="dir down">
         <h3>
           Downlink <span class="meta">to device</span>
+          <span v-if="sweeping" class="badge" style="color: var(--warn)">
+            swept &middot; {{ downCap.toFixed(2) }} Mbps
+          </span>
           <span class="readout num">
             {{ client.down_counters.throughput_mbps.toFixed(2) }}
             <small>Mbps</small>
@@ -284,11 +325,16 @@ function fmtBytes(n: number): string {
           v-bind="chartProps"
           :t="series?.t ?? []" :data="series?.down ?? []"
           color="var(--down)" label="Downlink"
-          :cap="client.policy.down.rate_mbps" :height="196"
+          :cap="downCap" :height="196"
           @hovering="(v: boolean) => emit('hovering', v)"
         />
+        <p v-if="sweeping" class="meta swept-note">
+          These controls are showing what the sweep is enforcing, not your saved
+          settings — those are untouched and return when it ends.
+        </p>
         <ShapeSliders
-          :shape="client.policy.down" dir="down" :disabled="!client.shapeable"
+          :shape="downShape" dir="down"
+          :disabled="!client.shapeable || sweeping"
           @update="(s) => emit('shape', 'down', s)"
         />
       </div>
@@ -314,6 +360,16 @@ function fmtBytes(n: number): string {
         />
       </div>
     </div>
+
+    <!-- Ladders sit above the fold, not behind the counters toggle: a sweep is
+         a deliberate action someone came to the page to start, and one that
+         takes minutes needs its progress visible without hunting for it. -->
+    <LadderPanel
+      :client="client"
+      @sweep="(svc: string) => emit('sweep', svc)"
+      @stop-sweep="emit('stopSweep')"
+      @remove-ladder="(svc: string) => emit('removeLadder', svc)"
+    />
 
     <div class="card-foot">
       <!-- Round-trip is computed here rather than left to the reader: delay is
@@ -386,6 +442,14 @@ function fmtBytes(n: number): string {
 </template>
 
 <style scoped>
+/* A control that is reporting rather than accepting input must not look
+   editable, but it must still be readable -- the whole point is watching it
+   move. Dimmed, not hidden. */
+.swept-note {
+  color: var(--warn);
+  margin: 6px 0 0;
+}
+
 .fold-summary { display: flex; align-items: center; gap: 6px; flex: none; }
 /* A folded row must not wrap. A ragged two-line list is harder to scan than a
    dense one-line one, which is the entire reason for folding. */
