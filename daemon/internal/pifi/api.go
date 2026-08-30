@@ -41,6 +41,10 @@ func (a *API) Routes() *http.ServeMux {
 	mux.HandleFunc("DELETE /api/devices/{mac}/sub/{id}", a.deleteSub)
 	mux.HandleFunc("POST /api/devices/{mac}/sweep", a.startSweep)
 	mux.HandleFunc("DELETE /api/devices/{mac}/sweep", a.stopSweep)
+	mux.HandleFunc("PUT /api/devices/{mac}/pattern", a.putPattern)
+	mux.HandleFunc("DELETE /api/devices/{mac}/pattern", a.deletePattern)
+	mux.HandleFunc("POST /api/devices/{mac}/pattern/play", a.playPattern)
+	mux.HandleFunc("DELETE /api/devices/{mac}/pattern/play", a.stopPattern)
 	mux.HandleFunc("PUT /api/devices/{mac}/ladders/{service}", a.putLadder)
 	mux.HandleFunc("DELETE /api/devices/{mac}/ladders/{service}", a.deleteLadder)
 	mux.HandleFunc("POST /api/devices/{mac}/reset", a.resetDevice)
@@ -263,7 +267,125 @@ func (a *API) patchPolicy(w http.ResponseWriter, r *http.Request) {
 	if in.Enabled != nil {
 		p.Enabled = *in.Enabled
 	}
+	// Moving a slider on a device that is mid-pattern pauses the pattern.
+	//
+	// The run would otherwise overwrite the operator's value on the next tick,
+	// which reads as controls that do not work; and letting the edit stand
+	// while the run continues means a pattern is playing that no longer
+	// describes what the kernel is doing. Stopping and saying so on the
+	// snapshot is the only outcome that can be reasoned about from the UI.
+	if in.Down != nil || in.Up != nil {
+		a.e.Player().Pause(normMAC(r.PathValue("mac")),
+			"paused: you changed this device's controls by hand")
+	}
 	a.commit(w, p)
+}
+
+// patternPut carries a whole timeline. There is no partial keyframe patch: a
+// pattern is only meaningful as an ordered whole, and a per-keyframe endpoint
+// would let two concurrent edits interleave into a timeline neither operator
+// authored.
+type patternPut struct {
+	BaseRevision *uint64  `json:"base_revision"`
+	Pattern      *Pattern `json:"pattern"`
+}
+
+// putPattern stores a device's timeline. Storing is not playing.
+func (a *API) putPattern(w http.ResponseWriter, r *http.Request) {
+	var in patternPut
+	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+		writeErr(w, http.StatusBadRequest, "malformed body: "+err.Error())
+		return
+	}
+	if in.Pattern == nil {
+		writeErr(w, http.StatusBadRequest, "pattern is required")
+		return
+	}
+	if err := validPattern(*in.Pattern); err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	p := a.load(r.PathValue("mac"))
+	if !a.checkRev(w, p, in.BaseRevision) {
+		return
+	}
+	pat := *in.Pattern
+	p.Pattern = &pat
+	a.commit(w, p)
+}
+
+// deletePattern drops the stored timeline, and stops it if it is playing.
+//
+// Stopping is not optional here: leaving a run driving a pattern that no longer
+// exists would condition the device from an object the UI cannot show.
+func (a *API) deletePattern(w http.ResponseWriter, r *http.Request) {
+	mac := normMAC(r.PathValue("mac"))
+	_ = a.e.Player().Stop(mac)
+	p := a.load(mac)
+	if p.Pattern == nil {
+		writeErr(w, http.StatusNotFound, "this device has no pattern")
+		return
+	}
+	p.Pattern = nil
+	a.commit(w, p)
+}
+
+// playPattern starts the stored timeline, or resumes a paused run from where it
+// stopped.
+func (a *API) playPattern(w http.ResponseWriter, r *http.Request) {
+	mac := normMAC(r.PathValue("mac"))
+	now := time.Now()
+	if err := a.e.Player().Resume(mac, now); err == nil {
+		writeJSON(w, http.StatusAccepted, map[string]any{"resumed": mac})
+		return
+	}
+	p := a.load(mac)
+	if p.Pattern == nil {
+		writeErr(w, http.StatusBadRequest,
+			"this device has no pattern; author one before playing it")
+		return
+	}
+	// A pattern drives the kernel cap, so a device with no address has nothing
+	// to attach a filter to and playback would run invisibly, conditioning
+	// nothing while the playhead moved.
+	shapeable := false
+	for _, c := range a.e.Snapshot().Clients {
+		if c.MAC == mac {
+			shapeable = c.Present && c.Shapeable
+			break
+		}
+	}
+	if !shapeable {
+		writeErr(w, http.StatusConflict,
+			"device is not present and shapeable; a pattern cannot condition it")
+		return
+	}
+	// A sweep is already driving this device's cap. Two drivers would fight
+	// over it once per tick and the loser would be whichever ran first, which
+	// is not a behaviour anyone could predict from the interface.
+	if sv := a.e.Sweeper().View(mac); sv != nil && sv.State == "running" {
+		writeErr(w, http.StatusConflict,
+			"a ladder sweep is running on this device; stop it before playing a pattern")
+		return
+	}
+	if err := a.e.Player().Start(mac, *p.Pattern, now); err != nil {
+		writeErr(w, http.StatusConflict, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusAccepted, map[string]any{
+		"started": mac, "pattern": p.Pattern.Name, "dur_sec": p.Pattern.DurSec(),
+	})
+}
+
+// stopPattern ends a run. The device returns to stored policy on the next tick;
+// nothing needs unwinding because nothing was written.
+func (a *API) stopPattern(w http.ResponseWriter, r *http.Request) {
+	mac := normMAC(r.PathValue("mac"))
+	if err := a.e.Player().Stop(mac); err != nil {
+		writeErr(w, http.StatusConflict, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"stopped": mac})
 }
 
 type subPatch struct {
@@ -454,6 +576,13 @@ func (a *API) startSweep(w http.ResponseWriter, r *http.Request) {
 	if !shapeable {
 		writeErr(w, http.StatusConflict,
 			"device is not present and shapeable; a sweep cannot condition it")
+		return
+	}
+	// A pattern is already driving this device's cap; see playPattern for why
+	// the two are refused rather than layered.
+	if a.e.Player().Running(mac) {
+		writeErr(w, http.StatusConflict,
+			"a pattern is playing on this device; stop it before sweeping")
 		return
 	}
 	if err := a.e.Sweeper().Start(mac, service, p, time.Now()); err != nil {

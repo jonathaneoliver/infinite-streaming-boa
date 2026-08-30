@@ -107,6 +107,43 @@ device card. Optional: the image builds without it.
 - Writes carry the revision the operator was looking at; a concurrent edit to
   the same device is refused rather than silently overwritten.
 
+#### Patterns
+
+A device may also hold a **pattern**: a timeline that drives its conditioning
+instead of holding it still. A fixed cap only tests steady state, and what a
+player does *through* a transition is the question this box exists to answer.
+
+- A **keyframe** is the whole policy at one instant — both directions, all four
+  parameters — at an absolute time. Values are absolute, not relative to
+  anything the pattern did before.
+- The device's own rate, delay, jitter and loss controls are the keyframe
+  editor. Selecting a keyframe on the timeline points them at that moment;
+  with none selected they edit the stored policy as usual.
+- Keyframe times land on **half seconds**. Throughput is sampled once a second,
+  so a transition finer than that can be configured but never observed.
+- Between keyframes a value is **held**, and changes as a step at the next one.
+  The stored format also carries an interpolated mode, which the editor does
+  not yet offer: nothing has measured whether changing a netem rate mid-flight
+  disturbs the queue, and a smooth ramp would otherwise be a picture of a link
+  the box cannot prove it delivers.
+- A pattern **loops** by restarting at its first keyframe. There is no wrap
+  setting: a seamless loop is one whose last keyframe holds the same values as
+  its first, which is visible on the timeline.
+- Playing a pattern **overrides** stored policy and writes nothing, exactly as a
+  sweep does. Stopping it, abandoning it or losing the daemon restores the
+  operator's settings by simply forgetting the run. A one-shot pattern releases
+  the device when it ends rather than holding its last keyframe.
+- Playback runs in the **daemon**, not the browser: closing the page does not
+  end a soak, and reloading it does not lose the playhead.
+- Moving a control by hand during playback **pauses** the run and says so. The
+  alternatives — overwriting the operator's value on the next tick, or leaving a
+  pattern playing that no longer describes what is enforced — are both worse.
+- A sweep and a pattern both drive the cap, so starting either is **refused**
+  while the other is running on that device.
+- The interface shows what is **enforced** during playback, not the stored
+  policy: the cap line on the chart follows the timeline, and the controls
+  report rather than accept input.
+
 ### 6.3 Enforcement
 
 - Both directions are shaped on a **true egress queue**: downlink on the

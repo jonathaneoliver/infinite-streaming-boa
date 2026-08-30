@@ -237,11 +237,19 @@ func (e *Engine) demoTick() {
 			// production, so the dev loop exercises the real code path rather
 			// than a demo-only imitation of it.
 			downShape := pol.Down
+			upShape := pol.Up
 			if !pol.Enabled {
-				downShape = Shape{}
+				downShape, upShape = Shape{}, Shape{}
 			}
 			if sh, ok := e.sweep.Override(d.mac); ok {
 				downShape = sh
+			}
+			// A pattern drives the synthetic client too, so the dev loop shows
+			// a chart that actually responds to the timeline being authored.
+			// Without this the editor would look finished while proving
+			// nothing, which is the failure mode a demo mode exists to avoid.
+			if ds, us, ok := e.player.Override(d.mac); ok {
+				downShape, upShape = ds, us
 			}
 
 			down := offer
@@ -256,12 +264,12 @@ func (e *Engine) demoTick() {
 				down = math.Min(offer, downShape.RateMbps*(0.93+0.05*rand.Float64()))
 			}
 			up := offer * 0.12
-			if pol.Enabled && pol.Up.RateMbps > 0 {
-				up = math.Min(up, pol.Up.RateMbps*(0.93+0.05*rand.Float64()))
+			if upShape.RateMbps > 0 {
+				up = math.Min(up, upShape.RateMbps*(0.93+0.05*rand.Float64()))
 			}
 
 			c.DownCounters = e.demoCounters("d/"+d.mac, down, downShape, now)
-			c.UpCounters = e.demoCounters("u/"+d.mac, up, pol.Up, now)
+			c.UpCounters = e.demoCounters("u/"+d.mac, up, upShape, now)
 
 			for _, sub := range pol.Sub {
 				if !sub.Enabled {
@@ -293,11 +301,13 @@ func (e *Engine) demoTick() {
 	}
 	e.sweep.Advance(now, sweepObserver{hist: e.hist, live: live})
 	e.storeSweepResult()
+	e.player.Advance(now)
 	// Read the view AFTER advancing, as production does, or demo would show a
 	// sweep one tick behind the one it is actually running and the two would
 	// disagree about when a level changed.
 	for i := range clients {
 		clients[i].Sweep = e.sweep.View(clients[i].MAC)
+		clients[i].PatternRun = e.player.View(clients[i].MAC)
 	}
 
 	e.mu.Lock()

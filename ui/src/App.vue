@@ -2,7 +2,7 @@
 import { computed, onUnmounted, ref, watch } from 'vue';
 import { useSnapshot } from '@/composables/useSnapshot';
 import { useDevice } from '@/composables/useDevice';
-import type { Client, Shape, ChartPrefs, YMode } from '@/types';
+import type { Client, Shape, ChartPrefs, YMode, Pattern } from '@/types';
 import { ntopngUrl } from '@/types';
 import ClientCard from '@/components/ClientCard.vue';
 import ChartToolbar from '@/components/ChartToolbar.vue';
@@ -212,6 +212,10 @@ onUnmounted(() => window.clearInterval(ticker));
       @sweep="(svc: string) => dev.startSweep(c.mac, svc)"
       @stop-sweep="dev.stopSweep(c.mac)"
       @remove-ladder="(svc: string) => dev.removeLadder(c.mac, svc)"
+      @pattern-update="(p: Pattern) => dev.putPattern(c.mac, rev(c), p)"
+      @pattern-remove="dev.deletePattern(c.mac)"
+      @pattern-play="dev.playPattern(c.mac)"
+      @pattern-stop="dev.stopPattern(c.mac)"
     />
 
     <div v-if="!clients.length" class="empty">

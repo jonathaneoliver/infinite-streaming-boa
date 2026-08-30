@@ -9,6 +9,7 @@
  */
 import { computed, ref, watch } from 'vue';
 import type { Shape } from '@/types';
+import { posToRate, rateToPos } from '@/types';
 
 const props = defineProps<{
   shape: Shape;
@@ -37,25 +38,9 @@ function set(k: keyof Shape, value: number) {
   emit('update', { ...props.shape, ...local.value, [k]: value });
 }
 
-/*
- * Rate uses an exponential slider. A linear 0-200 Mbps control puts every
- * interesting mobile-network rate -- 0.5 to 5 Mbps -- inside the first three
- * pixels of travel, which makes the most-used part of the range unusable.
- * Position 0 is reserved for "unlimited".
- */
-const RATE_MIN = 0.1;
-const RATE_MAX = 200;
-
-function posToRate(p: number): number {
-  if (p <= 0) return 0;
-  const r = RATE_MIN * Math.pow(RATE_MAX / RATE_MIN, (p - 1) / 99);
-  return r < 1 ? Math.round(r * 100) / 100 : Math.round(r * 10) / 10;
-}
-function rateToPos(r: number): number {
-  if (r <= 0) return 0;
-  return Math.round(1 + (99 * Math.log(r / RATE_MIN)) / Math.log(RATE_MAX / RATE_MIN));
-}
-
+// Rate uses an exponential slider; the scale itself lives in types.ts, shared
+// with the pattern timeline so a ramp authored as a straight line on this
+// control draws as a straight line there.
 const ratePos = computed(() => rateToPos(v('rate_mbps')));
 const rateText = computed(() =>
   v('rate_mbps') === 0 ? 'unlimited' : `${v('rate_mbps')} Mbps`,
