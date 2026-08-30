@@ -48,6 +48,9 @@ is there.
   per service, because no two streaming services share a ladder.
 - **Ships ntopng** on `:3000`, watching the bridge, with per-device deep links
   from each card for traffic breakdown and nDPI-labelled flows.
+- **Ships an iperf3 server** on `:5201`, so the ceiling a cap has to sit under
+  can be measured without installing anything on the device under test. It
+  measures the link **unshaped** — see below.
 
 ## Build an image
 
@@ -69,8 +72,24 @@ adapter in for a wired device under test, then:
 |---|---|
 | Web interface | `http://infinite-streaming-pifi.local/` |
 | ntopng | `http://infinite-streaming-pifi.local:3000/` — `admin` / `PIFI_PASSWORD` |
+| iperf3 | `iperf3 -c infinite-streaming-pifi.local` from a device under test |
 | SSH | `ssh pifi@infinite-streaming-pifi.local` |
 | Rescue | `http://<PIFI_RESCUE_IP>/` when upstream DHCP is absent |
+
+**The two directions measure different things.** `iperf3 -c <pi> -R` sends from
+the box to the device, which is that device's downlink — conditioned by its
+policy, so this is the cap being enforced. Without `-R` you are measuring upload
+*to* the box, which terminates there and never reaches the WAN port where uplink
+shaping lives; that reports what the link can do, not what the policy allows.
+Verifying uplink needs load from a host beyond `eth0`.
+
+Only the box's management ports — the interface, SSH and ntopng — are exempt
+from shaping, so a cap can never throttle the dashboard needed to undo it.
+Everything else the box sends is conditioned like any other traffic.
+
+**Bind the test to the path you mean.** A laptop on both Wi-Fi and ethernet has
+two addresses, and only the one pifi lists as a client is conditioned by that
+client's policy: `iperf3 -c <pi> -R -B <the address on that card>`.
 
 **The WAN port must be connected.** Being invisible means pifi issues no
 addresses: with no live upstream, clients associate to the Wi-Fi and then sit

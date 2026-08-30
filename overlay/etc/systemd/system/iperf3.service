@@ -1,0 +1,50 @@
+[Unit]
+# An iperf3 server so the box can say what the link is capable of, on demand,
+# without anything being installed on the device under test.
+#
+# What this measures, and what it does NOT:
+#
+# Traffic to and from this box is exempt from conditioning, in both directions
+# and for different reasons. Downlink from the box is excused by an explicit
+# `ip src <pi>/32` filter, so the web interface cannot throttle itself off the
+# network on a device it is conditioning. Uplink to the box never reaches the
+# WAN port, which is where uplink shaping lives, because it terminates here.
+#
+# So a test against this server reports the radio and the bridge at full tilt,
+# against any policy. That is a real and useful number -- it is the ceiling a
+# cap has to sit under, and the denominator for how much headroom a test has --
+# but it is not throttle verification, and anything surfacing it must say so.
+# To measure conditioning, the load has to arrive through the WAN port from a
+# host that is not this box.
+Description=iperf3 server for measuring the unshaped link
+Documentation=https://github.com/jonathaneoliver/infinite-streaming-pifi
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# The bridge holds the box's only addresses -- the ports are enslaved to it and
+# have none of their own -- so there is nothing useful to bind to: a client
+# reaches this on whichever port it is attached through, which is what decides
+# whether a wireless or a wired path is being measured.
+ExecStart=/usr/bin/iperf3 --server --port 5201
+Restart=always
+RestartSec=3
+
+# Unlike the daemon, this needs no privilege at all: it moves bytes and keeps
+# no state. DynamicUser gives it a throwaway account rather than root, which is
+# worth having for the one service on this box that is deliberately reachable
+# and deliberately hammered.
+DynamicUser=yes
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+RestrictAddressFamilies=AF_INET AF_INET6
+RestrictNamespaces=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+
+[Install]
+WantedBy=multi-user.target

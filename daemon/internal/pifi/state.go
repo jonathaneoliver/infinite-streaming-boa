@@ -17,7 +17,11 @@ type Config struct {
 	WlanPort  string // wlan0
 	LanPort   string // lan0, the USB adapter (may be absent)
 	StatePath string
-	Tick      time.Duration
+	// Addr is where the interface is served, e.g. ":80". The shaper needs it:
+	// the port the interface answers on is the one port whose traffic must
+	// never be conditioned.
+	Addr string
+	Tick time.Duration
 	// Demo serves synthetic clients and touches no kernel state, so the web
 	// interface can be developed without a Pi. See demo.go.
 	Demo bool
@@ -93,7 +97,7 @@ func NewEngine(cfg Config) *Engine {
 	}
 	return &Engine{
 		cfg:       cfg,
-		sh:        NewShaper(cfg.WANPort, cfg.Bridge),
+		sh:        NewShaper(cfg.WANPort, cfg.Bridge, managementPorts(cfg.Addr)),
 		st:        NewStore(cfg.StatePath),
 		learn:     NewLearner(cfg.Bridge, cfg.WlanPort, cfg.LanPort),
 		prev:      map[string]counterSample{},
@@ -250,6 +254,46 @@ func (e *Engine) rate(key string, bytes uint64, now time.Time) float64 {
 }
 
 const ntopngPort = 3000
+
+// sshPort is exempted from shaping alongside the interface: the way out of a
+// cap set too low is often the shell, and it must not be caught by the thing it
+// is there to undo.
+const sshPort = 22
+
+// managementPorts lists the source ports whose traffic FROM this box is never
+// conditioned. Everything else the box sends is, deliberately -- see
+// writeExemptions.
+//
+// The interface's own port is derived from the address it was told to serve on
+// rather than assumed to be 80, because -addr is a flag and a box serving on
+// 8080 would otherwise exempt a port nothing is listening on while shaping the
+// one that is: the interface would go dark exactly when a low cap made it
+// indispensable.
+func managementPorts(addr string) []int {
+	web := 80
+	if _, p, err := net.SplitHostPort(addr); err == nil {
+		if n, err := strconv.Atoi(p); err == nil && n > 0 && n < 65536 {
+			web = n
+		}
+	}
+	ports := []int{web}
+	for _, p := range []int{sshPort, ntopngPort} {
+		if p != web {
+			ports = append(ports, p)
+		}
+	}
+	sort.Ints(ports)
+	return ports
+}
+
+// iperfPort is where overlay/etc/systemd/system/iperf3.service listens.
+//
+// The target address is deliberately NOT computed here. The bridge holds
+// several -- a DHCP address and a fixed rescue address on a private /24 that
+// clients cannot reach -- and picking between them would be guessing at which
+// one the reader can get to. The interface knows for certain: it is being
+// served over one of them.
+const iperfPort = 5201
 
 // ntopngUp reports whether ntopng is answering on the loopback. Probing the
 // port rather than checking for the binary means the UI reflects "you can
@@ -509,6 +553,7 @@ func (e *Engine) tick() {
 			Leases:    false, // transparent bridge: upstream owns DHCP
 			WlanIface: e.cfg.WlanPort, UplinkIf: e.cfg.WANPort,
 			Ntopng: e.ntopngUp(), NtopngPort: ntopngPort,
+			Iperf: PortListening(iperfPort), IperfPort: iperfPort,
 			NamesLearned: len(names), NamesByMAC: len(macNames),
 		},
 		Notices: e.notices(ready, reason),

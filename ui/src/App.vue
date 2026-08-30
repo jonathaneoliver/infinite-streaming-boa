@@ -14,6 +14,18 @@ const clients = computed(() => snap.value?.clients ?? []);
 const caps = computed(() => snap.value?.caps);
 const presentCount = computed(() => clients.value.filter((c) => c.present).length);
 
+/**
+ * The command that points a device at the box's iperf3 server.
+ *
+ * The host comes from the browser, not the server: the bridge holds several
+ * addresses -- a DHCP one and a fixed rescue one on a private /24 clients
+ * cannot reach -- and the box has no way to know which of them the reader can
+ * get to. Whatever address this page was served over demonstrably works.
+ */
+const iperfCmd = computed(() =>
+  caps.value?.iperf ? `iperf3 -c ${location.hostname}` : '',
+);
+
 const notices = computed(() => snap.value?.notices ?? []);
 const errorNotices = computed(() => notices.value.filter((n) => n.level === 'error'));
 const infoNotices = computed(() => notices.value.filter((n) => n.level !== 'error'));
@@ -205,9 +217,22 @@ onUnmounted(() => window.clearInterval(ticker));
     <!-- Standing truths about how the box behaves. They never change and never
          need acting on, so they read as footnotes rather than pushing the
          devices -- the actual content -- below the fold. -->
-    <footer v-if="infoNotices.length" class="notes">
+    <footer v-if="infoNotices.length || iperfCmd" class="notes">
       <div v-for="n in infoNotices" :key="n.text" class="notice info">
         {{ n.text }}
+      </div>
+      <!-- The two directions measure different things, and which is which is
+           the easiest thing here to get backwards. Said explicitly rather than
+           left to be discovered from a number that looks wrong. -->
+      <div v-if="iperfCmd" class="notice info">
+        Measure a device with <code>{{ iperfCmd }} -R</code>: the reverse
+        direction is that device's <strong>downlink</strong>, and it is
+        conditioned by the policy set here, so this is the cap being enforced.
+        Without <code>-R</code> you are measuring upload to this box, which ends
+        here and never reaches the {{ caps?.uplink_if }} queue where uplink
+        shaping lives — that reports what the link can do, not what the policy
+        allows. Verifying <strong>uplink</strong> needs load from a host beyond
+        {{ caps?.uplink_if }}.
       </div>
     </footer>
   </div>

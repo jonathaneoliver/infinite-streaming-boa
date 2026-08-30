@@ -65,6 +65,11 @@ type Shaper struct {
 	// Tracked so the filters are only rewritten when the set actually changes
 	// -- the bridge takes its address by DHCP, so it can change while running.
 	exempt []string
+
+	// mgmtPorts are the source ports whose traffic from this box must never be
+	// conditioned: the interface, SSH and ntopng. Everything else the box
+	// sends is deliberately left subject to policy. See writeExemptions.
+	mgmtPorts []int
 }
 
 // rule is the exact state installed for one class. Keeping it lets the
@@ -105,17 +110,26 @@ const (
 	mtuBytes = 1500
 )
 
-func NewShaper(wan, bridge string) *Shaper {
+func NewShaper(wan, bridge string, mgmtPorts []int) *Shaper {
 	return &Shaper{
 		wan: wan, bridge: bridge, ports: map[string]bool{},
 		minors: map[string]int{}, applied: map[string]rule{}, nextMin: firstMinor,
+		mgmtPorts: mgmtPorts,
 	}
 }
 
-// prefExempt is below every policy filter (sub-classes start at 10000, device
-// defaults at 40000), so management traffic is classified before any rule the
-// operator wrote can claim it.
-const prefExempt = 50
+const (
+	// prefExempt is below every policy filter (sub-classes start at 10000,
+	// device defaults at 40000), so management traffic is classified before any
+	// rule the operator wrote can claim it.
+	prefExempt = 50
+
+	// The block reserved for exemptions: one filter per local address per
+	// management port. Two addresses and three ports is the normal case, and
+	// the whole block is cleared before it is rewritten, so the only cost of
+	// headroom is a few no-op deletes.
+	exemptSlots = 32
+)
 
 // localIPv4 returns the addresses belonging to the box itself.
 func (s *Shaper) localIPv4() []string {
@@ -136,29 +150,71 @@ func (s *Shaper) localIPv4() []string {
 	return out
 }
 
-// writeExemptions excuses traffic ORIGINATING FROM this box from shaping.
+// writeExemptions excuses this box's MANAGEMENT traffic from shaping.
 //
-// Without this, the web interface throttles itself. A reply from pifi to a
-// client leaves via that client's own port, where the downlink filter matches
+// Without an exemption the web interface throttles itself. A reply from pifi to
+// a client leaves via that client's own port, where the downlink filter matches
 // on destination address -- so the dashboard's own responses, and the SSE
 // stream, get conditioned by whatever policy the operator just set from it.
 // Capping a phone hard enough would leave the interface needed to undo it
-// crawling. The same applies to SSH from a shaped device.
+// crawling. The same applies to SSH from a shaped device. Note this only bites
+// when the interface is being driven FROM a conditioned client: a browser on
+// the upstream side is not a client of this box, so nothing matches it and no
+// exemption is involved.
 //
-// Only the source address is matched: traffic from the box is management,
-// traffic merely addressed TO the box is a client's own upload and stays
-// subject to its policy.
+// The exemption is scoped to the management PORTS rather than to the box as a
+// whole, which is the difference between an appliance that can prove what it
+// delivers and one that has to be trusted. A blanket `ip src <pi>` filter
+// excuses everything the box sends, so a test served from the box reports line
+// rate against any cap -- the box's own measurement is the one thing it cannot
+// condition. Naming the ports leaves the dashboard, SSH and ntopng untouchable
+// while everything else the box sends falls through to the device's own policy,
+// so `iperf3 -c <pi> -R` measures the downlink cap actually being enforced.
+//
+// Two consequences, both intended:
+//
+//   - ICMP carries no ports and so is no longer exempt. A ping from the box to
+//     a conditioned client now sits in that client's queue and shows the delay
+//     it was configured with, which is the honest answer.
+//   - Only the source address and port are matched. Traffic merely addressed TO
+//     the box is a client's own upload; that terminates here and never reaches
+//     the WAN port where uplink shaping lives, so it is unconditioned for a
+//     structural reason no filter here can change.
+//
+// One sharp edge, measured rather than assumed: `match ip sport` compiles to a
+// fixed offset of 20 bytes, not to nexthdr, so it reads the port of a packet
+// with no IP options and no fragment offset. Management traffic is TCP with a
+// plain header and neither applies, but a fragmented or option-bearing reply
+// would miss the exemption and be shaped rather than wrongly exempted -- which
+// is the safe direction for this to fail in.
 func (s *Shaper) writeExemptions(dev string, ips []string) {
-	for i := range ips {
+	// The whole block is cleared rather than only what was last written: the
+	// address list shrinks as well as grows -- DHCP moving the bridge onto a
+	// different address -- and a leftover filter would go on excusing an
+	// address that may since have been reassigned to a client.
+	for i := 0; i < exemptSlots; i++ {
 		tcQuiet("filter", "del", "dev", dev, "parent", "1:", "pref",
 			fmt.Sprint(prefExempt+i))
 	}
-	for i, ip := range ips {
-		if err := tc("filter", "add", "dev", dev, "protocol", "ip",
-			"parent", "1:", "prio", fmt.Sprint(prefExempt+i), "u32",
-			"match", "ip", "src", ip+"/32",
-			"flowid", fmt.Sprintf("1:%x", defaultMinor)); err != nil {
-			fmt.Printf("infinite-streaming-pifi: could not exempt %s on %s: %v\n", ip, dev, err)
+	slot := 0
+	for _, ip := range ips {
+		for _, port := range s.mgmtPorts {
+			if slot >= exemptSlots {
+				fmt.Printf("infinite-streaming-pifi: out of exemption slots on %s; "+
+					"%s:%d is NOT exempt and may be shaped\n", dev, ip, port)
+				return
+			}
+			if err := tc("filter", "add", "dev", dev, "protocol", "ip",
+				"parent", "1:", "prio", fmt.Sprint(prefExempt+slot), "u32",
+				"match", "ip", "src", ip+"/32",
+				"match", "ip", "sport", fmt.Sprint(port), "0xffff",
+				"flowid", fmt.Sprintf("1:%x", defaultMinor)); err != nil {
+				// Loud: a failed exemption is how the interface disappears the
+				// next time someone sets a low cap from a conditioned device.
+				fmt.Printf("infinite-streaming-pifi: could not exempt %s:%d on %s: %v\n",
+					ip, port, dev, err)
+			}
+			slot++
 		}
 	}
 }

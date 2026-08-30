@@ -408,6 +408,18 @@ else
   warn "bridge with no conditioning. Run scripts/build-payload.sh first."
 fi
 
+# The iperf3 server is enabled only when the binary is actually in the image.
+# The unit is in the overlay either way, and a unit whose ExecStart does not
+# exist fails on every boot and every restart -- noise that says nothing, on a
+# box where a failed unit is supposed to mean something.
+if [ -x "$ROOT/usr/bin/iperf3" ]; then
+  ln -sf /etc/systemd/system/iperf3.service \
+    "$ROOT/etc/systemd/system/multi-user.target.wants/iperf3.service"
+  log "iperf3 server enabled on :5201 (measures the UNSHAPED link)"
+else
+  warn "iperf3 not installed -- the box will not be able to measure its own link"
+fi
+
 ## 8d. ntopng (optional, prebuilt) ------------------------------------------
 # ntopng has to be compiled on arm64 -- ntop ships x86-64 binaries only, Docker
 # Hub's image is amd64 only, and Debian dropped the package after buster. A

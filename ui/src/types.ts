@@ -136,6 +136,9 @@ export interface Capabilities {
   /** True only when ntopng is ANSWERING, not merely installed. */
   ntopng: boolean;
   ntopng_port: number;
+  /** True only when the iperf3 server is LISTENING, not merely installed. */
+  iperf: boolean;
+  iperf_port: number;
   reason?: string;
 }
 
