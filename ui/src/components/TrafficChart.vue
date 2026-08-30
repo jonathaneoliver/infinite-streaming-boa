@@ -393,37 +393,6 @@ const gid = `g${Math.random().toString(36).slice(2, 8)}`;
     <div v-if="!compact" class="chart-head">
       <span v-if="titled" class="chart-title">{{ label }}</span>
 
-      <!-- The key sits with the plot it describes.
-           There is a shared one in the toolbar, but a legend is read while
-           looking at a chart, and on a page of device cards that one is
-           scrolled off the top by the time you are looking at any of them.
-           Here the swatches can also be the chart's OWN colour: up in the
-           toolbar it has to serve both directions at once and so must stay
-           neutral, whereas down here blue means downlink because that is what
-           is plotted. And the cap gets a key at all, which it never had --
-           three things are drawn and only two were ever named. -->
-      <span class="key" role="group" aria-label="Series shown">
-        <span v-if="showLive" class="key-item" title="Throughput during each sample. Bursty by nature: a player fetches a segment, then idles.">
-          <svg width="16" height="8" aria-hidden="true">
-            <line x1="0" y1="4" x2="16" y2="4" :stroke="color"
-                  :stroke-width="showSustainedLine ? 1.25 : 2"
-                  :opacity="showSustainedLine ? 0.45 : 1" />
-          </svg>live
-        </span>
-        <span v-if="showSustainedLine" class="key-item" :title="`Bytes delivered over the trailing ${sustainedSec} seconds, divided by that time. What the device is actually sustaining across segment fetches.`">
-          <svg width="16" height="8" aria-hidden="true">
-            <line x1="0" y1="4" x2="16" y2="4" :stroke="color" stroke-width="2.25" />
-          </svg>{{ sustainedSec }}s mean
-        </span>
-        <span v-if="capY !== null && cap <= yMax" class="key-item"
-              title="The rate being enforced right now, which is not always the rate you saved: a ladder sweep drives the cap itself while it runs.">
-          <svg width="16" height="8" aria-hidden="true">
-            <line x1="0" y1="4" x2="16" y2="4" :stroke="color"
-                  stroke-width="1" stroke-dasharray="4 3" opacity="0.8" />
-          </svg>cap
-        </span>
-      </span>
-
       <span class="stats num">
         <span v-if="clipped" class="clip" title="Traffic exceeds the fixed y-axis maximum">
           clipped ·
@@ -532,6 +501,40 @@ const gid = `g${Math.random().toString(36).slice(2, 8)}`;
       </g>
     </svg>
 
+    <!-- The key sits UNDER the plot it describes.
+         There is a shared one in the toolbar, but a legend is read while
+         looking at a chart, and on a page of device cards that one has scrolled
+         off the top by the time you are looking at any of them. Below rather
+         than above because the chart is the thing being read: the key is
+         referred to on the way out, not on the way in.
+
+         Down here the swatches can also be the chart's OWN colour -- in the
+         toolbar a swatch must serve both directions at once and so has to stay
+         neutral, whereas here blue means downlink because downlink is what is
+         plotted. And the cap gets a key at all, which it never had: three
+         things are drawn on a conditioned chart and only two were ever named. -->
+    <span class="key" role="group" aria-label="Series shown">
+          <span v-if="showLive" class="key-item" title="Throughput during each sample. Bursty by nature: a player fetches a segment, then idles.">
+            <svg width="16" height="8" aria-hidden="true">
+              <line x1="0" y1="4" x2="16" y2="4" :stroke="color"
+                    :stroke-width="showSustainedLine ? 1.25 : 2"
+                    :opacity="showSustainedLine ? 0.45 : 1" />
+            </svg>live
+          </span>
+          <span v-if="showSustainedLine" class="key-item" :title="`Bytes delivered over the trailing ${sustainedSec} seconds, divided by that time. What the device is actually sustaining across segment fetches.`">
+            <svg width="16" height="8" aria-hidden="true">
+              <line x1="0" y1="4" x2="16" y2="4" :stroke="color" stroke-width="2.25" />
+            </svg>{{ sustainedSec }}s mean
+          </span>
+          <span v-if="capY !== null && cap <= yMax" class="key-item"
+                title="The rate being enforced right now, which is not always the rate you saved: a ladder sweep drives the cap itself while it runs.">
+            <svg width="16" height="8" aria-hidden="true">
+              <line x1="0" y1="4" x2="16" y2="4" :stroke="color"
+                    stroke-width="1" stroke-dasharray="4 3" opacity="0.8" />
+            </svg>cap
+          </span>
+        </span>
+
     <!-- Value leads, label follows: the reader already knows the series and
          wants the number. -->
     <div
@@ -565,7 +568,14 @@ const gid = `g${Math.random().toString(36).slice(2, 8)}`;
 /* Swatches are the real strokes at the real weights, so the key cannot drift
    from the plot: change a width in the SVG above and the swatch is wrong in a
    way somebody will notice. */
-.key { display: flex; align-items: center; gap: 10px; margin-left: 10px; }
+.key {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  /* Sits under the plot, indented to the plot's left edge rather than the
+     card's, so it lines up with what it is describing. */
+  margin: 2px 0 0 34px;
+}
 .key-item {
   display: inline-flex;
   align-items: center;
