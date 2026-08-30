@@ -237,12 +237,13 @@ device card. Optional: the image builds without it.
   player never selects — wrong codec, wrong viewport, skipped by its own logic —
   is never delivered and so never appears. Two devices can produce different
   ladders from identical content.
-- **A low cap can deliver its bytes late.** `netemLimit` floors the netem queue
-  at 1000 packets, which is 0.24 s of buffering at 50 Mbps but **48 s at
-  0.25 Mbps**. Throughput is unaffected — the rate is delivered exactly — but a
-  client-side measurement at 0.25 Mbps saw a 13-second stall, consistent with a
-  queue deep enough to drive TCP's retransmission timers. The bytes arrive; they
-  do not necessarily arrive usefully. See the open issue.
+- **The netem queue is deep at low caps, but segmented traffic does not fill
+  it.** `netemLimit` floors the queue at 1000 packets: 0.24 s of buffering at
+  50 Mbps, but 48 s at 0.25 Mbps. A single bulk transfer large enough to fill it
+  does stall — 13 s observed — but that requires putting minutes of data in
+  flight, which no player does. Fetching the variant a player would actually
+  choose at that cap (190 KB at 0.25 Mbps, not 19 MB) the worst gap is 0.66 s
+  and pacing is even.
 - **Rung resolution is a merge tolerance.** Two renditions closer together than
   the larger of 250 kbps and 10% of the rate cannot be told apart and are
   reported as one. Real ladders are never spaced tighter than about 25%, which

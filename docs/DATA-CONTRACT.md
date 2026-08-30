@@ -463,16 +463,25 @@ transfer pulled by a laptop associated to the AP. Measured from BOTH ends: the
 box's own `tc` class counters, and the bytes the client's application actually
 received.
 
-| configured cap | box counters | client payload | client ÷ cap |
-|---|---|---|---|
-| 0.25 Mbps | 0.250 | 0.148* | 0.59* |
-| 0.50 Mbps | 0.500 | 0.483 | 0.965 |
-| 1.00 Mbps | 1.048 | 0.960 | 0.960 |
-| 2.00 Mbps | 2.000 | 1.438* | 0.72* |
-| 4.00 Mbps | 4.000 | 3.228* | 0.81* |
-| unshaped | 30.02 | 28.75 | — |
+Transfers are sized the way the content is: for each cap, the variant a player
+would actually choose, fetched segment by segment on one kept-alive connection.
+That matters more than it sounds -- see *the artefact that had to be removed*.
 
-\* depressed by multi-second stalls; see below.
+| configured cap | variant fetched | client payload | client ÷ cap | worst gap |
+|---|---|---|---|---|
+| 0.25 Mbps | 234p | 0.235 | 0.939 | 0.66 s |
+| 0.50 Mbps | 360p | 0.474 | 0.949 | 0.44 s |
+| 1.00 Mbps | 396p | 0.938 | 0.938 | 0.41 s |
+| 2.00 Mbps | 432p | 1.901 | 0.950 | 0.16 s |
+| 4.00 Mbps | 594p | 3.756 | 0.939 | 0.31 s |
+| unshaped | — | 28.75 | — | — |
+
+The box's own class counters read the configured rate exactly at every level:
+0.250, 0.500, 1.048, 2.000, 4.000.
+
+The client sits a little under the 0.956 the framing arithmetic predicts because
+each segment boundary costs a request round trip, and seven to ten segments
+across a 30 s window is two to three percent of idle.
 
 **The shaper itself is exact.** The box counters match the configured rate at
 every level. An earlier run with no stalls put the client at 0.953–0.957
@@ -484,13 +493,23 @@ TCP payload while the cap counts wire bytes, and 66 bytes of header per
 that sub-1.5 Mbps was unverified and the netem queue floor predicted trouble —
 was unfounded as far as *throughput* goes.
 
-**Delivery timing is another matter.** Client-side gaps reached 13.3 s at
-0.25 Mbps, 2.8 s at 1 Mbps and 5.5 s at 4 Mbps. `netemLimit` floors the queue at
-1000 packets, which is 48 s of buffering at 0.25 Mbps, and a queue that deep
-drives TCP's retransmission timers. Two confounds keep this from being a firm
-conclusion: another client was streaming ~28 Mbps and competing for airtime, and
-the stalls appear at 0.25/1/4 but not 0.5/2, which is not the clean
-rate-dependence bufferbloat alone would produce.
+### The artefact that had to be removed
+
+The first version of this measurement pulled a **2160p segment -- 19 MB -- at
+every cap**, including 0.25 Mbps. It reported multi-second stalls: 13.3 s at
+0.25, 2.8 s at 1, 5.5 s at 4 Mbps, and those were written up as bufferbloat from
+the queue floor.
+
+They were the harness. No player fetches 19 MB at 0.25 Mbps; it fetches the
+234p segment, about 190 KB. The oversized transfer put roughly ten minutes of
+data in flight against a 48-second queue and filled it, which is a pathology the
+test created rather than found. Sizing each transfer to its rate, the worst gap
+across the whole range is **0.66 s** and the stalls do not occur.
+
+The lesson generalises: a conditioner has to be measured under the traffic shape
+it exists to condition. A single enormous bulk transfer is a workload this box
+will never see, and testing with one produced a confident, wrong conclusion
+about the kernel.
 
 ### What a client cannot measure
 
@@ -507,9 +526,13 @@ rate, and the inter-arrival gaps matched `16 KB ÷ rate` to within a few percent
 | 4.00 | 32.8 ms | 32.5 ms |
 
 So any "burstiness" figure taken from a client at bin widths below one record
-period is measuring TLS framing. At 1-second bins — past that quantisation — the
-99th-percentile bin carried 1.05x the nominal rate at 0.25 and 0.5 Mbps, which
-is close to perfect pacing.
+period is measuring TLS framing, not the shaper.
+
+Past that quantisation the pacing is even. At 1-second bins the 99th-percentile
+bin carried 0.99x to 1.45x the nominal rate across 0.25-4 Mbps; at 200 ms,
+1.31x to 2.97x, improving as the rate rises and the record period shrinks
+relative to the bin. The shaper paces well at every timescale a TLS client can
+observe.
 
 Measuring the shaper's own pacing requires a packet capture at the egress
 interface, before the radio.
