@@ -10,7 +10,10 @@
 import { computed, inject, ref, watch } from 'vue';
 import type { ComputedRef } from 'vue';
 import type { Shape } from '@/types';
-import { BURST_MAX, EXTRA_IMPAIRMENTS, hasExtras, posToRate, rateToPos } from '@/types';
+import {
+  BURST_MAX, EXTRA_IMPAIRMENTS, hasExtras,
+  lossToPos, posToLoss, posToRate, rateToPos,
+} from '@/types';
 import { useExtras } from '@/composables/useExtras';
 
 /*
@@ -144,6 +147,15 @@ const reorderBlocked = computed(() => v('delay_ms') <= 0);
 const burst = computed(() => Math.max(1, local.value.loss_burst ?? props.shape.loss_burst ?? 1));
 const loss = computed(() => v('loss_pct'));
 
+// Log-scaled like rate, so the bottom few percent stay usable and 100% -- a
+// blackhole -- is reachable by dragging rather than only through the API.
+const lossPos = computed(() => lossToPos(loss.value));
+const lossText = computed(() =>
+  loss.value >= 100
+    ? 'blackhole'
+    : `${loss.value < 1 ? loss.value.toFixed(2) : loss.value.toFixed(1)} %`,
+);
+
 // A burst length with no loss configures nothing -- there are no bursts of
 // nothing -- so the control says why it is inert rather than sitting there
 // accepting input that does nothing.
@@ -233,11 +245,11 @@ const burstNote = computed(() => {
     <div class="row">
       <label>loss</label>
       <input
-        type="range" min="0" max="20" step="0.1"
-        :value="v('loss_pct')" :disabled="disabled"
-        @input="set('loss_pct', +($event.target as HTMLInputElement).value)"
+        type="range" min="0" max="100" step="1"
+        :value="lossPos" :disabled="disabled"
+        @input="set('loss_pct', posToLoss(+($event.target as HTMLInputElement).value))"
       />
-      <span class="val num">{{ v('loss_pct').toFixed(1) }} %</span>
+      <span class="val num" :class="{ black: loss >= 100 }">{{ lossText }}</span>
     </div>
 
     <!-- Burstiness sits with the loss it modifies rather than in the second
@@ -302,6 +314,12 @@ const burstNote = computed(() => {
 /* Dimmed, but the label and the reason stay readable: the row is explaining
    itself, so blanking it would defeat the point of keeping it. */
 .row.off { opacity: 0.55; }
+
+/* Total loss is not "a high number", it is a different state: nothing reaches
+   the device at all. It reads as a word rather than 100.0 %, and carries the
+   same warning colour the interface uses for conditioning that is severe
+   enough to be worth noticing on the way past. */
+.val.black { color: var(--warn); }
 
 /* Quiet: this is an affordance, not a control. It should read as the edge of
    the panel rather than competing with the sliders above it. */

@@ -526,6 +526,38 @@ export function rateToPos(r: number): number {
 }
 
 /**
+ * The loss scale, for the same reason as the rate scale and with one addition.
+ *
+ * Everything interesting about loss lives between about 0.1% and 5% — 1% is
+ * where TCP begins to suffer, 5% is a bad radio. The old linear 0–20 control
+ * put all of that in its first quarter and spent the other three quarters on
+ * values nobody sets deliberately.
+ *
+ * The addition is the top of the range. **100% is a blackhole** — the "drove
+ * into a tunnel" test — and it has to be reachable by dragging, not just
+ * through the API. A linear control that reached it would have been useless
+ * everywhere else; a log control reaches it and keeps the bottom usable.
+ *
+ * Unlike rate, position 0 is not a special case: no loss is a real value at the
+ * natural bottom of the scale, where "unlimited" was not.
+ */
+export const LOSS_MIN = 0.01;
+export const LOSS_MAX = 100;
+
+export function posToLoss(p: number): number {
+  if (p <= 0) return 0;
+  const l = LOSS_MIN * Math.pow(LOSS_MAX / LOSS_MIN, (p - 1) / 99);
+  // Two decimals below 1% because that is where the useful resolution is, one
+  // above: nobody distinguishes 37.4% loss from 37.5%.
+  return l < 1 ? Math.round(l * 100) / 100 : Math.round(l * 10) / 10;
+}
+
+export function lossToPos(l: number): number {
+  if (l <= 0) return 0;
+  return Math.round(1 + (99 * Math.log(l / LOSS_MIN)) / Math.log(LOSS_MAX / LOSS_MIN));
+}
+
+/**
  * Starting timelines.
  *
  * Absolute Mbps, deliberately: pifi cannot read a manifest, so it does not know
