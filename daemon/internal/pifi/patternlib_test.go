@@ -388,8 +388,7 @@ func TestSavedPatternsPersist(t *testing.T) {
 // another box would describe that box's ladders wrongly.
 func TestConfigExportOmitsBuiltinsAndImportRefusesThem(t *testing.T) {
 	two := []Keyframe{kf(0, 8, EaseHold), kf(30, 2, EaseHold)}
-	doc := ExportConfig(
-		map[string]Policy{"aa:aa:aa:aa:aa:aa": devPolicy("aa:aa:aa:aa:aa:aa", 1)},
+	doc := ExportConfig(nil,
 		[]Pattern{{Name: "valley", Keys: two}, {Name: "morning-peak", Keys: two}},
 	)
 	if len(doc.Patterns) != 1 || doc.Patterns[0].Name != "morning-peak" {
@@ -891,13 +890,13 @@ func TestGlobalLadderTakesTheNewestMeasurement(t *testing.T) {
 		"aa:bb": {Ladders: []Ladder{older}},
 		"cc:dd": {Ladders: []Ladder{newer}},
 	}
-	got, ok := GlobalLadder(all)
+	got, ok := GlobalLadder(Ladder{}, false, all)
 	if !ok || got.Service != "b" {
 		t.Fatalf("got %q (ok=%v), want the newer ladder %q", got.Service, ok, "b")
 	}
 	// Which device it was measured on is not part of the answer: the same
 	// pattern must come out whichever card the operator is looking at.
-	got2, _ := GlobalLadder(map[string]Policy{"zz:zz": {Ladders: []Ladder{newer, older}}})
+	got2, _ := GlobalLadder(Ladder{}, false, map[string]Policy{"zz:zz": {Ladders: []Ladder{newer, older}}})
 	if got2.Service != got.Service {
 		t.Errorf("the ladder changed with the device it was found on: %q vs %q",
 			got2.Service, got.Service)
@@ -907,7 +906,7 @@ func TestGlobalLadderTakesTheNewestMeasurement(t *testing.T) {
 // With nothing swept it falls back to the synthesised ladder, and says so, so
 // the interface can render a guess differently from a measurement.
 func TestGlobalLadderFallsBackAndAdmitsIt(t *testing.T) {
-	l, ok := GlobalLadder(map[string]Policy{"aa:bb": {}})
+	l, ok := GlobalLadder(Ladder{}, false, map[string]Policy{"aa:bb": {}})
 	if ok {
 		t.Error("reported a measured ladder when nothing was measured")
 	}
@@ -926,7 +925,7 @@ func TestGlobalLadderIgnoresLaddersTooShortToWalk(t *testing.T) {
 		Rungs: []Rung{{Mbps: 1, UpAtMbps: 1.5}}}
 	real := Ladder{Service: "real", Provenance: LadderMeasured, MeasuredAt: 1,
 		Rungs: []Rung{{Mbps: 1, UpAtMbps: 1.5}, {Mbps: 2, UpAtMbps: 3}}}
-	got, ok := GlobalLadder(map[string]Policy{"aa:bb": {Ladders: []Ladder{stub, real}}})
+	got, ok := GlobalLadder(Ladder{}, false, map[string]Policy{"aa:bb": {Ladders: []Ladder{stub, real}}})
 	if !ok || got.Service != "real" {
 		t.Errorf("got %q, want the usable ladder", got.Service)
 	}

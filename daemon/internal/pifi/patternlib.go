@@ -429,7 +429,13 @@ func blackhole() Pattern {
 // is the one the operator was last working on. Falling back to DefaultLadder
 // when nothing has been swept, which is marked as synthesised so the interface
 // can say so.
-func GlobalLadder(all map[string]Policy) (Ladder, bool) {
+func GlobalLadder(stored Ladder, storedOK bool, all map[string]Policy) (Ladder, bool) {
+	// The box's own ladder wins when it has one. The scan below is the
+	// migration path: a box swept before the ladder moved out of Policy still
+	// has one under a device, and should keep working without a re-sweep.
+	if storedOK && len(stored.Rungs) >= 2 {
+		return stored, true
+	}
 	var best Ladder
 	var found bool
 	for _, p := range all {

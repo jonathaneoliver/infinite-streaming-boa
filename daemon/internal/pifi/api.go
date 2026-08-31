@@ -680,7 +680,8 @@ func (a *API) resolveBuiltin(name string, p Policy, service string,
 	// the sweep's grid rather than the content's bitrates, and that grid is the
 	// same everywhere -- see GlobalLadder. `p` and `service` are still taken so
 	// the per-device view can say which measurement is in force.
-	l, ok := GlobalLadder(a.e.Store().All())
+	stored, storedOK := a.e.LadderStore().Get()
+	l, ok := GlobalLadder(stored, storedOK, a.e.Store().All())
 	// Generated at the default dwell and then stretched, rather than generated
 	// at a stretched dwell. One path, so a built-in and a saved pattern are
 	// scaled by exactly the same code and cannot drift apart in rounding.
@@ -1076,8 +1077,16 @@ func (a *API) selectPattern(w http.ResponseWriter, r *http.Request) {
 
 // getConfig exports every device's operator intent as one document.
 func (a *API) getConfig(w http.ResponseWriter, r *http.Request) {
+	var ladder *Ladder
+	if l, ok := a.e.LadderStore().Get(); ok {
+		ladder = &l
+	} else if l, ok := GlobalLadder(Ladder{}, false, a.e.Store().All()); ok {
+		// Not yet moved out of a device on this box. Export it anyway rather
+		// than making the operator re-sweep to get a backup worth having.
+		ladder = &l
+	}
 	writeJSON(w, http.StatusOK,
-		ExportConfig(a.e.Store().All(), a.e.PatternStore().All()))
+		ExportConfig(ladder, a.e.PatternStore().All()))
 }
 
 // configPost carries a configuration to import.
@@ -1131,6 +1140,16 @@ func (a *API) postConfig(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	// The ladder likewise: one per box, so there is nothing to merge. Applied
+	// after the patterns because every built-in is generated from it, so a
+	// document's patterns and its ladder describe one state and the box should
+	// not sit in half of it any longer than it must.
+	if in.Ladder != nil {
+		if err := a.e.LadderStore().Put(*in.Ladder); err != nil {
+			writeErr(w, http.StatusBadRequest, "ladder: "+err.Error())
+			return
+		}
+	}
 	// Every imported device's conditioning may have changed, and a pattern that
 	// was mid-run now belongs to a policy nobody in this session authored.
 	for _, mac := range wrote {
@@ -1139,6 +1158,7 @@ func (a *API) postConfig(w http.ResponseWriter, r *http.Request) {
 	a.e.BumpControl()
 	writeJSON(w, http.StatusOK, map[string]any{
 		"mode": string(mode), "wrote": wrote, "removed": removed,
+		"ladder": in.Ladder != nil, "patterns": len(in.Patterns),
 	})
 }
 

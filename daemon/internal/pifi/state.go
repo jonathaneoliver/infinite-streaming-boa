@@ -49,6 +49,7 @@ type Engine struct {
 	sh    *Shaper
 	st    *Store
 	pat   *PatternStore
+	lad   *LadderStore
 	learn *Learner
 
 	rev, ctrlRev uint64
@@ -107,19 +108,20 @@ func NewEngine(cfg Config) *Engine {
 		cfg.Tick = time.Second
 	}
 	return &Engine{
-		cfg:       cfg,
-		sh:        NewShaper(cfg.WANPort, cfg.Bridge, managementPorts(cfg.Addr)),
-		st:        NewStore(cfg.StatePath),
-		pat:       NewPatternStore(patternsPathFor(cfg.StatePath)),
-		learn:     NewLearner(cfg.Bridge, cfg.WlanPort, cfg.LanPort),
+		cfg:        cfg,
+		sh:         NewShaper(cfg.WANPort, cfg.Bridge, managementPorts(cfg.Addr)),
+		st:         NewStore(cfg.StatePath),
+		pat:        NewPatternStore(patternsPathFor(cfg.StatePath)),
+		lad:        NewLadderStore(ladderPathFor(cfg.StatePath)),
+		learn:      NewLearner(cfg.Bridge, cfg.WlanPort, cfg.LanPort),
 		prev:       map[string]counterSample{},
 		lastActive: map[string]int64{},
-		demo:      newDemoFleet(),
-		demoBytes: map[string]uint64{},
-		hist:      NewHistory(),
-		sweep:     &Sweeper{},
-		player:    &Player{},
-		subs:      map[chan Snapshot]struct{}{},
+		demo:       newDemoFleet(),
+		demoBytes:  map[string]uint64{},
+		hist:       NewHistory(),
+		sweep:      &Sweeper{},
+		player:     &Player{},
+		subs:       map[chan Snapshot]struct{}{},
 	}
 }
 
@@ -127,16 +129,23 @@ func patternsPathFor(statePath string) string {
 	return filepath.Join(filepath.Dir(statePath), "patterns.json")
 }
 
-func (e *Engine) Store() *Store     { return e.st }
+func ladderPathFor(statePath string) string {
+	return filepath.Join(filepath.Dir(statePath), "ladder.json")
+}
+
+func (e *Engine) Store() *Store { return e.st }
 
 // PatternStore holds the box's saved patterns. Beside policy.json rather than
 // inside it: policies persist as a bare object keyed by MAC, and folding
 // patterns in would change that file's shape and need a migration on every
 // existing box for no benefit over a second small file.
 func (e *Engine) PatternStore() *PatternStore { return e.pat }
-func (e *Engine) Shaper() *Shaper   { return e.sh }
-func (e *Engine) Sweeper() *Sweeper { return e.sweep }
-func (e *Engine) Player() *Player   { return e.player }
+
+// LadderStore holds THE ladder for the box. See LadderStore.
+func (e *Engine) LadderStore() *LadderStore { return e.lad }
+func (e *Engine) Shaper() *Shaper           { return e.sh }
+func (e *Engine) Sweeper() *Sweeper         { return e.sweep }
+func (e *Engine) Player() *Player           { return e.player }
 
 // Start brings up the kernel scaffolding and the passive listeners, then ticks
 // forever. Shaping failure is reported through capabilities rather than being
@@ -636,6 +645,15 @@ func (e *Engine) storeSweepResult() {
 		p = Policy{MAC: mac, Enabled: true}
 	}
 	p.PutLadder(ladder)
+	// The device keeps its record -- that is the measurement history, and the
+	// interface shows which service it came from -- but the BOX's ladder is
+	// what every pattern is generated from, so a fresh sweep has to move it.
+	// Reported rather than swallowed: a sweep that measured a ladder nothing
+	// will use is an hour of streaming wasted silently.
+	if err := e.lad.Put(ladder); err != nil {
+		fmt.Printf("infinite-streaming-pifi: sweep %s: measured ladder not stored: %v\n",
+			mac, err)
+	}
 	p.Rev++
 	if err := e.st.Put(p); err != nil {
 		fmt.Printf("infinite-streaming-pifi: sweep %s: ladder measured but NOT saved: %v\n",
