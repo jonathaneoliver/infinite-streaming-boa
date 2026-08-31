@@ -280,3 +280,6 @@ select, input[type='text'], input[type='number'] {
 .pill.link:hover { color: var(--ink); border-color: var(--ink-faint); }
 
 .empty { text-align: center; padding: 56px 20px; color: var(--ink-faint); }
+
+/* The file input is driven by a button, so it never shows itself. */
+.hidden-file { display: none; }
