@@ -1,5 +1,9 @@
-# Secrets and local configuration
+# Secrets and local configuration. The .bak glob matters: `.env` on its own
+# is an exact match, so a hand-made backup like .env.bak-prerename stays
+# untracked only by luck and would be swept up by `git add -A`. Those copies
+# carry AP_PASSWORD and BOA_PASSWORD in cleartext.
 .env
+.env.bak*
 
 # Build outputs, anchored to the repo root. NOT a bare `dist/`: that pattern
 # matches at any depth and would also exclude daemon/web/dist, whose
@@ -31,3 +35,8 @@ node_modules/
 # Browser-automation scratch: screenshots and console logs written while
 # checking the interface. Never part of the build.
 .playwright-mcp/
+
+# Claude Code local state: machine-specific settings, and worktrees/ which
+# holds whole checkouts of this repo -- committing it would nest the tree
+# inside itself.
+.claude/
