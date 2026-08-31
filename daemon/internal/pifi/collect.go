@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"encoding/json"
 	"fmt"
+	"net"
 	"os"
 	"os/exec"
 	"strconv"
@@ -129,17 +130,44 @@ type neighJSON struct {
 // FAILED entries are dropped: they mean the address did not answer, so binding
 // a shaping filter to it would condition traffic that goes nowhere.
 func NeighTable(iface string) map[string]string {
-	out := map[string]string{}
 	raw, err := exec.Command("ip", "-j", "neigh", "show", "dev", iface).Output()
 	if err != nil {
-		return out
+		return map[string]string{}
 	}
 	var entries []neighJSON
 	if json.Unmarshal(raw, &entries) != nil {
-		return out
+		return map[string]string{}
 	}
+	return neighFromEntries(entries)
+}
+
+// neighFromEntries is the parse, split from the exec so the family rule can be
+// tested without a kernel.
+//
+// IPv4 ONLY, and the reason is not tidiness. `ip neigh` returns both families,
+// the result is keyed by MAC, and a MAC commonly holds three entries at once --
+// its v4 address, a routable v6 address, and an IPv6 link-local. Without a
+// family check the last one parsed wins, so an fe80:: address would silently
+// displace a perfectly good v4 address for the same device.
+//
+// The single caller assigns this to Client.IP, which is the IPv4 field and
+// reaches tc as `protocol ip ... match ip dst`. Handing that an IPv6 address is
+// not merely wasteful, it is rejected outright with `Illegal "match"` -- and
+// because writeFilters installs the v4 filter FIRST and returns on error, the
+// v6 filters below it never get installed either. The device then carries no
+// conditioning at all while the interface reports its policy as applied, which
+// is the exact failure shape.go:632 exists to prevent.
+//
+// Routable v6 addresses are dropped rather than merged into Client.IPv6: the
+// ARP sniffer already supplies those, and widening this function's contract is
+// a separate change.
+func neighFromEntries(entries []neighJSON) map[string]string {
+	out := map[string]string{}
 	for _, e := range entries {
 		if e.LLAddr == "" || e.Dst == "" {
+			continue
+		}
+		if ip := net.ParseIP(e.Dst); ip == nil || ip.To4() == nil {
 			continue
 		}
 		failed := false
