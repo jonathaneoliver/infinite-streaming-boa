@@ -658,6 +658,8 @@ func (a *API) resolveBuiltin(name string, p Policy, service string,
 func stretchParam(raw string) (float64, error) {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
+		// Absent, not zero: an unstretched list is the sensible default, and a
+		// query string cannot express "explicitly 1" any other way.
 		return 1, nil
 	}
 	f, err := strconv.ParseFloat(raw, 64)
@@ -788,10 +790,17 @@ type patternSelect struct {
 	// means something once a service is named; empty takes the most recently
 	// measured.
 	Service string `json:"service"`
-	// Stretch scales the pattern in time, keeping its shape and its rates. 1 or
-	// absent leaves it alone. See StretchPattern for why this is a multiplier
-	// rather than a per-step duration.
-	Stretch float64 `json:"stretch"`
+	// Stretch scales the pattern in time, keeping its shape and its rates.
+	//
+	// A POINTER, so that absent and 0 are different requests. Absent means "do
+	// not stretch"; 0 is a request to collapse every step into one instant,
+	// which is a constant rate rather than a pattern, and is refused with that
+	// explanation. A bare float would silently turn one into the other -- the
+	// same trap policyPatch uses pointers to avoid.
+	//
+	// See StretchPattern for why this is a multiplier rather than a per-step
+	// duration.
+	Stretch *float64 `json:"stretch"`
 }
 
 // selectPattern loads a named pattern onto a device.
@@ -817,6 +826,11 @@ func (a *API) selectPattern(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	stretch := 1.0
+	if in.Stretch != nil {
+		stretch = *in.Stretch
+	}
+
 	name := normPatternName(in.Name)
 	switch {
 	case name == "":
@@ -825,7 +839,7 @@ func (a *API) selectPattern(w http.ResponseWriter, r *http.Request) {
 		a.e.Player().Stop(mac)
 		p.Pattern = nil
 	case IsBuiltin(name):
-		pat, _, _, err := a.resolveBuiltin(name, p, in.Service, in.Stretch)
+		pat, _, _, err := a.resolveBuiltin(name, p, in.Service, stretch)
 		if err != nil {
 			writeErr(w, http.StatusBadRequest, err.Error())
 			return
@@ -841,7 +855,7 @@ func (a *API) selectPattern(w http.ResponseWriter, r *http.Request) {
 		// Stretched on the way in, so the device stores the timeline it will
 		// actually play. The saved pattern in the library is untouched: the
 		// slider is a property of this selection, not an edit to the library.
-		st, err := StretchPattern(sp, in.Stretch)
+		st, err := StretchPattern(sp, stretch)
 		if err != nil {
 			writeErr(w, http.StatusBadRequest, err.Error())
 			return
