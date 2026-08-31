@@ -181,14 +181,13 @@ inflating its bandwidth estimate. netem instead computes each packet's
 serialisation time from its length, which is what a real slow link does. HTB is
 kept only as a classifier and per-client byte counter.
 
-Measured on real forwarded traffic: caps from 1.5 to 50 Mbps deliver within
-−4.5 % of target, and that residual is the Ethernet/IP/TCP framing overhead a
-real link of the same speed would also impose. Measured again separately over
-5 GHz at 0.25, 0.5, 1, 2 and 4 Mbps, from both ends at once: the kernel's own
-class counters read the configured rate exactly, and a client counting TCP
-payload sees 0.943–0.952 of it — the same framing, from the other side of it.
-**Uplink is untested at any rate.** A configured 200 ms one-way delay measured
-200.6 ms RTT.
+Measured on real forwarded traffic, a downlink cap lands within 6 % of target
+across the whole verified range, 0.25 to 50 Mbps. That shortfall is not error:
+the kernel's own class counters read the configured rate exactly, and the 4–6 %
+a client sees missing is the Ethernet, IP and TCP framing the cap counts and a
+payload byte-count does not — the same overhead a real link of that speed would
+impose. **Uplink is untested at any rate.** A configured 200 ms one-way delay
+measured 200.6 ms RTT.
 
 Policies are keyed by **MAC**, not IP, so they survive a DHCP renewal, a reboot,
 and a client roaming between the wireless and wired ports.
