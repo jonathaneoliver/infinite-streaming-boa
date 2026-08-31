@@ -38,7 +38,8 @@ ssh -o ConnectTimeout=8 -o BatchMode=yes "$TARGET" true 2>/dev/null \
       ssh-copy-id $TARGET
   A key is worth it -- this script runs many times an hour."
 
-# A deploy restarts the unit, and a ladder sweep lives only in the daemon's
+# A deploy restarts the unit, and a ladder sweep or a playing pattern lives only
+# in the daemon's
 # memory -- deliberately, so a crash cannot leave a device throttled with
 # nothing to unwind. The cost is that deploying mid-sweep destroys it silently.
 #
@@ -49,16 +50,52 @@ ssh -o ConnectTimeout=8 -o BatchMode=yes "$TARGET" true 2>/dev/null \
 #
 # Best effort by design: an unreachable or too-old daemon must not block a
 # deploy, since deploying is how you FIX a broken daemon.
-if [ "$FORCE" = "0" ]; then
-  sweeping=$(ssh -o ConnectTimeout=5 -o BatchMode=yes "$TARGET" \
+#
+# It has to say WHICH, because the two cost very different amounts. The first
+# version flattened the JSON and counted '"state":"running"', which also matched
+# a playing pattern -- so an interrupted two-minute test was reported as a lost
+# half-hour measurement, and the only way past it was --force, which would have
+# been right for the pattern and wrong for the sweep.
+if [ "$FORCE" = "0" ] && command -v python3 >/dev/null 2>&1; then
+  busy=$(ssh -o ConnectTimeout=5 -o BatchMode=yes "$TARGET" \
     "curl -s --max-time 4 localhost/api/state" 2>/dev/null \
-    | tr ',' '\n' | grep -c '"state":"running"' || true)
-  if [ "${sweeping:-0}" -gt 0 ]; then
-    die "a ladder sweep is running on $TARGET.
+    | python3 -c '
+import json, sys
+try:
+    st = json.load(sys.stdin)
+except Exception:
+    sys.exit(0)          # unreachable or too old to ask: never block a deploy
+for c in st.get("clients") or []:
+    who = c.get("hostname") or c.get("mac") or "?"
+    sw = c.get("sweep") or {}
+    if sw.get("state") == "running":
+        print("sweep\t%s\t%s" % (who, sw.get("service") or "?"))
+    pr = c.get("pattern_run") or {}
+    if pr.get("state") == "running":
+        print("pattern\t%s\t%s" % (who, (c.get("policy") or {}).get("pattern", {}).get("name") or ""))
+' 2>/dev/null || true)
+
+  if printf '%s' "$busy" | grep -q '^sweep'; then
+    die "a ladder sweep is running on $TARGET:
+$(printf '%s' "$busy" | grep '^sweep' | sed 's/^sweep\t/      /;s/\t/ · /')
+
   Deploying restarts the daemon, which ends the sweep and loses its results --
-  it keeps no state on disk until it finishes.
+  it keeps no state on disk until it finishes, and a sweep can run for half an
+  hour with no sign from outside.
 
   Wait for it, stop it from the interface, or:
+      ./scripts/deploy.sh --force"
+  fi
+
+  if [ -n "$busy" ]; then
+    die "a pattern is playing on $TARGET:
+$(printf '%s' "$busy" | grep '^pattern' | sed 's/^pattern\t/      /;s/\t/ · /')
+
+  Deploying restarts the daemon, which stops the run and returns the device to
+  its stored policy. Cheap to restart, unlike a sweep -- but somebody is
+  mid-test, so this asks first.
+
+  Stop it from the interface, or:
       ./scripts/deploy.sh --force"
   fi
 fi
