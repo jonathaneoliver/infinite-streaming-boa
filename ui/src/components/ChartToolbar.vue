@@ -12,7 +12,8 @@
  * comparable at a glance. Per-device ranges would make each card readable on
  * its own and the page as a whole meaningless.
  */
-import { RANGES, SUSTAINED_SEC, type YMode } from '@/types';
+import { RANGES, SORT_MODES, SUSTAINED_SEC, type SortMode, type YMode }
+  from '@/types';
 
 const props = defineProps<{
   rangeSec: number;
@@ -22,6 +23,8 @@ const props = defineProps<{
   bucketMs: number;
   showLive: boolean;
   showSustained: boolean;
+  /** How the device list below is ordered. */
+  sortMode: SortMode;
 }>();
 
 const emit = defineEmits<{
@@ -30,6 +33,7 @@ const emit = defineEmits<{
   (e: 'y-manual', v: number): void;
   (e: 'show-live', v: boolean): void;
   (e: 'show-sustained', v: boolean): void;
+  (e: 'sort-mode', m: SortMode): void;
 }>();
 
 /**
@@ -80,6 +84,18 @@ function onManual(e: Event) {
 
 <template>
   <div class="toolbar">
+    <span class="lbl">order</span>
+    <!-- First in the bar because it acts on the PAGE, where everything after it
+         configures the charts drawn on it. -->
+    <div class="seg" role="group" aria-label="Device order">
+      <button
+        v-for="m in SORT_MODES" :key="m.v"
+        class="seg-btn" :class="{ on: sortMode === m.v }"
+        :title="m.title"
+        @click="emit('sort-mode', m.v)"
+      >{{ m.label }}</button>
+    </div>
+
     <span class="lbl">range</span>
     <div class="seg" role="group" aria-label="Chart time range">
       <button

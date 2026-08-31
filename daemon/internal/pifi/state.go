@@ -57,6 +57,12 @@ type Engine struct {
 	// prev is keyed "dev/minor" and holds the last byte count seen there.
 	prev map[string]counterSample
 
+	// lastActive is when each MAC was last moving more than a trickle.
+	// Telemetry, so it is held in memory and never written to the store: it
+	// rebuilds itself within seconds of a restart for anything actually doing
+	// something, which is the only case it is consulted for.
+	lastActive map[string]int64
+
 	demo      []*demoClient
 	demoBytes map[string]uint64
 
@@ -106,7 +112,8 @@ func NewEngine(cfg Config) *Engine {
 		st:        NewStore(cfg.StatePath),
 		pat:       NewPatternStore(patternsPathFor(cfg.StatePath)),
 		learn:     NewLearner(cfg.Bridge, cfg.WlanPort, cfg.LanPort),
-		prev:      map[string]counterSample{},
+		prev:       map[string]counterSample{},
+		lastActive: map[string]int64{},
 		demo:      newDemoFleet(),
 		demoBytes: map[string]uint64{},
 		hist:      NewHistory(),
@@ -559,6 +566,13 @@ func (e *Engine) tick() {
 	// instant gets history consistent with the snapshot it also receives.
 	for i := range clients {
 		c := &clients[i]
+		// Anything above a trickle counts as active. The same threshold the
+		// sweep uses to call a client silent, for the same reason: below it a
+		// device is doing background chatter, not work.
+		if c.DownCounters.ThroughputMbps+c.UpCounters.ThroughputMbps > silentMbps {
+			e.lastActive[c.MAC] = now.UnixMilli()
+		}
+		c.LastActiveMs = e.lastActive[c.MAC]
 		e.hist.Add(c.MAC, Sample{
 			T:    now.UnixMilli(),
 			Down: c.DownCounters.ThroughputMbps,
