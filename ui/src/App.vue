@@ -143,6 +143,9 @@ const CHART_DEFAULTS: ChartPrefs = {
   // Off by default: the taller plot costs how many devices are visible at once,
   // which is the more common need.
   tallCharts: false,
+  // Both on: hiding a direction is a deliberate act, and a card that silently
+  // omitted one would be a card lying about what it is conditioning.
+  showDown: true, showUp: true,
 };
 
 function loadChart(): ChartPrefs {
@@ -195,7 +198,6 @@ onUnmounted(() => window.clearInterval(ticker));
  */
 const cfgMsg = ref('');
 const cfgErr = ref('');
-const cfgFile = ref<HTMLInputElement | null>(null);
 
 async function onSaveConfig() {
   cfgErr.value = '';
@@ -257,15 +259,20 @@ conditioning, its ladders, saved and merged patterns, and this browser's chart
 preferences."
         @click="onSaveConfig()"
       >export config</button>
-      <button
-        class="pill link" title="Restore a setup from a file. Merges: devices in
-the file are replaced, devices not mentioned are left alone."
-        @click="cfgFile?.click()"
-      >import config</button>
-      <input
-        ref="cfgFile" type="file" accept="application/json,.json"
-        class="hidden-file" @change="onLoadConfig"
-      />
+      <!-- A label WRAPPING the input, not a button that clicks it from
+           script. Clicking a label opens its own file picker natively, with no
+           JavaScript and no question about user activation -- and a
+           script-driven .click() on a hidden input is exactly the kind of thing
+           a browser may decline without saying so, which is how this shipped
+           looking like a button that did nothing. -->
+      <label class="pill link" title="Restore a setup from a file. Merges: devices in
+the file are replaced, devices not mentioned are left alone.">
+        import config
+        <input
+          type="file" accept="application/json,.json"
+          class="hidden-file" @change="onLoadConfig"
+        />
+      </label>
       <a
         v-if="caps?.ntopng"
         class="pill link"
@@ -294,6 +301,9 @@ the file are replaced, devices not mentioned are left alone."
       @sort-mode="(v: SortMode) => (sortMode = v)"
       :show-live="chart.showLive" :show-sustained="chart.showSustained"
       :tall-charts="chart.tallCharts" :sustained-sec="chart.sustainedSec"
+      :show-down="chart.showDown" :show-up="chart.showUp"
+      @show-down="(v: boolean) => (chart = { ...chart, showDown: v })"
+      @show-up="(v: boolean) => (chart = { ...chart, showUp: v })"
       @sustained-sec="(v: number) => (chart = { ...chart, sustainedSec: v })"
       @tall-charts="(v: boolean) => (chart = { ...chart, tallCharts: v })"
       @range="(v: number) => (chart = { ...chart, rangeSec: v })"

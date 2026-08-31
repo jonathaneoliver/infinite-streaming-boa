@@ -29,6 +29,9 @@ const props = defineProps<{
   tallCharts: boolean;
   /** Trailing window for the sustained mean, in seconds. */
   sustainedSec: number;
+  /** Which directions are drawn at all. */
+  showDown: boolean;
+  showUp: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -40,6 +43,8 @@ const emit = defineEmits<{
   (e: 'sort-mode', m: SortMode): void;
   (e: 'tall-charts', v: boolean): void;
   (e: 'sustained-sec', v: number): void;
+  (e: 'show-down', v: boolean): void;
+  (e: 'show-up', v: boolean): void;
 }>();
 
 /**
@@ -140,6 +145,24 @@ function onManual(e: Event) {
       title="Double the height of the expanded charts. More vertical resolution to separate close rungs; fewer devices on screen at once."
       @click="emit('tall-charts', !tallCharts)"
     >tall</button>
+
+    <!-- Which directions to draw. Page-level like everything else in this bar:
+         one card showing a direction while the next hides it would make the
+         page unreadable, and the question is how much screen to spend, which
+         is not a per-device one. -->
+    <span class="lbl">show</span>
+    <div class="seg" role="group" aria-label="Directions shown">
+      <button
+        class="seg-btn" :class="{ on: showDown }" :aria-pressed="showDown"
+        title="Draw the downlink: traffic to the device, and what most testing here is about."
+        @click="emit('show-down', !showDown)"
+      >down</button>
+      <button
+        class="seg-btn" :class="{ on: showUp }" :aria-pressed="showUp"
+        title="Draw the uplink: traffic from the device. Hiding it gives every card its width back."
+        @click="emit('show-up', !showUp)"
+      >up</button>
+    </div>
 
     <span class="lbl">mean over</span>
     <div class="seg" role="group" aria-label="Window for the sustained mean">

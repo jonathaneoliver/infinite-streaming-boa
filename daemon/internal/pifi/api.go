@@ -57,7 +57,7 @@ func (a *API) Routes() *http.ServeMux {
 	mux.HandleFunc("DELETE /api/devices/{mac}/ladders/{service}", a.deleteLadder)
 	mux.HandleFunc("POST /api/devices/{mac}/reset", a.resetDevice)
 	mux.HandleFunc("DELETE /api/devices/{mac}", a.forgetDevice)
-	mux.Handle("/", http.FileServer(http.FS(a.ui)))
+	mux.Handle("/", cacheHeaders(http.FileServer(http.FS(a.ui))))
 	return mux
 }
 
@@ -852,6 +852,37 @@ func (a *API) savePattern(w http.ResponseWriter, r *http.Request) {
 	a.e.BumpControl()
 	writeJSON(w, http.StatusOK, map[string]any{
 		"saved": normPatternName(pat.Name)})
+}
+
+// cacheHeaders tells the browser what it may keep, because otherwise it decides
+// for itself and gets it wrong.
+//
+// The embedded filesystem has no modification times -- embed.FS reports zero --
+// so http.FileServer emits no Last-Modified, and nothing here was emitting an
+// ETag or a Cache-Control either. A response with no validators and no
+// directives is not "do not cache": it licenses HEURISTIC caching, and a
+// browser may then reuse it for the rest of a session.
+//
+// For index.html that is the expensive one. Vite fingerprints every asset, so a
+// deploy changes their names -- but only index.html knows the new names. Serve
+// a stale index and the browser dutifully loads the OLD bundle, and the box
+// then runs code the operator cannot see and did not deploy. That happened here
+// across a dozen deploys before anyone noticed, and it presented as two
+// unrelated bugs: a button that did nothing and a layout that did not fit.
+//
+// So: the fingerprinted assets are immutable, because their names change when
+// their content does. Everything else must revalidate. no-cache does not mean
+// "do not store" -- it means "ask first" -- which is exactly right for a file
+// whose name never changes and whose content does.
+func cacheHeaders(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/assets/") {
+			w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+		} else {
+			w.Header().Set("Cache-Control", "no-cache")
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 // mergePatterns lays several patterns over one another and returns the result
