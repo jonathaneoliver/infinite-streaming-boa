@@ -132,8 +132,25 @@ const dur = computed(() => (keys.value.length ? keys.value[keys.value.length - 1
  * headroom is shaded so it never reads as part of the pattern -- nothing
  * happens out there until something is put there.
  */
-const HEADROOM_SEC = 30;
-const viewSpan = computed(() => dur.value + HEADROOM_SEC);
+/** What the runtime will play. Mirrors maxPatternSec in pattern.go. */
+const maxPatternSec = 3600;
+
+/*
+ * How much empty ruler sits past the end, as a fraction of the pattern plus a
+ * floor.
+ *
+ * It was a flat 30 seconds, which is most of a short pattern and nothing at all
+ * on a long one: on the 11-minute ladder patterns the generator produces, 30s
+ * is four percent of the width, so "drag the end into the headroom to lengthen
+ * it" meant dragging into a strip a few pixels wide and releasing to get
+ * another few pixels. The space exists to be dragged into, so it scales with
+ * what is being dragged.
+ */
+const HEADROOM_MIN_SEC = 30;
+const HEADROOM_FRAC = 0.25;
+const viewSpan = computed(
+  () => dur.value + Math.max(HEADROOM_MIN_SEC, dur.value * HEADROOM_FRAC),
+);
 
 /*
  * What the ruler is actually drawn against, which is not viewSpan mid-drag.
@@ -336,7 +353,14 @@ function clickTimeline(e: MouseEvent) {
  * first one cannot move at all -- a timeline with no value at t=0 has no
  * defined starting condition.
  */
-const drag = ref<{ i: number; span: number; x0: number; moved: boolean } | null>(null);
+const drag = ref<{
+  i: number;
+  span: number;
+  x0: number;
+  moved: boolean;
+  /** alt held when the press landed: slide within the gap, do not ripple. */
+  penned: boolean;
+} | null>(null);
 
 /*
  * How far the pointer must travel before a press counts as a drag.
@@ -364,7 +388,11 @@ function startDrag(i: number, e: PointerEvent) {
   // must leave it to the click handler, or selecting on the way down and
   // toggling on the way up cancel each other out and the keyframe can never be
   // selected at all.
-  drag.value = { i, span: viewSpan.value, x0: e.clientX, moved: false };
+  // Read once, at the press. Sampling it per move would let the gesture change
+  // meaning halfway through, so half a drag would ripple and half would not.
+  drag.value = {
+    i, span: viewSpan.value, x0: e.clientX, moved: false, penned: e.altKey,
+  };
 }
 
 function onDrag(e: PointerEvent) {
@@ -382,7 +410,7 @@ function onDrag(e: PointerEvent) {
   // Only the last keyframe may run past the ruler; the rest are penned in by
   // their neighbours anyway.
   const at = timeAt(e.clientX, d.span, d.i === keys.value.length - 1);
-  if (at !== cur.at_sec) moveKey(d.i, at);
+  if (at !== cur.at_sec) moveKey(d.i, at, d.penned, d.span);
 }
 
 function endDrag(e: PointerEvent) {
@@ -416,18 +444,78 @@ function removeKey(i: number) {
   emit('select', null);
 }
 
-function moveKey(i: number, sec: number) {
+/**
+ * Move a keyframe, taking everything after it along -- or not, with alt held.
+ *
+ * # Why ripple is the default
+ *
+ * The commonest edit to a ladder pattern is "give this rung longer", and that
+ * is a statement about ONE segment: the gap before this keyframe grew, and
+ * nothing else about the pattern changed. Ripple says exactly that in one
+ * gesture.
+ *
+ * Penned dragging cannot say it at all. On a 24-keyframe pattern, stretching
+ * one dwell means dragging that keyframe and then all 22 after it, each clamped
+ * by the neighbour not yet moved, and finally the last one again to extend the
+ * end. Twenty-three gestures for one intent is not an editing model.
+ *
+ * The cost is that the total duration and the loop point move. That is real,
+ * and it is visible: the end marker travels, the shaded headroom follows it,
+ * and the header's duration updates as you drag. Nothing changes quietly.
+ *
+ * # Why penned is still reachable
+ *
+ * Sliding a keyframe within its gap -- making one segment shorter and the next
+ * longer, with the pattern's length untouched -- is a real and different edit.
+ * alt-drag does it, which is the modifier timeline editors already use for
+ * "leave the neighbours alone".
+ */
+function moveKey(i: number, sec: number, penned = false, limitSec = maxPatternSec) {
   // Half-second granularity, because throughput is sampled once a second and a
   // transition finer than that can be configured but never observed.
   if (i === 0) return;
+  const ks = keys.value;
   const at = Math.max(0, Math.round(sec * 2) / 2);
-  const lo = keys.value[i - 1].at_sec + 0.5;
-  const hi = i + 1 < keys.value.length ? keys.value[i + 1].at_sec - 0.5 : 3600;
-  const clamped = Math.min(Math.max(at, lo), hi);
+
+  if (penned || i === ks.length - 1) {
+    // The last keyframe has nothing after it to push, so a ripple and a penned
+    // move are the same gesture there -- and it is how the pattern is
+    // lengthened by dragging into the headroom.
+    const lo = ks[i - 1].at_sec + 0.5;
+    const hi = i + 1 < ks.length ? ks[i + 1].at_sec - 0.5 : maxPatternSec;
+    const clamped = Math.min(Math.max(at, lo), hi);
+    mutate((p) => {
+      p.keys[i].at_sec = clamped;
+    });
+    scrub.value = clamped;
+    return;
+  }
+
+  // Ripple. The keyframe may not cross the one before it -- that would reorder
+  // the timeline under the hand -- and the delta is capped so the LAST keyframe
+  // cannot be pushed past what the runtime will play. Clamping the whole shift
+  // rather than each keyframe keeps the gaps after this one exactly as they
+  // were: clamping individually would silently compress the tail against the
+  // ceiling instead of stopping.
+  //
+  // The tail also stops at the RULER, not just at the runtime's ceiling. The
+  // axis is pinned for the length of a gesture -- it has to be, or the scale
+  // would stretch under the marker and the keyframe would chase the cursor --
+  // so a ripple that runs past the pinned span has nowhere left to draw its
+  // tail and stacks every trailing marker on the right edge. Stopping is
+  // legible where piling up is not; release and the ruler regrows around the
+  // longer pattern, so the next drag carries on.
+  const lo = ks[i - 1].at_sec + 0.5;
+  const room = Math.min(limitSec, maxPatternSec) - ks[ks.length - 1].at_sec;
+  const target = Math.min(Math.max(at, lo), ks[i].at_sec + room);
+  const delta = target - ks[i].at_sec;
+  if (delta === 0) return;
   mutate((p) => {
-    p.keys[i].at_sec = clamped;
+    for (let n = i; n < p.keys.length; n++) {
+      p.keys[n].at_sec = Math.round((p.keys[n].at_sec + delta) * 2) / 2;
+    }
   });
-  scrub.value = clamped;
+  scrub.value = target;
 }
 
 /*
@@ -1105,6 +1193,10 @@ const status = computed(() => {
       </div>
       <div v-else class="sel">
         <span class="meta">
+          Drag a keyframe to move it and everything after it; hold alt to slide
+          it between its neighbours instead. A ripple stops when its tail
+          reaches the end of the ruler — let go and the ruler grows, then carry
+          on.
           Click the timeline to move the playhead, then add a keyframe — or
           right-click the timeline to do both at once. A new keyframe inherits
           the one before it, so adding one changes nothing until you move a
