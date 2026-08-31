@@ -992,14 +992,11 @@ const status = computed(() => {
           @pointercancel="endScrub"
           @keydown="keyScrub"
         >
+          <!-- The end is already drawn: the shaded headroom starts there and
+               the end marker sits on it, and the header states the length in
+               words. A number floating on the axis as well was a third telling
+               of the same fact, on the row whose job is the playhead. -->
           <span class="lane-name">time <b class="num">{{ head.toFixed(1) }}s</b></span>
-          <!-- The end label sits under the end marker rather than at the right
-               edge, because the right edge is headroom and labelling it with
-               the pattern's length would put the number 30s from the thing it
-               describes. -->
-          <span class="tend meta" :style="{ left: pct(dur) }">
-            ends {{ dur.toFixed(0) }}s
-          </span>
         </div>
       </div>
 
@@ -1259,14 +1256,6 @@ const status = computed(() => {
 .timelane:focus-visible {
   outline: 2px solid var(--down);
   outline-offset: -2px;
-}
-.tend {
-  position: absolute;
-  top: 3px;
-  transform: translateX(-50%);
-  white-space: nowrap;
-  font-size: 10px;
-  pointer-events: none;
 }
 .selband {
   position: absolute;
