@@ -421,11 +421,24 @@ const hover = computed(() => {
   // The sustained value for the same instant, so the tooltip answers both
   // "what was it doing" and "what was it sustaining" without a second gesture.
   const s = showSustainedLine.value ? (viewOf(sustained.value)[i]?.v ?? null) : null;
+  // The cap AT that instant, not the one in force now.
+  //
+  // Reading a chart is asking why the line did what it did, and the answer is
+  // usually the cap -- but under a pattern the cap has moved since, so the
+  // current value is the one number guaranteed not to explain a past moment.
+  // Comes from the same recorded series the stepped line is drawn from, so the
+  // tooltip and the dashes cannot disagree.
+  const capAt = props.caps.length ? (viewOf(props.caps)[i]?.v ?? null) : null;
   return {
     x: xAt(v[i].t),
     y: yAt(v[i].v),
     value: v[i].v,
     sustained: s,
+    // 0 is unlimited, which is an absence of a cap rather than a cap of zero:
+    // shown as such, or the reader is told the link was throttled to nothing at
+    // the exact moment it was throttled to nothing at all.
+    cap: capAt !== null && capAt > 0 ? capAt : null,
+    uncapped: capAt !== null && capAt <= 0,
     ago: ago(edge.value - v[i].t),
   };
 });
@@ -618,6 +631,12 @@ const gid = `g${Math.random().toString(36).slice(2, 8)}`;
       <span v-if="hover.sustained !== null" class="tip-sus">
         {{ fmt(hover.sustained) }} sustained
       </span>
+      <!-- Dashed underline, the same mark the cap line carries, so the row is
+           tied to the rule it describes without spending a word on saying so. -->
+      <span v-if="hover.cap !== null" class="tip-cap">
+        {{ fmt(hover.cap) }} cap
+      </span>
+      <span v-else-if="hover.uncapped" class="tip-cap">uncapped</span>
       <span class="tip-key"><i :style="{ background: color }"></i>{{ label }}</span>
       <span class="tip-ago">{{ hover.ago }}</span>
     </div>
@@ -671,6 +690,11 @@ const gid = `g${Math.random().toString(36).slice(2, 8)}`;
 .cap line,
 .cap polyline { stroke-width: 1; stroke-dasharray: 4 3; opacity: 0.8; fill: none; }
 .cap-text { fill: var(--ink-dim); font-size: 10px; }
+.tip-cap {
+  color: var(--ink-dim);
+  border-bottom: 1px dashed currentColor;
+  align-self: flex-start;
+}
 
 .crosshair line { stroke: var(--ink-faint); stroke-width: 1; opacity: 0.6; }
 
