@@ -37,6 +37,21 @@ type Sample struct {
 	T    int64   `json:"t"` // unix milliseconds
 	Down float64 `json:"down"`
 	Up   float64 `json:"up"`
+	// Cap is the downlink cap the kernel was enforcing at this instant, 0 for
+	// unlimited.
+	//
+	// Recorded per sample rather than read from the policy when the chart is
+	// drawn, because a pattern moves the cap while the chart is being watched:
+	// the current value says nothing about what was in force when the player
+	// reacted three minutes ago. Lining a player's behaviour up against the cap
+	// that caused it is the entire purpose of this box, and it cannot be done
+	// from a single number.
+	//
+	// It is the ENFORCED cap read back from tc, not the requested one, for the
+	// same reason DownCounters.CapMbps is: the chart should show what the
+	// kernel believed, so a shaping failure appears as a flat line at the old
+	// value rather than being papered over by the value we asked for.
+	Cap float64 `json:"cap"`
 }
 
 const (
@@ -53,8 +68,8 @@ const (
 	// Clients quiet for longer than this are dropped, so a network with many
 	// transient devices cannot grow the table without bound.
 	historyIdle = 30 * time.Minute
-	// Lowered from 256 alongside the twelvefold ring: a Sample is 24 bytes, so
-	// the worst case is 64 x 3600 x 24 = 5.5 MB resident, against 22 MB at the
+	// Lowered from 256 alongside the twelvefold ring: a Sample is 32 bytes, so
+	// the worst case is 64 x 3600 x 32 = 7.4 MB resident, against 22 MB at the
 	// old ceiling. A per-client link conditioner with more than 64 devices on
 	// it is not the machine this was built for.
 	historyMaxClients = 64
@@ -186,6 +201,13 @@ func (h *History) Window(dur time.Duration, maxPoints int) (series map[string][]
 		var sumD, sumU float64
 		var n int
 		var slot int64 = -1
+		// The cap is NOT averaged. It is a step, set to values somebody chose,
+		// so the mean of a bucket spanning a change is a cap that was never in
+		// force -- a bucket covering 12 and 1.5 would draw a line at 6.75 and
+		// invite the reader to explain a player's behaviour against it. The
+		// first sample's value is taken instead, which matches the bucket's
+		// timestamp: buckets are stamped at their start.
+		var capFirst float64
 
 		flush := func() {
 			if n == 0 {
@@ -195,6 +217,7 @@ func (h *History) Window(dur time.Duration, maxPoints int) (series map[string][]
 				T:    slot * bucketMS,
 				Down: sumD / float64(n),
 				Up:   sumU / float64(n),
+				Cap:  capFirst,
 			})
 			sumD, sumU, n = 0, 0, 0
 		}
@@ -206,6 +229,9 @@ func (h *History) Window(dur time.Duration, maxPoints int) (series map[string][]
 			if b := sm.T / bucketMS; b != slot {
 				flush()
 				slot = b
+			}
+			if n == 0 {
+				capFirst = sm.Cap
 			}
 			sumD += sm.Down
 			sumU += sm.Up

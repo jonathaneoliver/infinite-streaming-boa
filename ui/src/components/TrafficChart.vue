@@ -38,8 +38,18 @@ const props = withDefaults(
     data: number[];
     color: string;
     label: string;
-    /** Configured cap in Mbps, drawn as a threshold line. 0 = unlimited. */
+    /** Cap in Mbps right now, drawn when no history is supplied. 0 = unlimited. */
     cap?: number;
+    /**
+     * The cap at each sample, parallel to `t`. 0 means unlimited.
+     *
+     * When present the threshold is drawn as a STEP through history rather than
+     * a rule at today's value. A pattern moves the cap while the chart is being
+     * watched, and a flat line at the current one invites the reader to explain
+     * a three-minute-old reaction against a cap that was not in force then --
+     * which is the exact mistake this box exists to make impossible.
+     */
+    caps?: number[];
     /** Width of the visible window in ms. */
     windowMs?: number;
     /** Right-hand edge of the plot. Held still while the pointer is inside. */
@@ -68,7 +78,7 @@ const props = withDefaults(
     sustainedSec?: number;
   }>(),
   {
-    cap: 0, windowMs: 300_000, now: 0, yMode: 'auto', yManual: 10,
+    cap: 0, caps: () => [], windowMs: 300_000, now: 0, yMode: 'auto', yManual: 10,
     height: 132, titled: false, compact: false,
     showLive: true, showSustained: false, sustainedSec: 30,
   },
@@ -318,6 +328,51 @@ const sustainedPaths = computed(() =>
 
 const capY = computed(() => (props.cap > 0 ? yAt(props.cap) : null));
 
+/*
+ * The cap over time, as a step.
+ *
+ * Stepped, never sloped, because a cap is set to a value and holds it: an
+ * interpolated cap line would draw a ramp the kernel never applied, and the
+ * vertical edge is the moment being lined up against a player's reaction.
+ *
+ * Unlimited breaks the line rather than drawing at zero. A cap of 0 means "no
+ * ceiling", and a rule along the floor would read as "throttled to nothing" --
+ * the exact opposite. segmentsOf already splits on nulls, so the gap falls out.
+ */
+const capSteps = computed(() => {
+  if (!props.caps.length) return [];
+  const pts = viewOf(props.caps).map((p) => ({
+    t: p.t,
+    v: p.v && p.v > 0 ? p.v : null,
+  }));
+  const out: { t: number; v: number | null }[] = [];
+  for (let i = 0; i < pts.length; i++) {
+    // The held value up to this instant, then the change at it.
+    if (i > 0 && pts[i].v !== pts[i - 1].v) {
+      out.push({ t: pts[i].t, v: pts[i - 1].v });
+    }
+    out.push(pts[i]);
+  }
+  return out;
+});
+
+const capPaths = computed(() => pathsOf(segmentsOf(capSteps.value)));
+
+/** Whether the cap moved inside the window: a flat one needs no step drawing. */
+const capVaries = computed(() => {
+  const vs = capSteps.value;
+  return vs.some((p) => p.v !== vs[0].v);
+});
+
+/** The cap at the right-hand edge, which is what the label names. */
+const capNow = computed(() => {
+  const vs = capSteps.value;
+  for (let i = vs.length - 1; i >= 0; i--) {
+    if (vs[i].v !== null) return vs[i].v as number;
+  }
+  return 0;
+});
+
 const lastPoint = computed(() => view.value[view.value.length - 1] ?? null);
 const last = computed(() => lastPoint.value?.v ?? 0);
 const avg = computed(() =>
@@ -467,9 +522,27 @@ const gid = `g${Math.random().toString(36).slice(2, 8)}`;
         />
       </g>
 
-      <!-- The configured cap. Dashed deliberately: this IS a threshold, which is
-           exactly the meaning a dashed rule carries. -->
-      <g v-if="capY !== null && !compact && cap <= yMax" class="cap">
+      <!-- The cap as it was, when it moved. Dashed deliberately: this IS a
+           threshold, which is exactly the meaning a dashed rule carries. The
+           label names the value at the right-hand edge, because that is the one
+           the endpoint marker sits against. -->
+      <g v-if="capVaries && !compact" class="cap">
+        <polyline
+          v-for="(d, i) in capPaths" :key="i" :points="d.line" fill="none"
+          :stroke="color" vector-effect="non-scaling-stroke"
+        />
+        <text
+          v-if="capNow > 0 && capNow <= yMax"
+          :x="PAD.l + plotW + 6" :y="yAt(capNow) + 3" class="cap-text num"
+        >
+          cap {{ fmt(capNow) }}
+        </text>
+      </g>
+
+      <!-- A cap that has not moved is a rule, not a step: one line and one
+           label, which is cheaper to read than a flat path with the same
+           meaning. -->
+      <g v-else-if="capY !== null && !compact && cap <= yMax" class="cap">
         <line :x1="PAD.l" :x2="PAD.l + plotW" :y1="capY" :y2="capY" :stroke="color" />
         <text :x="PAD.l + plotW + 6" :y="capY + 3" class="cap-text num">
           cap {{ fmt(cap) }}

@@ -99,3 +99,57 @@ func TestWindowOmitsClientsWithNothingInRange(t *testing.T) {
 		t.Fatal("client with no samples in range should be omitted")
 	}
 }
+
+// A cap is a step set to values somebody chose, so decimating it by averaging
+// would draw a line at a cap that was never in force -- and invite the reader
+// to explain a player's behaviour against it. The bucket takes the value at its
+// start, which is where the bucket is stamped.
+func TestWindowDoesNotAverageTheCapAcrossAChange(t *testing.T) {
+	h := NewHistory()
+	now := time.Now().UnixMilli()
+	// 120 samples over two minutes: the first minute capped at 12, the second
+	// at 1.5. Decimated hard enough that buckets must span the change.
+	for i := 119; i >= 0; i-- {
+		cap := 12.0
+		if i < 60 {
+			cap = 1.5
+		}
+		h.Add("aa", Sample{T: now - int64(i)*1000, Down: 5, Cap: cap})
+	}
+	series, bucket := h.Window(2*time.Minute, 8)
+	if bucket <= 1000 {
+		t.Fatalf("bucket %dms: the window was not decimated, so nothing is proven", bucket)
+	}
+	for _, s := range series["aa"] {
+		if s.Cap != 12 && s.Cap != 1.5 {
+			t.Fatalf("bucket at %d reports cap %g, which was never set", s.T, s.Cap)
+		}
+	}
+	// Both values must survive: a decimation that kept only one would lose the
+	// change the chart exists to show.
+	var saw12, saw15 bool
+	for _, s := range series["aa"] {
+		saw12 = saw12 || s.Cap == 12
+		saw15 = saw15 || s.Cap == 1.5
+	}
+	if !saw12 || !saw15 {
+		t.Fatalf("lost a cap level: 12=%v 1.5=%v", saw12, saw15)
+	}
+}
+
+// Unlimited must stay 0 rather than being smeared into a neighbouring bucket's
+// value: 0 means "no ceiling", and any other number drawn there would claim a
+// throttle that was not applied.
+func TestWindowKeepsUnlimitedAsZero(t *testing.T) {
+	h := NewHistory()
+	now := time.Now().UnixMilli()
+	for i := 59; i >= 0; i-- {
+		h.Add("aa", Sample{T: now - int64(i)*1000, Down: 5, Cap: 0})
+	}
+	series, _ := h.Window(time.Minute, 10)
+	for _, s := range series["aa"] {
+		if s.Cap != 0 {
+			t.Fatalf("unconditioned bucket reports cap %g", s.Cap)
+		}
+	}
+}

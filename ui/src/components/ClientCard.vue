@@ -285,7 +285,7 @@ function fmtBytes(n: number): string {
       <span class="cell spark">
         <TrafficChart
           v-bind="chartProps"
-          :t="series?.t ?? []" :data="series?.down ?? []"
+          :t="series?.t ?? []" :data="series?.down ?? []" :caps="series?.cap ?? []"
           color="var(--down)" label="Downlink"
           :cap="downCap" :height="24" compact
         />
@@ -440,7 +440,7 @@ function fmtBytes(n: number): string {
         </h3>
         <TrafficChart
           v-bind="chartProps"
-          :t="series?.t ?? []" :data="series?.down ?? []"
+          :t="series?.t ?? []" :data="series?.down ?? []" :caps="series?.cap ?? []"
           color="var(--down)" label="Downlink"
           :cap="downCap" :height="196"
           @hovering="(v: boolean) => emit('hovering', v)"
