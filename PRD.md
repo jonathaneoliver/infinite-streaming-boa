@@ -109,6 +109,12 @@ device card. Optional: the image builds without it.
   other device on that port being conditioned — which this box cannot allow.
 - `rate_mbps = 0` means unlimited. `delay_ms` is **per direction**; the round
   trip is the sum, and the interface shows that sum.
+- **Loss runs to 100%, which is a blackhole** — the "drove into a tunnel" test.
+  Its control is log-scaled for the same reason the rate control is: everything
+  ordinarily interesting sits below 5%, and a linear track to 100 would bury it.
+  A device can be blackholed from the interface it is serving and still be
+  recovered, because the box's own management traffic is exempt from
+  conditioning.
 - Loss may be **uniform or bursty**. `loss_burst` is the mean length of a loss
   burst in packets; 1 is uniform — each packet independently, which is netem's
   default and essentially never happens on a real link. Above 1 the kernel runs
