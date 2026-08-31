@@ -219,21 +219,47 @@ const fmt = (v: number) => (v >= 100 ? v.toFixed(0) : v >= 10 ? v.toFixed(1) : v
  * at six lines.
  */
 const TICK_SPACING_PX = 34;
+/**
+ * Decimals needed to write v exactly, or -1 if more than `max` would be.
+ *
+ * The axis label formatter cannot be the test for this. It picks precision from
+ * each value's own magnitude -- two decimals under ten, one under a hundred --
+ * which is right for a single reading and wrong for a column of them, because
+ * whether a tick is representable then depends on where it happens to fall. A
+ * fixed ceiling of 16.6 in fifths is 3.32, 6.64, 9.96, 13.28: the first three
+ * are exact and the fourth crosses ten and prints as 13.3, so the whole
+ * division was rejected and the axis fell back to halves -- three gridlines on
+ * a chart asking for eleven. Precision belongs to the STEP, and every tick on
+ * one axis shares it.
+ */
+function decimalsFor(v: number): number {
+  if (!(v > 0)) return -1;
+  // Two decimals RELATIVE TO THE STEP'S OWN MAGNITUDE, not two absolute ones.
+  // A hard cap of two is itself a scale: it makes a 0.015 step unwritable while
+  // a 1.5 one is fine, so a small axis lost gridlines for no reason but its
+  // units. Every maximum niceMax returns divides into tenths that need exactly
+  // one decimal more than the maximum itself, which is why this is the whole
+  // fix -- the range was never the problem.
+  const max = Math.min(6, Math.max(2, 2 - Math.floor(Math.log10(v))));
+  for (let d = 0; d <= max; d++) {
+    if (Math.abs(Number(v.toFixed(d)) - v) < 1e-9) return d;
+  }
+  return -1;
+}
+
 const tickDivisions = computed(() => {
   const m = yMax.value;
   if (!(m > 0)) return 2;
-  const roundLabels = (n: number) => {
-    for (let i = 1; i < n; i++) {
-      const v = (m * i) / n;
-      if (Math.abs(Number(fmt(v)) - v) > 1e-9) return false;
-    }
-    return true;
-  };
   const ideal = plotH.value / TICK_SPACING_PX;
-  const usable = [2, 3, 4, 5, 6, 8, 10].filter(roundLabels);
+  const usable = [2, 3, 4, 5, 6, 8, 10].filter((n) => decimalsFor(m / n) >= 0);
   if (!usable.length) return 2;
   return usable.reduce((a, b) => (Math.abs(b - ideal) < Math.abs(a - ideal) ? b : a));
 });
+
+/** One precision for the whole axis, from the step it is drawn in. */
+const tickDecimals = computed(() =>
+  Math.max(0, decimalsFor(yMax.value / tickDivisions.value)),
+);
 
 const ticks = computed(() => {
   const m = yMax.value;
@@ -556,7 +582,7 @@ const gid = `g${Math.random().toString(36).slice(2, 8)}`;
         <text
           v-for="tk in ticks" :key="'t' + tk.v"
           :x="PAD.l - 8" :y="tk.y + 3" text-anchor="end"
-        >{{ fmt(tk.v) }}</text>
+        >{{ tk.v.toFixed(tickDecimals) }}</text>
       </g>
 
       <!-- Both series are the SAME hue: they are the same quantity over
