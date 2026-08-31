@@ -433,6 +433,9 @@ function fmtBytes(n: number): string {
           <span v-if="sweeping" class="badge" style="color: var(--warn)">
             swept &middot; {{ downCap.toFixed(2) }} Mbps
           </span>
+          <span v-if="editKey" class="badge" style="color: var(--down)">
+            keyframe {{ (patSelected ?? 0) + 1 }} &middot; {{ editKey.at_sec }}s
+          </span>
           <span class="readout num">
             {{ client.down_counters.throughput_mbps.toFixed(2) }}
             <small>Mbps</small>
@@ -453,10 +456,6 @@ function fmtBytes(n: number): string {
           These controls are showing what the pattern is enforcing, not your
           saved settings. Move one and playback pauses.
         </p>
-        <p v-else-if="editKey" class="meta editing-note">
-          Editing keyframe {{ (patSelected ?? 0) + 1 }} at
-          {{ editKey.at_sec }}s, not this device's saved settings.
-        </p>
         <ShapeSliders
           :shape="downShape" dir="down"
           :disabled="!client.shapeable || sweeping || playing"
@@ -467,6 +466,9 @@ function fmtBytes(n: number): string {
       <div class="dir up">
         <h3>
           Uplink <span class="meta">from device</span>
+          <span v-if="editKey" class="badge" style="color: var(--up)">
+            keyframe {{ (patSelected ?? 0) + 1 }} &middot; {{ editKey.at_sec }}s
+          </span>
           <span class="readout num">
             {{ client.up_counters.throughput_mbps.toFixed(2) }}
             <small>Mbps</small>
@@ -596,13 +598,14 @@ function fmtBytes(n: number): string {
   color: var(--warn);
   margin: 6px 0 0;
 }
-/* Editing a keyframe is not a warning -- nothing is being enforced differently
-   -- but it does change what the sliders write, so it is coloured rather than
-   left as ordinary dimmed text. */
-.editing-note {
-  color: var(--down);
-  margin: 6px 0 0;
-}
+/* Editing a keyframe used to be announced by a paragraph between the chart and
+   the sliders. It said the right thing and said it in the wrong place: the line
+   appeared and vanished with the selection, moving every control below it --
+   and it appeared exactly when a lane was being dragged, so the panel shifted
+   under the hand doing the dragging.
+   It is a badge in the heading now, beside the one a sweep uses. The headings
+   are always there, so nothing reflows, and it sits with the sliders whose
+   destination it is describing. */
 
 .fold-summary { display: flex; align-items: center; gap: 6px; flex: none; }
 /* A folded row must not wrap. A ragged two-line list is harder to scan than a
