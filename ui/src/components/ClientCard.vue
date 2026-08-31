@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue';
 import type { Client, Shape, Series, ChartPrefs, Pattern } from '@/types';
-import { CLEAN, PRESETS, SUSTAINED_SEC, ntopngUrl, patternFromPolicy } from '@/types';
+import { CLEAN, DEVELOPER, PRESETS, SUSTAINED_SEC, ntopngUrl, patternFromPolicy } from '@/types';
 import ShapeSliders from './ShapeSliders.vue';
 import SubClasses from './SubClasses.vue';
 import LadderPanel from './LadderPanel.vue';
@@ -512,8 +512,15 @@ function fmtBytes(n: number): string {
 
     <!-- Ladders sit above the fold, not behind the counters toggle: a sweep is
          a deliberate action someone came to the page to start, and one that
-         takes minutes needs its progress visible without hunting for it. -->
+         takes minutes needs its progress visible without hunting for it.
+
+         Behind ?developer=1, because that deliberate action is a measurement
+         rather than part of conditioning a device -- see DEVELOPER. Hidden, not
+         disabled: there is nothing here to explain to someone who did not come
+         looking for it. A sweep already running still reports itself through
+         the controls, which say they are showing what the sweep is enforcing. -->
     <LadderPanel
+      v-if="DEVELOPER"
       :client="client"
       @sweep="(svc: string) => emit('sweep', svc)"
       @stop-sweep="emit('stopSweep')"

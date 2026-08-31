@@ -412,6 +412,26 @@ export interface Series {
   cap: number[];
 }
 
+/**
+ * Developer surfaces, shown only with ?developer=1 in the URL.
+ *
+ * Rendition-ladder discovery is a measurement tool, not part of conditioning a
+ * device: a sweep drives the cap for half an hour and produces numbers that
+ * only mean something to someone who knows what a rendition ladder is. On a
+ * page whose job is "throttle this phone", it is a large panel on every card
+ * asking a question most sessions are not asking.
+ *
+ * A URL flag rather than a stored preference, deliberately. It is a thing you
+ * turn on for a session because you came to do that work, and it leaves no
+ * state to explain later when a panel someone forgot about is missing -- or
+ * present. Reload without it and the page is the plain conditioner again.
+ *
+ * Read once at load: it cannot change without a navigation, and re-reading it
+ * per render would only invite the belief that it could.
+ */
+export const DEVELOPER =
+  new URLSearchParams(window.location.search).get('developer') === '1';
+
 /** Chart time ranges, in the `{ v, label }` shape the streaming dashboard uses. */
 export const RANGES = [
   { v: 60, label: '1m' },
