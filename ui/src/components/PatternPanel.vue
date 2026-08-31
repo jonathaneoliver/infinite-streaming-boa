@@ -77,6 +77,31 @@ function setOpen(v: boolean) {
   if (!v) emit('select', null);
 }
 
+/**
+ * The whole header toggles the fold, not just the button on the end.
+ *
+ * The same two exclusions as the card title, and for the same reasons -- see
+ * onHeadClick in ClientCard, which this deliberately mirrors rather than
+ * inventing a second behaviour for a second header:
+ *
+ * Clicks on something interactive. play, stop and the fold button all live in
+ * this header; swallowing their clicks would break them, and toggling the fold
+ * as well as playing would be worse.
+ *
+ * Clicks that conclude a text selection. Dragging across the summary to copy a
+ * duration ends in a click on the header, and folding the panel away underneath
+ * that would be infuriating.
+ *
+ * The button stays. It is the keyboard route and it names the action, which a
+ * click target alone does not.
+ */
+function onHeadClick(e: MouseEvent) {
+  const el = e.target as HTMLElement | null;
+  if (el?.closest('input, button, a, select, textarea')) return;
+  if ((window.getSelection()?.toString() ?? '').length > 0) return;
+  setOpen(!open.value);
+}
+
 /** What the folded header says, so a pattern is never invisible. */
 const summary = computed(() => {
   if (!props.pattern) return 'no timeline — a fixed cap only tests steady state';
@@ -581,7 +606,7 @@ const status = computed(() => {
          controls; on a page of devices that is a lot of chrome for something
          most cards are not doing. The summary and the play control stay, so a
          device with a pattern is never silent about having one. -->
-    <h3>
+    <h3 class="head" @click="onHeadClick">
       Pattern
       <span class="meta">{{ summary }}</span>
       <span class="spacer"></span>
@@ -843,6 +868,10 @@ const status = computed(() => {
   color: var(--down);
   border-color: var(--down);
 }
+/* Clickable, so it says so. The text inside stays selectable -- onHeadClick
+   ignores a click that ends a selection, which is what makes that safe. */
+.head { cursor: pointer; }
+
 .spacer {
   flex: 1;
 }
