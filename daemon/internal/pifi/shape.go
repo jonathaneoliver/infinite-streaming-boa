@@ -56,6 +56,11 @@ type Shaper struct {
 	ready  bool
 	reason string
 
+	// lossBurst records whether this kernel's netem accepts a Gilbert-Elliott
+	// loss model, asked once at Setup. See probeLossBurst.
+	lossBurst     bool
+	lossBurstNote string
+
 	ports   map[string]bool // interfaces whose root qdisc we have created
 	minors  map[string]int
 	nextMin int
@@ -291,12 +296,60 @@ func (s *Shaper) Setup() error {
 	s.applied = map[string]rule{}
 	s.ports = map[string]bool{}
 
+	s.lossBurst, s.lossBurstNote = probeLossBurst()
+	if !s.lossBurst {
+		fmt.Printf("infinite-streaming-pifi: bursty loss unavailable: %s\n", s.lossBurstNote)
+	}
+
 	if err := s.ensurePort(s.wan); err != nil {
 		s.reason = "cannot prepare WAN port " + s.wan + ": " + err.Error()
 		return fmt.Errorf("%s", s.reason)
 	}
 	s.ready = true
 	return nil
+}
+
+// LossBurst reports whether this kernel accepts a Gilbert-Elliott loss model,
+// and why not when it does not.
+func (s *Shaper) LossBurst() (bool, string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.lossBurst, s.lossBurstNote
+}
+
+// geProbeIface is a throwaway interface used only to ask the kernel a question.
+const geProbeIface = "pifi-geprobe"
+
+// probeLossBurst asks the kernel once, at startup, whether it will accept
+// `loss gemodel`.
+//
+// It is asked rather than assumed because the alternative is the exact failure
+// this feature exists to fix, inverted: if tc rejects the model and anything
+// quietly falls back to uniform loss, the operator gets independent per-packet
+// loss while the interface says bursty, and every conclusion drawn from that
+// test is wrong in a way nothing reports. writeNetem therefore has no fallback
+// path, and this makes the control honest before it is touched rather than
+// after.
+//
+// The question is asked on a dummy interface. Attaching a qdisc to a live port
+// to test a piece of syntax would mean touching real packets belonging to a
+// device under test, to answer something that has nothing to do with them.
+func probeLossBurst() (bool, string) {
+	// A previous run may have died before cleaning up.
+	_ = exec.Command("ip", "link", "del", geProbeIface).Run()
+	if err := exec.Command("ip", "link", "add", geProbeIface, "type", "dummy").Run(); err != nil {
+		// No dummy support. Assume the model works rather than disabling a
+		// feature on the strength of a failed test of something unrelated: a
+		// real apply still fails loudly, and never silently degrades.
+		return true, "not verified: this box could not create a probe interface"
+	}
+	defer func() { _ = exec.Command("ip", "link", "del", geProbeIface).Run() }()
+
+	if err := tc("qdisc", "add", "dev", geProbeIface, "root",
+		"netem", "loss", "gemodel", "1%", "10%", "100%", "0%"); err != nil {
+		return false, "this kernel's netem does not accept `loss gemodel`: " + err.Error()
+	}
+	return true, ""
 }
 
 func (s *Shaper) Teardown() {
@@ -394,9 +447,9 @@ func (s *Shaper) writeNetem(dev string, minor int, sh Shape, exists bool) (bool,
 				"distribution", "normal")
 		}
 	}
-	if sh.LossPct > 0 {
-		args = append(args, "loss", fmt.Sprintf("%.4f%%", sh.LossPct))
-	}
+	// Loss is built separately: uniform and bursty are different netem verbs,
+	// and there is deliberately no fallback between them -- see netemLossArgs.
+	args = append(args, netemLossArgs(sh)...)
 	// Reorder is dropped rather than passed on when there is no delay to
 	// reorder against. netem rejects that combination outright -- "reordering
 	// not possible without specifying some delay" -- and a rejected command
@@ -417,6 +470,78 @@ func (s *Shaper) writeNetem(dev string, minor int, sh Shape, exists bool) (bool,
 		return exists, err
 	}
 	return true, nil
+}
+
+// netemLossArgs builds the loss half of a netem command line.
+//
+// Separated from writeNetem because it is the one part of this file that can be
+// checked without a kernel, and because it is where a mistake would be silent:
+// every other error here makes tc fail loudly, while the wrong loss model runs
+// perfectly and answers a different question than the one asked.
+//
+// There is deliberately no fallback. If the kernel will not take a
+// Gilbert-Elliott model the write fails and says so; quietly substituting
+// uniform loss would deliver independent per-packet drops while the interface
+// said bursty, and every conclusion drawn from that test would be wrong with
+// nothing reporting it. Capabilities.LossBurst is how the interface finds out
+// beforehand.
+func netemLossArgs(sh Shape) []string {
+	if sh.LossPct <= 0 {
+		return nil
+	}
+	// 100% loss is a blackhole and has no burst structure to speak of -- every
+	// packet is in the bad state forever -- and the Gilbert-Elliott transition
+	// probability diverges there. Plain loss says it exactly.
+	if !sh.Bursty() || sh.LossPct >= 100 {
+		return []string{"loss", fmt.Sprintf("%.4f%%", sh.LossPct)}
+	}
+	p, r := geParams(sh.LossPct, sh.LossBurst)
+	return []string{"loss", "gemodel",
+		fmt.Sprintf("%.6f%%", p), fmt.Sprintf("%.6f%%", r),
+		// 1-h and 1-k: total loss in the bad state, none in the good one.
+		// Stated rather than left to netem's defaults, so a change in those
+		// defaults cannot quietly change what a stored policy means.
+		"100%", "0%"}
+}
+
+// geParams turns "this much loss, in bursts this long" into the two
+// Gilbert-Elliott transition probabilities netem actually wants, as
+// percentages.
+//
+// # Why the operator is not asked for these directly
+//
+// netem's `loss gemodel` takes four parameters -- p, r, 1-h, 1-k -- describing
+// a two-state Markov chain. Nobody testing a player wants to reason about one.
+// They want "2% loss, arriving in bursts of about ten packets", so that is what
+// the interface asks for and this is the conversion.
+//
+// # The derivation
+//
+// Fixing the model to strict Gilbert -- no loss in the good state (1-k = 0),
+// total loss in the bad one (1-h = 1) -- leaves two free parameters for two
+// questions, which is what makes the mapping invertible:
+//
+//	mean burst length  B = 1/r          time in the bad state is geometric
+//	mean loss          L = p/(p+r)      the bad state's stationary probability
+//
+// so r = 1/B and p = (L/(1-L))/B.
+//
+// The property that matters most is at B = 1: r = 1, p = L/(1-L), and the
+// stationary probability is exactly L with the chain leaving the bad state
+// after every packet -- which IS independent per-packet loss at rate L. So the
+// control has a true identity point, and every policy stored before bursts
+// existed keeps behaving precisely as it did.
+//
+// Both come back as percentages because that is what tc's command line takes.
+func geParams(lossPct, burst float64) (p, r float64) {
+	l := lossPct / 100
+	b := burst
+	if b < 1 {
+		b = 1
+	}
+	r = 1 / b
+	p = (l / (1 - l)) * r
+	return p * 100, r * 100
 }
 
 // matchArgs builds the u32 selector for one class in one direction.

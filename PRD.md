@@ -109,6 +109,31 @@ device card. Optional: the image builds without it.
   other device on that port being conditioned — which this box cannot allow.
 - `rate_mbps = 0` means unlimited. `delay_ms` is **per direction**; the round
   trip is the sum, and the interface shows that sum.
+- Loss may be **uniform or bursty**. `loss_burst` is the mean length of a loss
+  burst in packets; 1 is uniform — each packet independently, which is netem's
+  default and essentially never happens on a real link. Above 1 the kernel runs
+  a Gilbert-Elliott model and `loss_pct` becomes the **mean** loss over time
+  rather than a per-packet probability. TCP and QUIC behave differently under
+  bursty and uniform loss at the same nominal rate, so which one is in force is
+  part of what a test result means.
+- Burst length is in **packets**, because the model steps per packet and so
+  remains defined at an unlimited rate. The interface derives the wall-clock
+  equivalent from the configured rate, and says so rather than implying it.
+- A burst length above 50 packets is refused. Beyond that the link is not lossy,
+  it is out — and an outage belongs on a pattern, where it is visible and timed.
+- Whether the kernel accepts the model is **probed at startup**, not assumed.
+  Where it does not, the control is disabled and says why; loss is never
+  silently downgraded to uniform, because a test run against the wrong loss
+  model gives a confident wrong answer.
+- **Loss does not repeat between runs, because pifi does not ask it to.** Rate,
+  delay and a pattern's schedule are deterministic; loss is a random process, and
+  two runs of the same configuration lose different packets. Today it is
+  reproducible only statistically, over enough packets.
+  That is a choice, not a limitation of the kernel. netem takes a `seed`
+  (iproute2 6.15, kernel 6.18 — `tc ... netem [ seed SEED ]`, and it reports the
+  seed it used on every qdisc it installs). Setting one would make a lossy run
+  repeat packet for packet, which for a box whose purpose is reproducing
+  conditions on demand is worth having. It is not wired up yet.
 - Sub-classes condition part of a device's traffic, matched by destination port,
   network and protocol, evaluated before the device default.
 - Writes carry the revision the operator was looking at; a concurrent edit to

@@ -572,6 +572,7 @@ func (e *Engine) tick() {
 
 	e.rev++
 	ready, reason := e.sh.Ready()
+	burstOK, burstNote := e.sh.LossBurst()
 	snap := Snapshot{
 		Revision: e.rev, ControlRevision: e.ctrlRev, Time: now.UnixMilli(),
 		Clients: clients,
@@ -582,6 +583,7 @@ func (e *Engine) tick() {
 			WlanIface: e.cfg.WlanPort, UplinkIf: e.cfg.WANPort,
 			Ntopng: e.ntopngUp(), NtopngPort: ntopngPort,
 			Iperf: PortListening(iperfPort), IperfPort: iperfPort,
+			LossBurst: burstOK, LossBurstNote: burstNote,
 			NamesLearned: len(names), NamesByMAC: len(macNames),
 		},
 		Notices: e.notices(ready, reason),

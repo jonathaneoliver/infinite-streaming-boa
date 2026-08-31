@@ -322,6 +322,10 @@ func (e *Engine) demoTick() {
 			// during UI development; neither is actually running here.
 			Ntopng: true, NtopngPort: ntopngPort,
 			Iperf: true, IperfPort: iperfPort,
+			// No kernel here to ask, so the control is offered: demo exists to
+			// develop the interface, and a permanently disabled control cannot
+			// be developed against.
+			LossBurst: true,
 		},
 		Notices: []Notice{
 			{"error", "DEMO MODE - these clients are synthetic. No traffic is being conditioned."},
