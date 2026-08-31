@@ -609,10 +609,42 @@ export type YMode = 'auto' | 'cap' | 'manual';
  *
  * 30s spans five fetch cycles at the 6s segment duration that is the common
  * case, and fifteen at a 2s cadence -- enough for the line to sit still rather
- * than breathe with each fetch. The cost is a trailing lag of half the window,
- * so a cap change takes ~15s to be fully reflected.
+ * than breathe with each fetch.
+ *
+ * The cost is lag, and it is three different numbers worth keeping apart. The
+ * line is drawn all the way to the live edge -- at `now` the trailing window is
+ * fully available, so it never stops short of it. But the value there averages
+ * the whole window, so its centre of mass is half a window old: ~15s at 30s.
+ * A step change is not FULLY reflected until the old samples have aged out,
+ * which takes the whole 30s. And at the start of a series the line begins once
+ * the window is HALF full rather than full, so ~15s in.
  */
 export const SUSTAINED_SEC = 30;
+
+/**
+ * The windows on offer, and what each is for.
+ *
+ * 30s stays the default for the reason above. The other two exist because the
+ * right window depends on the segment duration of the thing being watched, and
+ * that is a property of the stream rather than of this box:
+ *
+ * - 10s places the line ~5s behind the traffic rather than ~15s, and settles
+ *   within 10s of a step, which is what you want while stepping a pattern by
+ *   hand and watching a player react. Under a 6s segment cadence it spans fewer
+ *   than two fetches, so it still breathes with them.
+ * - 60s sits flat across ten fetches at 6s: the window to read a rendition
+ *   plateau off rather than to watch a transition, since it puts the line ~30s
+ *   behind and takes a full minute to settle.
+ *
+ * Every one of them is computed in the browser from points already held, so
+ * changing it redraws the whole visible history at the new window rather than
+ * only what arrives next.
+ */
+export const SUSTAINED_CHOICES = [
+  { v: 10, label: '10s', title: 'Follows a change in ~5s. Best while stepping a cap by hand; still breathes with each segment fetch.' },
+  { v: 30, label: '30s', title: 'Five fetch cycles at a 6s segment cadence. The default: steady, and ~15s behind a change.' },
+  { v: 60, label: '60s', title: 'Ten fetch cycles at 6s. Flattest, for reading a rendition plateau rather than watching a transition.' },
+] as const;
 
 /*
  * The rate scale, shared by the slider and the pattern timeline.
@@ -781,8 +813,10 @@ export interface ChartPrefs {
   yManual: number;
   /** Draw the per-sample trace. */
   showLive: boolean;
-  /** Draw the rolling mean over SUSTAINED_SEC. */
+  /** Draw the rolling mean over sustainedSec. */
   showSustained: boolean;
+  /** Trailing window for that mean, in seconds. One of SUSTAINED_CHOICES. */
+  sustainedSec: number;
   /**
    * Draw the expanded charts at double height.
    *
