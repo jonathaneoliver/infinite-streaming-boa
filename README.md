@@ -69,18 +69,30 @@ impairment sits** — and therefore what has to cooperate for it to work.
 | [Facebook ATC](https://github.com/facebookarchive/augmented-traffic-control) | your gateway | yes | yes, per source IP | free; archived October 2018 |
 | [Netropy](https://apposite-tech.com/products/netropy-network-emulation/) / Linktropy and similar | a rack appliance in the path | yes | per emulated WAN link | thousands to tens of thousands |
 
-**What pifi is actually for.** ATC is the closest prior art in that table, and
-it is instructive: it shaped per source IP and had to *be the gateway*, so
-adopting it meant re-homing the network you wanted to test.
-Every other entry asks for cooperation of some kind. Network Link Conditioner
-needs to run on the device, which rules out anything you cannot install on, and
-conditions your debugging tools along with the app. Toxiproxy needs the
-application pointed at it. Charles needs the device to honour a proxy and trust
-an installed CA, which streaming apps increasingly refuse. pfSense and a
-hand-rolled `tc` router both work, and both make the box a hop with its own
-subnet and its own DHCP. pifi asks for nothing: cable it in, and a device keeps
+**What pifi is actually for.** Every other entry in that table asks for
+cooperation of some kind. Network Link Conditioner needs to run on the device,
+which rules out anything you cannot install on, and conditions your debugging
+tools along with the app. Toxiproxy needs the application pointed at it. Charles
+needs the device to honour a proxy and trust an installed CA, which streaming
+apps increasingly refuse. pfSense and a hand-rolled `tc` router both work, and
+both make the box a hop with its own subnet and its own DHCP. pifi asks for nothing: cable it in, and a device keeps
 its address, its DHCP lease, its mDNS discovery, and its view of the network.
 That is the whole design, and the rest of this README is the consequences of it.
+
+**ATC is the closest prior art, and the closest miss.** Facebook's Augmented
+Traffic Control had the same goal and much of the same shape: condition real
+devices, install nothing on them, and let a tester shape their own device from a
+web page — "traffic can be shaped/unshaped using a web interface allowing any
+devices with a web browser to use ATC without the need for a client
+application" — across bandwidth, latency, packet loss, corruption and packet
+ordering. The whole difference is one sentence of its README: "ATC must be
+running on a device that routes the traffic and sees the real IP address of the
+device, like your network gateway for instance." Routing the traffic is *how it
+identifies a device*, and that is also its price — adopting it meant re-homing
+the network under test behind it, with the new subnet, the new DHCP authority
+and the changed addresses that implies. pifi identifies a device by the MAC on a
+frame it is already forwarding, which requires no address of its own and no
+routing role. ATC was archived on 30 October 2018 and is read-only.
 
 **Where the others are better.** A rack emulator is calibrated, repeatable and
 certified; pifi is explicitly none of those (see [Non-Goals](PRD.md#3-non-goals)).
@@ -92,6 +104,56 @@ does not. If you need a per-application policy on one device rather than a
 per-device one, Toxiproxy or a proxy is the right tool and composes with this
 one. And if the device under test is a Mac you already control, Network Link
 Conditioner is free and takes thirty seconds.
+
+### Why a proxy is a different instrument
+
+Charles and Toxiproxy are the two tools most often suggested in place of a box
+like this, and both are good. Neither does what this one does, for reasons that
+are structural rather than a matter of features.
+
+**A proxy terminates the connection.** Toxiproxy is "a TCP proxy to simulate
+network and system conditions": it accepts the client's connection and opens its
+own to the upstream, so there are two TCP connections with two independent
+congestion-control loops. Charles occupies the same position for HTTP. Either
+way, the throughput a player measures, the round-trip time it estimates and the
+retransmits it counts are formed against a local proxy socket and that proxy's
+userspace buffer — not against a constrained link. pifi shapes the frames it
+forwards and terminates nothing, so the client's own congestion control meets
+the path directly. For a player deciding which rendition to fetch next, that
+difference is the entire measurement.
+
+**A proxy conditions only what it proxies.** Toxiproxy is TCP only; Charles
+carries HTTP and HTTPS. In both cases QUIC and HTTP/3 over UDP, DNS, discovery
+and anything on a raw socket travel unimpaired alongside the throttled traffic —
+so the device under test sees a network degraded in one protocol and pristine in
+every other. That is not a coverage gap to be filled in later, it is a different
+network from the one being simulated, and a player that quietly prefers QUIC is
+not being tested at all. netem on a bridge holds no opinion about protocol.
+
+**A proxy has to be adopted by the thing under test.** Toxiproxy's own example
+is editing `Redis.new(port: 6380)` into `Redis.new(port: 22220)` — reasonable for
+a service you own, impossible for a shipping app. Charles needs the device to
+expose a proxy setting and honour it, and for HTTPS it needs its root
+certificate trusted: "If you add the Charles CA Certificate to your trusted
+certificates you will no longer see any warnings." A television or a console
+often exposes no proxy field at all, and an app that pins its certificate
+rejects an installed CA by design — which is the case for most streaming apps
+worth testing. pifi is addressed by MAC and asks the device for nothing.
+
+**They are scoped along a different axis, and it is a real one.** Charles can
+throttle selected hosts, and a Toxiproxy proxy is defined per upstream service;
+both give per-application resolution on a machine you administer. pifi gives
+per-device resolution on a machine you cannot touch, and cannot tell two apps on
+one device apart. If the question is "what is this app requesting, and what came
+back", Charles answers it and pifi cannot — this box sees ciphertext and flow
+metadata. The tools compose. They do not substitute.
+
+Toxiproxy is also deterministic where this box deliberately is not: an HTTP API
+on `:8474` lets a test set up and tear down its own faults, and its toxics —
+`latency`, `bandwidth`, `slicer`, `timeout`, `reset_peer`, `limit_data`,
+`packet_loss` — reach failure modes that live above the link layer and that
+netem cannot produce. For proving a service survives a flaky dependency in CI,
+it is the right tool and this one is not.
 
 ## Build an image
 
