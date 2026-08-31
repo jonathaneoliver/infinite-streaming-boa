@@ -218,7 +218,14 @@ async function onLoadConfig(e: Event) {
   cfgMsg.value = '';
   try {
     const n = await importConfig(file);
-    cfgMsg.value = `loaded ${n.devices} device(s), ${n.patterns} pattern(s) — reloading`;
+    // Only what the document actually carried. A version 2 export holds no
+    // devices at all, and "loaded 0 device(s)" reads as a failure when the
+    // import in fact restored a ladder that cost an hour of real streaming.
+    const parts: string[] = [];
+    if (n.ladder) parts.push('ladder');
+    if (n.patterns) parts.push(`${n.patterns} pattern(s)`);
+    if (n.devices) parts.push(`${n.devices} device(s)`);
+    cfgMsg.value = `loaded ${parts.join(', ')} — reloading`;
     // A reload rather than reactive re-application: the restored view
     // preferences are read once at startup by design, and re-plumbing every one
     // of them to be settable at runtime would be a lot of machinery for an
