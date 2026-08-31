@@ -32,6 +32,16 @@ is there.
                     conditioned identically
 ```
 
+![The boa interface: an iPhone streaming while the valley pattern walks the
+downlink cap down through a measured rendition ladder](docs/images/interface.png)
+
+Above: one client streaming, five minutes of history. The blue trace is real
+downlink throughput; the dashed `cap` line is what boa is enforcing. The
+`valley` pattern is 315s into its 660s run, stepping the cap down rung by rung
+— and the player is following it down, which is the thing worth watching. The
+lane editor underneath is the pattern itself: 23 keyframes on a rate lane, with
+delay, jitter and loss lanes unused in this run.
+
 ## What it does
 
 - **Conditions each client independently** — rate, latency, jitter and loss, per
