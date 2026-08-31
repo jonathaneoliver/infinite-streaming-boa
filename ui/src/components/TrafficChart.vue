@@ -183,9 +183,48 @@ const yMax = computed(() => {
 // of the view, so it is stated.
 const clipped = computed(() => peak.value > yMax.value * 1.001);
 
+const fmt = (v: number) => (v >= 100 ? v.toFixed(0) : v >= 10 ? v.toFixed(1) : v.toFixed(2));
+
+/**
+ * How many gridlines to draw, from the height of the plot rather than from any
+ * setting.
+ *
+ * Three lines across 166px is a readable grid; the same three across 362px is
+ * an empty pane with a line top, middle and bottom, which throws away the
+ * resolution a taller chart was chosen for. Spacing is what should stay
+ * constant, so the count is derived from it.
+ *
+ * The divisor is chosen from those that keep every label round, tested rather
+ * than assumed: a value is admissible only if it survives a round-trip through
+ * the same formatter the axis prints with. That rejects thirds of 10 and
+ * quarters of 1.5, which would otherwise put 3.33 and 0.38 on the axis and make
+ * the grid harder to read than having fewer lines. It is the same reasoning as
+ * the LADDER above, applied to the interval instead of the maximum.
+ */
+const TICK_SPACING_PX = 58;
+const tickDivisions = computed(() => {
+  const m = yMax.value;
+  if (!(m > 0)) return 2;
+  const roundLabels = (n: number) => {
+    for (let i = 1; i < n; i++) {
+      const v = (m * i) / n;
+      if (Math.abs(Number(fmt(v)) - v) > 1e-9) return false;
+    }
+    return true;
+  };
+  const ideal = plotH.value / TICK_SPACING_PX;
+  const usable = [2, 3, 4, 5, 6, 8, 10].filter(roundLabels);
+  if (!usable.length) return 2;
+  return usable.reduce((a, b) => (Math.abs(b - ideal) < Math.abs(a - ideal) ? b : a));
+});
+
 const ticks = computed(() => {
   const m = yMax.value;
-  return [0, m / 2, m].map((v) => ({ v, y: PAD.value.t + plotH.value - (v / m) * plotH.value }));
+  const n = tickDivisions.value;
+  return Array.from({ length: n + 1 }, (_, i) => {
+    const v = (m * i) / n;
+    return { v, y: PAD.value.t + plotH.value - (v / m) * plotH.value };
+  });
 });
 
 const xAt = (t: number) =>
@@ -452,7 +491,6 @@ function leave() {
   emit('hovering', false);
 }
 
-const fmt = (v: number) => (v >= 100 ? v.toFixed(0) : v >= 10 ? v.toFixed(1) : v.toFixed(2));
 const gid = `g${Math.random().toString(36).slice(2, 8)}`;
 </script>
 

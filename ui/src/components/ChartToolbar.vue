@@ -25,6 +25,8 @@ const props = defineProps<{
   showSustained: boolean;
   /** How the device list below is ordered. */
   sortMode: SortMode;
+  /** Expanded charts drawn at double height. */
+  tallCharts: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -34,6 +36,7 @@ const emit = defineEmits<{
   (e: 'show-live', v: boolean): void;
   (e: 'show-sustained', v: boolean): void;
   (e: 'sort-mode', m: SortMode): void;
+  (e: 'tall-charts', v: boolean): void;
 }>();
 
 /**
@@ -116,6 +119,13 @@ function onManual(e: Event) {
       >{{ m.label }}</button>
     </div>
 
+    <button
+      class="seg-btn lone" :class="{ on: tallCharts }"
+      :aria-pressed="tallCharts"
+      title="Double the height of the expanded charts. More vertical resolution to separate close rungs; fewer devices on screen at once."
+      @click="emit('tall-charts', !tallCharts)"
+    >tall</button>
+
     <label v-if="yMode === 'manual'" class="manual">
       <input
         class="num" type="number" min="0.1" step="0.5" :value="yManual"
@@ -172,6 +182,9 @@ function onManual(e: Event) {
 /* A segmented control, not four loose buttons: these are exclusive choices and
    the shared border says so. */
 .seg { display: flex; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }
+/* A toggle, not one of an exclusive set, so it carries its own border rather
+   than sharing the segmented control's. */
+.lone { border: 1px solid var(--line); border-radius: 6px; }
 .seg-btn {
   padding: 3px 10px;
   font: inherit; font-size: 12px;

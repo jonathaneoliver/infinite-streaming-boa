@@ -52,6 +52,18 @@ const chartProps = computed(() => ({
   sustainedSec: SUSTAINED_SEC,
 }));
 
+/**
+ * Height of the two expanded plots.
+ *
+ * Doubled rather than made freely resizable: the point is more vertical
+ * resolution when two rungs sit a few pixels apart, and one toggle keeps every
+ * card the same height, which is what lets two devices be compared down the
+ * page. The sparklines on a folded row are deliberately unaffected -- they
+ * summarise, and a tall summary is a chart.
+ */
+const EXPANDED_H = 196;
+const expandedH = computed(() => (props.chart.tallCharts ? EXPANDED_H * 2 : EXPANDED_H));
+
 const open = ref(false);
 
 // Signal quality bands are the conventional Wi-Fi ones: above -60 dBm is a
@@ -445,16 +457,12 @@ function fmtBytes(n: number): string {
           v-bind="chartProps"
           :t="series?.t ?? []" :data="series?.down ?? []" :caps="series?.cap ?? []"
           color="var(--down)" label="Downlink"
-          :cap="downCap" :height="196"
+          :cap="downCap" :height="expandedH"
           @hovering="(v: boolean) => emit('hovering', v)"
         />
         <p v-if="sweeping" class="meta swept-note">
           These controls are showing what the sweep is enforcing, not your saved
           settings — those are untouched and return when it ends.
-        </p>
-        <p v-else-if="playing" class="meta swept-note">
-          These controls are showing what the pattern is enforcing, not your
-          saved settings. Move one and playback pauses.
         </p>
         <ShapeSliders
           :shape="downShape" dir="down"
@@ -479,7 +487,7 @@ function fmtBytes(n: number): string {
           :t="series?.t ?? []" :data="series?.up ?? []"
           color="var(--up)" label="Uplink"
           :cap="playing ? (patRun?.up.rate_mbps ?? 0) : client.policy.up.rate_mbps"
-          :height="196"
+          :height="expandedH"
           @hovering="(v: boolean) => emit('hovering', v)"
         />
         <ShapeSliders

@@ -783,4 +783,13 @@ export interface ChartPrefs {
   showLive: boolean;
   /** Draw the rolling mean over SUSTAINED_SEC. */
   showSustained: boolean;
+  /**
+   * Draw the expanded charts at double height.
+   *
+   * Height is resolution on the y axis, and the default trades it for how many
+   * devices fit on one screen. A slow rung and the rung below it can sit a few
+   * pixels apart at 196px; doubling separates them without touching the range
+   * or the axis rule, so the plot still means the same thing.
+   */
+  tallCharts: boolean;
 }
