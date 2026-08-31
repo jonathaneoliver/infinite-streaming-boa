@@ -135,8 +135,22 @@ const dur = computed(() => (keys.value.length ? keys.value[keys.value.length - 1
 /** What the runtime will play. Mirrors maxPatternSec in pattern.go. */
 const maxPatternSec = 3600;
 
-const HEADROOM_SEC = 30;
-const viewSpan = computed(() => dur.value + HEADROOM_SEC);
+/*
+ * How much empty ruler sits past the end, as a fraction of the pattern plus a
+ * floor.
+ *
+ * It was a flat 30 seconds, which is most of a short pattern and nothing at all
+ * on a long one: on the 11-minute ladder patterns the generator produces, 30s
+ * is four percent of the width, so "drag the end into the headroom to lengthen
+ * it" meant dragging into a strip a few pixels wide and releasing to get
+ * another few pixels. The space exists to be dragged into, so it scales with
+ * what is being dragged.
+ */
+const HEADROOM_MIN_SEC = 30;
+const HEADROOM_FRAC = 0.25;
+const viewSpan = computed(
+  () => dur.value + Math.max(HEADROOM_MIN_SEC, dur.value * HEADROOM_FRAC),
+);
 
 /*
  * What the ruler is actually drawn against, which is not viewSpan mid-drag.
@@ -396,7 +410,7 @@ function onDrag(e: PointerEvent) {
   // Only the last keyframe may run past the ruler; the rest are penned in by
   // their neighbours anyway.
   const at = timeAt(e.clientX, d.span, d.i === keys.value.length - 1);
-  if (at !== cur.at_sec) moveKey(d.i, at, d.penned);
+  if (at !== cur.at_sec) moveKey(d.i, at, d.penned, d.span);
 }
 
 function endDrag(e: PointerEvent) {
@@ -456,7 +470,7 @@ function removeKey(i: number) {
  * alt-drag does it, which is the modifier timeline editors already use for
  * "leave the neighbours alone".
  */
-function moveKey(i: number, sec: number, penned = false) {
+function moveKey(i: number, sec: number, penned = false, limitSec = maxPatternSec) {
   // Half-second granularity, because throughput is sampled once a second and a
   // transition finer than that can be configured but never observed.
   if (i === 0) return;
@@ -483,8 +497,16 @@ function moveKey(i: number, sec: number, penned = false) {
   // rather than each keyframe keeps the gaps after this one exactly as they
   // were: clamping individually would silently compress the tail against the
   // ceiling instead of stopping.
+  //
+  // The tail also stops at the RULER, not just at the runtime's ceiling. The
+  // axis is pinned for the length of a gesture -- it has to be, or the scale
+  // would stretch under the marker and the keyframe would chase the cursor --
+  // so a ripple that runs past the pinned span has nowhere left to draw its
+  // tail and stacks every trailing marker on the right edge. Stopping is
+  // legible where piling up is not; release and the ruler regrows around the
+  // longer pattern, so the next drag carries on.
   const lo = ks[i - 1].at_sec + 0.5;
-  const room = maxPatternSec - ks[ks.length - 1].at_sec;
+  const room = Math.min(limitSec, maxPatternSec) - ks[ks.length - 1].at_sec;
   const target = Math.min(Math.max(at, lo), ks[i].at_sec + room);
   const delta = target - ks[i].at_sec;
   if (delta === 0) return;
@@ -1172,7 +1194,9 @@ const status = computed(() => {
       <div v-else class="sel">
         <span class="meta">
           Drag a keyframe to move it and everything after it; hold alt to slide
-          it between its neighbours instead.
+          it between its neighbours instead. A ripple stops when its tail
+          reaches the end of the ruler — let go and the ruler grows, then carry
+          on.
           Click the timeline to move the playhead, then add a keyframe — or
           right-click the timeline to do both at once. A new keyframe inherits
           the one before it, so adding one changes nothing until you move a
