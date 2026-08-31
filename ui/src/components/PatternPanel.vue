@@ -587,6 +587,81 @@ function setLaneValue(i: number, lane: LaneKey, n: number, ceil: number) {
   });
 }
 
+/*
+ * Scrubbing by dragging the time lane.
+ *
+ * The playhead used to be positioned by a range input sitting in a flex row
+ * with a label before it and a readout and a button after it. Its track
+ * therefore covered a different pixel span than the lanes above, so the same
+ * cursor movement meant a different number of seconds in the two places and the
+ * playhead visibly lagged or ran ahead of the hand. The control and the picture
+ * of what it controlled disagreed.
+ *
+ * The time lane is inside the stack, so it shares the lanes' x-axis by
+ * construction rather than by arithmetic anybody has to keep in step.
+ */
+const scrubbing = ref(false);
+
+function startScrub(e: PointerEvent) {
+  if (props.run) return;
+  try {
+    (e.target as HTMLElement).setPointerCapture(e.pointerId);
+  } catch {
+    /* no active pointer; the drag still tracks via bubbled events */
+  }
+  scrubbing.value = true;
+  seek(timeAt(e.clientX, renderSpan.value));
+}
+
+function onScrub(e: PointerEvent) {
+  if (!scrubbing.value) return;
+  seek(timeAt(e.clientX, renderSpan.value));
+}
+
+function endScrub(e: PointerEvent) {
+  if (!scrubbing.value) return;
+  try {
+    (e.target as HTMLElement).releasePointerCapture(e.pointerId);
+  } catch {
+    /* nothing was captured */
+  }
+  scrubbing.value = false;
+  // Deliberately NOT setting suppressClick. That flag is consumed by
+  // toggleKey, and a scrub does not end on a marker -- so arming it here would
+  // leave it set and swallow the next keyframe click instead. The trailing
+  // click lands on the stack and seeks to where the drag already finished,
+  // which changes nothing.
+}
+
+/**
+ * Keyboard scrubbing, which the range input used to provide for free.
+ *
+ * Half-second steps because that is the grid keyframes land on; a finer arrow
+ * key would move the playhead to positions a keyframe can never occupy.
+ */
+function keyScrub(e: KeyboardEvent) {
+  if (props.run) return;
+  const step = e.shiftKey ? 5 : 0.5;
+  const at = head.value;
+  switch (e.key) {
+    case 'ArrowLeft':
+      seek(Math.max(0, at - step));
+      break;
+    case 'ArrowRight':
+      seek(Math.min(renderSpan.value, at + step));
+      break;
+    case 'Home':
+      seek(0);
+      break;
+    case 'End':
+      seek(dur.value);
+      break;
+    default:
+      return;
+  }
+  e.preventDefault();
+}
+
 function setLoop(on: boolean) {
   mutate((p) => {
     p.loop = on;
@@ -900,30 +975,42 @@ const status = computed(() => {
           :style="{ left: pct(selKey.at_sec) }"
         ></div>
         <div class="playhead" :style="{ left: pct(head) }"></div>
+
+        <!-- Time is a lane, not a control beside the picture. Inside the stack
+             it shares the x-axis with rate, delay, jitter and loss, so dragging
+             it moves the playhead exactly as far as the cursor travels -- which
+             a slider in its own row could only approximate. -->
+        <div
+          class="lane timelane" :class="{ grab: !run }"
+          :tabindex="run ? -1 : 0" role="slider"
+          aria-label="time"
+          :aria-valuemin="0" :aria-valuemax="Math.round(renderSpan)"
+          :aria-valuenow="Math.round(head * 10) / 10"
+          @pointerdown.stop="startScrub"
+          @pointermove="onScrub"
+          @pointerup="endScrub"
+          @pointercancel="endScrub"
+          @keydown="keyScrub"
+        >
+          <span class="lane-name">time <b class="num">{{ head.toFixed(1) }}s</b></span>
+          <!-- The end label sits under the end marker rather than at the right
+               edge, because the right edge is headroom and labelling it with
+               the pattern's length would put the number 30s from the thing it
+               describes. -->
+          <span class="tend meta" :style="{ left: pct(dur) }">
+            ends {{ dur.toFixed(0) }}s
+          </span>
+        </div>
       </div>
 
-      <!-- The playhead row. Adding a keyframe is one always-present button
-           beside the control that positions it, rather than something that
-           appears only once the playhead happens to be between keyframes. -->
+      <!-- Adding a keyframe is one always-present button rather than something
+           that appears only once the playhead happens to be between keyframes.
+           It is not on the time lane: a button inside the stack would inset the
+           axis it sits on, which is the whole problem being fixed. -->
       <div class="head-row">
-        <span class="meta">playhead</span>
-        <input
-          class="scrub" type="range" min="0" :max="renderSpan" step="0.5"
-          :value="head" :disabled="!!run"
-          @input="seek(+($event.target as HTMLInputElement).value)"
-        />
-        <span class="num at-now">{{ head.toFixed(1) }}s</span>
         <button :disabled="!canSnapshot" :title="snapshotWhy" @click="snapshot">
           + keyframe here
         </button>
-      </div>
-      <!-- The end label sits under the end marker rather than at the right
-           edge, because the right edge is now headroom and labelling it with
-           the pattern's length would put the number 30s away from the thing it
-           describes. -->
-      <div class="ticks meta">
-        <span>0s</span>
-        <span class="tend" :style="{ left: pct(dur) }">ends {{ dur.toFixed(0) }}s</span>
       </div>
 
       <!-- What the sliders above are pointed at. Stated rather than implied:
@@ -1161,13 +1248,25 @@ const status = computed(() => {
   background: var(--line);
   pointer-events: none;
 }
-.ticks {
-  position: relative;
+/* Shorter than a data lane: it carries a label and a tick, not a shape. */
+.timelane {
+  height: 20px;
+  cursor: default;
+}
+.timelane.grab {
+  cursor: ew-resize;
+}
+.timelane:focus-visible {
+  outline: 2px solid var(--down);
+  outline-offset: -2px;
 }
 .tend {
   position: absolute;
+  top: 3px;
   transform: translateX(-50%);
   white-space: nowrap;
+  font-size: 10px;
+  pointer-events: none;
 }
 .selband {
   position: absolute;
