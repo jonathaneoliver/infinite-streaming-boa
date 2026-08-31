@@ -564,6 +564,7 @@ func (e *Engine) tick() {
 			T:    now.UnixMilli(),
 			Down: c.DownCounters.ThroughputMbps,
 			Up:   c.UpCounters.ThroughputMbps,
+			Cap:  c.DownCounters.CapMbps,
 		})
 	}
 	if e.rev%60 == 0 {

@@ -352,6 +352,15 @@ export interface Series {
   t: number[];
   down: number[];
   up: number[];
+  /**
+   * The downlink cap in force at each sample, 0 for unlimited.
+   *
+   * Parallel to `t`, because a pattern moves the cap while the chart is being
+   * watched: the device's current cap says nothing about what was enforced when
+   * the player reacted three minutes ago, and lining those two up is the whole
+   * point of the box.
+   */
+  cap: number[];
 }
 
 /** Chart time ranges, in the `{ v, label }` shape the streaming dashboard uses. */

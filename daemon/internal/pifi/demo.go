@@ -293,6 +293,7 @@ func (e *Engine) demoTick() {
 			T:    now.UnixMilli(),
 			Down: clients[i].DownCounters.ThroughputMbps,
 			Up:   clients[i].UpCounters.ThroughputMbps,
+			Cap:  clients[i].DownCounters.CapMbps,
 		})
 	}
 	live := make(map[string]bool, len(clients))
