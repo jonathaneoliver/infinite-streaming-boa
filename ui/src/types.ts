@@ -609,8 +609,15 @@ export type YMode = 'auto' | 'cap' | 'manual';
  *
  * 30s spans five fetch cycles at the 6s segment duration that is the common
  * case, and fifteen at a 2s cadence -- enough for the line to sit still rather
- * than breathe with each fetch. The cost is a trailing lag of half the window,
- * so a cap change takes ~15s to be fully reflected.
+ * than breathe with each fetch.
+ *
+ * The cost is lag, and it is three different numbers worth keeping apart. The
+ * line is drawn all the way to the live edge -- at `now` the trailing window is
+ * fully available, so it never stops short of it. But the value there averages
+ * the whole window, so its centre of mass is half a window old: ~15s at 30s.
+ * A step change is not FULLY reflected until the old samples have aged out,
+ * which takes the whole 30s. And at the start of a series the line begins once
+ * the window is HALF full rather than full, so ~15s in.
  */
 export const SUSTAINED_SEC = 30;
 
@@ -621,12 +628,13 @@ export const SUSTAINED_SEC = 30;
  * right window depends on the segment duration of the thing being watched, and
  * that is a property of the stream rather than of this box:
  *
- * - 10s follows a cap change in about five seconds instead of fifteen, which is
- *   what you want while stepping a pattern by hand and watching a player react.
- *   Under a 6s segment cadence it spans fewer than two fetches, so it still
- *   breathes with them.
- * - 60s sits flat across ten fetches at 6s, which is the window to read a
- *   rendition plateau off rather than to watch a transition.
+ * - 10s places the line ~5s behind the traffic rather than ~15s, and settles
+ *   within 10s of a step, which is what you want while stepping a pattern by
+ *   hand and watching a player react. Under a 6s segment cadence it spans fewer
+ *   than two fetches, so it still breathes with them.
+ * - 60s sits flat across ten fetches at 6s: the window to read a rendition
+ *   plateau off rather than to watch a transition, since it puts the line ~30s
+ *   behind and takes a full minute to settle.
  *
  * Every one of them is computed in the browser from points already held, so
  * changing it redraws the whole visible history at the new window rather than
