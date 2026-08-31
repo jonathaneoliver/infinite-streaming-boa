@@ -176,6 +176,7 @@ async function saveAs() {
     return;
   }
   saveName.value = '';
+  showSave.value = false;
   await load();
   await choose(name);
 }
@@ -198,146 +199,203 @@ function fmtDur(sec: number) {
   return s ? `${m}m${String(s).padStart(2, '0')}s` : `${m}m`;
 }
 
+/*
+ * The selected row, which is the only one whose detail is worth showing.
+ *
+ * The per-row detail used to be repeated on every line, and for the built-ins
+ * it was character-for-character identical -- same ladder, same step count,
+ * same stretch. Six lines of chrome to say one thing twice. Only the selection
+ * has context worth spending a line on.
+ */
+const sel = computed(() => rows.value.find((r) => r.name === currentName.value));
+
+/** The save field is revealed on request: naming is rare, the picker is not. */
+const showSave = ref(false);
+
+/**
+ * Which ladder a built-in was actually generated from.
+ *
+ * Named even when the service picker says "most recent", because that is a rule
+ * and not a name: without this, taking the default hides which of the device's
+ * ladders the rates came from -- and a measured ladder and a typed one are
+ * different strengths of claim.
+ */
+function ladderOf(r: PatternEntry) {
+  if (r.ladder === 'default') return '— no ladder yet, generic rungs';
+  return `${r.ladder_service} ${r.ladder}`;
+}
+
 /** Seconds per step, which is only meaningful for the uniform generated ones. */
 function perStep(r: PatternEntry) {
   return r.keys > 1 ? r.dur_sec / (r.keys - 1) : 0;
 }
 
+/**
+ * The one-line description of the selected pattern.
+ *
+ * Provenance stays, because it is load-bearing: a pattern built from the
+ * stand-in ladder is a plausible shape rather than a description of this
+ * content, and that must not have to be inferred from the rates. The ladder it
+ * came from is named here too, where the picker sits, so the two are read
+ * together.
+ */
 function detail(r: PatternEntry) {
   if (r.unavailable) return r.unavailable;
   const bits: string[] = [];
-  if (r.builtin) {
-    // Provenance is load-bearing: a pattern built from the stand-in ladder is
-    // a plausible shape, not a description of this content.
-    bits.push(
-      r.ladder === 'default'
-        ? 'built-in · no ladder yet, generic rungs'
-        : `built-in · ${r.ladder_service} ${r.ladder}`,
-    );
-  } else {
-    bits.push('saved');
-  }
+  if (!r.builtin) bits.push('saved');
   bits.push(`${r.keys} steps`);
-  if (r.builtin) bits.push(`${perStep(r).toFixed(0)}s each`);
   bits.push(fmtDur(r.dur_sec));
+  if (!r.loop) bits.push('once');
   return bits.join(' · ');
 }
 </script>
 
 <template>
   <div class="lib">
-    <!-- Which ladder the generated patterns describe. Only shown when there is
-         a choice: one ladder needs no picker, and the row detail already names
-         whichever was used. -->
-    <div v-if="ladders.length > 1" class="svc">
-      <label :for="`svc-${mac}`">ladder</label>
-      <select :id="`svc-${mac}`" v-model="service" :disabled="locked">
-        <option value="">most recent</option>
-        <option v-for="l in ladders" :key="l.service" :value="l.service">
-          {{ l.service }} — {{ l.rungs.length }} rungs, {{ l.provenance }}
-        </option>
-      </select>
-    </div>
-
-    <div class="rows" :class="{ busy: loading }">
-      <!-- "none" is a real choice, not an empty state: a fixed cap is a
-           legitimate test, and clearing the pattern is how you get back to it. -->
-      <label class="row" :class="{ dim: locked }">
-        <input
-          type="radio" :name="`pat-${mac}`" :checked="!current"
-          :disabled="locked" @change="choose('')"
-        />
-        <span class="nm">none</span>
-        <span class="det">a fixed cap — tests steady state only</span>
-      </label>
-
-      <label
-        v-for="r in rows" :key="r.name" class="row"
-        :class="{ dim: locked || !!r.unavailable, bad: !!r.unavailable }"
-      >
-        <input
-          type="radio" :name="`pat-${mac}`"
-          :checked="currentName === r.name"
-          :disabled="locked || !!r.unavailable"
-          @change="choose(r.name)"
-        />
-        <span class="nm">{{ r.name }}</span>
-        <span class="det">{{ detail(r) }}</span>
+    <!-- One row: the choice, and how long each step lasts. A segmented control
+         rather than a stack of radios, matching the toolbar's groups -- these
+         are exclusive choices and the shared border says so, in a fraction of
+         the height. -->
+    <div class="line">
+      <div class="seg" role="group" aria-label="Pattern">
         <button
-          v-if="!r.builtin" class="ghost x" title="delete this saved pattern"
-          @click.prevent="remove(r.name)"
-        >×</button>
+          class="seg-btn" :class="{ on: !current }" :disabled="locked"
+          title="no pattern - a fixed cap tests steady state only"
+          @click="choose('')"
+        >none</button>
+        <button
+          v-for="r in rows" :key="r.name"
+          class="seg-btn" :class="{ on: currentName === r.name, saved: !r.builtin }"
+          :disabled="locked || !!r.unavailable"
+          :title="r.unavailable || r.name"
+          @click="choose(r.name)"
+        >{{ r.name }}</button>
+      </div>
+
+      <!-- Labelled in seconds a step, because that is the quantity being
+           reasoned about; the multiplier follows so the two are never
+           confused. The note about 75s is a tooltip rather than a line of its
+           own -- worth knowing once, not worth a row forever. -->
+      <label
+        class="step"
+        title="1x is 30s a rung, enough to provoke a player. 2.5x is 75s, the dwell a sweep needed before a rendition switch could be relied on."
+      >
+        <span class="lbl">step</span>
+        <input
+          type="range" min="0" :max="STOPS.length - 1" step="1"
+          :value="stopIdx" :disabled="locked"
+          @input="stopIdx = +($event.target as HTMLInputElement).value"
+        />
+        <span class="val">{{ (30 * stretch).toFixed(0) }}s</span>
+        <span class="mul">{{ stretch }}x</span>
       </label>
+
+      <span class="spacer"></span>
+      <button
+        v-if="current && !showSave" class="ghost"
+        title="keep this timeline in the library under a name"
+        @click="showSave = true"
+      >save as...</button>
     </div>
 
-    <!-- The stretch applies to whichever row is selected next, so it sits with
-         the list rather than inside the editor. Labelled in seconds a step,
-         because that is the quantity being reasoned about; the multiplier is
-         shown too so the two are never confused. -->
-    <div class="stretch">
-      <label :for="`st-${mac}`">step</label>
-      <input
-        :id="`st-${mac}`" type="range" min="0" :max="STOPS.length - 1" step="1"
-        :value="stopIdx" :disabled="locked"
-        @input="stopIdx = +($event.target as HTMLInputElement).value"
-      />
-      <span class="val">
-        {{ (30 * stretch).toFixed(0) }}s <span class="mul">({{ stretch }}×)</span>
-      </span>
-    </div>
-    <p v-if="stretch === 2.5" class="meta hint">
-      75s a rung is the dwell a sweep needed before a switch could be relied on.
+    <!-- One line of context for the SELECTION only. The ladder picker lives
+         here, beside the provenance it explains, and only when the device has
+         more than one ladder to choose between. -->
+    <p class="det" :class="{ busy: loading }">
+      <template v-if="sel">
+        <span class="prov">{{ sel.builtin ? 'built-in from' : 'saved' }}</span>
+        <!-- The picker sits beside the provenance it explains. "most recent" is
+             a rule rather than a name, so the ladder it resolved to is printed
+             after it -- otherwise choosing the default hides which of the
+             device's ladders the rates actually came from. -->
+        <select
+          v-if="sel.builtin && ladders.length > 1"
+          v-model="service" class="svc" :disabled="locked" aria-label="ladder"
+        >
+          <option value="">most recent</option>
+          <option v-for="l in ladders" :key="l.service" :value="l.service">
+            {{ l.service }}
+          </option>
+        </select>
+        <span v-if="sel.builtin" class="prov">{{ ladderOf(sel) }}</span>
+        <span class="prov">· {{ detail(sel) }}</span>
+        <button
+          v-if="!sel.builtin" class="ghost x" title="delete this saved pattern"
+          @click="remove(sel.name)"
+        >delete</button>
+      </template>
+      <template v-else-if="current">
+        <span class="prov">{{ current.name }} — not in the library</span>
+      </template>
+      <template v-else>
+        <span class="prov">a fixed cap — tests steady state only</span>
+      </template>
     </p>
 
-    <!-- Keeping a timeline means naming it. A built-in cannot be written over:
-         it is derived, and a frozen copy under its name would mean something
-         different here than everywhere else. -->
-    <div v-if="current" class="saveas">
-      <span class="meta">
-        {{
-          onBuiltin
-            ? 'built-in — edits need a name of their own'
-            : 'save this timeline to the library'
-        }}
-      </span>
+    <div v-if="showSave && current" class="saveas">
       <input
         v-model="saveName" placeholder="name this pattern"
-        @keyup.enter="saveAs()"
+        @keyup.enter="saveAs()" @keyup.esc="showSave = false"
       />
-      <button :disabled="!saveName.trim()" @click="saveAs()">save as</button>
+      <button :disabled="!saveName.trim()" @click="saveAs()">save</button>
+      <button class="ghost" @click="showSave = false">cancel</button>
+      <span v-if="sel?.builtin" class="meta">a built-in needs a name of its own</span>
     </div>
     <p v-if="saveErr" class="err">{{ saveErr }}</p>
     <p v-if="error" class="err">{{ error }}</p>
-    <p v-if="locked" class="meta">stop the run to change pattern</p>
   </div>
 </template>
 
 <style scoped>
-.lib { display: flex; flex-direction: column; gap: 6px; }
-.svc { display: flex; align-items: center; gap: 8px; }
-.rows { display: flex; flex-direction: column; gap: 2px; }
-/* Dimmed rather than blanked while re-listing: the previous durations stay
-   readable, so moving the slider reads as the numbers changing rather than as
-   the list disappearing and coming back. */
-.rows.busy { opacity: 0.6; }
-.row {
-  display: flex; align-items: baseline; gap: 8px;
-  padding: 3px 4px; border-radius: 4px; cursor: pointer;
+.lib { display: flex; flex-direction: column; gap: 4px; }
+.line { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.spacer { flex: 1; }
+
+/* Matches the chart toolbar: exclusive choices sharing one border. */
+.seg { display: flex; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }
+.seg-btn {
+  padding: 3px 10px;
+  font: inherit; font-size: 12px;
+  color: var(--ink-dim);
+  background: var(--panel-2);
+  border: 0; border-left: 1px solid var(--line);
+  cursor: pointer;
 }
-.row:hover { background: var(--row-hover, rgba(127, 127, 127, 0.12)); }
-.row.dim { opacity: 0.5; cursor: default; }
-.row.bad .det { font-style: italic; }
-.nm { min-width: 8.5em; font-weight: 600; }
-.det { color: var(--muted, #888); font-size: 0.85em; }
-.x { margin-left: auto; opacity: 0.5; }
-.x:hover { opacity: 1; }
-.stretch { display: flex; align-items: center; gap: 8px; }
-.stretch input[type='range'] { flex: 1; max-width: 220px; }
-.stretch .val { font-variant-numeric: tabular-nums; }
-.mul { color: var(--muted, #888); }
-.hint { margin: 0; }
-.saveas { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-.saveas input { flex: 1; min-width: 10em; }
-.err { color: var(--bad, #c0392b); margin: 2px 0 0; font-size: 0.85em; }
-.meta { color: var(--muted, #888); font-size: 0.85em; margin: 0; }
+.seg-btn:first-child { border-left: 0; }
+.seg-btn:hover:not(:disabled) { color: var(--ink); background: var(--line); }
+.seg-btn.on { color: var(--ink); background: var(--line); font-weight: 600; }
+.seg-btn:disabled { opacity: 0.45; cursor: default; }
+.seg-btn:focus-visible { outline: 2px solid var(--down); outline-offset: -2px; }
+/* Saved patterns are the operator's own, so they read differently from the two
+   the box generates. */
+.seg-btn.saved { font-style: italic; }
+
+.step { display: flex; align-items: center; gap: 6px; font-size: 12px; }
+.step input[type='range'] { width: 110px; }
+.lbl {
+  font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase;
+  color: var(--ink-faint);
+}
+.val { font-variant-numeric: tabular-nums; color: var(--ink); }
+.mul { color: var(--ink-faint); }
+
+.det {
+  margin: 0; font-size: 12px; color: var(--ink-dim);
+  display: flex; align-items: baseline; gap: 4px; flex-wrap: wrap;
+}
+/* Dimmed rather than blanked while re-listing, so moving the slider reads as
+   the numbers changing rather than the line disappearing and coming back. */
+.det.busy { opacity: 0.55; }
+.prov { color: var(--ink-faint); }
+.svc {
+  font: inherit; font-size: 12px; padding: 0 2px;
+  color: var(--ink-dim); background: transparent;
+  border: 0; border-bottom: 1px dotted var(--line); cursor: pointer;
+}
+.x { margin-left: 8px; }
+
+.saveas { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.saveas input { flex: 0 1 14em; }
+.err { color: var(--bad, #c0392b); margin: 0; font-size: 12px; }
+.meta { color: var(--ink-faint); font-size: 12px; }
 </style>
