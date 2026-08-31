@@ -107,6 +107,38 @@ fi
 printf '%s:%s\n' "$BOA_USER" "$HASH" > "$BOOT/userconf.txt"
 log "User '$BOA_USER' will be created on first boot"
 
+# Passwordless sudo for that account. scripts/deploy.sh is the normal loop --
+# many times an hour -- and it installs a binary and restarts a unit over a
+# NON-INTERACTIVE ssh session, where sudo has no terminal to prompt on. It dies
+# with "a terminal is required to read the password" AFTER copying the binary,
+# so the box goes on running the old one while the deploy looks like it merely
+# stumbled at the last step.
+#
+# Raspberry Pi OS grants this to its own first user through a 010_pi-nopasswd
+# drop-in. userconf.txt creates an account but carries no such rule, and stock
+# /etc/sudoers has %sudo requiring a password -- so a freshly flashed box cannot
+# be deployed to at all. That is easy to misdiagnose, because 010_global-tty
+# makes sudo's timestamp global across sessions: one interactive sudo makes
+# deploys work for about fifteen minutes, which looks like a fixed box rather
+# than a borrowed credential about to expire.
+#
+# NOPASSWD: ALL rather than the four commands deploy.sh runs. A narrower rule
+# would buy nothing -- `install` to an arbitrary path is already root -- while
+# breaking the `tc`/`ip`/`nft` verification loop this repository runs on.
+SUDOERS="$ROOT/etc/sudoers.d/010_${BOA_USER}-nopasswd"
+install -d -m 0755 "$ROOT/etc/sudoers.d"
+printf '%s ALL=(ALL) NOPASSWD: ALL\n' "$BOA_USER" > "$SUDOERS"
+# 0440 is required, not tidiness: sudo ignores a group- or world-writable
+# drop-in and says nothing, leaving the box prompting again with no clue why.
+chmod 0440 "$SUDOERS"
+# A malformed drop-in breaks sudo outright, on a headless box, after a reflash.
+if command -v visudo >/dev/null 2>&1; then
+  visudo -c -f "$SUDOERS" >/dev/null || die "generated sudoers file is invalid"
+else
+  warn "visudo unavailable in the build image; sudoers drop-in not validated"
+fi
+log "Passwordless sudo enabled for '$BOA_USER' (deploy.sh needs it)"
+
 if [ -n "${BOA_SSH_PUBKEY:-}" ]; then
   # Keys go under /etc/ssh rather than ~/.ssh because the user's home does not
   # exist yet — it is created by the first-boot account step.
