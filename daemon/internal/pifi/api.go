@@ -47,6 +47,7 @@ func (a *API) Routes() *http.ServeMux {
 	mux.HandleFunc("DELETE /api/devices/{mac}/pattern/play", a.stopPattern)
 	mux.HandleFunc("GET /api/patterns", a.listPatterns)
 	mux.HandleFunc("GET /api/patterns/{name}", a.getPattern)
+	mux.HandleFunc("POST /api/patterns/merge", a.mergePatterns)
 	mux.HandleFunc("PUT /api/patterns/{name}", a.savePattern)
 	mux.HandleFunc("DELETE /api/patterns/{name}", a.deleteSavedPattern)
 	mux.HandleFunc("POST /api/devices/{mac}/pattern/select", a.selectPattern)
@@ -852,6 +853,86 @@ func (a *API) savePattern(w http.ResponseWriter, r *http.Request) {
 	a.e.BumpControl()
 	writeJSON(w, http.StatusOK, map[string]any{
 		"saved": normPatternName(pat.Name)})
+}
+
+// mergePatterns lays several patterns over one another and returns the result
+// WITHOUT saving it.
+//
+// A preview rather than a write, for two reasons. The operator has to name the
+// thing, and they will name it better once they can see what it turned out to
+// be -- a merge whose sources both drove the rate is a merge that did nothing,
+// and that is worth noticing before it acquires a name and a place in the
+// library. And saving goes through the existing PUT, so a merged pattern is
+// stored by exactly the same path as a hand-built one and cannot drift from it.
+//
+// Order matters and is the caller's: where two sources drive the same axis, the
+// first in this list wins. See MergePatterns.
+func (a *API) mergePatterns(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		Names   []string `json:"names"`
+		MAC     string   `json:"mac"`
+		Service string   `json:"service"`
+		Stretch float64  `json:"stretch"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+		writeErr(w, http.StatusBadRequest, "malformed body: "+err.Error())
+		return
+	}
+	if len(in.Names) < 2 {
+		writeErr(w, http.StatusBadRequest, "a merge needs at least 2 patterns")
+		return
+	}
+	if in.Stretch == 0 {
+		in.Stretch = 1
+	}
+	pol := a.load(normMAC(in.MAC))
+
+	pats := make([]Pattern, 0, len(in.Names))
+	for _, n := range in.Names {
+		n = normPatternName(n)
+		if IsBuiltin(n) {
+			// Built-ins are per-device, so a merge is too: the same two names
+			// produce different patterns on two devices with different ladders,
+			// which is the point of a built-in.
+			pat, _, _, err := a.resolveBuiltin(n, pol, in.Service, in.Stretch)
+			if err != nil {
+				writeErr(w, http.StatusBadRequest, err.Error())
+				return
+			}
+			pats = append(pats, pat)
+			continue
+		}
+		sp, ok := a.e.PatternStore().Get(n)
+		if !ok {
+			writeErr(w, http.StatusNotFound, "no pattern named "+n)
+			return
+		}
+		st, err := StretchPattern(sp, in.Stretch)
+		if err != nil {
+			writeErr(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		pats = append(pats, st)
+	}
+
+	merged, err := MergePatterns(strings.Join(in.Names, "+"), pats)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	// Validated here rather than only at save time, so an impossible
+	// combination is reported while the operator can still see which two
+	// patterns they picked -- reorder over a zero delay being the one that
+	// actually happens. See reorderClimbSteps.
+	if err := validPattern(merged); err != nil {
+		writeErr(w, http.StatusBadRequest,
+			"these patterns cannot be layered: "+err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"pattern": merged,
+		"sources": in.Names,
+	})
 }
 
 func (a *API) deleteSavedPattern(w http.ResponseWriter, r *http.Request) {

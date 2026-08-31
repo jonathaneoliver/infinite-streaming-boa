@@ -25,6 +25,15 @@ const (
 	PatternTransientShock = "transient_shock"
 	// Blackhole has no counterpart there. It is not a ladder walk at all.
 	PatternBlackhole = "blackhole"
+
+	// Impairment overlays. Each owns ONE axis and asserts no rate, so it layers
+	// over any pattern that drives one -- which is every other pattern here.
+	// They are the reason a merge has anything to merge: without them the
+	// library was seven patterns all fighting over rate_mbps.
+	PatternDelayClimb   = "delay_climb"
+	PatternLossClimb    = "loss_climb"
+	PatternReorderClimb = "reorder_climb"
+	PatternCorruptClimb = "corrupt_climb"
 )
 
 // BuiltinNames is every generated pattern, in display order.
@@ -33,7 +42,66 @@ var BuiltinNames = []string{
 	PatternRampDown, PatternRampUp,
 	PatternSquareWave, PatternTransientShock,
 	PatternBlackhole,
+	PatternDelayClimb, PatternLossClimb,
+	PatternReorderClimb, PatternCorruptClimb,
 }
+
+// The impairment ladders each overlay walks.
+//
+// The delay and loss figures are lifted from this box's own PRESETS rather than
+// invented: Fibre 4ms, Cable 15, 4G good 25, 4G weak 60, 3G 100, Satellite 300,
+// and the loss pairs likewise. Those were chosen once, for links people
+// actually use, and a second set of numbers meaning the same thing would only
+// be a second thing to keep true.
+//
+// Delay carries jitter and loss carries its burst length because each pair is
+// ONE physical phenomenon, not two axes that happen to co-occur: a delay with
+// no jitter is not a link anyone has, and uniform loss is netem's default and
+// essentially never happens on a real one (see Shape.LossBurst). Splitting them
+// to gain composability would buy a merge the ability to build links that do
+// not exist.
+//
+// reorder and corrupt have no preset to borrow from and nothing measured here,
+// so their ladders are plausible rather than observed, and shallow: both are
+// pathologies rather than conditions, and a player meeting 3% corruption has
+// already told you what you needed to know.
+var (
+	delayClimbSteps = []Shape{
+		{}, // start clean, so the overlay's first step changes nothing
+		{DelayMs: 4, JitterMs: 1},
+		{DelayMs: 15, JitterMs: 4},
+		{DelayMs: 25, JitterMs: 8},
+		{DelayMs: 60, JitterMs: 25},
+		{DelayMs: 100, JitterMs: 40},
+		{DelayMs: 300, JitterMs: 20},
+	}
+	lossClimbSteps = []Shape{
+		{},
+		{LossPct: 0.05, LossBurst: 2},
+		{LossPct: 0.1, LossBurst: 4},
+		{LossPct: 1, LossBurst: 10},
+		{LossPct: 1.5, LossBurst: 10},
+		{LossPct: 5, LossBurst: 20},
+	}
+	// Reorder carries a delay, and not by choice: netem reorders by letting a
+	// fraction of packets SKIP the delay queue, so with no queue there is
+	// nothing to skip and the shape is rejected (see the validator). 20ms is
+	// small enough not to be the thing under test and large enough for the
+	// skip to mean something.
+	//
+	// The consequence for merging is worth knowing: this overlay owns delay as
+	// well as reorder, so laying it under delay_climb -- which starts at zero
+	// delay -- produces an invalid keyframe at that instant. The validator says
+	// so rather than silently dropping the reorder.
+	reorderClimbSteps = []Shape{
+		{},
+		{DelayMs: 20, ReorderPct: 0.1},
+		{DelayMs: 20, ReorderPct: 0.5},
+		{DelayMs: 20, ReorderPct: 1},
+		{DelayMs: 20, ReorderPct: 3},
+	}
+	corruptClimbSteps = []Shape{{}, {CorruptPct: 0.1}, {CorruptPct: 0.5}, {CorruptPct: 1}, {CorruptPct: 3}}
+)
 
 // The blackhole cycle: a minute, with the last ten seconds dark.
 //
@@ -176,7 +244,8 @@ func DefaultLadder() Ladder {
 //     independent probe at increasing severity: it looks for where a player
 //     BREAKS, where valley watches one glide.
 //   - blackhole is the odd one out and walks no rungs at all: a minute of clear
-//     air with the last ten seconds at total loss. See blackhole().
+//     air with the last ten seconds at total loss, and it sets loss ONLY, so it
+//     can be layered over a pattern that drives the rate. See blackhole().
 //
 // Every rung walk traverses EVERY rung rather than just the extremes. A
 // two-level dip tells you a player fell and got up; walking the ladder tells you
@@ -209,11 +278,20 @@ func LadderPattern(name string, l Ladder, dwellSec float64) (Pattern, error) {
 	// The top rung is capped differently from the rest; see topRungHeadroom.
 	caps[len(caps)-1] = topCapFor(rungs[len(rungs)-1])
 
-	// Blackhole is not a walk of the ladder at all -- it only borrows its top
-	// so the clear phase is unconstrained -- so it is built and returned here
-	// rather than being expressed as a sequence of caps.
-	if name == PatternBlackhole {
-		return blackhole(caps[len(caps)-1]), nil
+	// The overlays walk no rungs and assert no rate, so they need nothing from
+	// the ladder and are built and returned here rather than being expressed as
+	// a sequence of caps.
+	switch name {
+	case PatternBlackhole:
+		return blackhole(), nil
+	case PatternDelayClimb:
+		return impairmentClimb(name, delayClimbSteps, dwellSec), nil
+	case PatternLossClimb:
+		return impairmentClimb(name, lossClimbSteps, dwellSec), nil
+	case PatternReorderClimb:
+		return impairmentClimb(name, reorderClimbSteps, dwellSec), nil
+	case PatternCorruptClimb:
+		return impairmentClimb(name, corruptClimbSteps, dwellSec), nil
 	}
 
 	// Every sequence below ends on the value it began with, so a looping run
@@ -288,15 +366,21 @@ func reversedCaps(c []float64) []float64 {
 
 // blackhole is a minute of clear air with the last ten seconds dark.
 //
-// The cap is held across BOTH phases rather than dropped to zero for the
-// outage, because those are different faults and a player tells them apart. A
-// rate of zero is a link that got slow; 100% loss is a link that stopped
-// answering, with segment requests timing out rather than trickling. Tunnels,
-// lift shafts and handovers are the second kind, and testing the first in their
-// name would flatter a player that handles only slowness.
-func blackhole(topCap float64) Pattern {
-	clear := Shape{RateMbps: topCap}
-	dark := Shape{RateMbps: topCap, LossPct: 100}
+// It sets LOSS AND NOTHING ELSE. Every other field stays zero, and zero on a
+// Shape means "no conditioning of this kind" (model.go) -- so the rate is left
+// unlimited rather than pinned to the ladder's top.
+//
+// Two reasons, and the second is the one that matters. First, it is the more
+// honest description: a tunnel does not slow a link, it removes it, and holding
+// a cap through the outage describes a fault nobody has. Second, a pattern that
+// touches only the axis it is about can be LAYERED on one that owns a different
+// axis. transient_shock drives the rate; this drives the loss; together they
+// are a ladder walk that periodically goes dark, and neither had to know about
+// the other. A blackhole that also asserted a rate would collide with any
+// pattern that drives one, which is every other pattern here.
+func blackhole() Pattern {
+	clear := Shape{}
+	dark := Shape{LossPct: 100}
 	return Pattern{
 		Name: PatternBlackhole,
 		Keys: []Keyframe{
@@ -410,4 +494,202 @@ func StretchPattern(p Pattern, factor float64) (Pattern, error) {
 			factor, d, maxPatternSec, float64(maxPatternSec)/p.DurSec())
 	}
 	return out, nil
+}
+
+// MergePatterns lays patterns over one another on a single timeline.
+//
+// # What a merge is
+//
+// Not a concatenation. The sources run CONCURRENTLY, and each contributes the
+// axes it actually drives: transient_shock owns the rate, blackhole owns the
+// loss, and together they are a ladder walk that periodically goes dark without
+// either having been written with the other in mind. Zero on a Shape means "no
+// conditioning of this kind" (model.go), so a field a pattern leaves alone is a
+// field another can fill.
+//
+// # Which value wins
+//
+// The first non-zero one, in the order the operator selected them. Not the
+// lowest, not the most restrictive, and never a refusal: selection order is a
+// choice the operator already made and can see, where "most restrictive" is a
+// rule they would have to remember. Two patterns that both drive the rate
+// therefore merge to the first one's rate, which is a merge that did nothing
+// rather than an error to dismiss.
+//
+// # Length, and why it only ever grows
+//
+// A shorter pattern repeats to fill a longer one. Where the lengths do not
+// divide, something must stretch, and stretching may only ENLARGE: effects have
+// minimum durations to work at all -- an outage has to outlast a segment fetch,
+// a rung has to be held long enough to provoke a switch -- and shrinking one
+// silently breaks the thing the pattern exists to test. Enlarging cannot: a
+// longer dwell provokes a switch at least as reliably, a longer outage is at
+// least as total.
+//
+// So the merged length is a whole multiple of some pattern's period, chosen by
+// a short search to minimise the LARGEST stretch any source has to take. Across
+// the built-in library the worst case is 1.09x, and most pairs need none: a 60s
+// blackhole fits a 660s shock exactly eleven times, untouched.
+func MergePatterns(name string, pats []Pattern) (Pattern, error) {
+	if len(pats) < 2 {
+		return Pattern{}, fmt.Errorf("a merge needs at least 2 patterns, got %d", len(pats))
+	}
+	durs := make([]float64, len(pats))
+	for i, p := range pats {
+		if durs[i] = p.DurSec(); durs[i] <= 0 {
+			return Pattern{}, fmt.Errorf("pattern %q has no duration", p.Name)
+		}
+	}
+	total, reps := mergeLength(durs)
+
+	// Every instant at which ANY source changes, in merged time. A keyframe
+	// anywhere else would be a sample of a step function between its steps,
+	// which is a value nothing ever held.
+	at := map[float64]bool{0: true, round2(total): true}
+	for i, p := range pats {
+		f := total / (float64(reps[i]) * durs[i])
+		for r := 0; r < reps[i]; r++ {
+			for _, k := range p.Keys {
+				t := round2((float64(r)*durs[i] + k.AtSec) * f)
+				if t > 0 && t < total {
+					at[t] = true
+				}
+			}
+		}
+	}
+	times := make([]float64, 0, len(at))
+	for t := range at {
+		times = append(times, t)
+	}
+	sort.Float64s(times)
+
+	keys := make([]Keyframe, 0, len(times))
+	for _, t := range times {
+		var down, up Shape
+		for i, p := range pats {
+			f := total / (float64(reps[i]) * durs[i])
+			// Its own phase: merged time undone by this source's stretch, then
+			// wrapped into one of its cycles.
+			phase := math.Mod(t/f, durs[i])
+			if t >= total {
+				phase = 0 // the seam repeats the start, as every pattern does
+			}
+			d, u, _ := p.At(phase)
+			fillZeroFields(&down, d)
+			fillZeroFields(&up, u)
+		}
+		keys = append(keys, Keyframe{AtSec: t, Down: down, Up: up, Ease: EaseHold})
+	}
+	return Pattern{Name: name, Keys: keys, Loop: true}, nil
+}
+
+// maxMergeRun bounds how much longer a merge may run than its longest source.
+//
+// Without it, minimising the stretch always wins by running longer: 660 and 360
+// merge with a stretch of only 1.048 if you are willing to run for 2640s, four
+// cycles of one against seven of the other. That is 44 minutes to spare 4% of
+// distortion, and nobody asked for a 44-minute test -- they asked for those two
+// patterns. Length is the cost the operator feels; a rung held 32.7s instead of
+// 30 is one they will not notice.
+//
+// 1.5x leaves room to round up to the next whole cycle of any source without
+// leaving room to run away.
+const maxMergeRun = 1.5
+
+// mergeLength picks the merged duration and how many times each source repeats.
+//
+// Candidates are whole multiples of each source's own period -- a length that is
+// not a whole multiple of SOMETHING would cut a cycle off mid-shape, which is
+// how a blackhole ends up in a pattern that never goes dark -- from the longest
+// source up to maxMergeRun times it. Among those the smallest worst-case
+// stretch wins, and a tie goes to the shorter.
+//
+// For 660 and 360 that is 720s: the 360 runs twice untouched and the 660
+// stretches by 1.091. The alternative at this length, 660s, would have made the
+// 360 run once at 1.833x, which is the same distortion the bound exists to
+// avoid, applied to the wrong pattern.
+func mergeLength(durs []float64) (float64, []int) {
+	longest, shortest := durs[0], durs[0]
+	for _, d := range durs {
+		if d > longest {
+			longest = d
+		}
+		if d < shortest {
+			shortest = d
+		}
+	}
+	var bestTotal float64
+	var bestReps []int
+	bestWorst := math.Inf(1)
+	limit := longest * maxMergeRun
+	for _, unit := range durs {
+		for k := 1; float64(k)*unit <= limit+1e-9; k++ {
+			total := round2(float64(k) * unit)
+			if total < longest {
+				continue
+			}
+			reps := make([]int, len(durs))
+			worst := 1.0
+			for i, d := range durs {
+				n := int(math.Floor(total/d + 1e-9))
+				if n < 1 {
+					n = 1
+				}
+				reps[i] = n
+				if f := total / (float64(n) * d); f > worst {
+					worst = f
+				}
+			}
+			if worst < bestWorst-1e-9 || (math.Abs(worst-bestWorst) < 1e-9 && total < bestTotal) {
+				bestWorst, bestTotal, bestReps = worst, total, reps
+			}
+		}
+	}
+	return bestTotal, bestReps
+}
+
+// fillZeroFields copies each field of src into dst only where dst is still
+// zero, so the first source to set an axis owns it. Zero is "unset" throughout
+// this model, which is what makes first-wins expressible at all.
+func fillZeroFields(dst *Shape, src Shape) {
+	for _, f := range []struct{ d, s *float64 }{
+		{&dst.RateMbps, &src.RateMbps},
+		{&dst.DelayMs, &src.DelayMs},
+		{&dst.JitterMs, &src.JitterMs},
+		{&dst.LossPct, &src.LossPct},
+		{&dst.LossBurst, &src.LossBurst},
+		{&dst.ReorderPct, &src.ReorderPct},
+		{&dst.CorruptPct, &src.CorruptPct},
+	} {
+		if *f.d == 0 {
+			*f.d = *f.s
+		}
+	}
+}
+
+// impairmentClimb walks one impairment axis up and back down, the same
+// out-and-back shape a pyramid walks on the rate axis and for the same reason:
+// the way back tells you whether a player recovers, which the way up cannot.
+//
+// It sets NO RATE. That is the whole purpose -- an overlay owns its axis and
+// leaves every other one at zero, so a merge can lay it over a pattern that
+// drives the cap and neither has to know about the other.
+func impairmentClimb(name string, steps []Shape, dwellSec float64) Pattern {
+	if dwellSec <= 0 {
+		dwellSec = defaultRungDwellSec
+	}
+	seq := make([]Shape, 0, 2*len(steps)-1)
+	seq = append(seq, steps...)
+	for i := len(steps) - 2; i >= 0; i-- {
+		seq = append(seq, steps[i])
+	}
+	keys := make([]Keyframe, 0, len(seq))
+	for i, sh := range seq {
+		keys = append(keys, Keyframe{
+			AtSec: float64(i) * dwellSec,
+			Down:  sh,
+			Ease:  EaseHold,
+		})
+	}
+	return Pattern{Name: name, Keys: keys, Loop: true}
 }

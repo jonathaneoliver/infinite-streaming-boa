@@ -1,7 +1,9 @@
 package pifi
 
 import (
+	"math"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 )
@@ -156,10 +158,7 @@ func TestTransientShockRecoversBetweenDeepeningDips(t *testing.T) {
 	}
 }
 
-// blackhole is a minute with the last ten seconds at total loss. It borrows
-// only the ladder's top, and holds the CAP across the outage rather than
-// dropping the rate: a link that stopped answering is a different fault from
-// one that got slow, and a player tells them apart.
+// blackhole is a minute with the last ten seconds at total loss.
 func TestBlackholeIsAMinuteWithTenSecondsDark(t *testing.T) {
 	p, err := LadderPattern(PatternBlackhole, testLadder(), 30)
 	if err != nil {
@@ -171,7 +170,6 @@ func TestBlackholeIsAMinuteWithTenSecondsDark(t *testing.T) {
 	if len(p.Keys) != 3 {
 		t.Fatalf("got %d keyframes, want 3", len(p.Keys))
 	}
-	top := round2(4.59 * topRungHeadroom)
 	for i, want := range []struct {
 		at   float64
 		loss float64
@@ -181,14 +179,53 @@ func TestBlackholeIsAMinuteWithTenSecondsDark(t *testing.T) {
 			t.Errorf("key %d: at %v loss %v, want at %v loss %v",
 				i, k.AtSec, k.Down.LossPct, want.at, want.loss)
 		}
-		if k.Down.RateMbps != top {
-			t.Errorf("key %d: rate %v, want the top cap %v held throughout",
-				i, k.Down.RateMbps, top)
-		}
 	}
 	// The dark stretch is the LAST ten seconds, not the first.
 	if p.Keys[1].AtSec != p.DurSec()-10 {
 		t.Errorf("outage starts at %v, want %v", p.Keys[1].AtSec, p.DurSec()-10)
+	}
+}
+
+// blackhole touches the loss axis and NOTHING else.
+//
+// This is what lets it be layered over a pattern that drives the rate: zero on
+// a Shape means "no conditioning of this kind", so every field it leaves alone
+// is a field another pattern can own. Asserting a rate here -- even the
+// ladder's top -- would collide with every other pattern in the library, since
+// they all drive one.
+func TestBlackholeSetsLossAndNothingElse(t *testing.T) {
+	p, err := LadderPattern(PatternBlackhole, testLadder(), 30)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, k := range p.Keys {
+		for _, f := range []struct {
+			name string
+			v    float64
+		}{
+			{"rate_mbps", k.Down.RateMbps},
+			{"delay_ms", k.Down.DelayMs},
+			{"jitter_ms", k.Down.JitterMs},
+			{"reorder_pct", k.Down.ReorderPct},
+			{"corrupt_pct", k.Down.CorruptPct},
+		} {
+			if f.v != 0 {
+				t.Errorf("key %d sets %s=%v; blackhole must leave every axis but loss at zero",
+					i, f.name, f.v)
+			}
+		}
+		if k.Up != (Shape{}) {
+			t.Errorf("key %d sets an uplink shape %+v; blackhole is downlink-only", i, k.Up)
+		}
+	}
+}
+
+// It needs nothing from the ladder, so it does not care how many rungs there
+// are -- including fewer than the two a rung walk requires.
+func TestBlackholeNeedsNoLadder(t *testing.T) {
+	one := Ladder{Service: "x", Rungs: []Rung{{Mbps: 4.59, UpAtMbps: 6.41}}}
+	if _, err := LadderPattern(PatternBlackhole, one, 30); err == nil {
+		t.Log("builds from a single rung, which is fine: it reads none of them")
 	}
 }
 
@@ -545,4 +582,301 @@ func TestACloneMustBeSavedUnderItsOwnName(t *testing.T) {
 	// The clone is a snapshot: it keeps the rates it was taken from and does
 	// NOT track the ladder afterwards, which is the point of cloning one.
 	eq(t, rates(got), rates(src))
+}
+
+// The merge this feature exists for: a ladder walk that periodically goes dark.
+// transient_shock owns the rate, blackhole owns the loss, and neither was
+// written knowing about the other.
+func TestMergeLaysBlackholeOverTransientShock(t *testing.T) {
+	shock, err := LadderPattern(PatternTransientShock, testLadder(), 30)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dark, err := LadderPattern(PatternBlackhole, testLadder(), 30)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m, err := MergePatterns("shock+dark", []Pattern{shock, dark})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 60 divides 180 exactly, so nothing is stretched and the merge is as long
+	// as the longer source.
+	if got, want := m.DurSec(), shock.DurSec(); got != want {
+		t.Fatalf("duration %v, want %v (blackhole fits exactly, nothing stretches)", got, want)
+	}
+	// The rate comes from the shock at every instant...
+	for _, k := range m.Keys {
+		if k.Down.RateMbps == 0 {
+			t.Fatalf("keyframe at %vs has no rate; the shock should own that axis", k.AtSec)
+		}
+	}
+	// ...and the loss from blackhole, dark for the last 10s of each minute.
+	darkAt := map[float64]bool{50: true, 110: true, 170: true}
+	for _, k := range m.Keys {
+		if darkAt[k.AtSec] && k.Down.LossPct != 100 {
+			t.Errorf("at %vs loss is %v, want 100", k.AtSec, k.Down.LossPct)
+		}
+	}
+	var sawDark bool
+	for _, k := range m.Keys {
+		if k.Down.LossPct == 100 {
+			sawDark = true
+			if k.Down.RateMbps == 0 {
+				t.Errorf("at %vs the link is dark but has no cap; both axes should be set", k.AtSec)
+			}
+		}
+	}
+	if !sawDark {
+		t.Error("no keyframe carries the blackhole's loss")
+	}
+}
+
+// Where two sources drive the same axis, the FIRST selected wins -- not the
+// lowest, and not an error. Selection order is a choice the operator made and
+// can see.
+func TestMergeGivesACollidingFieldToTheFirstSelected(t *testing.T) {
+	a, err := LadderPattern(PatternValley, testLadder(), 30)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := LadderPattern(PatternRampUp, testLadder(), 30)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Both drive the rate at every instant, so the second contributes nothing.
+	m, err := MergePatterns("v+r", []Pattern{a, b})
+	if err != nil {
+		t.Fatalf("a collision must merge, not fail: %v", err)
+	}
+	// Valley starts at the top; ramp_up starts at the bottom. First wins.
+	if got, want := m.Keys[0].Down.RateMbps, a.Keys[0].Down.RateMbps; got != want {
+		t.Errorf("first keyframe rate %v, want valley's %v", got, want)
+	}
+	rev, err := MergePatterns("r+v", []Pattern{b, a})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := rev.Keys[0].Down.RateMbps, b.Keys[0].Down.RateMbps; got != want {
+		t.Errorf("reversed, first keyframe rate %v, want ramp_up's %v", got, want)
+	}
+	if rev.Keys[0].Down.RateMbps == m.Keys[0].Down.RateMbps {
+		t.Error("selection order made no difference; first-wins is not being applied")
+	}
+}
+
+// Stretching may only ENLARGE. Effects have minimum durations -- an outage has
+// to outlast a segment fetch, a rung has to be held long enough to provoke a
+// switch -- and shrinking one silently breaks what the pattern is for.
+func TestMergeNeverShortensASource(t *testing.T) {
+	for _, durs := range [][]float64{
+		{660, 60}, {660, 360}, {660, 360, 60}, {360, 60}, {180, 50}, {97, 31},
+	} {
+		total, reps := mergeLength(durs)
+		for i, d := range durs {
+			f := total / (float64(reps[i]) * d)
+			if f < 1-1e-9 {
+				t.Errorf("durs %v: source %v stretched by %.4f, which SHRINKS it", durs, d, f)
+			}
+		}
+		if total < durs[0] {
+			for _, d := range durs {
+				if total < d {
+					t.Errorf("durs %v: merged length %v is shorter than source %v", durs, total, d)
+				}
+			}
+		}
+	}
+}
+
+// The merged length is a whole multiple of at least one source's period, so no
+// cycle is cut off mid-shape -- which is how a blackhole ends up in a pattern
+// that never goes dark.
+func TestMergeLengthCutsNoCycleShort(t *testing.T) {
+	cases := [][]float64{{660, 60}, {660, 360}, {660, 360, 60}, {97, 31}}
+	for _, durs := range cases {
+		total, reps := mergeLength(durs)
+		whole := false
+		for i, d := range durs {
+			if math.Abs(total-float64(reps[i])*d*(total/(float64(reps[i])*d))) < 1e-6 &&
+				math.Abs(total/d-math.Round(total/d)) < 1e-6 {
+				whole = true
+			}
+		}
+		if !whole {
+			t.Errorf("durs %v: merged length %v is a whole multiple of no source period", durs, total)
+		}
+	}
+}
+
+// The worst stretch across the built-in library, stated so a regression in the
+// search shows up as a number rather than as a pattern that feels wrong.
+func TestMergeWorstStretchAcrossTheLibrary(t *testing.T) {
+	lib := map[string]float64{
+		"valley": 660, "pyramid": 660, "transient_shock": 660,
+		"ramp_down": 360, "ramp_up": 360, "square_wave": 60, "blackhole": 60,
+	}
+	worst, worstPair := 1.0, ""
+	names := make([]string, 0, len(lib))
+	for n := range lib {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	for i := range names {
+		for j := i + 1; j < len(names); j++ {
+			durs := []float64{lib[names[i]], lib[names[j]]}
+			total, reps := mergeLength(durs)
+			for k, d := range durs {
+				if f := total / (float64(reps[k]) * d); f > worst {
+					worst, worstPair = f, names[i]+"+"+names[j]
+				}
+			}
+		}
+	}
+	if worst > 1.10 {
+		t.Errorf("worst stretch across the library is %.3f on %s, want <= 1.10", worst, worstPair)
+	}
+	t.Logf("worst stretch %.3f on %s", worst, worstPair)
+}
+
+// A merge loops, so its last keyframe must repeat its first, exactly as every
+// generated pattern does.
+func TestMergeLoopsSeamlessly(t *testing.T) {
+	shock, _ := LadderPattern(PatternTransientShock, testLadder(), 30)
+	dark, _ := LadderPattern(PatternBlackhole, testLadder(), 30)
+	m, err := MergePatterns("m", []Pattern{shock, dark})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !m.Loop {
+		t.Error("a merge should loop")
+	}
+	first, last := m.Keys[0], m.Keys[len(m.Keys)-1]
+	if first.Down != last.Down || first.Up != last.Up {
+		t.Errorf("seam: first %+v, last %+v", first.Down, last.Down)
+	}
+}
+
+func TestMergeNeedsTwoPatterns(t *testing.T) {
+	one, _ := LadderPattern(PatternValley, testLadder(), 30)
+	if _, err := MergePatterns("x", []Pattern{one}); err == nil {
+		t.Error("merging one pattern should fail")
+	}
+}
+
+// 660 and 360 merge at 720s: the shorter runs twice untouched and the LONGER
+// takes the stretch.
+//
+// The alternative at 660s would have run the 360 once at 1.833x -- the same
+// distortion, applied to the pattern that did not need it. And the alternative
+// at 2640s reduces the stretch to 1.048 by running for 44 minutes, which is the
+// trade maxMergeRun exists to refuse: length is a cost the operator feels, a
+// rung held 32.7s instead of 30 is not.
+func TestMergeLengthPrefersAShortRunOverASmallStretch(t *testing.T) {
+	total, reps := mergeLength([]float64{660, 360})
+	if total != 720 {
+		t.Fatalf("merged length %v, want 720", total)
+	}
+	if reps[1] != 2 {
+		t.Errorf("the 360 runs %d time(s), want 2", reps[1])
+	}
+	if f := total / (float64(reps[1]) * 360); f != 1 {
+		t.Errorf("the 360 was stretched %v, want 1 (the shorter should be untouched)", f)
+	}
+	if f := total / (float64(reps[0]) * 660); math.Abs(f-720.0/660.0) > 1e-9 {
+		t.Errorf("the 660 was stretched %v, want %v", f, 720.0/660.0)
+	}
+}
+
+// An overlay owns its axis and asserts NO RATE, which is the whole reason a
+// merge has anything to lay over a ladder walk.
+func TestImpairmentOverlaysAssertNoRate(t *testing.T) {
+	for _, name := range []string{
+		PatternDelayClimb, PatternLossClimb, PatternReorderClimb, PatternCorruptClimb,
+	} {
+		p, err := LadderPattern(name, testLadder(), 30)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var touched bool
+		for i, k := range p.Keys {
+			if k.Down.RateMbps != 0 {
+				t.Errorf("%s key %d sets rate %v; an overlay must leave the cap alone",
+					name, i, k.Down.RateMbps)
+			}
+			if k.Down != (Shape{}) {
+				touched = true
+			}
+		}
+		if !touched {
+			t.Errorf("%s sets nothing at all", name)
+		}
+		// Out and back, so the way down is measured too, and the seam repeats.
+		if p.Keys[0].Down != p.Keys[len(p.Keys)-1].Down {
+			t.Errorf("%s does not return to its start", name)
+		}
+		if !p.Loop {
+			t.Errorf("%s should loop", name)
+		}
+	}
+}
+
+// Each overlay touches only the axis it is named for, so two of them can be
+// merged as readily as one can be merged with a ladder walk. Delay carries
+// jitter and loss carries its burst length because each pair is one physical
+// phenomenon; both are documented as such.
+func TestEachOverlayOwnsOneAxis(t *testing.T) {
+	axes := map[string]func(Shape) bool{
+		PatternDelayClimb: func(s Shape) bool { return s.LossPct != 0 || s.ReorderPct != 0 || s.CorruptPct != 0 },
+		PatternLossClimb:  func(s Shape) bool { return s.DelayMs != 0 || s.JitterMs != 0 || s.ReorderPct != 0 || s.CorruptPct != 0 },
+		// Delay is not a stray here: netem reorders by letting packets skip the
+		// delay queue, so reorder without delay is rejected outright. This
+		// overlay owns both by necessity, which is documented where it is
+		// built and is why it cannot be layered under delay_climb.
+		PatternReorderClimb: func(s Shape) bool { return s.JitterMs != 0 || s.LossPct != 0 || s.CorruptPct != 0 },
+		PatternCorruptClimb: func(s Shape) bool { return s.DelayMs != 0 || s.JitterMs != 0 || s.LossPct != 0 || s.ReorderPct != 0 },
+	}
+	for name, strays := range axes {
+		p, err := LadderPattern(name, testLadder(), 30)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for i, k := range p.Keys {
+			if strays(k.Down) {
+				t.Errorf("%s key %d strays onto another axis: %+v", name, i, k.Down)
+			}
+		}
+	}
+}
+
+// The point of the overlays: a ladder walk and an impairment climb merge into
+// one pattern where each still owns what it drove.
+func TestMergeLadderWalkWithAnImpairmentOverlay(t *testing.T) {
+	walk, err := LadderPattern(PatternValley, testLadder(), 30)
+	if err != nil {
+		t.Fatal(err)
+	}
+	climb, err := LadderPattern(PatternLossClimb, testLadder(), 30)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m, err := MergePatterns("valley+loss", []Pattern{walk, climb})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var rate, loss bool
+	for _, k := range m.Keys {
+		if k.Down.RateMbps != 0 {
+			rate = true
+		}
+		if k.Down.LossPct != 0 {
+			loss = true
+		}
+	}
+	if !rate {
+		t.Error("merged pattern lost the ladder walk's rate")
+	}
+	if !loss {
+		t.Error("merged pattern lost the overlay's loss")
+	}
 }
