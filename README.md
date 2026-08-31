@@ -52,6 +52,47 @@ is there.
   can be measured without installing anything on the device under test. It
   measures the link **unshaped** — see below.
 
+## How this compares to what already exists
+
+Deliberately degrading a link is a well-worn idea, and most of the tools below
+do it with the same kernel machinery pifi does. What differs is **where the
+impairment sits** — and therefore what has to cooperate for it to work.
+
+| | Runs where | Reaches a TV, console or set-top box | Per device | Cost |
+|---|---|---|---|---|
+| **pifi** | a transparent bridge in the path | yes | yes | a Pi 5 |
+| [Network Link Conditioner](https://nshipster.com/network-link-conditioner/) | on the Mac or iOS device under test | no — macOS and iOS only | it *is* the device | free with Xcode's Additional Tools |
+| `tc` / `netem` by hand | a Linux host, or a router you assemble yourself | only via that router | you write the filters | free |
+| [Toxiproxy](https://github.com/Shopify/toxiproxy) | between an application and its backend | no | per proxy, not per device | free |
+| [Charles](https://www.charlesproxy.com/) / Proxyman throttling | a proxy the device is pointed at | only if it honours a proxy and a custom CA | per proxied device | commercial licence |
+| [pfSense / OPNsense limiters](https://docs.netgate.com/pfsense/en/latest/trafficshaper/limiters.html) | your router | yes | yes, via source/destination-masked limiters | free, plus a box |
+| [Facebook ATC](https://github.com/facebookarchive/augmented-traffic-control) | your gateway | yes | yes, per source IP | free; archived October 2018 |
+| [Netropy](https://apposite-tech.com/products/netropy-network-emulation/) / Linktropy and similar | a rack appliance in the path | yes | per emulated WAN link | thousands to tens of thousands |
+
+**What pifi is actually for.** ATC is the closest prior art in that table, and
+it is instructive: it shaped per source IP and had to *be the gateway*, so
+adopting it meant re-homing the network you wanted to test.
+Every other entry asks for cooperation of some kind. Network Link Conditioner
+needs to run on the device, which rules out anything you cannot install on, and
+conditions your debugging tools along with the app. Toxiproxy needs the
+application pointed at it. Charles needs the device to honour a proxy and trust
+an installed CA, which streaming apps increasingly refuse. pfSense and a
+hand-rolled `tc` router both work, and both make the box a hop with its own
+subnet and its own DHCP. pifi asks for nothing: cable it in, and a device keeps
+its address, its DHCP lease, its mDNS discovery, and its view of the network.
+That is the whole design, and the rest of this README is the consequences of it.
+
+**Where the others are better.** A rack emulator is calibrated, repeatable and
+certified; pifi is explicitly none of those (see [Non-Goals](PRD.md#3-non-goals)).
+Caps here are verified from 0.25 to 50 Mbps and nothing above that has been
+measured. Loss is deliberately not reproducible run to run. Over Wi-Fi the
+conditioning is additive on top of a shared, variable radio baseline rather than
+absolute — a wired emulator gives you a number you can put in a report, and pifi
+does not. If you need a per-application policy on one device rather than a
+per-device one, Toxiproxy or a proxy is the right tool and composes with this
+one. And if the device under test is a Mac you already control, Network Link
+Conditioner is free and takes thirty seconds.
+
 ## Build an image
 
 Needs `curl`, `docker`, `go` and `npm`. On macOS the Docker engine can come from
@@ -142,8 +183,12 @@ kept only as a classifier and per-client byte counter.
 
 Measured on real forwarded traffic: caps from 1.5 to 50 Mbps deliver within
 −4.5 % of target, and that residual is the Ethernet/IP/TCP framing overhead a
-real link of the same speed would also impose. A configured 200 ms one-way
-delay measured 200.6 ms RTT.
+real link of the same speed would also impose. Measured again separately over
+5 GHz at 0.25, 0.5, 1, 2 and 4 Mbps, from both ends at once: the kernel's own
+class counters read the configured rate exactly, and a client counting TCP
+payload sees 0.943–0.952 of it — the same framing, from the other side of it.
+**Uplink is untested at any rate.** A configured 200 ms one-way delay measured
+200.6 ms RTT.
 
 Policies are keyed by **MAC**, not IP, so they survive a DHCP renewal, a reboot,
 and a client roaming between the wireless and wired ports.
