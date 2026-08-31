@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue';
 import type { Client, Shape, Series, ChartPrefs, Pattern } from '@/types';
-import { CLEAN, DEVELOPER, PRESETS, SUSTAINED_SEC, ntopngUrl, patternFromPolicy } from '@/types';
+import { CLEAN, DEVELOPER, PRESETS, ntopngUrl, patternFromPolicy } from '@/types';
 import ShapeSliders from './ShapeSliders.vue';
 import SubClasses from './SubClasses.vue';
 import LadderPanel from './LadderPanel.vue';
@@ -49,7 +49,7 @@ const chartProps = computed(() => ({
   yManual: props.chart.yManual,
   showLive: props.chart.showLive,
   showSustained: props.chart.showSustained,
-  sustainedSec: SUSTAINED_SEC,
+  sustainedSec: props.chart.sustainedSec,
 }));
 
 /**

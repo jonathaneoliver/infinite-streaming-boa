@@ -3,7 +3,7 @@ import { computed, onUnmounted, provide, ref, watch } from 'vue';
 import { useSnapshot } from '@/composables/useSnapshot';
 import { useDevice } from '@/composables/useDevice';
 import type { Client, Shape, ChartPrefs, SortMode, YMode, Pattern } from '@/types';
-import { ntopngUrl, sortClients } from '@/types';
+import { SUSTAINED_SEC, ntopngUrl, sortClients } from '@/types';
 import ClientCard from '@/components/ClientCard.vue';
 import ChartToolbar from '@/components/ChartToolbar.vue';
 
@@ -138,7 +138,7 @@ const CHART_DEFAULTS: ChartPrefs = {
   rangeSec: 300, yMode: 'auto', yManual: 10,
   // Both on by default: the live trace is the record, and the mean is the
   // answer to the question most often being asked of it.
-  showLive: true, showSustained: true,
+  showLive: true, showSustained: true, sustainedSec: SUSTAINED_SEC,
   // Off by default: the taller plot costs how many devices are visible at once,
   // which is the more common need.
   tallCharts: false,
@@ -233,7 +233,8 @@ onUnmounted(() => window.clearInterval(ticker));
       :bucket-ms="bucketMs" :sort-mode="sortMode"
       @sort-mode="(v: SortMode) => (sortMode = v)"
       :show-live="chart.showLive" :show-sustained="chart.showSustained"
-      :tall-charts="chart.tallCharts"
+      :tall-charts="chart.tallCharts" :sustained-sec="chart.sustainedSec"
+      @sustained-sec="(v: number) => (chart = { ...chart, sustainedSec: v })"
       @tall-charts="(v: boolean) => (chart = { ...chart, tallCharts: v })"
       @range="(v: number) => (chart = { ...chart, rangeSec: v })"
       @y-mode="(v: YMode) => (chart = { ...chart, yMode: v })"

@@ -12,7 +12,7 @@
  * comparable at a glance. Per-device ranges would make each card readable on
  * its own and the page as a whole meaningless.
  */
-import { RANGES, SORT_MODES, SUSTAINED_SEC, type SortMode, type YMode }
+import { RANGES, SORT_MODES, SUSTAINED_CHOICES, type SortMode, type YMode }
   from '@/types';
 
 const props = defineProps<{
@@ -27,6 +27,8 @@ const props = defineProps<{
   sortMode: SortMode;
   /** Expanded charts drawn at double height. */
   tallCharts: boolean;
+  /** Trailing window for the sustained mean, in seconds. */
+  sustainedSec: number;
 }>();
 
 const emit = defineEmits<{
@@ -37,6 +39,7 @@ const emit = defineEmits<{
   (e: 'show-sustained', v: boolean): void;
   (e: 'sort-mode', m: SortMode): void;
   (e: 'tall-charts', v: boolean): void;
+  (e: 'sustained-sec', v: number): void;
 }>();
 
 /**
@@ -61,8 +64,8 @@ const SERIES = [
   },
   {
     key: 'sustained' as const,
-    label: `${SUSTAINED_SEC}s mean`,
-    title: `Bytes delivered over the trailing ${SUSTAINED_SEC} seconds, divided by that time. What the device is actually sustaining across segment fetches.`,
+    label: 'mean',
+    title: 'Bytes delivered over the trailing window, divided by that time. What the device is actually sustaining across segment fetches.',
   },
 ];
 
@@ -72,6 +75,8 @@ function toggle(key: 'live' | 'sustained') {
 }
 const on = (key: 'live' | 'sustained') =>
   key === 'live' ? props.showLive : props.showSustained;
+const seriesLabel = (key: 'live' | 'sustained') =>
+  key === 'sustained' ? `${props.sustainedSec}s mean` : 'live';
 
 const MODES: { v: YMode; label: string; title: string }[] = [
   { v: 'auto', label: 'auto', title: 'Scale to the traffic, including the cap' },
@@ -136,6 +141,16 @@ function onManual(e: Event) {
       @click="emit('tall-charts', !tallCharts)"
     >tall</button>
 
+    <span class="lbl">mean over</span>
+    <div class="seg" role="group" aria-label="Window for the sustained mean">
+      <button
+        v-for="c in SUSTAINED_CHOICES" :key="c.v"
+        class="seg-btn" :class="{ on: sustainedSec === c.v }"
+        :aria-pressed="sustainedSec === c.v" :title="c.title"
+        @click="emit('sustained-sec', c.v)"
+      >{{ c.label }}</button>
+    </div>
+
     <span class="lbl">series</span>
     <div class="legend" role="group" aria-label="Series shown">
       <button
@@ -151,7 +166,7 @@ function onManual(e: Event) {
             :opacity="s.key === 'sustained' ? 1 : 0.55"
           />
         </svg>
-        {{ s.label }}
+        {{ seriesLabel(s.key) }}
       </button>
     </div>
 
