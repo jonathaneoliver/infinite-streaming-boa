@@ -223,3 +223,113 @@ func TestConfigExportOmitsBuiltinsAndImportRefusesThem(t *testing.T) {
 		t.Fatal("import accepted a built-in name")
 	}
 }
+
+// Stretching changes time and nothing else. Touching the rates would ask a
+// different question and silently invalidate the ladder the pattern came from.
+func TestStretchScalesTimeAndLeavesRatesAlone(t *testing.T) {
+	base, _ := LadderPattern(PatternValley, testLadder(), 30)
+	got, err := StretchPattern(base, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.DurSec() != base.DurSec()*2 {
+		t.Fatalf("duration %v, want %v", got.DurSec(), base.DurSec()*2)
+	}
+	eq(t, rates(got), rates(base))
+	for i := range got.Keys {
+		if got.Keys[i].AtSec != base.Keys[i].AtSec*2 {
+			t.Fatalf("key %d at %v, want %v",
+				i, got.Keys[i].AtSec, base.Keys[i].AtSec*2)
+		}
+	}
+	if got.Name != base.Name || got.Loop != base.Loop {
+		t.Fatal("stretching changed the pattern's identity")
+	}
+}
+
+// Shape is preserved, not flattened. An authored timeline whose steps are
+// uneven on purpose must stay uneven -- imposing one duration on every step
+// would destroy the thing that was authored.
+func TestStretchPreservesUnevenSpacing(t *testing.T) {
+	p := Pattern{Name: "authored", Keys: []Keyframe{
+		kf(0, 8, EaseHold), kf(20, 2, EaseHold), kf(25, 8, EaseHold)}}
+	got, err := StretchPattern(p, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []float64{0, 40, 50}
+	for i, w := range want {
+		if got.Keys[i].AtSec != w {
+			t.Fatalf("key %d at %v, want %v", i, got.Keys[i].AtSec, w)
+		}
+	}
+}
+
+// Every stretched keyframe must still land on the half-second grid, because
+// throughput is sampled once a second and a finer transition cannot be seen.
+func TestStretchStaysOnTheHalfSecondGrid(t *testing.T) {
+	base, _ := LadderPattern(PatternPyramid, testLadder(), 30)
+	for _, f := range []float64{0.35, 0.5, 1.1, 1.7, 3.3} {
+		got, err := StretchPattern(base, f)
+		if err != nil {
+			t.Fatalf("%gx: %v", f, err)
+		}
+		if err := validPattern(got); err != nil {
+			t.Fatalf("%gx produced an invalid pattern: %v", f, err)
+		}
+	}
+}
+
+// A stretch that collapses two steps into one instant, or runs past what the
+// engine will play, is refused with a reason naming the slider -- not with the
+// validator's message about grids, which says nothing about the cause.
+func TestStretchRefusesWhatItCannotPlay(t *testing.T) {
+	base, _ := LadderPattern(PatternValley, testLadder(), 30)
+	if _, err := StretchPattern(base, 0.001); err == nil {
+		t.Fatal("accepted a stretch below the minimum")
+	}
+	if _, err := StretchPattern(base, 100); err == nil {
+		t.Fatal("accepted a stretch above the maximum")
+	}
+	if _, err := StretchPattern(base, 19); err != nil {
+		t.Fatalf("refused a stretch that fits: %v", err)
+	}
+	long := Pattern{Name: "long", Keys: []Keyframe{
+		kf(0, 8, EaseHold), kf(3000, 2, EaseHold)}}
+	if _, err := StretchPattern(long, 2); err == nil {
+		t.Fatal("accepted a stretch past the maximum pattern length")
+	}
+	tight := Pattern{Name: "tight", Keys: []Keyframe{
+		kf(0, 8, EaseHold), kf(0.5, 2, EaseHold), kf(1, 8, EaseHold)}}
+	if _, err := StretchPattern(tight, 0.2); err == nil {
+		t.Fatal("accepted a stretch that collapses adjacent keyframes")
+	}
+}
+
+// A stretch of 1 is the identity, and an absent one must behave as 1 rather
+// than as zero.
+func TestStretchOfOneOrZeroIsTheIdentity(t *testing.T) {
+	base, _ := LadderPattern(PatternValley, testLadder(), 30)
+	for _, f := range []float64{1, 0} {
+		got, err := StretchPattern(base, f)
+		if err != nil {
+			t.Fatalf("%gx: %v", f, err)
+		}
+		if got.DurSec() != base.DurSec() {
+			t.Fatalf("%gx changed the duration to %v", f, got.DurSec())
+		}
+	}
+}
+
+// Seconds-per-step must be recoverable from a stored pattern, so a slider
+// labelled in seconds shows the right value after a reload.
+func TestGeneratedDwellIsRecoverableFromTheStoredPattern(t *testing.T) {
+	base, _ := LadderPattern(PatternPyramid, testLadder(), 30)
+	got, err := StretchPattern(base, 2.5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dwell := got.DurSec() / float64(len(got.Keys)-1); dwell != 75 {
+		t.Fatalf("recovered dwell %v, want 75", dwell)
+	}
+}
