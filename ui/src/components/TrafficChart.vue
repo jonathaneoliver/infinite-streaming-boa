@@ -200,8 +200,15 @@ const fmt = (v: number) => (v >= 100 ? v.toFixed(0) : v >= 10 ? v.toFixed(1) : v
  * quarters of 1.5, which would otherwise put 3.33 and 0.38 on the axis and make
  * the grid harder to read than having fewer lines. It is the same reasoning as
  * the LADDER above, applied to the interval instead of the maximum.
+ *
+ * 42px targets five lines at the default height and nine to eleven when tall --
+ * the tall grid being the short one with its midpoints filled in. It is a
+ * target and not a guarantee, because roundness wins: eighths of 1 are 0.125,
+ * which this axis would print as 0.13, so those maxima take tenths instead and
+ * land on eleven. Widening the labels to three decimals would buy the exact
+ * count at the cost of the gutter every chart on the page shares.
  */
-const TICK_SPACING_PX = 58;
+const TICK_SPACING_PX = 42;
 const tickDivisions = computed(() => {
   const m = yMax.value;
   if (!(m > 0)) return 2;
