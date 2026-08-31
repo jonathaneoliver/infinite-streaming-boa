@@ -479,7 +479,6 @@ func (e *Engine) tick() {
 			// Either family is enough to attach a filter to.
 			Present: a.present, Shapeable: ip != "" || len(v6) > 0,
 			Station: stations[mac], Policy: pol, LastSeen: now.UnixMilli(),
-			RTTAddedMs:  pol.Down.DelayMs + pol.Up.DelayMs,
 			SubCounters: map[string]Counters{},
 		}
 		clients = append(clients, c)

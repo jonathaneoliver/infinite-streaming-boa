@@ -521,14 +521,6 @@ function fmtBytes(n: number): string {
     />
 
     <div class="card-foot">
-      <!-- Round-trip is computed here rather than left to the reader: delay is
-           configured per direction, and forgetting that it applies twice is the
-           single most misread control in a bidirectional conditioner. -->
-      <span class="rtt">
-        added round-trip
-        <b class="num">{{ client.rtt_added_ms.toFixed(0) }} ms</b>
-        <span class="meta"> ({{ client.policy.down.delay_ms }} down + {{ client.policy.up.delay_ms }} up)</span>
-      </span>
       <span class="spacer"></span>
       <button class="ghost" @click="open = !open">
         {{ open ? 'hide' : 'show' }} counters &amp; rules

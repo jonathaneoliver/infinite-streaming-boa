@@ -229,15 +229,6 @@ input[type='range']::-moz-range-thumb {
   flex-wrap: wrap;
   align-items: center;
 }
-.rtt {
-  font-size: 13px;
-  padding: 3px 10px;
-  border-radius: 5px;
-  border: 1px solid var(--line);
-  background: var(--bg);
-}
-.rtt b { color: var(--ink); }
-
 table.counters { width: 100%; border-collapse: collapse; font-size: 12px; }
 table.counters th {
   text-align: right;

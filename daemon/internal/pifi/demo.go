@@ -212,7 +212,6 @@ func (e *Engine) demoTick() {
 			MAC: d.mac, IP: d.ip, IPv6: v6, Label: label, Medium: d.medium, Port: d.port,
 			Present: d.present, Shapeable: d.ip != "" && d.present,
 			Policy: pol, LastSeen: now.UnixMilli(),
-			RTTAddedMs:  pol.Down.DelayMs + pol.Up.DelayMs,
 			SubCounters: map[string]Counters{},
 		}
 
