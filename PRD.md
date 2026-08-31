@@ -125,10 +125,15 @@ device card. Optional: the image builds without it.
   Where it does not, the control is disabled and says why; loss is never
   silently downgraded to uniform, because a test run against the wrong loss
   model gives a confident wrong answer.
-- **Loss is the one impairment that does not repeat.** Rate, delay and a
-  pattern's schedule are deterministic; loss is a random process with no seed
-  the kernel exposes, so two runs of the same configuration lose different
-  packets. It is reproducible only statistically, over enough packets.
+- **Loss does not repeat between runs, because pifi does not ask it to.** Rate,
+  delay and a pattern's schedule are deterministic; loss is a random process, and
+  two runs of the same configuration lose different packets. Today it is
+  reproducible only statistically, over enough packets.
+  That is a choice, not a limitation of the kernel. netem takes a `seed`
+  (iproute2 6.15, kernel 6.18 — `tc ... netem [ seed SEED ]`, and it reports the
+  seed it used on every qdisc it installs). Setting one would make a lossy run
+  repeat packet for packet, which for a box whose purpose is reproducing
+  conditions on demand is worth having. It is not wired up yet.
 - Sub-classes condition part of a device's traffic, matched by destination port,
   network and protocol, evaluated before the device default.
 - Writes carry the revision the operator was looking at; a concurrent edit to
