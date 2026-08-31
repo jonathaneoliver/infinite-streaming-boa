@@ -493,6 +493,9 @@ function fmtBytes(n: number): string {
          anywhere else would separate the control from the thing it edits. -->
     <PatternPanel
       :pattern="pattern"
+      :mac="client.mac"
+      :rev="client.policy?.rev ?? 0"
+      :ladders="client.policy?.ladders ?? []"
       :run="client.pattern_run"
       :selected="patSelected"
       :can-play="patBlocked === ''"
