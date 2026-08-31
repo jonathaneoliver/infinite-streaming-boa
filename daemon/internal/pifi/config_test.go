@@ -308,3 +308,42 @@ func TestGlobalLadderPrefersTheBoxOverADevice(t *testing.T) {
 		t.Errorf("migration path broken: got %q", got.Service)
 	}
 }
+
+// Importing a pattern library in merge mode must not destroy the one already
+// there. It used to: the library was replaced wholesale in both modes, which
+// was defensible while this document was a whole-box backup and stopped being
+// so the moment a patterns-only document became the way to send someone a
+// pattern. Replace mode still makes the library match the document.
+func TestPatternImportModeIsHonoured(t *testing.T) {
+	two := []Keyframe{kf(0, 8, EaseHold), kf(30, 2, EaseHold)}
+	mine := Pattern{Name: "mine", Keys: two, Loop: true}
+	theirs := Pattern{Name: "theirs", Keys: two, Loop: true}
+
+	dir := t.TempDir()
+	st := NewPatternStore(filepath.Join(dir, "patterns.json"))
+	if err := st.Put(mine); err != nil {
+		t.Fatal(err)
+	}
+	// Merge: theirs arrives, mine survives.
+	if err := st.Put(theirs); err != nil {
+		t.Fatal(err)
+	}
+	names := map[string]bool{}
+	for _, p := range st.All() {
+		names[p.Name] = true
+	}
+	if !names["mine"] || !names["theirs"] {
+		t.Fatalf("merge lost a pattern: %v", names)
+	}
+	// Replace: the library becomes exactly the document.
+	if err := st.ReplaceAll([]Pattern{theirs}); err != nil {
+		t.Fatal(err)
+	}
+	names = map[string]bool{}
+	for _, p := range st.All() {
+		names[p.Name] = true
+	}
+	if names["mine"] || !names["theirs"] {
+		t.Fatalf("replace did not make the library match: %v", names)
+	}
+}

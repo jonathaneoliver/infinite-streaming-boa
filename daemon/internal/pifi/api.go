@@ -1130,14 +1130,31 @@ func (a *API) postConfig(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	// The library is replaced wholesale whenever the document carries one. It
-	// is box-level rather than per-device, so there is no subset of it that a
-	// merge could sensibly leave alone -- and a document with no patterns key
-	// at all is one exported before the library existed, which must not wipe it.
+	// Patterns follow the same rule as devices: merge upserts by name and
+	// leaves the rest alone, replace makes the library match the document.
+	//
+	// It used to replace wholesale in both modes, on the grounds that a
+	// box-level library has no subset a merge could sensibly leave alone. That
+	// was true while this document was a whole-box backup. It stopped being
+	// true when a document carrying only patterns became the way to send
+	// someone a pattern -- at which point importing a colleague's library
+	// silently destroyed your own, and the word on the button said "merge".
+	//
+	// A document with no patterns key at all is one exported before the library
+	// existed, and must not wipe it in either mode.
 	if in.Patterns != nil {
-		if err := a.e.PatternStore().ReplaceAll(in.Patterns); err != nil {
-			writeErr(w, http.StatusInternalServerError, err.Error())
-			return
+		if mode == ImportReplace {
+			if err := a.e.PatternStore().ReplaceAll(in.Patterns); err != nil {
+				writeErr(w, http.StatusInternalServerError, err.Error())
+				return
+			}
+		} else {
+			for _, pat := range in.Patterns {
+				if err := a.e.PatternStore().Put(pat); err != nil {
+					writeErr(w, http.StatusBadRequest, "pattern "+pat.Name+": "+err.Error())
+					return
+				}
+			}
 		}
 	}
 	// The ladder likewise: one per box, so there is nothing to merge. Applied
