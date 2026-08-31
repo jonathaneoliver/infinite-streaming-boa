@@ -466,6 +466,13 @@ const LANE_START_CEIL: Record<LaneKey, number> = {
   delay_ms: 200,
   jitter_ms: 200,
   loss_pct: 5,
+  // Well under each slider's maximum, for the same reason the others are: this
+  // is the scale a lane is dragged against before it holds anything, so a
+  // ceiling at the top of the range would put every useful value in the bottom
+  // tenth of the lane. Reorder is worth having in whole percents; corrupt bites
+  // at a fraction of one.
+  reorder_pct: 25,
+  corrupt_pct: 5,
 };
 
 /** Which keyframe holds the value at this x. */
@@ -719,12 +726,31 @@ function useTemplate(name: string) {
  * One direction at a time. Eight lanes at once is not a chart anyone reads, and
  * the downlink is what nearly every test here is about.
  */
-type LaneKey = 'rate_mbps' | 'delay_ms' | 'jitter_ms' | 'loss_pct';
-const LANES: { key: LaneKey; label: string; unit: string }[] = [
+type LaneKey =
+  | 'rate_mbps' | 'delay_ms' | 'jitter_ms' | 'loss_pct'
+  | 'reorder_pct' | 'corrupt_pct';
+
+const CORE_LANES: { key: LaneKey; label: string; unit: string }[] = [
   { key: 'rate_mbps', label: 'rate', unit: 'Mbps' },
   { key: 'delay_ms', label: 'delay', unit: 'ms' },
   { key: 'jitter_ms', label: 'jitter', unit: 'ms' },
   { key: 'loss_pct', label: 'loss', unit: '%' },
+];
+
+/**
+ * The second-tier impairments get a lane only when the pattern uses one.
+ *
+ * Same rule as the sliders, for the same reason as the note above about eight
+ * lanes: a timeline that always drew seven would be unreadable for the patterns
+ * that vary one thing, which is most of them. A lane that is flat at zero for
+ * the whole run says nothing and costs a quarter of the panel.
+ *
+ * Derived from the keyframes rather than from a setting, so a pattern that uses
+ * reorder always shows reorder, in every session and for whoever opens it.
+ */
+const EXTRA_LANES: { key: LaneKey; label: string; unit: string }[] = [
+  { key: 'reorder_pct', label: 'reorder', unit: '%' },
+  { key: 'corrupt_pct', label: 'corrupt', unit: '%' },
 ];
 
 const dir = ref<'down' | 'up'>('down');
@@ -737,6 +763,16 @@ function valueAt(k: Keyframe, lane: LaneKey): number {
 function laneMax(lane: LaneKey): number {
   return keys.value.reduce((m, k) => Math.max(m, valueAt(k, lane)), 0);
 }
+
+// A second-tier lane earns its place by being used in EITHER direction: the
+// panel shows one direction at a time, and a lane appearing when you switch
+// direction would read as the interface losing track of the pattern.
+const LANES = computed(() => [
+  ...CORE_LANES,
+  ...EXTRA_LANES.filter((l) =>
+    keys.value.some((k) => k.down[l.key] > 0 || k.up[l.key] > 0),
+  ),
+]);
 
 /**
  * Where a value sits in its lane, 0 at the floor and 1 at the ceiling.

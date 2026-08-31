@@ -9,7 +9,7 @@
  */
 import { computed, ref, watch } from 'vue';
 import type { Shape } from '@/types';
-import { posToRate, rateToPos } from '@/types';
+import { EXTRA_IMPAIRMENTS, hasExtras, posToRate, rateToPos } from '@/types';
 
 const props = defineProps<{
   shape: Shape;
@@ -82,6 +82,33 @@ const jitterVal = computed(() => Math.min(v('jitter_ms'), jitterMax.value));
  * hover, where it costs nothing.
  */
 const jitterText = computed(() => `± ${jitterVal.value} ms`);
+
+/**
+ * The second tier opens itself.
+ *
+ * Held open by an explicit click, or by anything inside being in force. The
+ * second half is the important half: a section that closes over a live
+ * impairment would be conditioning the traffic with nothing on screen saying
+ * so, which is the whole objection to hiding controls behind a preference.
+ *
+ * So the collapsed header does not say "3 more" -- it names what is set. Empty
+ * is the only state in which this is out of sight.
+ */
+const opened = ref(false);
+const extrasActive = computed(() => hasExtras({ ...props.shape, ...local.value } as Shape));
+const extrasOpen = computed(() => opened.value || extrasActive.value);
+
+const extrasSummary = computed(() =>
+  EXTRA_IMPAIRMENTS.filter((e) => v(e.key) > 0)
+    .map((e) => `${e.label} ${v(e.key)}${e.unit}`)
+    .join(' · '),
+);
+
+// netem rejects `reorder` outright when there is no delay to reorder against,
+// and a rejected command installs no qdisc at all -- so this would not merely
+// fail to reorder, it would drop the device's rate and loss with it. Disabled
+// rather than left to fail, with the reason on the control.
+const reorderBlocked = computed(() => v('delay_ms') <= 0);
 </script>
 
 <template>
@@ -132,6 +159,39 @@ const jitterText = computed(() => `± ${jitterVal.value} ms`);
       />
       <span class="val num">{{ v('loss_pct').toFixed(1) }} %</span>
     </div>
+
+    <!-- The long tail. Out of the way until it is doing something, and then it
+         stays put: `extrasOpen` is true whenever anything inside is non-zero,
+         so no impairment can be in force while its control is off screen. -->
+    <button
+      v-if="!extrasOpen" class="more" :disabled="disabled"
+      @click="opened = true"
+    >+ {{ EXTRA_IMPAIRMENTS.map((e) => e.label).join(', ') }}</button>
+
+    <template v-else>
+      <div
+        v-for="e in EXTRA_IMPAIRMENTS" :key="e.key"
+        class="row"
+        :class="{ blocked: e.needsDelay && reorderBlocked }"
+      >
+        <label :title="e.title">{{ e.label }}</label>
+        <input
+          type="range" min="0" :max="e.max" :step="e.step"
+          :value="v(e.key)"
+          :disabled="disabled || (e.needsDelay && reorderBlocked)"
+          @input="set(e.key, +($event.target as HTMLInputElement).value)"
+        />
+        <span
+          v-if="e.needsDelay && reorderBlocked" class="val need"
+          title="netem reorders by letting packets skip the delay queue. With no delay there is no queue, and it refuses the whole rule."
+        >needs delay</span>
+        <span v-else class="val num">{{ v(e.key) }} {{ e.unit }}</span>
+      </div>
+      <button
+        v-if="!extrasActive" class="more" :disabled="disabled"
+        @click="opened = false"
+      >− fewer</button>
+    </template>
   </div>
 </template>
 
@@ -140,4 +200,21 @@ const jitterText = computed(() => `± ${jitterVal.value} ms`);
 /* Dimmed, but the label and the reason stay readable: the row is explaining
    itself, so blanking it would defeat the point of keeping it. */
 .row.off { opacity: 0.55; }
+
+/* Quiet: this is an affordance, not a control. It should read as the edge of
+   the panel rather than competing with the sliders above it. */
+.more {
+  align-self: start;
+  padding: 1px 0;
+  font: inherit; font-size: 11px;
+  color: var(--ink-faint);
+  background: none; border: 0;
+  cursor: pointer;
+}
+.more:hover { color: var(--ink-dim); }
+
+/* A blocked row stays legible rather than greying to nothing: the reason it is
+   unavailable is the useful part, and it is written where the value goes. */
+.row.blocked label { color: var(--ink-faint); }
+.val.need { font-size: 10px; color: var(--warn); white-space: nowrap; }
 </style>

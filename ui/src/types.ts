@@ -7,6 +7,53 @@ export interface Shape {
   delay_ms: number;
   jitter_ms: number;
   loss_pct: number;
+  reorder_pct: number;
+  corrupt_pct: number;
+}
+
+/**
+ * The impairments kept out of the way until they are used.
+ *
+ * netem's `duplicate` is absent on purpose. It cannot coexist with any other
+ * netem qdisc on the same interface, in either order, so one device using it
+ * would make every other device on that port unconditionable -- see the note in
+ * the daemon's Shape.
+ *
+ * Not a preference and not a menu: which controls are on screen is derived from
+ * whether they are doing anything. A device with none of these set shows four
+ * sliders; set one and it stays visible for as long as it is in force. So the
+ * page is quiet by default and nothing conditioning the traffic can ever be
+ * hidden — the failure a "show these controls" checkbox list would invite.
+ *
+ * They are second-tier because the traffic here rarely needs them, not because
+ * they are lesser: rate and delay are what this box is for, loss and jitter are
+ * the common companions, and these three are the long tail.
+ */
+export const EXTRA_IMPAIRMENTS = [
+  {
+    key: 'reorder_pct' as const,
+    label: 'reorder',
+    unit: '%',
+    max: 50,
+    step: 0.5,
+    /** netem cannot reorder without a delay queue to skip. */
+    needsDelay: true,
+    title: 'Packets released ahead of the delay queue, arriving out of order. TCP treats this very differently from loss.',
+  },
+  {
+    key: 'corrupt_pct' as const,
+    label: 'corrupt',
+    unit: '%',
+    max: 20,
+    step: 0.1,
+    needsDelay: false,
+    title: 'Packets given a bit error. The receiver discards them on checksum, so the link is consumed but nothing arrives — unlike loss, where nothing is sent.',
+  },
+];
+
+/** Whether any second-tier impairment is in force in this shape. */
+export function hasExtras(s: Shape): boolean {
+  return EXTRA_IMPAIRMENTS.some((e) => (s[e.key] ?? 0) > 0);
 }
 
 export interface Match {
@@ -276,6 +323,8 @@ export const CLEAN: Shape = {
   delay_ms: 0,
   jitter_ms: 0,
   loss_pct: 0,
+  reorder_pct: 0,
+  corrupt_pct: 0,
 };
 
 // Named starting points. These are approximations of real-world links, not
@@ -293,44 +342,44 @@ export const PRESETS: Preset[] = [
   {
     name: 'Fibre',
     note: '100 Mbps, 8 ms',
-    down: { rate_mbps: 100, delay_ms: 4, jitter_ms: 1, loss_pct: 0 },
-    up: { rate_mbps: 40, delay_ms: 4, jitter_ms: 1, loss_pct: 0 },
+    down: { ...CLEAN, rate_mbps: 100, delay_ms: 4, jitter_ms: 1, loss_pct: 0 },
+    up: { ...CLEAN, rate_mbps: 40, delay_ms: 4, jitter_ms: 1, loss_pct: 0 },
   },
   {
     name: 'Cable',
     note: '30 Mbps, 30 ms',
-    down: { rate_mbps: 30, delay_ms: 15, jitter_ms: 4, loss_pct: 0.05 },
-    up: { rate_mbps: 6, delay_ms: 15, jitter_ms: 4, loss_pct: 0.05 },
+    down: { ...CLEAN, rate_mbps: 30, delay_ms: 15, jitter_ms: 4, loss_pct: 0.05 },
+    up: { ...CLEAN, rate_mbps: 6, delay_ms: 15, jitter_ms: 4, loss_pct: 0.05 },
   },
   {
     name: '4G good',
     note: '20 Mbps, 50 ms',
-    down: { rate_mbps: 20, delay_ms: 25, jitter_ms: 8, loss_pct: 0.1 },
-    up: { rate_mbps: 8, delay_ms: 25, jitter_ms: 8, loss_pct: 0.1 },
+    down: { ...CLEAN, rate_mbps: 20, delay_ms: 25, jitter_ms: 8, loss_pct: 0.1 },
+    up: { ...CLEAN, rate_mbps: 8, delay_ms: 25, jitter_ms: 8, loss_pct: 0.1 },
   },
   {
     name: '4G weak',
     note: '3 Mbps, 120 ms, 1%',
-    down: { rate_mbps: 3, delay_ms: 60, jitter_ms: 25, loss_pct: 1 },
-    up: { rate_mbps: 1, delay_ms: 60, jitter_ms: 25, loss_pct: 1 },
+    down: { ...CLEAN, rate_mbps: 3, delay_ms: 60, jitter_ms: 25, loss_pct: 1 },
+    up: { ...CLEAN, rate_mbps: 1, delay_ms: 60, jitter_ms: 25, loss_pct: 1 },
   },
   {
     name: '3G',
     note: '1.5 Mbps, 200 ms, 1.5%',
-    down: { rate_mbps: 1.5, delay_ms: 100, jitter_ms: 40, loss_pct: 1.5 },
-    up: { rate_mbps: 0.5, delay_ms: 100, jitter_ms: 40, loss_pct: 1.5 },
+    down: { ...CLEAN, rate_mbps: 1.5, delay_ms: 100, jitter_ms: 40, loss_pct: 1.5 },
+    up: { ...CLEAN, rate_mbps: 0.5, delay_ms: 100, jitter_ms: 40, loss_pct: 1.5 },
   },
   {
     name: 'Satellite',
     note: '25 Mbps, 600 ms',
-    down: { rate_mbps: 25, delay_ms: 300, jitter_ms: 20, loss_pct: 0.2 },
-    up: { rate_mbps: 3, delay_ms: 300, jitter_ms: 20, loss_pct: 0.2 },
+    down: { ...CLEAN, rate_mbps: 25, delay_ms: 300, jitter_ms: 20, loss_pct: 0.2 },
+    up: { ...CLEAN, rate_mbps: 3, delay_ms: 300, jitter_ms: 20, loss_pct: 0.2 },
   },
   {
     name: 'Lossy',
     note: '10 Mbps, 5% loss',
-    down: { rate_mbps: 10, delay_ms: 20, jitter_ms: 10, loss_pct: 5 },
-    up: { rate_mbps: 5, delay_ms: 20, jitter_ms: 10, loss_pct: 5 },
+    down: { ...CLEAN, rate_mbps: 10, delay_ms: 20, jitter_ms: 10, loss_pct: 5 },
+    up: { ...CLEAN, rate_mbps: 5, delay_ms: 20, jitter_ms: 10, loss_pct: 5 },
   },
 ];
 
@@ -480,12 +529,12 @@ export const PATTERN_TEMPLATES: PatternTemplate[] = [
       name: 'tunnel',
       loop: true,
       keys: [
-        at(0, { rate_mbps: 25 }),
-        at(30, { rate_mbps: 25 }),
-        at(31, { rate_mbps: 0.2, delay_ms: 400, jitter_ms: 200, loss_pct: 15 }),
-        at(46, { rate_mbps: 0.2, delay_ms: 400, jitter_ms: 200, loss_pct: 15 }),
-        at(47, { rate_mbps: 25 }),
-        at(70, { rate_mbps: 25 }),
+        at(0, { ...CLEAN, rate_mbps: 25 }),
+        at(30, { ...CLEAN, rate_mbps: 25 }),
+        at(31, { ...CLEAN, rate_mbps: 0.2, delay_ms: 400, jitter_ms: 200, loss_pct: 15 }),
+        at(46, { ...CLEAN, rate_mbps: 0.2, delay_ms: 400, jitter_ms: 200, loss_pct: 15 }),
+        at(47, { ...CLEAN, rate_mbps: 25 }),
+        at(70, { ...CLEAN, rate_mbps: 25 }),
       ],
     }),
   },
@@ -496,9 +545,9 @@ export const PATTERN_TEMPLATES: PatternTemplate[] = [
       name: 'congested cell',
       loop: true,
       keys: [
-        at(0, { rate_mbps: 20, delay_ms: 30, jitter_ms: 10 }),
-        at(45, { rate_mbps: 2, delay_ms: 120, jitter_ms: 60, loss_pct: 1 }),
-        at(46, { rate_mbps: 20, delay_ms: 30, jitter_ms: 10 }),
+        at(0, { ...CLEAN, rate_mbps: 20, delay_ms: 30, jitter_ms: 10 }),
+        at(45, { ...CLEAN, rate_mbps: 2, delay_ms: 120, jitter_ms: 60, loss_pct: 1 }),
+        at(46, { ...CLEAN, rate_mbps: 20, delay_ms: 30, jitter_ms: 10 }),
       ],
     }),
   },
@@ -509,11 +558,11 @@ export const PATTERN_TEMPLATES: PatternTemplate[] = [
       name: 'handover',
       loop: true,
       keys: [
-        at(0, { rate_mbps: 15, delay_ms: 30, jitter_ms: 5 }),
-        at(25, { rate_mbps: 15, delay_ms: 30, jitter_ms: 5 }),
-        at(26, { rate_mbps: 0.5, delay_ms: 600, jitter_ms: 300, loss_pct: 5 }),
-        at(29, { rate_mbps: 6, delay_ms: 80, jitter_ms: 20 }),
-        at(55, { rate_mbps: 6, delay_ms: 80, jitter_ms: 20 }),
+        at(0, { ...CLEAN, rate_mbps: 15, delay_ms: 30, jitter_ms: 5 }),
+        at(25, { ...CLEAN, rate_mbps: 15, delay_ms: 30, jitter_ms: 5 }),
+        at(26, { ...CLEAN, rate_mbps: 0.5, delay_ms: 600, jitter_ms: 300, loss_pct: 5 }),
+        at(29, { ...CLEAN, rate_mbps: 6, delay_ms: 80, jitter_ms: 20 }),
+        at(55, { ...CLEAN, rate_mbps: 6, delay_ms: 80, jitter_ms: 20 }),
       ],
     }),
   },

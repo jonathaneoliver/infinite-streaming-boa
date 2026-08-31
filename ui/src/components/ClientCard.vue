@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue';
 import type { Client, Shape, Series, ChartPrefs, Pattern } from '@/types';
-import { PRESETS, SUSTAINED_SEC, ntopngUrl, patternFromPolicy } from '@/types';
+import { CLEAN, PRESETS, SUSTAINED_SEC, ntopngUrl, patternFromPolicy } from '@/types';
 import ShapeSliders from './ShapeSliders.vue';
 import SubClasses from './SubClasses.vue';
 import LadderPanel from './LadderPanel.vue';
@@ -197,7 +197,7 @@ const patBlocked = computed(() => {
  */
 const downShape = computed<Shape>(() => {
   if (sweeping.value) {
-    return { rate_mbps: downCap.value, delay_ms: 0, jitter_ms: 0, loss_pct: 0 };
+    return { ...CLEAN, rate_mbps: downCap.value };
   }
   if (playing.value) return patRun.value!.down;
   return editKey.value ? editKey.value.down : props.client.policy.down;

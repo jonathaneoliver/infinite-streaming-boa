@@ -34,12 +34,45 @@ type Shape struct {
 	JitterMs float64 `json:"jitter_ms"`
 	// LossPct is random packet loss, 0-100.
 	LossPct float64 `json:"loss_pct"`
+
+	// The two below are the less common impairments. They are separated in the
+	// interface rather than in the model: netem treats all six alike, and a
+	// device that has one set is as conditioned as one that has any other.
+	//
+	// netem's `duplicate` is deliberately NOT here, though it is the obvious
+	// third and the issue asking for these assumed it would be. It cannot
+	// coexist with any other netem qdisc on the same interface -- "cannot mix
+	// duplicating netems with other netems in tree" -- and the refusal is
+	// symmetric: a device with duplicate set makes every OTHER device on that
+	// port unconditionable, whichever order they are configured in. Measured on
+	// 6.12; accepted alone, refused in both orders with a sibling present.
+	//
+	// That is not a limitation to work around, it is a contradiction of what
+	// this box is: per-client conditioning where one device's policy never
+	// affects another's. So it is left out rather than exposed with a caveat.
+
+	// ReorderPct is the share of packets released immediately instead of
+	// waiting in the delay queue, arriving ahead of packets sent before them.
+	//
+	// It REQUIRES DelayMs > 0. Reordering is implemented by letting a packet
+	// skip the delay queue, so with no queue there is nothing to skip -- and
+	// netem does not ignore the combination, it rejects the whole command:
+	// "reordering not possible without specifying some delay". A rejected
+	// command means NO netem qdisc, so an invalid reorder value would silently
+	// take the device's rate and loss down with it. Verified on 6.12.
+	ReorderPct float64 `json:"reorder_pct"`
+	// CorruptPct is the share of packets given a single-bit error, which fails
+	// the checksum and is discarded by the receiver rather than delivered
+	// damaged. Distinct from loss: the packet is transmitted and consumes the
+	// link, and TCP recovers by a different path than it does from a drop.
+	CorruptPct float64 `json:"corrupt_pct"`
 }
 
 // IsClean reports whether this direction imposes nothing at all, which lets the
 // engine skip building a netem qdisc rather than installing an identity one.
 func (s Shape) IsClean() bool {
-	return s.RateMbps == 0 && s.DelayMs == 0 && s.JitterMs == 0 && s.LossPct == 0
+	return s.RateMbps == 0 && s.DelayMs == 0 && s.JitterMs == 0 && s.LossPct == 0 &&
+		s.ReorderPct == 0 && s.CorruptPct == 0
 }
 
 // Match narrows a sub-class to a subset of a device's traffic. An empty Match
