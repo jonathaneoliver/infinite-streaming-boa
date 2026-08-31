@@ -216,8 +216,17 @@ func snapHalf(sec float64) float64 { return math.Round(sec*2) / 2 }
 // different question and silently invalidate the ladder the pattern was built
 // from.
 func StretchPattern(p Pattern, factor float64) (Pattern, error) {
-	if factor <= 0 {
-		factor = 1
+	// Zero is refused rather than treated as "unset". Collapsing the time axis
+	// to nothing puts every keyframe at the same instant, which is not a fast
+	// pattern -- it is a single constant rate, and that is a policy. Clearing
+	// the pattern and setting a rate already expresses it, honestly and
+	// visibly. Callers pass 1 for "no stretch"; absent must be decided by the
+	// caller, because a float cannot tell absent from zero.
+	if factor == 0 {
+		return Pattern{}, fmt.Errorf(
+			"a stretch of 0 collapses every step into one instant, which is a " +
+				"constant rate rather than a pattern; clear the pattern and " +
+				"set a rate instead")
 	}
 	if factor < minStretch || factor > maxStretch {
 		return Pattern{}, fmt.Errorf("stretch must be between %g and %g",

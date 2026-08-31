@@ -2,6 +2,7 @@ package pifi
 
 import (
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -306,18 +307,34 @@ func TestStretchRefusesWhatItCannotPlay(t *testing.T) {
 	}
 }
 
-// A stretch of 1 is the identity, and an absent one must behave as 1 rather
-// than as zero.
-func TestStretchOfOneOrZeroIsTheIdentity(t *testing.T) {
+// A stretch of 1 is the identity.
+func TestStretchOfOneIsTheIdentity(t *testing.T) {
 	base, _ := LadderPattern(PatternValley, testLadder(), 30)
-	for _, f := range []float64{1, 0} {
-		got, err := StretchPattern(base, f)
-		if err != nil {
-			t.Fatalf("%gx: %v", f, err)
-		}
-		if got.DurSec() != base.DurSec() {
-			t.Fatalf("%gx changed the duration to %v", f, got.DurSec())
-		}
+	got, err := StretchPattern(base, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.DurSec() != base.DurSec() {
+		t.Fatalf("1x changed the duration to %v", got.DurSec())
+	}
+}
+
+// Zero is not "unset" and not a very fast pattern: it puts every keyframe at
+// the same instant, which is a constant rate, which is a policy. Refused with
+// that explanation rather than silently coerced to 1x -- the coercion is the
+// same trap policyPatch uses pointers to avoid, and it would answer a request
+// the operator did not make.
+func TestStretchOfZeroIsRefusedAsAConstant(t *testing.T) {
+	base, _ := LadderPattern(PatternValley, testLadder(), 30)
+	_, err := StretchPattern(base, 0)
+	if err == nil {
+		t.Fatal("a stretch of 0 was accepted")
+	}
+	if !strings.Contains(err.Error(), "constant rate") {
+		t.Fatalf("error does not explain why: %v", err)
+	}
+	if _, err := StretchPattern(base, -2); err == nil {
+		t.Fatal("a negative stretch was accepted")
 	}
 }
 
