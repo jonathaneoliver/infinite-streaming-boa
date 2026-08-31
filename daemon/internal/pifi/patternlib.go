@@ -2,6 +2,7 @@ package pifi
 
 import (
 	"fmt"
+	"math"
 	"sort"
 	"strings"
 )
@@ -182,4 +183,72 @@ func pickLadder(p Policy, service string) (Ladder, bool) {
 		}
 	}
 	return best, ok
+}
+
+// Stretch limits. A pattern that runs longer than the engine will play, or
+// whose steps are shorter than throughput is sampled, is not a pattern anyone
+// can read a result off.
+const (
+	minStretch = 0.1
+	maxStretch = 20.0
+)
+
+// snapHalf puts a time on the half-second grid validPattern requires.
+//
+// Throughput is sampled once a second, so a transition finer than half a second
+// cannot be OBSERVED even though the kernel would accept it. Stretching has to
+// respect that or it produces patterns the validator then rejects with a
+// message about grids that the operator never asked to think about.
+func snapHalf(sec float64) float64 { return math.Round(sec*2) / 2 }
+
+// StretchPattern scales a pattern in time, keeping its shape.
+//
+// The knob is a MULTIPLIER rather than a per-step duration because a saved
+// pattern's steps need not be uniform -- an authored timeline might hold for
+// 20s, dip for 5 and recover over 60 -- and scaling preserves those
+// proportions, where imposing one duration on every step would destroy the very
+// thing that was authored. For the generated ladder patterns, whose steps ARE
+// uniform, seconds-per-step is simply DurSec/(len(Keys)-1), so a UI can still
+// label the slider in seconds and recover it after a reload.
+//
+// Rates are untouched. Stretching asks "how long does the player get at each
+// rung", which is a question about time; changing the rates would ask a
+// different question and silently invalidate the ladder the pattern was built
+// from.
+func StretchPattern(p Pattern, factor float64) (Pattern, error) {
+	if factor <= 0 {
+		factor = 1
+	}
+	if factor < minStretch || factor > maxStretch {
+		return Pattern{}, fmt.Errorf("stretch must be between %g and %g",
+			minStretch, maxStretch)
+	}
+	if factor == 1 {
+		return p, nil
+	}
+	out := p
+	out.Keys = make([]Keyframe, len(p.Keys))
+	copy(out.Keys, p.Keys)
+	for i := range out.Keys {
+		out.Keys[i].AtSec = snapHalf(p.Keys[i].AtSec * factor)
+	}
+	// Snapping can collapse two adjacent keyframes into one instant when the
+	// factor is small. Caught here with a reason, rather than surfacing as the
+	// validator's "not after the one before it", which says nothing about the
+	// slider that caused it.
+	for i := 1; i < len(out.Keys); i++ {
+		if out.Keys[i].AtSec <= out.Keys[i-1].AtSec {
+			return Pattern{}, fmt.Errorf(
+				"stretching by %gx puts steps closer together than the half "+
+					"second throughput is sampled at; use a larger stretch",
+				factor)
+		}
+	}
+	if d := out.DurSec(); d > maxPatternSec {
+		return Pattern{}, fmt.Errorf(
+			"stretching by %gx runs %.0fs, over the %ds a pattern may run; "+
+				"the most this pattern will take is %.2gx",
+			factor, d, maxPatternSec, float64(maxPatternSec)/p.DurSec())
+	}
+	return out, nil
 }

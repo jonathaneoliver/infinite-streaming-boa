@@ -636,15 +636,35 @@ type patternEntry struct {
 
 // resolveBuiltin generates a built-in for a device, reporting which ladder it
 // came from.
-func (a *API) resolveBuiltin(name string, p Policy, service string) (
-	Pattern, Ladder, bool, error) {
+func (a *API) resolveBuiltin(name string, p Policy, service string,
+	stretch float64) (Pattern, Ladder, bool, error) {
 
 	l, ok := pickLadder(p, service)
 	if !ok {
 		l = DefaultLadder()
 	}
+	// Generated at the default dwell and then stretched, rather than generated
+	// at a stretched dwell. One path, so a built-in and a saved pattern are
+	// scaled by exactly the same code and cannot drift apart in rounding.
 	pat, err := LadderPattern(name, l, 0)
+	if err != nil {
+		return pat, l, ok, err
+	}
+	pat, err = StretchPattern(pat, stretch)
 	return pat, l, ok, err
+}
+
+// stretchParam reads the time-stretch multiplier, defaulting to 1.
+func stretchParam(raw string) (float64, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return 1, nil
+	}
+	f, err := strconv.ParseFloat(raw, 64)
+	if err != nil {
+		return 0, fmt.Errorf("stretch must be a number")
+	}
+	return f, nil
 }
 
 // listPatterns returns the built-ins and every saved pattern.
@@ -657,6 +677,13 @@ func (a *API) listPatterns(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	mac := normMAC(q.Get("mac"))
 	service := q.Get("service")
+	// The list reports durations AT the requested stretch, so a slider can show
+	// what it is about to do before anything is selected.
+	stretch, err := stretchParam(q.Get("stretch"))
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
 
 	var p Policy
 	if mac != "" {
@@ -678,7 +705,7 @@ func (a *API) listPatterns(w http.ResponseWriter, r *http.Request) {
 			out = append(out, e)
 			continue
 		}
-		pat, l, real, err := a.resolveBuiltin(name, p, service)
+		pat, l, real, err := a.resolveBuiltin(name, p, service, stretch)
 		if err != nil {
 			e.Unavailable = err.Error()
 			out = append(out, e)
@@ -694,10 +721,14 @@ func (a *API) listPatterns(w http.ResponseWriter, r *http.Request) {
 		out = append(out, e)
 	}
 	for _, sp := range a.e.PatternStore().All() {
-		out = append(out, patternEntry{
-			Name: sp.Name, DurSec: sp.DurSec(), Keys: len(sp.Keys),
-			Loop: sp.Loop, Selected: current == sp.Name,
-		})
+		e := patternEntry{Name: sp.Name, DurSec: sp.DurSec(),
+			Keys: len(sp.Keys), Loop: sp.Loop, Selected: current == sp.Name}
+		if st, err := StretchPattern(sp, stretch); err == nil {
+			e.DurSec = st.DurSec()
+		} else {
+			e.Unavailable = err.Error()
+		}
+		out = append(out, e)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"patterns": out})
 }
@@ -757,6 +788,10 @@ type patternSelect struct {
 	// means something once a service is named; empty takes the most recently
 	// measured.
 	Service string `json:"service"`
+	// Stretch scales the pattern in time, keeping its shape and its rates. 1 or
+	// absent leaves it alone. See StretchPattern for why this is a multiplier
+	// rather than a per-step duration.
+	Stretch float64 `json:"stretch"`
 }
 
 // selectPattern loads a named pattern onto a device.
@@ -790,7 +825,7 @@ func (a *API) selectPattern(w http.ResponseWriter, r *http.Request) {
 		a.e.Player().Stop(mac)
 		p.Pattern = nil
 	case IsBuiltin(name):
-		pat, _, _, err := a.resolveBuiltin(name, p, in.Service)
+		pat, _, _, err := a.resolveBuiltin(name, p, in.Service, in.Stretch)
 		if err != nil {
 			writeErr(w, http.StatusBadRequest, err.Error())
 			return
@@ -803,8 +838,16 @@ func (a *API) selectPattern(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, http.StatusNotFound, "no pattern named "+in.Name)
 			return
 		}
+		// Stretched on the way in, so the device stores the timeline it will
+		// actually play. The saved pattern in the library is untouched: the
+		// slider is a property of this selection, not an edit to the library.
+		st, err := StretchPattern(sp, in.Stretch)
+		if err != nil {
+			writeErr(w, http.StatusBadRequest, err.Error())
+			return
+		}
 		a.e.Player().Stop(mac)
-		p.Pattern = &sp
+		p.Pattern = &st
 	}
 	a.commit(w, p)
 }
