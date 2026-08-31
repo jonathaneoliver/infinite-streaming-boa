@@ -49,7 +49,8 @@ func TestPyramidWalksEveryRungUsingMeasuredCaps(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	eq(t, rates(p), []float64{0.45, 1.20, 3.34, 6.41, 3.34, 1.20, 0.45})
+	// 6.89 rather than the top rung's measured 6.41: see topRungHeadroom.
+	eq(t, rates(p), []float64{0.45, 1.20, 3.34, 6.89, 3.34, 1.20, 0.45})
 	if p.Name != PatternPyramid || !p.Loop {
 		t.Fatalf("name %q loop %v", p.Name, p.Loop)
 	}
@@ -64,7 +65,145 @@ func TestValleyDescendsThenClimbsBack(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	eq(t, rates(p), []float64{6.41, 3.34, 1.20, 0.45, 1.20, 3.34, 6.41})
+	eq(t, rates(p), []float64{6.89, 3.34, 1.20, 0.45, 1.20, 3.34, 6.89})
+}
+
+// The top rung does not get the cap the sweep recorded for it.
+//
+// Its up_at is not a measurement of the same kind as the others: nothing was
+// ever observed climbing INTO the top, because the sweep starts there and
+// descends, so that figure is bounded by where the sweep began. Here it is
+// 1.40x the variant's cost, under the 1.5x floor a player was ever seen to
+// need, which would make the top of every pattern a marginal state rather than
+// the unconstrained baseline it is supposed to be.
+func TestTopRungGetsHeadroomOverItsMeasuredCap(t *testing.T) {
+	l := testLadder()
+	p, err := LadderPattern(PatternValley, l, 30)
+	if err != nil {
+		t.Fatal(err)
+	}
+	top := rates(p)[0]
+	if want := round2(4.59 * topRungHeadroom); top != want {
+		t.Errorf("top cap %v, want %v (1.5x the 4.59 top variant)", top, want)
+	}
+	if top <= 6.41 {
+		t.Errorf("top cap %v is not above the measured 6.41 it replaces", top)
+	}
+	// Every rung BELOW the top keeps its measurement: those up_at figures were
+	// each observed by a player actually climbing into that rendition, and
+	// widening them would over-select the rung above.
+	for i, want := range []float64{3.34, 1.20, 0.45} {
+		if got := rates(p)[i+1]; got != want {
+			t.Errorf("rung %d cap %v, want the measured %v", i+1, got, want)
+		}
+	}
+}
+
+// ramp_down walks the ladder once, top to bottom, and ramp_up is its mirror.
+// Neither returns along itself: the seam is a real jump, which is what a
+// repeated ramp is.
+func TestRampsWalkTheLadderOnce(t *testing.T) {
+	down, err := LadderPattern(PatternRampDown, testLadder(), 30)
+	if err != nil {
+		t.Fatal(err)
+	}
+	eq(t, rates(down), []float64{6.89, 3.34, 1.20, 0.45, 6.89})
+
+	up, err := LadderPattern(PatternRampUp, testLadder(), 30)
+	if err != nil {
+		t.Fatal(err)
+	}
+	eq(t, rates(up), []float64{0.45, 1.20, 3.34, 6.89, 0.45})
+}
+
+// A square wave is the extremes and nothing else -- no intermediate rung to
+// land on, so a player either crosses the whole ladder or thrashes.
+func TestSquareWaveUsesOnlyTheExtremes(t *testing.T) {
+	p, err := LadderPattern(PatternSquareWave, testLadder(), 30)
+	if err != nil {
+		t.Fatal(err)
+	}
+	eq(t, rates(p), []float64{0.45, 6.89, 0.45})
+	if got := p.DurSec(); got != 60 {
+		t.Fatalf("duration %v, want 60", got)
+	}
+}
+
+// transient_shock returns to the top between dips, so each dip starts from a
+// refilled buffer and is an independent probe. The dips deepen.
+func TestTransientShockRecoversBetweenDeepeningDips(t *testing.T) {
+	p, err := LadderPattern(PatternTransientShock, testLadder(), 30)
+	if err != nil {
+		t.Fatal(err)
+	}
+	top := round2(4.59 * topRungHeadroom)
+	eq(t, rates(p), []float64{top, 3.34, top, 1.20, top, 0.45, top})
+
+	// Every other keyframe is the top: that alternation IS the pattern, and
+	// without it the dips would compound instead of each being measured from
+	// the same starting condition.
+	r := rates(p)
+	for i := 0; i < len(r); i += 2 {
+		if r[i] != top {
+			t.Fatalf("keyframe %d is %v, want the top cap %v", i, r[i], top)
+		}
+	}
+	// And the dips descend.
+	for i := 1; i+2 < len(r); i += 2 {
+		if r[i] <= r[i+2] {
+			t.Fatalf("dip %v at %d is not deeper than the previous", r[i+2], i+2)
+		}
+	}
+}
+
+// blackhole is a minute with the last ten seconds at total loss. It borrows
+// only the ladder's top, and holds the CAP across the outage rather than
+// dropping the rate: a link that stopped answering is a different fault from
+// one that got slow, and a player tells them apart.
+func TestBlackholeIsAMinuteWithTenSecondsDark(t *testing.T) {
+	p, err := LadderPattern(PatternBlackhole, testLadder(), 30)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := p.DurSec(); got != 60 {
+		t.Fatalf("duration %v, want 60", got)
+	}
+	if len(p.Keys) != 3 {
+		t.Fatalf("got %d keyframes, want 3", len(p.Keys))
+	}
+	top := round2(4.59 * topRungHeadroom)
+	for i, want := range []struct {
+		at   float64
+		loss float64
+	}{{0, 0}, {50, 100}, {60, 0}} {
+		k := p.Keys[i]
+		if k.AtSec != want.at || k.Down.LossPct != want.loss {
+			t.Errorf("key %d: at %v loss %v, want at %v loss %v",
+				i, k.AtSec, k.Down.LossPct, want.at, want.loss)
+		}
+		if k.Down.RateMbps != top {
+			t.Errorf("key %d: rate %v, want the top cap %v held throughout",
+				i, k.Down.RateMbps, top)
+		}
+	}
+	// The dark stretch is the LAST ten seconds, not the first.
+	if p.Keys[1].AtSec != p.DurSec()-10 {
+		t.Errorf("outage starts at %v, want %v", p.Keys[1].AtSec, p.DurSec()-10)
+	}
+}
+
+// The dwell applies to rung walks and not to blackhole, whose cycle is fixed
+// because the question it asks has nothing to do with the ladder.
+func TestBlackholeIgnoresTheRungDwell(t *testing.T) {
+	for _, dwell := range []float64{5, 30, 120} {
+		p, err := LadderPattern(PatternBlackhole, testLadder(), dwell)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := p.DurSec(); got != 60 {
+			t.Errorf("dwell %v gave duration %v, want 60", dwell, got)
+		}
+	}
 }
 
 // The last keyframe repeats the first, so a looping run rejoins its own start
