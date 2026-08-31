@@ -204,6 +204,114 @@ async function saveAs() {
   await choose(name);
 }
 
+/**
+ * The merge selection, in the order it was built.
+ *
+ * Order is not decoration: where two sources drive the same axis the first
+ * wins, so this array IS the precedence rule. It is a list rather than a Set
+ * for exactly that reason.
+ *
+ * Alt-click rather than a checkbox column: merging is occasional, and a column
+ * of empty boxes down every row would charge the common case -- picking one
+ * pattern -- for the rare one.
+ */
+const merging = ref<string[]>([]);
+
+function toggleMerge(name: string) {
+  const i = merging.value.indexOf(name);
+  if (i >= 0) merging.value.splice(i, 1);
+  else merging.value.push(name);
+}
+
+/** 1-based position, or 0 when not selected. Shown on the row as its rank. */
+const mergeRank = (name: string) => merging.value.indexOf(name) + 1;
+
+function onRowClick(e: MouseEvent, name: string) {
+  if (e.altKey) {
+    toggleMerge(name);
+    return;
+  }
+  void choose(name);
+}
+
+/**
+ * Right-click merges when a selection is standing, and clones otherwise.
+ *
+ * One gesture doing two things, chosen by whether the operator has built a
+ * selection -- which they can see, because the rows carry their rank. Adding a
+ * second gesture for a second rare action would cost more than it saves.
+ */
+function onRowContext(r: PatternEntry) {
+  if (merging.value.length >= 2) {
+    void previewMerge();
+    return;
+  }
+  startClone(r);
+}
+
+const mergePreview = ref<Pattern | null>(null);
+const mergeErr = ref('');
+
+/**
+ * Merged on the box, not here.
+ *
+ * The daemon owns which value wins, how the lengths reconcile and whether the
+ * result is even legal -- reorder over a zero delay is refused, and its message
+ * says why better than this component could. Rebuilding any of that in the
+ * browser would be a second implementation to keep true.
+ */
+async function previewMerge() {
+  mergeErr.value = '';
+  mergePreview.value = null;
+  const r = await fetch('/api/patterns/merge', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      names: merging.value,
+      mac: props.mac,
+      service: service.value,
+      stretch: stretch.value,
+    }),
+  });
+  if (!r.ok) {
+    mergeErr.value = (await r.json()).error ?? `HTTP ${r.status}`;
+    return;
+  }
+  mergePreview.value = (await r.json()).pattern as Pattern;
+  saveName.value = merging.value.join('+');
+}
+
+async function saveMerge() {
+  const name = saveName.value.trim();
+  if (!name || !mergePreview.value) return;
+  const r = await fetch(`/api/patterns/${encodeURIComponent(name)}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ pattern: { ...mergePreview.value, name } }),
+  });
+  if (!r.ok) {
+    mergeErr.value = (await r.json()).error ?? `HTTP ${r.status}`;
+    return;
+  }
+  clearMerge();
+  await load();
+  await choose(name);
+}
+
+function clearMerge() {
+  merging.value = [];
+  mergePreview.value = null;
+  mergeErr.value = '';
+  saveName.value = '';
+}
+
+/** Steps and duration of the preview, phrased the way a row is. */
+const mergeDetail = computed(() => {
+  const p = mergePreview.value;
+  if (!p?.keys?.length) return '';
+  return `${p.keys.length} steps · ${fmtDur(p.keys[p.keys.length - 1].at_sec)}`;
+});
+
 async function remove(name: string) {
   const r = await fetch(`/api/patterns/${encodeURIComponent(name)}`, {
     method: 'DELETE',
@@ -326,12 +434,13 @@ function detail(r: PatternEntry) {
         >none</button>
         <button
           v-for="r in rows" :key="r.name"
-          class="seg-btn" :class="{ on: currentName === r.name, saved: !r.builtin }"
+          class="seg-btn"
+          :class="{ on: currentName === r.name, saved: !r.builtin, picked: mergeRank(r.name) > 0 }"
           :disabled="locked || !!r.unavailable"
-          :title="r.unavailable || `${r.name} — right-click to copy it`"
-          @click="choose(r.name)"
-          @contextmenu.prevent="startClone(r)"
-        >{{ r.name }}</button>
+          :title="r.unavailable || `${r.name} — alt-click to add to a merge, right-click to ${merging.length >= 2 ? 'merge the selection' : 'copy it'}`"
+          @click="onRowClick($event, r.name)"
+          @contextmenu.prevent="onRowContext(r)"
+        >{{ r.name }}<sup v-if="mergeRank(r.name)" class="rank">{{ mergeRank(r.name) }}</sup></button>
       </div>
 
       <!-- Labelled in seconds a step, because that is the quantity being
@@ -394,6 +503,34 @@ function detail(r: PatternEntry) {
       </template>
     </p>
 
+    <!-- The merge bar. Present only while a selection stands, because it is
+         the only time it says anything, and it states the ORDER because that
+         order is the rule: first to drive an axis owns it. -->
+    <div v-if="merging.length" class="merge">
+      <span class="meta">merge</span>
+      <span class="chain">
+        <template v-for="(n, i) in merging" :key="n">
+          <span v-if="i" class="plus">+</span>
+          <span class="src">{{ n }}</span>
+        </template>
+      </span>
+      <span v-if="merging.length < 2" class="meta">alt-click one more</span>
+      <template v-else-if="!mergePreview">
+        <button @click="previewMerge()">merge</button>
+        <span class="meta">first to set a field wins it</span>
+      </template>
+      <template v-else>
+        <span class="meta num">{{ mergeDetail }}</span>
+        <input
+          v-model="saveName" placeholder="name the merged pattern"
+          @keyup.enter="saveMerge()" @keyup.esc="clearMerge()"
+        />
+        <button :disabled="!saveName.trim()" @click="saveMerge()">save</button>
+      </template>
+      <button class="ghost" @click="clearMerge()">clear</button>
+      <span v-if="mergeErr" class="err">{{ mergeErr }}</span>
+    </div>
+
     <div v-if="showSave" class="saveas">
       <span class="meta">{{ cloneFrom ? `copy of ${cloneFrom}` : 'save this timeline' }}</span>
       <input
@@ -412,6 +549,28 @@ function detail(r: PatternEntry) {
 </template>
 
 <style scoped>
+/* A picked row keeps its own outline rather than borrowing the selected
+   state's: being in a merge and being the running pattern are different facts,
+   and a row can be both. */
+.seg-btn.picked { box-shadow: inset 0 0 0 2px var(--accent, #5b8def); }
+.rank {
+  font-size: 9px; margin-left: 3px; opacity: 0.85;
+  font-variant-numeric: tabular-nums;
+}
+.merge {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  margin-top: 8px; padding: 6px 8px;
+  border: 1px solid var(--line); border-radius: 6px;
+}
+.merge .chain { display: flex; align-items: center; gap: 6px; }
+.merge .src {
+  font-size: 12px; padding: 1px 6px;
+  border: 1px solid var(--line); border-radius: 4px;
+}
+.merge .plus { color: var(--ink-faint); font-size: 11px; }
+.merge input { min-width: 180px; }
+.merge .err { color: var(--bad, #d66); font-size: 12px; }
+
 .lib { display: flex; flex-direction: column; gap: 4px; }
 .line { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .spacer { flex: 1; }
