@@ -10,6 +10,7 @@
 import { computed, ref, watch } from 'vue';
 import type { Shape } from '@/types';
 import { EXTRA_IMPAIRMENTS, hasExtras, posToRate, rateToPos } from '@/types';
+import { useExtras } from '@/composables/useExtras';
 
 const props = defineProps<{
   shape: Shape;
@@ -94,7 +95,7 @@ const jitterText = computed(() => `± ${jitterVal.value} ms`);
  * So the collapsed header does not say "3 more" -- it names what is set. Empty
  * is the only state in which this is out of sight.
  */
-const opened = ref(false);
+const { show: opened, toggle: toggleExtras } = useExtras();
 const extrasActive = computed(() => hasExtras({ ...props.shape, ...local.value } as Shape));
 const extrasOpen = computed(() => opened.value || extrasActive.value);
 
@@ -165,7 +166,7 @@ const reorderBlocked = computed(() => v('delay_ms') <= 0);
          so no impairment can be in force while its control is off screen. -->
     <button
       v-if="!extrasOpen" class="more" :disabled="disabled"
-      @click="opened = true"
+      @click="toggleExtras()"
     >+ {{ EXTRA_IMPAIRMENTS.map((e) => e.label).join(', ') }}</button>
 
     <template v-else>
@@ -189,7 +190,7 @@ const reorderBlocked = computed(() => v('delay_ms') <= 0);
       </div>
       <button
         v-if="!extrasActive" class="more" :disabled="disabled"
-        @click="opened = false"
+        @click="toggleExtras()"
       >− fewer</button>
     </template>
   </div>

@@ -37,7 +37,8 @@
  */
 import { computed, ref, watch } from 'vue';
 import type { Keyframe, Ladder, Pattern, PatternView, Shape } from '@/types';
-import { PATTERN_TEMPLATES, RATE_MAX, posToRate, rateToPos } from '@/types';
+import { EXTRA_IMPAIRMENTS, PATTERN_TEMPLATES, RATE_MAX, posToRate, rateToPos } from '@/types';
+import { useExtras } from '@/composables/useExtras';
 import PatternLibrary from './PatternLibrary.vue';
 
 const props = defineProps<{
@@ -767,12 +768,25 @@ function laneMax(lane: LaneKey): number {
 // A second-tier lane earns its place by being used in EITHER direction: the
 // panel shows one direction at a time, and a lane appearing when you switch
 // direction would read as the interface losing track of the pattern.
+const { show: showExtras, toggle: toggleExtras } = useExtras();
+
+// The same switch the sliders use, so a reorder slider and a reorder lane are
+// never one without the other. ORed with "the pattern actually uses it": a lane
+// carrying data is drawn whatever the switch says, because a keyframe changing
+// something the timeline does not draw is the timeline lying about the run.
 const LANES = computed(() => [
   ...CORE_LANES,
-  ...EXTRA_LANES.filter((l) =>
-    keys.value.some((k) => k.down[l.key] > 0 || k.up[l.key] > 0),
+  ...EXTRA_LANES.filter(
+    (l) =>
+      showExtras.value ||
+      keys.value.some((k) => k.down[l.key] > 0 || k.up[l.key] > 0),
   ),
 ]);
+
+/** True when the switch is the only reason the extra lanes are up. */
+const extrasUnused = computed(() =>
+  EXTRA_LANES.every((l) => !keys.value.some((k) => k.down[l.key] > 0 || k.up[l.key] > 0)),
+);
 
 /**
  * Where a value sits in its lane, 0 at the floor and 1 at the ceiling.
@@ -1036,6 +1050,16 @@ const status = computed(() => {
         </div>
       </div>
 
+      <!-- The same switch the sliders carry, put where the lanes are so it can
+           be reached from whichever view raised the question. Hidden while the
+           pattern uses these values: the lanes are then not optional, and a
+           control that cannot do anything is worse than no control. -->
+      <button
+        v-if="extrasUnused" class="more"
+        @click="toggleExtras()"
+      >{{ showExtras ? '−' : '+' }}
+        {{ EXTRA_IMPAIRMENTS.map((e) => e.label).join(', ') }}</button>
+
       <!-- Adding a keyframe is one always-present button rather than something
            that appears only once the playhead happens to be between keyframes.
            It is not on the time lane: a button inside the stack would inset the
@@ -1117,6 +1141,18 @@ const status = computed(() => {
 </template>
 
 <style scoped>
+/* Matches the affordance on the sliders, because it is the same switch. */
+.more {
+  align-self: start;
+  margin-top: 2px;
+  padding: 1px 0;
+  font: inherit; font-size: 11px;
+  color: var(--ink-faint);
+  background: none; border: 0;
+  cursor: pointer;
+}
+.more:hover { color: var(--ink-dim); }
+
 .pattern {
   padding: 12px 14px;
   border-top: 1px solid var(--line);
