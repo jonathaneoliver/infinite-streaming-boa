@@ -139,6 +139,9 @@ const CHART_DEFAULTS: ChartPrefs = {
   // Both on by default: the live trace is the record, and the mean is the
   // answer to the question most often being asked of it.
   showLive: true, showSustained: true,
+  // Off by default: the taller plot costs how many devices are visible at once,
+  // which is the more common need.
+  tallCharts: false,
 };
 
 function loadChart(): ChartPrefs {
@@ -230,6 +233,8 @@ onUnmounted(() => window.clearInterval(ticker));
       :bucket-ms="bucketMs" :sort-mode="sortMode"
       @sort-mode="(v: SortMode) => (sortMode = v)"
       :show-live="chart.showLive" :show-sustained="chart.showSustained"
+      :tall-charts="chart.tallCharts"
+      @tall-charts="(v: boolean) => (chart = { ...chart, tallCharts: v })"
       @range="(v: number) => (chart = { ...chart, rangeSec: v })"
       @y-mode="(v: YMode) => (chart = { ...chart, yMode: v })"
       @y-manual="(v: number) => (chart = { ...chart, yManual: v })"
