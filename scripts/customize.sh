@@ -438,6 +438,13 @@ if [ -f /cache/ntopng-arm64.tar.gz ]; then
 -i=br-lan
 -w=3000
 -d=/var/lib/ntopng
+# No login. ntopng logs a session out on inactivity, so a credential here meant
+# retyping it on most visits to a dashboard that is opened for ten seconds at a
+# time. It also guarded the wrong door: the interface on :80 has no
+# authentication at all and can CHANGE a device's conditioning, while :3000 can
+# only look. A password on the weaker surface bought nothing and cost a login
+# every time. Use -l=0 instead to keep the login for everyone but localhost.
+-l=1
 EOF
 
   # Upstream's `make install` ships no systemd unit, so without this ntopng
@@ -507,6 +514,11 @@ UNIT
   # (mg_md5 + strcmp, see src/Ntop.cpp). Seeding it from PIFI_PASSWORD means one
   # credential for the box instead of ntopng's admin/admin and a forced change
   # wizard on every reflash.
+  #
+  # INERT while ntopng.conf carries -l=1, which disables login outright. Kept so
+  # that re-enabling the login stays a one-line edit rather than a rebuild of
+  # this whole seeding path, and so the admin account is not left on ntopng's
+  # default password if it is ever re-enabled.
   #
   # Only the digest goes into the image, never the plaintext. Note this is a
   # WEAKER store of the same secret than the system account, which uses a salted
