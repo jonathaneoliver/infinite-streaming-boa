@@ -27,3 +27,7 @@ node_modules/
 # memsearch plugin session memory. Contains conversation notes, including
 # credentials that were discussed. Never commit.
 .memsearch/
+
+# Browser-automation scratch: screenshots and console logs written while
+# checking the interface. Never part of the build.
+.playwright-mcp/

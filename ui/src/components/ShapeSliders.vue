@@ -7,10 +7,24 @@
  * telemetry frame arriving mid-drag cannot snatch the handle away. `local`
  * clears when the model catches up.
  */
-import { computed, ref, watch } from 'vue';
+import { computed, inject, ref, watch } from 'vue';
+import type { ComputedRef } from 'vue';
 import type { Shape } from '@/types';
-import { EXTRA_IMPAIRMENTS, hasExtras, posToRate, rateToPos } from '@/types';
+import { BURST_MAX, EXTRA_IMPAIRMENTS, hasExtras, posToRate, rateToPos } from '@/types';
 import { useExtras } from '@/composables/useExtras';
+
+/*
+ * Whether this kernel will take a Gilbert-Elliott loss model.
+ *
+ * Injected rather than threaded through as a prop: it is a property of the box,
+ * identical for every card, and the two components between here and the
+ * snapshot -- ClientCard and SubClasses -- have no use for it. Provided once in
+ * App.vue.
+ */
+const burstCap = inject<ComputedRef<{ ok: boolean; note: string }>>(
+  'lossBurst',
+  computed(() => ({ ok: true, note: '' })),
+);
 
 const props = defineProps<{
   shape: Shape;
@@ -26,13 +40,21 @@ watch(
   () => props.shape,
   (s) => {
     for (const k of Object.keys(local.value) as (keyof Shape)[]) {
-      if (Math.abs((local.value[k] as number) - s[k]) < 1e-6) delete local.value[k];
+      // An absent optional field reads as 0, not NaN: comparing against
+      // undefined would make the difference NaN, which is never below the
+      // tolerance, and the local override would stick for ever.
+      const server = (s[k] as number | undefined) ?? 0;
+      if (Math.abs((local.value[k] as number) - server) < 1e-6) delete local.value[k];
     }
   },
   { deep: true },
 );
 
-const v = (k: keyof Shape) => local.value[k] ?? props.shape[k];
+// Always a number. loss_burst is optional on the wire -- policy stored before
+// bursts existed carries no such field -- and every reader here wants a value,
+// not a maybe. Zero is the right absence for all of them: for burst it means
+// uniform, which is what those stored policies were.
+const v = (k: keyof Shape): number => local.value[k] ?? props.shape[k] ?? 0;
 
 function set(k: keyof Shape, value: number) {
   const next: Partial<Shape> = { [k]: value };
@@ -110,6 +132,63 @@ const extrasSummary = computed(() =>
 // fail to reorder, it would drop the device's rate and loss with it. Disabled
 // rather than left to fail, with the reason on the control.
 const reorderBlocked = computed(() => v('delay_ms') <= 0);
+
+/*
+ * Burstiness.
+ *
+ * 1 is uniform loss -- each packet independently -- which is what this control
+ * did before it existed, and what essentially never happens on a real link. A
+ * burst length above 1 hands the kernel a Gilbert-Elliott model whose mean loss
+ * is still the figure on the loss slider.
+ */
+const burst = computed(() => Math.max(1, local.value.loss_burst ?? props.shape.loss_burst ?? 1));
+const loss = computed(() => v('loss_pct'));
+
+// A burst length with no loss configures nothing -- there are no bursts of
+// nothing -- so the control says why it is inert rather than sitting there
+// accepting input that does nothing.
+const burstWhy = computed(() => {
+  if (!burstCap.value.ok) return burstCap.value.note;
+  if (loss.value <= 0) return 'No loss to make bursty — raise the loss slider first';
+  return 'Mean length of a loss burst. 1 is uniform, independent per packet';
+});
+const burstOff = computed(() => !burstCap.value.ok || loss.value <= 0);
+const burstText = computed(() => (burst.value <= 1 ? 'uniform' : `${burst.value} packets`));
+
+/*
+ * What the numbers actually mean, which neither slider can show on its own.
+ *
+ * Bursts start roughly every B/L packets, so a long burst at a low mean loss is
+ * a RARE event -- and someone who sets 2% at 40 packets, watches for fifteen
+ * seconds and sees nothing will conclude the feature is broken when it is
+ * simply not due yet. The duration matters for the opposite reason: eight
+ * packets is 5 ms at 12 Mbps and 100 ms at 0.5 Mbps, which are different events
+ * as far as any player is concerned.
+ */
+const MTU_BYTES = 1500; // matches mtuBytes in shape.go
+
+function fmtDur(sec: number): string {
+  // Convert once, up front. Formatting seconds under a millisecond label is
+  // exactly the factor-of-1000 mistake docs/DATA-CONTRACT.md exists to prevent,
+  // and it reads as plausible: an 8 ms burst rendered "0.008 ms" looks like a
+  // very fast link rather than a wrong number.
+  const ms = sec * 1000;
+  if (ms < 10) return `${ms.toFixed(1)} ms`;
+  if (ms < 1000) return `${ms.toFixed(0)} ms`;
+  return `${sec.toFixed(1)} s`;
+}
+
+const burstNote = computed(() => {
+  if (burstOff.value || burst.value <= 1) return '';
+  const gapPackets = Math.round(burst.value / (loss.value / 100));
+  const rate = v('rate_mbps');
+  if (rate <= 0) {
+    // No rate, no packet clock: a duration here would be invented.
+    return `≈ one burst every ${gapPackets.toLocaleString()} packets · timing depends on the rate`;
+  }
+  const pktsPerSec = (rate * 1e6) / 8 / MTU_BYTES;
+  return `≈ ${fmtDur(burst.value / pktsPerSec)} of loss every ${fmtDur(gapPackets / pktsPerSec)} at ${rate} Mbps`;
+});
 </script>
 
 <template>
@@ -160,6 +239,23 @@ const reorderBlocked = computed(() => v('delay_ms') <= 0);
       />
       <span class="val num">{{ v('loss_pct').toFixed(1) }} %</span>
     </div>
+
+    <!-- Burstiness sits with the loss it modifies rather than in the second
+         tier: it does not add an impairment, it changes what the slider above
+         it means. Disabled rather than hidden when it can do nothing -- a
+         control that vanishes leaves the operator wondering whether the box
+         supports the idea at all. -->
+    <div class="row" :class="{ off: burstOff }">
+      <label>burst</label>
+      <input
+        type="range" min="1" :max="BURST_MAX" step="1"
+        :value="burst" :disabled="disabled || burstOff" :title="burstWhy"
+        @input="set('loss_burst', +($event.target as HTMLInputElement).value)"
+      />
+      <span class="val num">{{ burstText }}</span>
+    </div>
+    <p v-if="burstNote" class="meta burst-note">{{ burstNote }}</p>
+    <p v-else-if="!burstCap.ok" class="meta burst-note warn">{{ burstCap.note }}</p>
 
     <!-- The long tail. Out of the way until it is doing something, and then it
          stays put: `extrasOpen` is true whenever anything inside is non-zero,
@@ -222,4 +318,7 @@ const reorderBlocked = computed(() => v('delay_ms') <= 0);
 /* A blocked row stays legible rather than greying to nothing: the reason it is
    unavailable is the useful part, and it is written where the value goes. */
 .row.blocked label { color: var(--ink-faint); }
+
+.burst-note { margin: 2px 0 0; grid-column: 1 / -1; }
+.burst-note.warn { color: var(--warn); }
 </style>
