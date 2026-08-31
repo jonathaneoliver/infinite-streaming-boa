@@ -14,10 +14,40 @@ import (
 const (
 	PatternValley  = "valley"
 	PatternPyramid = "pyramid"
+	// The names below match the templates in the streaming project's
+	// go-proxy/pkg/ladder/pattern.go exactly. That is deliberate: "valley"
+	// already means the same experiment in both places, and a shared vocabulary
+	// is what lets a run here and a run of the harness there be compared
+	// without a translation table.
+	PatternRampUp         = "ramp_up"
+	PatternRampDown       = "ramp_down"
+	PatternSquareWave     = "square_wave"
+	PatternTransientShock = "transient_shock"
+	// Blackhole has no counterpart there. It is not a ladder walk at all.
+	PatternBlackhole = "blackhole"
 )
 
 // BuiltinNames is every generated pattern, in display order.
-var BuiltinNames = []string{PatternValley, PatternPyramid}
+var BuiltinNames = []string{
+	PatternValley, PatternPyramid,
+	PatternRampDown, PatternRampUp,
+	PatternSquareWave, PatternTransientShock,
+	PatternBlackhole,
+}
+
+// The blackhole cycle: a minute, with the last ten seconds dark.
+//
+// Fixed rather than derived from the rung dwell, because the question it asks
+// has nothing to do with the ladder. Ten seconds is longer than a segment fetch
+// and longer than most players' retry backoff, so it outlasts the buffer of a
+// player running thin without being so long that every run ends in a fatal
+// error -- and fifty seconds of clear air is enough for the buffer to refill
+// before the next one, which is what makes each outage an independent probe
+// rather than a slow starvation.
+const (
+	blackholeClearSec  = 50
+	blackholeOutageSec = 10
+)
 
 // IsBuiltin reports whether a name belongs to a generated pattern.
 func IsBuiltin(name string) bool {
@@ -50,6 +80,24 @@ const defaultRungDwellSec = 30
 // up_at per rung and should always be preferred to it.
 const ladderHeadroom = 1.35
 
+// topRungHeadroom is the margin over the TOP variant's cost, which is not the
+// same problem as the rungs below it.
+//
+// Every other rung's up_at is a real observation: the player climbed into that
+// rendition when the cap reached that value. The top rung's is not. A sweep
+// descends from its own starting cap, so nothing was ever observed climbing
+// INTO the top -- its up_at is bounded by where the sweep began rather than by
+// the player, which is also why it is the one rung with no down_at. On the two
+// ladders measured on this box it lands at 1.34x and 1.39x of cost, BELOW the
+// 1.5x floor this file records as the least a player was ever seen to need.
+//
+// It matters because the top is where a pattern starts and returns to. A cap
+// that only just selects the top variant makes the baseline a marginal state
+// instead of an unconstrained one, and then a valley's recovery leg cannot be
+// told apart from a cap that was too tight the whole time. Nothing sits above
+// the top to over-select into, so the headroom costs nothing.
+const topRungHeadroom = 1.5
+
 // capFor is the cap to hold a player on one rung.
 //
 // up_at is the cap OBSERVED to put this client on this rendition, so it beats
@@ -64,6 +112,17 @@ func capFor(r Rung) float64 {
 		return r.UpAtMbps
 	}
 	return round2(r.Mbps * ladderHeadroom)
+}
+
+// topCapFor is capFor for the highest rung: never below what was measured, and
+// never below topRungHeadroom over the variant's cost. See that constant for
+// why the top is treated differently from every rung under it.
+func topCapFor(r Rung) float64 {
+	generous := round2(r.Mbps * topRungHeadroom)
+	if measured := capFor(r); measured > generous {
+		return measured
+	}
+	return generous
 }
 
 // DefaultLadder stands in when a device has no measured or typed ladder.
@@ -100,11 +159,30 @@ func DefaultLadder() Ladder {
 //   - valley descends top to bottom, then climbs back. It asks the more
 //     interesting question: what a player does under a squeeze, and whether it
 //     recovers to where it started.
+//   - ramp_down walks top to bottom once and stops. The same descent as a
+//     valley with the recovery removed, which is what makes it the clearer read
+//     of the descent alone: nothing after it to confuse a late switch with an
+//     early recovery.
+//   - ramp_up is the mirror, and asks the harder question. Not whether a player
+//     downshifts -- they all do -- but how long it waits before trusting
+//     bandwidth that has appeared. That hesitation is invisible in a valley,
+//     where the descent has already primed it.
+//   - square_wave is the extremes and nothing in between. With no intermediate
+//     rung to land on, a player either crosses the whole ladder in one decision
+//     or thrashes at the boundary.
+//   - transient_shock holds the top and dips to each lower rung in turn,
+//     shallowest first, returning to the top between dips. Because the buffer
+//     refills in between, every dip starts from the same condition and is an
+//     independent probe at increasing severity: it looks for where a player
+//     BREAKS, where valley watches one glide.
+//   - blackhole is the odd one out and walks no rungs at all: a minute of clear
+//     air with the last ten seconds at total loss. See blackhole().
 //
-// Both traverse EVERY rung rather than just the extremes. A two-level dip tells
-// you a player fell and got up; walking the ladder tells you which renditions it
-// actually stopped at on the way, and the ones it skipped are usually the
-// finding.
+// Every rung walk traverses EVERY rung rather than just the extremes. A
+// two-level dip tells you a player fell and got up; walking the ladder tells you
+// which renditions it actually stopped at on the way, and the ones it skipped
+// are usually the finding. square_wave is the deliberate exception, and exists
+// to ask what happens when there is nothing to stop at.
 func LadderPattern(name string, l Ladder, dwellSec float64) (Pattern, error) {
 	name = strings.ToLower(strings.TrimSpace(name))
 	if !IsBuiltin(name) {
@@ -128,19 +206,50 @@ func LadderPattern(name string, l Ladder, dwellSec float64) (Pattern, error) {
 	for i, r := range rungs {
 		caps[i] = capFor(r)
 	}
-	if name == PatternValley {
-		// Top first, then down and back up.
-		for i, j := 0, len(caps)-1; i < j; i, j = i+1, j-1 {
-			caps[i], caps[j] = caps[j], caps[i]
-		}
+	// The top rung is capped differently from the rest; see topRungHeadroom.
+	caps[len(caps)-1] = topCapFor(rungs[len(rungs)-1])
+
+	// Blackhole is not a walk of the ladder at all -- it only borrows its top
+	// so the clear phase is unconstrained -- so it is built and returned here
+	// rather than being expressed as a sequence of caps.
+	if name == PatternBlackhole {
+		return blackhole(caps[len(caps)-1]), nil
 	}
 
-	// Out and back. The last keyframe repeats the first so a looping run
-	// rejoins its own start without a step change at the seam.
-	seq := make([]float64, 0, 2*len(caps)-1)
-	seq = append(seq, caps...)
-	for i := len(caps) - 2; i >= 0; i-- {
-		seq = append(seq, caps[i])
+	// Every sequence below ends on the value it began with, so a looping run
+	// rejoins its own start without a step change at the seam, and the final
+	// keyframe's time is the pattern's duration.
+	var seq []float64
+	switch name {
+	case PatternPyramid:
+		seq = outAndBack(caps)
+	case PatternValley:
+		seq = outAndBack(reversedCaps(caps))
+	case PatternRampUp:
+		// One-way, so the seam is a genuine jump from top back to bottom: a
+		// sawtooth, which is what a repeated ramp is. Asked of a player, it is
+		// the harder question of the two -- not whether it downshifts, but how
+		// long it waits before trusting bandwidth that has appeared.
+		seq = append(append([]float64{}, caps...), caps[0])
+	case PatternRampDown:
+		d := reversedCaps(caps)
+		seq = append(append([]float64{}, d...), d[0])
+	case PatternSquareWave:
+		// Only the extremes, no rungs between. It asks whether a player can
+		// cross the whole ladder in one step or thrashes trying.
+		seq = []float64{caps[0], caps[len(caps)-1], caps[0]}
+	case PatternTransientShock:
+		// Hold the top, then dip to each lower rung in turn, shallowest first,
+		// returning to the top between dips. Because the buffer refills in
+		// between, each dip is an independent probe at increasing severity --
+		// it looks for where a player BREAKS, where valley watches it glide.
+		top := caps[len(caps)-1]
+		seq = append(seq, top)
+		for i := len(caps) - 2; i >= 0; i-- {
+			seq = append(seq, caps[i], top)
+		}
+	default:
+		return Pattern{}, fmt.Errorf("no built-in pattern named %q", name)
 	}
 
 	keys := make([]Keyframe, 0, len(seq))
@@ -156,6 +265,47 @@ func LadderPattern(name string, l Ladder, dwellSec float64) (Pattern, error) {
 		})
 	}
 	return Pattern{Name: name, Keys: keys, Loop: true}, nil
+}
+
+// outAndBack walks a sequence and returns along it, without holding the far end
+// twice. The result ends on the value it started from.
+func outAndBack(c []float64) []float64 {
+	seq := make([]float64, 0, 2*len(c)-1)
+	seq = append(seq, c...)
+	for i := len(c) - 2; i >= 0; i-- {
+		seq = append(seq, c[i])
+	}
+	return seq
+}
+
+func reversedCaps(c []float64) []float64 {
+	out := make([]float64, len(c))
+	for i, v := range c {
+		out[len(c)-1-i] = v
+	}
+	return out
+}
+
+// blackhole is a minute of clear air with the last ten seconds dark.
+//
+// The cap is held across BOTH phases rather than dropped to zero for the
+// outage, because those are different faults and a player tells them apart. A
+// rate of zero is a link that got slow; 100% loss is a link that stopped
+// answering, with segment requests timing out rather than trickling. Tunnels,
+// lift shafts and handovers are the second kind, and testing the first in their
+// name would flatter a player that handles only slowness.
+func blackhole(topCap float64) Pattern {
+	clear := Shape{RateMbps: topCap}
+	dark := Shape{RateMbps: topCap, LossPct: 100}
+	return Pattern{
+		Name: PatternBlackhole,
+		Keys: []Keyframe{
+			{AtSec: 0, Down: clear, Ease: EaseHold},
+			{AtSec: blackholeClearSec, Down: dark, Ease: EaseHold},
+			{AtSec: blackholeClearSec + blackholeOutageSec, Down: clear, Ease: EaseHold},
+		},
+		Loop: true,
+	}
 }
 
 // pickLadder chooses which of a device's ladders a generated pattern is built
