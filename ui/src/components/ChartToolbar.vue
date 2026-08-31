@@ -119,13 +119,6 @@ function onManual(e: Event) {
       >{{ m.label }}</button>
     </div>
 
-    <button
-      class="seg-btn lone" :class="{ on: tallCharts }"
-      :aria-pressed="tallCharts"
-      title="Double the height of the expanded charts. More vertical resolution to separate close rungs; fewer devices on screen at once."
-      @click="emit('tall-charts', !tallCharts)"
-    >tall</button>
-
     <label v-if="yMode === 'manual'" class="manual">
       <input
         class="num" type="number" min="0.1" step="0.5" :value="yManual"
@@ -134,6 +127,14 @@ function onManual(e: Event) {
       />
       <span>Mbps</span>
     </label>
+
+    <span class="lbl">height</span>
+    <button
+      class="seg-btn lone" :class="{ on: tallCharts }"
+      :aria-pressed="tallCharts"
+      title="Double the height of the expanded charts. More vertical resolution to separate close rungs; fewer devices on screen at once."
+      @click="emit('tall-charts', !tallCharts)"
+    >tall</button>
 
     <span class="lbl">series</span>
     <div class="legend" role="group" aria-label="Series shown">
@@ -185,6 +186,7 @@ function onManual(e: Event) {
 /* A toggle, not one of an exclusive set, so it carries its own border rather
    than sharing the segmented control's. */
 .lone { border: 1px solid var(--line); border-radius: 6px; }
+.lbl + .lone { margin-right: 6px; }
 .seg-btn {
   padding: 3px 10px;
   font: inherit; font-size: 12px;
