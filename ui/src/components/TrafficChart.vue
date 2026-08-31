@@ -631,8 +631,6 @@ const gid = `g${Math.random().toString(36).slice(2, 8)}`;
       <span v-if="hover.sustained !== null" class="tip-sus">
         {{ fmt(hover.sustained) }} sustained
       </span>
-      <!-- Dashed underline, the same mark the cap line carries, so the row is
-           tied to the rule it describes without spending a word on saying so. -->
       <span v-if="hover.cap !== null" class="tip-cap">
         {{ fmt(hover.cap) }} cap
       </span>
@@ -690,12 +688,6 @@ const gid = `g${Math.random().toString(36).slice(2, 8)}`;
 .cap line,
 .cap polyline { stroke-width: 1; stroke-dasharray: 4 3; opacity: 0.8; fill: none; }
 .cap-text { fill: var(--ink-dim); font-size: 10px; }
-.tip-cap {
-  color: var(--ink-dim);
-  border-bottom: 1px dashed currentColor;
-  align-self: flex-start;
-}
-
 .crosshair line { stroke: var(--ink-faint); stroke-width: 1; opacity: 0.6; }
 
 .tip {
@@ -716,6 +708,12 @@ const gid = `g${Math.random().toString(36).slice(2, 8)}`;
 .tip-key i { width: 10px; height: 2px; border-radius: 1px; display: inline-block; }
 /* Subordinate to the instantaneous value above it, in the same order the two
    lines sit in the plot's visual hierarchy. */
-.tip-sus { font-size: 11px; color: var(--ink-dim); }
+/* Both are the same kind of thing: a secondary quantity about the instant the
+   headline value describes, so they share one rule rather than being two that
+   have to be kept in step. The cap first carried a dashed underline echoing the
+   cap line -- a decoration earning its keep only if you already knew what it
+   meant, on the densest text in the interface. */
+.tip-sus,
+.tip-cap { font-size: 11px; color: var(--ink-dim); }
 .tip-ago { font-size: 10px; color: var(--ink-faint); }
 </style>
