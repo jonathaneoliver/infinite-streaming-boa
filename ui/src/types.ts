@@ -261,7 +261,6 @@ export interface Client {
   down_counters: Counters;
   up_counters: Counters;
   sub_counters?: Record<string, Counters>;
-  rtt_added_ms: number;
   sweep?: SweepView;
   pattern_run?: PatternView;
 }

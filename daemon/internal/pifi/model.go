@@ -333,10 +333,6 @@ type Client struct {
 	UpCounters   Counters            `json:"up_counters"`
 	SubCounters  map[string]Counters `json:"sub_counters,omitempty"`
 
-	// RTTAddedMs is Down.DelayMs + Up.DelayMs, computed here so the UI cannot
-	// get the round-trip arithmetic wrong.
-	RTTAddedMs float64 `json:"rtt_added_ms"`
-
 	// Sweep is the ladder sweep running on this device, or the outcome of the
 	// last one. Absent when the device has never been swept this daemon run.
 	Sweep *SweepView `json:"sweep,omitempty"`
