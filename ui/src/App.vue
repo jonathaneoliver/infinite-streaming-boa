@@ -256,12 +256,12 @@ async function onLoadConfig(e: Event) {
 conditioning, its ladders, saved and merged patterns, and this browser's chart
 preferences."
         @click="onSaveConfig()"
-      >save config</button>
+      >export config</button>
       <button
         class="pill link" title="Restore a setup from a file. Merges: devices in
 the file are replaced, devices not mentioned are left alone."
         @click="cfgFile?.click()"
-      >load config</button>
+      >import config</button>
       <input
         ref="cfgFile" type="file" accept="application/json,.json"
         class="hidden-file" @change="onLoadConfig"

@@ -676,10 +676,11 @@ type patternEntry struct {
 func (a *API) resolveBuiltin(name string, p Policy, service string,
 	stretch float64) (Pattern, Ladder, bool, error) {
 
-	l, ok := pickLadder(p, service)
-	if !ok {
-		l = DefaultLadder()
-	}
+	// One ladder for the box, not this device's. The caps a pattern uses are
+	// the sweep's grid rather than the content's bitrates, and that grid is the
+	// same everywhere -- see GlobalLadder. `p` and `service` are still taken so
+	// the per-device view can say which measurement is in force.
+	l, ok := GlobalLadder(a.e.Store().All())
 	// Generated at the default dwell and then stretched, rather than generated
 	// at a stretched dwell. One path, so a built-in and a saved pattern are
 	// scaled by exactly the same code and cannot drift apart in rounding.
@@ -793,14 +794,12 @@ func (a *API) getPattern(w http.ResponseWriter, r *http.Request) {
 	name := normPatternName(r.PathValue("name"))
 
 	if IsBuiltin(name) {
-		mac := normMAC(q.Get("mac"))
-		if mac == "" {
-			writeErr(w, http.StatusBadRequest,
-				"a built-in is generated from a device's ladder; name a mac")
-			return
-		}
-		pat, l, real, err := a.resolveBuiltin(name, a.load(mac), q.Get("service"),
-			stretch)
+		// A mac is optional now: built-ins are generated from the box's one
+		// ladder rather than a device's, so the same name means the same
+		// pattern everywhere. It is still accepted, and still names which
+		// device the caller was looking at.
+		pat, l, real, err := a.resolveBuiltin(name, a.load(normMAC(q.Get("mac"))),
+			q.Get("service"), stretch)
 		if err != nil {
 			writeErr(w, http.StatusBadRequest, err.Error())
 			return
@@ -920,6 +919,10 @@ func (a *API) mergePatterns(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	// What it is, alongside what it computed to. The keyframes are what plays;
+	// the recipe is how it was made, and is what makes a merge shareable and
+	// rebuildable. See PatternRecipe.
+	merged.Recipe = &PatternRecipe{Sources: in.Names, Stretch: in.Stretch}
 	// Validated here rather than only at save time, so an impossible
 	// combination is reported while the operator can still see which two
 	// patterns they picked -- reorder over a zero delay being the one that

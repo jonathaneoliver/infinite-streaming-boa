@@ -69,6 +69,42 @@ type Pattern struct {
 	Name string     `json:"name"`
 	Keys []Keyframe `json:"keys"`
 	Loop bool       `json:"loop"`
+
+	// Recipe records how a merged pattern was made, when it was made that way.
+	// Absent on anything hand-built, which stays entirely legal. See
+	// PatternRecipe.
+	Recipe *PatternRecipe `json:"recipe,omitempty"`
+}
+
+// PatternRecipe is a merge expressed as its ingredients rather than its result.
+//
+// # Why keep both
+//
+// The keyframes are what plays, and they have to be: a pattern may be
+// hand-built, and one that is has no recipe to resolve. But a merge of
+// transient_shock and blackhole is 34 keyframes and 8.6 KB of absolute rates,
+// and that is a poor description of a thing whose actual identity is "those two
+// patterns, over this ladder". The recipe is 1.7 KB and says so.
+//
+// # Why it carries no ladder
+//
+// Because there is only one. The caps a pattern is built from are the sweep's
+// grid rather than the content's bitrates, and that grid is the same for every
+// device and every service on a box -- see GlobalLadder for the measurement
+// that establishes it.
+//
+// So a recipe is just its ingredients: which patterns, in what order, at what
+// dwell. Naming a ladder would be recording a dependency that does not exist,
+// and it is the difference between a 1.7 KB object and a 200 byte one that a
+// person can read.
+type PatternRecipe struct {
+	// Sources in the order they were selected, which IS the precedence rule:
+	// the first to drive an axis owns it. See MergePatterns.
+	Sources []string `json:"sources"`
+	// DwellSec and Stretch as they were when the merge was made, so a rebuild
+	// reproduces it exactly rather than approximately.
+	DwellSec float64 `json:"dwell_sec,omitempty"`
+	Stretch  float64 `json:"stretch,omitempty"`
 }
 
 // DurSec is the position of the last keyframe: the loop point, and the moment a

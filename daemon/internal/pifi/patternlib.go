@@ -392,8 +392,67 @@ func blackhole() Pattern {
 	}
 }
 
+// GlobalLadder is the one ladder every generated pattern is built from.
+//
+// # Why one, when ladders are measured per device and per service
+//
+// Because the numbers a pattern uses are already global, and the data says so.
+// Both ladders measured on this box -- a native player and a self-hosted stream,
+// different content, different codecs -- produced IDENTICAL up_at values:
+//
+//	0.45 0.7 1.2 1.79 3.34 4.58 6.41 9.41 12.13 24.05 27.34 38.21
+//
+// while their costs differed throughout (0.29 vs 0.251 at the bottom, 28.44 vs
+// 27.478 at the top). That is not a coincidence. up_at is the cap at which the
+// SWEEP observed a switch, and a sweep climbs a fixed geometric schedule, so
+// up_at lands on the sweep's own grid. It is a property of the measuring
+// instrument. The cost is the property of the content.
+//
+// capFor prefers up_at, so patterns were already built entirely from that grid.
+// Keying them by device and service was describing a dependency they did not
+// have, and it cost the two things that matter here: a pattern could not be
+// shared without carrying a ladder with it, and the same named pattern was a
+// different length on every box.
+//
+// # The invariant this actually rests on
+//
+// Not "content does not matter" but "the sweep schedule is the same". Two boxes
+// sweeping with a different start cap or climb ratio would produce different
+// grids and disagree again. That is the thing to watch, and the thing that
+// would silently stop being true.
+//
+// # How the one is chosen
+//
+// The most recently measured ladder anywhere on the box. Sweeps still write per
+// device and per service -- those records are the measurement history and are
+// worth keeping -- but pattern generation reads whichever is newest, because it
+// is the one the operator was last working on. Falling back to DefaultLadder
+// when nothing has been swept, which is marked as synthesised so the interface
+// can say so.
+func GlobalLadder(all map[string]Policy) (Ladder, bool) {
+	var best Ladder
+	var found bool
+	for _, p := range all {
+		for _, l := range p.Ladders {
+			if len(l.Rungs) < 2 {
+				continue
+			}
+			if !found || l.MeasuredAt > best.MeasuredAt {
+				best, found = l, true
+			}
+		}
+	}
+	if !found {
+		return DefaultLadder(), false
+	}
+	return best, true
+}
+
 // pickLadder chooses which of a device's ladders a generated pattern is built
 // from.
+//
+// Retained for the per-device view, which still shows what was measured where.
+// Pattern generation uses GlobalLadder instead; see there for why.
 //
 // A device holds one ladder per service and they share nothing -- Netflix,
 // YouTube and a self-hosted stream have different rungs, different segment
