@@ -201,14 +201,24 @@ const fmt = (v: number) => (v >= 100 ? v.toFixed(0) : v >= 10 ? v.toFixed(1) : v
  * the grid harder to read than having fewer lines. It is the same reasoning as
  * the LADDER above, applied to the interval instead of the maximum.
  *
- * 42px targets five lines at the default height and nine to eleven when tall --
- * the tall grid being the short one with its midpoints filled in. It is a
- * target and not a guarantee, because roundness wins: eighths of 1 are 0.125,
- * which this axis would print as 0.13, so those maxima take tenths instead and
- * land on eleven. Widening the labels to three decimals would buy the exact
- * count at the cost of the gutter every chart on the page shares.
+ * 34px lands on fifths at the default height and tenths when tall -- six lines,
+ * then eleven, the short grid with its midpoints filled in.
+ *
+ * Those two divisors are why this spacing and not a looser one. Fifths and
+ * tenths are round for every value niceMax can return and for any sane ceiling
+ * typed by hand, so in practice EVERY chart on the page gets the same grid.
+ * That matters more than the individual choice: this toolbar's whole premise is
+ * that one range and one axis rule make two devices comparable at a glance, and
+ * a grid that thins out on one card because its maximum happened to divide
+ * differently works against exactly that. A looser 42px target picked quarters
+ * for a 20 Mbps axis and tenths for a 0.5 Mbps one, so two charts a few pixels
+ * apart carried nine lines and eleven.
+ *
+ * Still a target rather than a guarantee, because roundness wins: a 0.15 Mbps
+ * axis in tenths is 0.015, which prints as 0.01, so it keeps fifths and stays
+ * at six lines.
  */
-const TICK_SPACING_PX = 42;
+const TICK_SPACING_PX = 34;
 const tickDivisions = computed(() => {
   const m = yMax.value;
   if (!(m > 0)) return 2;
