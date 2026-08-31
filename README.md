@@ -174,7 +174,7 @@ adapter in for a wired device under test, then:
 | | |
 |---|---|
 | Web interface | `http://infinite-streaming-pifi.local/` |
-| ntopng | `http://infinite-streaming-pifi.local:3000/` — `admin` / `PIFI_PASSWORD` |
+| ntopng | `http://infinite-streaming-pifi.local:3000/` — no login |
 | iperf3 | `iperf3 -c infinite-streaming-pifi.local` from a device under test |
 | SSH | `ssh pifi@infinite-streaming-pifi.local` |
 | Rescue | `http://<PIFI_RESCUE_IP>/` when upstream DHCP is absent |

@@ -70,6 +70,10 @@ disciplines and opens a packet socket.
 **ntopng** — traffic analysis on :3000, watching `br-lan`. Deep links from each
 device card. Optional: the image builds without it.
 
+Neither :80 nor :3000 authenticates. The box is a bench appliance for a network
+you already control, and anyone who can reach it can re-shape any device on it;
+put it on a network where that is acceptable.
+
 ## 6) Behaviour
 
 ### 6.1 Discovery
