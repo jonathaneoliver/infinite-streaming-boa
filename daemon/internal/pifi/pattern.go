@@ -109,17 +109,32 @@ func (p Pattern) At(sec float64) (down, up Shape, idx int) {
 
 // lerpShape interpolates one direction's conditioning across a ramp.
 //
-// Delay, jitter and loss are linear, which also keeps the netem invariant that
-// jitter may not exceed delay: both endpoints satisfy it, and a linear blend of
-// two values that each satisfy an inequality satisfies it too. Rate is not
-// linear -- see lerpRate.
+// Every impairment but rate is linear, which also keeps the netem invariant
+// that jitter may not exceed delay: both endpoints satisfy it, and a linear
+// blend of two values that each satisfy an inequality satisfies it too. Rate is
+// not linear -- see lerpRate.
+//
+// The reorder invariant does NOT survive the same argument, and this is where
+// that matters. Reorder needs a delay to reorder against, and a ramp from
+// {delay 10ms, reorder 25%} to {delay 0, reorder 25%} arrives at exactly the
+// combination netem refuses -- with no keyframe an operator could look at to
+// see it coming. That is why writeNetem drops reorder when delay is zero
+// rather than trusting its input: this function is the caller that can produce
+// an invalid pair out of two valid ones.
+//
+// Every field is listed rather than starting from `a` and overwriting, so
+// adding an impairment to Shape breaks the build here instead of silently
+// ramping it to zero -- which is what a struct literal missing a field would
+// otherwise do, mid-segment, in a way no test of the endpoints would catch.
 func lerpShape(a, b Shape, f float64) Shape {
 	lin := func(x, y float64) float64 { return round2(x + (y-x)*f) }
 	return Shape{
-		RateMbps: lerpRate(a.RateMbps, b.RateMbps, f),
-		DelayMs:  lin(a.DelayMs, b.DelayMs),
-		JitterMs: lin(a.JitterMs, b.JitterMs),
-		LossPct:  lin(a.LossPct, b.LossPct),
+		RateMbps:   lerpRate(a.RateMbps, b.RateMbps, f),
+		DelayMs:    lin(a.DelayMs, b.DelayMs),
+		JitterMs:   lin(a.JitterMs, b.JitterMs),
+		LossPct:    lin(a.LossPct, b.LossPct),
+		ReorderPct: lin(a.ReorderPct, b.ReorderPct),
+		CorruptPct: lin(a.CorruptPct, b.CorruptPct),
 	}
 }
 

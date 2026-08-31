@@ -205,6 +205,17 @@ func validShape(s Shape) error {
 		return fmt.Errorf("jitter_ms cannot exceed delay_ms")
 	case s.LossPct < 0 || s.LossPct > 100:
 		return fmt.Errorf("loss_pct must be between 0 and 100")
+	case s.ReorderPct < 0 || s.ReorderPct > 100:
+		return fmt.Errorf("reorder_pct must be between 0 and 100")
+	case s.CorruptPct < 0 || s.CorruptPct > 100:
+		return fmt.Errorf("corrupt_pct must be between 0 and 100")
+	case s.ReorderPct > 0 && s.DelayMs <= 0:
+		// Refused rather than silently ignored. netem rejects the combination
+		// outright, and a rejected command installs no qdisc at all -- so
+		// accepting this would take the device's rate and loss down with a
+		// setting the operator thought was additive.
+		return fmt.Errorf("reorder_pct needs delay_ms above 0: " +
+			"reordering works by letting packets skip the delay queue")
 	}
 	return nil
 }

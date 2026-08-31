@@ -68,6 +68,47 @@ func TestRampNeverPutsJitterAboveDelay(t *testing.T) {
 	}
 }
 
+// A ramp must carry every impairment, not just the four it was written for. A
+// struct literal that forgets a field ramps it to zero mid-segment while both
+// endpoints still read correctly, so testing the keyframes alone would miss it.
+func TestRampCarriesEveryImpairment(t *testing.T) {
+	p := Pattern{Keys: []Keyframe{
+		{AtSec: 0, Down: Shape{DelayMs: 100, ReorderPct: 10, CorruptPct: 1}},
+		{AtSec: 10, Down: Shape{DelayMs: 100, ReorderPct: 20, CorruptPct: 3},
+			Ease: EaseRamp},
+	}}
+	mid, _, _ := p.At(5)
+	for _, c := range []struct {
+		name      string
+		got, a, b float64
+	}{
+		{"reorder", mid.ReorderPct, 10, 20},
+		{"corrupt", mid.CorruptPct, 1, 3},
+	} {
+		if c.got <= c.a || c.got >= c.b {
+			t.Errorf("%s halfway through the ramp = %g, want between %g and %g",
+				c.name, c.got, c.a, c.b)
+		}
+	}
+}
+
+// netem refuses `reorder` with no delay, and refuses the WHOLE command -- so an
+// invalid pair takes the device's rate and loss down with it. A ramp reaches
+// that pair from two perfectly valid keyframes, which is why the shaper drops
+// reorder rather than trusting what it is handed. This records that the pair is
+// reachable, so the guard cannot be removed as redundant.
+func TestRampCanReachReorderWithoutDelay(t *testing.T) {
+	p := Pattern{Keys: []Keyframe{
+		{AtSec: 0, Down: Shape{DelayMs: 50, ReorderPct: 25}},
+		{AtSec: 10, Down: Shape{DelayMs: 0, ReorderPct: 25}, Ease: EaseRamp},
+	}}
+	end, _, _ := p.At(10)
+	if end.DelayMs != 0 || end.ReorderPct == 0 {
+		t.Fatalf("expected the ramp to end at delay 0 with reorder still set, "+
+			"got delay=%g reorder=%g", end.DelayMs, end.ReorderPct)
+	}
+}
+
 func TestValidPattern(t *testing.T) {
 	ok := Pattern{Keys: []Keyframe{kf(0, 8, ""), kf(30, 2, EaseRamp)}}
 	if err := validPattern(ok); err != nil {

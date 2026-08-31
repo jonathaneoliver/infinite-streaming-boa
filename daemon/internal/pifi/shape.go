@@ -397,6 +397,22 @@ func (s *Shaper) writeNetem(dev string, minor int, sh Shape, exists bool) (bool,
 	if sh.LossPct > 0 {
 		args = append(args, "loss", fmt.Sprintf("%.4f%%", sh.LossPct))
 	}
+	// Reorder is dropped rather than passed on when there is no delay to
+	// reorder against. netem rejects that combination outright -- "reordering
+	// not possible without specifying some delay" -- and a rejected command
+	// leaves NO qdisc, so honouring the request literally would take the
+	// device's rate and loss down with it.
+	//
+	// The API refuses the combination when an operator writes it, so this is
+	// not the normal path. It exists because a PATTERN can reach it: a segment
+	// ramping delay to zero while reorder stays set passes through exactly this
+	// state on its way, and no validation at write time can see that coming.
+	if sh.ReorderPct > 0 && sh.DelayMs > 0 {
+		args = append(args, "reorder", fmt.Sprintf("%.4f%%", sh.ReorderPct))
+	}
+	if sh.CorruptPct > 0 {
+		args = append(args, "corrupt", fmt.Sprintf("%.4f%%", sh.CorruptPct))
+	}
 	if err := tc(args...); err != nil {
 		return exists, err
 	}

@@ -99,7 +99,14 @@ device card. Optional: the image builds without it.
 
 - Policy is keyed by **MAC**, so it survives DHCP renewal, reboots and a client
   roaming between the wireless and wired ports.
-- Each device has a downlink and an uplink policy: rate, delay, jitter, loss.
+- Each device has a downlink and an uplink policy: rate, delay, jitter, loss,
+  and — less often needed, so kept out of the way until used — reorder and
+  corrupt. The interface shows the second group only when it is empty of values;
+  anything in force keeps its control on screen.
+- **Reorder requires a delay** to reorder against, and is refused without one.
+  Packet **duplication is deliberately absent**: the kernel will not run a
+  duplicating queue alongside any other, so one device using it would stop every
+  other device on that port being conditioned — which this box cannot allow.
 - `rate_mbps = 0` means unlimited. `delay_ms` is **per direction**; the round
   trip is the sum, and the interface shows that sum.
 - Sub-classes condition part of a device's traffic, matched by destination port,

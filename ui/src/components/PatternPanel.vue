@@ -37,7 +37,8 @@
  */
 import { computed, ref, watch } from 'vue';
 import type { Keyframe, Ladder, Pattern, PatternView, Shape } from '@/types';
-import { PATTERN_TEMPLATES, RATE_MAX, posToRate, rateToPos } from '@/types';
+import { EXTRA_IMPAIRMENTS, PATTERN_TEMPLATES, RATE_MAX, posToRate, rateToPos } from '@/types';
+import { useExtras } from '@/composables/useExtras';
 import PatternLibrary from './PatternLibrary.vue';
 
 const props = defineProps<{
@@ -466,6 +467,13 @@ const LANE_START_CEIL: Record<LaneKey, number> = {
   delay_ms: 200,
   jitter_ms: 200,
   loss_pct: 5,
+  // Well under each slider's maximum, for the same reason the others are: this
+  // is the scale a lane is dragged against before it holds anything, so a
+  // ceiling at the top of the range would put every useful value in the bottom
+  // tenth of the lane. Reorder is worth having in whole percents; corrupt bites
+  // at a fraction of one.
+  reorder_pct: 25,
+  corrupt_pct: 5,
 };
 
 /** Which keyframe holds the value at this x. */
@@ -719,12 +727,31 @@ function useTemplate(name: string) {
  * One direction at a time. Eight lanes at once is not a chart anyone reads, and
  * the downlink is what nearly every test here is about.
  */
-type LaneKey = 'rate_mbps' | 'delay_ms' | 'jitter_ms' | 'loss_pct';
-const LANES: { key: LaneKey; label: string; unit: string }[] = [
+type LaneKey =
+  | 'rate_mbps' | 'delay_ms' | 'jitter_ms' | 'loss_pct'
+  | 'reorder_pct' | 'corrupt_pct';
+
+const CORE_LANES: { key: LaneKey; label: string; unit: string }[] = [
   { key: 'rate_mbps', label: 'rate', unit: 'Mbps' },
   { key: 'delay_ms', label: 'delay', unit: 'ms' },
   { key: 'jitter_ms', label: 'jitter', unit: 'ms' },
   { key: 'loss_pct', label: 'loss', unit: '%' },
+];
+
+/**
+ * The second-tier impairments get a lane only when the pattern uses one.
+ *
+ * Same rule as the sliders, for the same reason as the note above about eight
+ * lanes: a timeline that always drew seven would be unreadable for the patterns
+ * that vary one thing, which is most of them. A lane that is flat at zero for
+ * the whole run says nothing and costs a quarter of the panel.
+ *
+ * Derived from the keyframes rather than from a setting, so a pattern that uses
+ * reorder always shows reorder, in every session and for whoever opens it.
+ */
+const EXTRA_LANES: { key: LaneKey; label: string; unit: string }[] = [
+  { key: 'reorder_pct', label: 'reorder', unit: '%' },
+  { key: 'corrupt_pct', label: 'corrupt', unit: '%' },
 ];
 
 const dir = ref<'down' | 'up'>('down');
@@ -737,6 +764,29 @@ function valueAt(k: Keyframe, lane: LaneKey): number {
 function laneMax(lane: LaneKey): number {
   return keys.value.reduce((m, k) => Math.max(m, valueAt(k, lane)), 0);
 }
+
+// A second-tier lane earns its place by being used in EITHER direction: the
+// panel shows one direction at a time, and a lane appearing when you switch
+// direction would read as the interface losing track of the pattern.
+const { show: showExtras, toggle: toggleExtras } = useExtras();
+
+// The same switch the sliders use, so a reorder slider and a reorder lane are
+// never one without the other. ORed with "the pattern actually uses it": a lane
+// carrying data is drawn whatever the switch says, because a keyframe changing
+// something the timeline does not draw is the timeline lying about the run.
+const LANES = computed(() => [
+  ...CORE_LANES,
+  ...EXTRA_LANES.filter(
+    (l) =>
+      showExtras.value ||
+      keys.value.some((k) => k.down[l.key] > 0 || k.up[l.key] > 0),
+  ),
+]);
+
+/** True when the switch is the only reason the extra lanes are up. */
+const extrasUnused = computed(() =>
+  EXTRA_LANES.every((l) => !keys.value.some((k) => k.down[l.key] > 0 || k.up[l.key] > 0)),
+);
 
 /**
  * Where a value sits in its lane, 0 at the floor and 1 at the ceiling.
@@ -1000,6 +1050,16 @@ const status = computed(() => {
         </div>
       </div>
 
+      <!-- The same switch the sliders carry, put where the lanes are so it can
+           be reached from whichever view raised the question. Hidden while the
+           pattern uses these values: the lanes are then not optional, and a
+           control that cannot do anything is worse than no control. -->
+      <button
+        v-if="extrasUnused" class="more"
+        @click="toggleExtras()"
+      >{{ showExtras ? '−' : '+' }}
+        {{ EXTRA_IMPAIRMENTS.map((e) => e.label).join(', ') }}</button>
+
       <!-- Adding a keyframe is one always-present button rather than something
            that appears only once the playhead happens to be between keyframes.
            It is not on the time lane: a button inside the stack would inset the
@@ -1081,6 +1141,18 @@ const status = computed(() => {
 </template>
 
 <style scoped>
+/* Matches the affordance on the sliders, because it is the same switch. */
+.more {
+  align-self: start;
+  margin-top: 2px;
+  padding: 1px 0;
+  font: inherit; font-size: 11px;
+  color: var(--ink-faint);
+  background: none; border: 0;
+  cursor: pointer;
+}
+.more:hover { color: var(--ink-dim); }
+
 .pattern {
   padding: 12px 14px;
   border-top: 1px solid var(--line);
