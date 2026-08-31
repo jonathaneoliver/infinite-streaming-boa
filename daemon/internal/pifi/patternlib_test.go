@@ -156,10 +156,7 @@ func TestTransientShockRecoversBetweenDeepeningDips(t *testing.T) {
 	}
 }
 
-// blackhole is a minute with the last ten seconds at total loss. It borrows
-// only the ladder's top, and holds the CAP across the outage rather than
-// dropping the rate: a link that stopped answering is a different fault from
-// one that got slow, and a player tells them apart.
+// blackhole is a minute with the last ten seconds at total loss.
 func TestBlackholeIsAMinuteWithTenSecondsDark(t *testing.T) {
 	p, err := LadderPattern(PatternBlackhole, testLadder(), 30)
 	if err != nil {
@@ -171,7 +168,6 @@ func TestBlackholeIsAMinuteWithTenSecondsDark(t *testing.T) {
 	if len(p.Keys) != 3 {
 		t.Fatalf("got %d keyframes, want 3", len(p.Keys))
 	}
-	top := round2(4.59 * topRungHeadroom)
 	for i, want := range []struct {
 		at   float64
 		loss float64
@@ -181,14 +177,53 @@ func TestBlackholeIsAMinuteWithTenSecondsDark(t *testing.T) {
 			t.Errorf("key %d: at %v loss %v, want at %v loss %v",
 				i, k.AtSec, k.Down.LossPct, want.at, want.loss)
 		}
-		if k.Down.RateMbps != top {
-			t.Errorf("key %d: rate %v, want the top cap %v held throughout",
-				i, k.Down.RateMbps, top)
-		}
 	}
 	// The dark stretch is the LAST ten seconds, not the first.
 	if p.Keys[1].AtSec != p.DurSec()-10 {
 		t.Errorf("outage starts at %v, want %v", p.Keys[1].AtSec, p.DurSec()-10)
+	}
+}
+
+// blackhole touches the loss axis and NOTHING else.
+//
+// This is what lets it be layered over a pattern that drives the rate: zero on
+// a Shape means "no conditioning of this kind", so every field it leaves alone
+// is a field another pattern can own. Asserting a rate here -- even the
+// ladder's top -- would collide with every other pattern in the library, since
+// they all drive one.
+func TestBlackholeSetsLossAndNothingElse(t *testing.T) {
+	p, err := LadderPattern(PatternBlackhole, testLadder(), 30)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, k := range p.Keys {
+		for _, f := range []struct {
+			name string
+			v    float64
+		}{
+			{"rate_mbps", k.Down.RateMbps},
+			{"delay_ms", k.Down.DelayMs},
+			{"jitter_ms", k.Down.JitterMs},
+			{"reorder_pct", k.Down.ReorderPct},
+			{"corrupt_pct", k.Down.CorruptPct},
+		} {
+			if f.v != 0 {
+				t.Errorf("key %d sets %s=%v; blackhole must leave every axis but loss at zero",
+					i, f.name, f.v)
+			}
+		}
+		if k.Up != (Shape{}) {
+			t.Errorf("key %d sets an uplink shape %+v; blackhole is downlink-only", i, k.Up)
+		}
+	}
+}
+
+// It needs nothing from the ladder, so it does not care how many rungs there
+// are -- including fewer than the two a rung walk requires.
+func TestBlackholeNeedsNoLadder(t *testing.T) {
+	one := Ladder{Service: "x", Rungs: []Rung{{Mbps: 4.59, UpAtMbps: 6.41}}}
+	if _, err := LadderPattern(PatternBlackhole, one, 30); err == nil {
+		t.Log("builds from a single rung, which is fine: it reads none of them")
 	}
 }
 

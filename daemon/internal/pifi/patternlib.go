@@ -176,7 +176,8 @@ func DefaultLadder() Ladder {
 //     independent probe at increasing severity: it looks for where a player
 //     BREAKS, where valley watches one glide.
 //   - blackhole is the odd one out and walks no rungs at all: a minute of clear
-//     air with the last ten seconds at total loss. See blackhole().
+//     air with the last ten seconds at total loss, and it sets loss ONLY, so it
+//     can be layered over a pattern that drives the rate. See blackhole().
 //
 // Every rung walk traverses EVERY rung rather than just the extremes. A
 // two-level dip tells you a player fell and got up; walking the ladder tells you
@@ -209,11 +210,11 @@ func LadderPattern(name string, l Ladder, dwellSec float64) (Pattern, error) {
 	// The top rung is capped differently from the rest; see topRungHeadroom.
 	caps[len(caps)-1] = topCapFor(rungs[len(rungs)-1])
 
-	// Blackhole is not a walk of the ladder at all -- it only borrows its top
-	// so the clear phase is unconstrained -- so it is built and returned here
-	// rather than being expressed as a sequence of caps.
+	// Blackhole walks no rungs and asserts no rate, so it needs nothing from
+	// the ladder and is built and returned here rather than being expressed as
+	// a sequence of caps.
 	if name == PatternBlackhole {
-		return blackhole(caps[len(caps)-1]), nil
+		return blackhole(), nil
 	}
 
 	// Every sequence below ends on the value it began with, so a looping run
@@ -288,15 +289,21 @@ func reversedCaps(c []float64) []float64 {
 
 // blackhole is a minute of clear air with the last ten seconds dark.
 //
-// The cap is held across BOTH phases rather than dropped to zero for the
-// outage, because those are different faults and a player tells them apart. A
-// rate of zero is a link that got slow; 100% loss is a link that stopped
-// answering, with segment requests timing out rather than trickling. Tunnels,
-// lift shafts and handovers are the second kind, and testing the first in their
-// name would flatter a player that handles only slowness.
-func blackhole(topCap float64) Pattern {
-	clear := Shape{RateMbps: topCap}
-	dark := Shape{RateMbps: topCap, LossPct: 100}
+// It sets LOSS AND NOTHING ELSE. Every other field stays zero, and zero on a
+// Shape means "no conditioning of this kind" (model.go) -- so the rate is left
+// unlimited rather than pinned to the ladder's top.
+//
+// Two reasons, and the second is the one that matters. First, it is the more
+// honest description: a tunnel does not slow a link, it removes it, and holding
+// a cap through the outage describes a fault nobody has. Second, a pattern that
+// touches only the axis it is about can be LAYERED on one that owns a different
+// axis. transient_shock drives the rate; this drives the loss; together they
+// are a ladder walk that periodically goes dark, and neither had to know about
+// the other. A blackhole that also asserted a rate would collide with any
+// pattern that drives one, which is every other pattern here.
+func blackhole() Pattern {
+	clear := Shape{}
+	dark := Shape{LossPct: 100}
 	return Pattern{
 		Name: PatternBlackhole,
 		Keys: []Keyframe{
