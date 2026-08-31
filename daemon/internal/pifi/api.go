@@ -57,7 +57,7 @@ func (a *API) Routes() *http.ServeMux {
 	mux.HandleFunc("DELETE /api/devices/{mac}/ladders/{service}", a.deleteLadder)
 	mux.HandleFunc("POST /api/devices/{mac}/reset", a.resetDevice)
 	mux.HandleFunc("DELETE /api/devices/{mac}", a.forgetDevice)
-	mux.Handle("/", http.FileServer(http.FS(a.ui)))
+	mux.Handle("/", cacheHeaders(http.FileServer(http.FS(a.ui))))
 	return mux
 }
 
@@ -676,10 +676,12 @@ type patternEntry struct {
 func (a *API) resolveBuiltin(name string, p Policy, service string,
 	stretch float64) (Pattern, Ladder, bool, error) {
 
-	l, ok := pickLadder(p, service)
-	if !ok {
-		l = DefaultLadder()
-	}
+	// One ladder for the box, not this device's. The caps a pattern uses are
+	// the sweep's grid rather than the content's bitrates, and that grid is the
+	// same everywhere -- see GlobalLadder. `p` and `service` are still taken so
+	// the per-device view can say which measurement is in force.
+	stored, storedOK := a.e.LadderStore().Get()
+	l, ok := GlobalLadder(stored, storedOK, a.e.Store().All())
 	// Generated at the default dwell and then stretched, rather than generated
 	// at a stretched dwell. One path, so a built-in and a saved pattern are
 	// scaled by exactly the same code and cannot drift apart in rounding.
@@ -793,14 +795,12 @@ func (a *API) getPattern(w http.ResponseWriter, r *http.Request) {
 	name := normPatternName(r.PathValue("name"))
 
 	if IsBuiltin(name) {
-		mac := normMAC(q.Get("mac"))
-		if mac == "" {
-			writeErr(w, http.StatusBadRequest,
-				"a built-in is generated from a device's ladder; name a mac")
-			return
-		}
-		pat, l, real, err := a.resolveBuiltin(name, a.load(mac), q.Get("service"),
-			stretch)
+		// A mac is optional now: built-ins are generated from the box's one
+		// ladder rather than a device's, so the same name means the same
+		// pattern everywhere. It is still accepted, and still names which
+		// device the caller was looking at.
+		pat, l, real, err := a.resolveBuiltin(name, a.load(normMAC(q.Get("mac"))),
+			q.Get("service"), stretch)
 		if err != nil {
 			writeErr(w, http.StatusBadRequest, err.Error())
 			return
@@ -853,6 +853,37 @@ func (a *API) savePattern(w http.ResponseWriter, r *http.Request) {
 	a.e.BumpControl()
 	writeJSON(w, http.StatusOK, map[string]any{
 		"saved": normPatternName(pat.Name)})
+}
+
+// cacheHeaders tells the browser what it may keep, because otherwise it decides
+// for itself and gets it wrong.
+//
+// The embedded filesystem has no modification times -- embed.FS reports zero --
+// so http.FileServer emits no Last-Modified, and nothing here was emitting an
+// ETag or a Cache-Control either. A response with no validators and no
+// directives is not "do not cache": it licenses HEURISTIC caching, and a
+// browser may then reuse it for the rest of a session.
+//
+// For index.html that is the expensive one. Vite fingerprints every asset, so a
+// deploy changes their names -- but only index.html knows the new names. Serve
+// a stale index and the browser dutifully loads the OLD bundle, and the box
+// then runs code the operator cannot see and did not deploy. That happened here
+// across a dozen deploys before anyone noticed, and it presented as two
+// unrelated bugs: a button that did nothing and a layout that did not fit.
+//
+// So: the fingerprinted assets are immutable, because their names change when
+// their content does. Everything else must revalidate. no-cache does not mean
+// "do not store" -- it means "ask first" -- which is exactly right for a file
+// whose name never changes and whose content does.
+func cacheHeaders(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/assets/") {
+			w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+		} else {
+			w.Header().Set("Cache-Control", "no-cache")
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 // mergePatterns lays several patterns over one another and returns the result
@@ -920,6 +951,10 @@ func (a *API) mergePatterns(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	// What it is, alongside what it computed to. The keyframes are what plays;
+	// the recipe is how it was made, and is what makes a merge shareable and
+	// rebuildable. See PatternRecipe.
+	merged.Recipe = &PatternRecipe{Sources: in.Names, Stretch: in.Stretch}
 	// Validated here rather than only at save time, so an impossible
 	// combination is reported while the operator can still see which two
 	// patterns they picked -- reorder over a zero delay being the one that
@@ -1042,8 +1077,16 @@ func (a *API) selectPattern(w http.ResponseWriter, r *http.Request) {
 
 // getConfig exports every device's operator intent as one document.
 func (a *API) getConfig(w http.ResponseWriter, r *http.Request) {
+	var ladder *Ladder
+	if l, ok := a.e.LadderStore().Get(); ok {
+		ladder = &l
+	} else if l, ok := GlobalLadder(Ladder{}, false, a.e.Store().All()); ok {
+		// Not yet moved out of a device on this box. Export it anyway rather
+		// than making the operator re-sweep to get a backup worth having.
+		ladder = &l
+	}
 	writeJSON(w, http.StatusOK,
-		ExportConfig(a.e.Store().All(), a.e.PatternStore().All()))
+		ExportConfig(ladder, a.e.PatternStore().All()))
 }
 
 // configPost carries a configuration to import.
@@ -1087,13 +1130,40 @@ func (a *API) postConfig(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	// The library is replaced wholesale whenever the document carries one. It
-	// is box-level rather than per-device, so there is no subset of it that a
-	// merge could sensibly leave alone -- and a document with no patterns key
-	// at all is one exported before the library existed, which must not wipe it.
+	// Patterns follow the same rule as devices: merge upserts by name and
+	// leaves the rest alone, replace makes the library match the document.
+	//
+	// It used to replace wholesale in both modes, on the grounds that a
+	// box-level library has no subset a merge could sensibly leave alone. That
+	// was true while this document was a whole-box backup. It stopped being
+	// true when a document carrying only patterns became the way to send
+	// someone a pattern -- at which point importing a colleague's library
+	// silently destroyed your own, and the word on the button said "merge".
+	//
+	// A document with no patterns key at all is one exported before the library
+	// existed, and must not wipe it in either mode.
 	if in.Patterns != nil {
-		if err := a.e.PatternStore().ReplaceAll(in.Patterns); err != nil {
-			writeErr(w, http.StatusInternalServerError, err.Error())
+		if mode == ImportReplace {
+			if err := a.e.PatternStore().ReplaceAll(in.Patterns); err != nil {
+				writeErr(w, http.StatusInternalServerError, err.Error())
+				return
+			}
+		} else {
+			for _, pat := range in.Patterns {
+				if err := a.e.PatternStore().Put(pat); err != nil {
+					writeErr(w, http.StatusBadRequest, "pattern "+pat.Name+": "+err.Error())
+					return
+				}
+			}
+		}
+	}
+	// The ladder likewise: one per box, so there is nothing to merge. Applied
+	// after the patterns because every built-in is generated from it, so a
+	// document's patterns and its ladder describe one state and the box should
+	// not sit in half of it any longer than it must.
+	if in.Ladder != nil {
+		if err := a.e.LadderStore().Put(*in.Ladder); err != nil {
+			writeErr(w, http.StatusBadRequest, "ladder: "+err.Error())
 			return
 		}
 	}
@@ -1105,6 +1175,7 @@ func (a *API) postConfig(w http.ResponseWriter, r *http.Request) {
 	a.e.BumpControl()
 	writeJSON(w, http.StatusOK, map[string]any{
 		"mode": string(mode), "wrote": wrote, "removed": removed,
+		"ladder": in.Ladder != nil, "patterns": len(in.Patterns),
 	})
 }
 

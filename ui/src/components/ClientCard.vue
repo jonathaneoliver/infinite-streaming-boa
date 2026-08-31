@@ -61,6 +61,27 @@ const chartProps = computed(() => ({
  * page. The sparklines on a folded row are deliberately unaffected -- they
  * summarise, and a tall summary is a chart.
  */
+/**
+ * The folded row's columns, which have to follow the directions being shown.
+ *
+ * A fixed template with the cells v-if'd out would not do: the columns are
+ * positional, so dropping the two uplink cells slides the unit, the conditioned
+ * badge and the actions two columns to the left and every row stops lining up
+ * -- which is the exact failure the fixed template was introduced to fix.
+ * Built here instead, from one source, so the cells and the columns cannot
+ * disagree.
+ */
+const foldedCols = computed(() => [
+  '30px', '14px', 'minmax(96px, 1.3fr)', '58px', 'minmax(104px, 1fr)',
+  ...(props.chart.showDown ? ['76px', '68px'] : []),
+  ...(props.chart.showUp ? ['76px', '68px'] : []),
+  '38px', '92px', '56px',
+].join(' '));
+
+/** Two directions side by side, or one taking the full width. */
+const dirCols = computed(() =>
+  props.chart.showDown && props.chart.showUp ? '1fr 1fr' : '1fr');
+
 const EXPANDED_H = 196;
 const expandedH = computed(() => (props.chart.tallCharts ? EXPANDED_H * 2 : EXPANDED_H));
 
@@ -268,7 +289,11 @@ function fmtBytes(n: number): string {
          and the optional fields -- medium, address, conditioned -- would drop
          out and shift everything after them. Each slot is always rendered here
          and simply left empty when it does not apply. -->
-    <div v-if="collapsed" class="card-head folded" @click="onHeadClick">
+    <div
+      v-if="collapsed" class="card-head folded"
+      :style="{ gridTemplateColumns: foldedCols }"
+      @click="onHeadClick"
+    >
       <button
         class="fold-toggle ghost" @click="emit('toggle')"
         title="Expand this device" :aria-expanded="false"
@@ -294,29 +319,33 @@ function fmtBytes(n: number): string {
         {{ client.ip || (client.ipv6?.length ? client.ipv6[0] : 'no address yet') }}
       </span>
 
-      <span class="cell spark">
-        <TrafficChart
-          v-bind="chartProps"
-          :t="series?.t ?? []" :data="series?.down ?? []" :caps="series?.cap ?? []"
-          color="var(--down)" label="Downlink"
-          :cap="downCap" :height="24" compact
-        />
-      </span>
-      <span class="cell num val" style="color: var(--down)">
-        &darr;{{ client.down_counters.throughput_mbps.toFixed(2) }}
-      </span>
+      <template v-if="chart.showDown">
+        <span class="cell spark">
+          <TrafficChart
+            v-bind="chartProps"
+            :t="series?.t ?? []" :data="series?.down ?? []" :caps="series?.cap ?? []"
+            color="var(--down)" label="Downlink"
+            :cap="downCap" :height="24" compact
+          />
+        </span>
+        <span class="cell num val" style="color: var(--down)">
+          &darr;{{ client.down_counters.throughput_mbps.toFixed(2) }}
+        </span>
+      </template>
 
-      <span class="cell spark">
-        <TrafficChart
-          v-bind="chartProps"
-          :t="series?.t ?? []" :data="series?.up ?? []"
-          color="var(--up)" label="Uplink"
-          :cap="client.policy.up.rate_mbps" :height="24" compact
-        />
-      </span>
-      <span class="cell num val" style="color: var(--up)">
-        &uarr;{{ client.up_counters.throughput_mbps.toFixed(2) }}
-      </span>
+      <template v-if="chart.showUp">
+        <span class="cell spark">
+          <TrafficChart
+            v-bind="chartProps"
+            :t="series?.t ?? []" :data="series?.up ?? []"
+            color="var(--up)" label="Uplink"
+            :cap="client.policy.up.rate_mbps" :height="24" compact
+          />
+        </span>
+        <span class="cell num val" style="color: var(--up)">
+          &uarr;{{ client.up_counters.throughput_mbps.toFixed(2) }}
+        </span>
+      </template>
 
       <span class="cell meta unit">Mbps</span>
 
@@ -438,8 +467,8 @@ function fmtBytes(n: number): string {
       </button>
     </div>
 
-    <div class="dirs" style="margin-top: 10px">
-      <div class="dir down">
+    <div class="dirs" :style="{ marginTop: '10px', gridTemplateColumns: dirCols }">
+      <div v-if="chart.showDown" class="dir down">
         <h3>
           Downlink <span class="meta">to device</span>
           <span v-if="sweeping" class="badge" style="color: var(--warn)">
@@ -471,7 +500,7 @@ function fmtBytes(n: number): string {
         />
       </div>
 
-      <div class="dir up">
+      <div v-if="chart.showUp" class="dir up">
         <h3>
           Uplink <span class="meta">from device</span>
           <span v-if="editKey" class="badge" style="color: var(--up)">

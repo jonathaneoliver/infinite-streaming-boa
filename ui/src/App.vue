@@ -4,6 +4,7 @@ import { useSnapshot } from '@/composables/useSnapshot';
 import { useDevice } from '@/composables/useDevice';
 import type { Client, Shape, ChartPrefs, SortMode, YMode, Pattern } from '@/types';
 import { SUSTAINED_SEC, ntopngUrl, sortClients } from '@/types';
+import { exportConfig, importConfig } from '@/composables/useConfig';
 import ClientCard from '@/components/ClientCard.vue';
 import ChartToolbar from '@/components/ChartToolbar.vue';
 
@@ -142,6 +143,9 @@ const CHART_DEFAULTS: ChartPrefs = {
   // Off by default: the taller plot costs how many devices are visible at once,
   // which is the more common need.
   tallCharts: false,
+  // Both on: hiding a direction is a deliberate act, and a card that silently
+  // omitted one would be a card lying about what it is conditioning.
+  showDown: true, showUp: true,
 };
 
 function loadChart(): ChartPrefs {
@@ -184,6 +188,46 @@ const ticker = window.setInterval(() => {
   if (!hovering.value) now.value = Date.now();
 }, 1000);
 onUnmounted(() => window.clearInterval(ticker));
+
+/**
+ * Saving and restoring the whole setup.
+ *
+ * The box holds the work -- conditioning, ladders, saved and merged patterns --
+ * and the browser holds the view. A file that carried only one of those would
+ * restore half a setup, so it carries both. See useConfig.
+ */
+const cfgMsg = ref('');
+const cfgErr = ref('');
+
+async function onSaveConfig() {
+  cfgErr.value = '';
+  try {
+    cfgMsg.value = `saved ${await exportConfig()}`;
+  } catch (e) {
+    cfgErr.value = `save failed: ${(e as Error).message}`;
+  }
+}
+
+async function onLoadConfig(e: Event) {
+  const input = e.target as HTMLInputElement;
+  const file = input.files?.[0];
+  // Cleared straight away, so picking the same file twice still fires a change.
+  input.value = '';
+  if (!file) return;
+  cfgErr.value = '';
+  cfgMsg.value = '';
+  try {
+    const n = await importConfig(file);
+    cfgMsg.value = `loaded ${n.devices} device(s), ${n.patterns} pattern(s) — reloading`;
+    // A reload rather than reactive re-application: the restored view
+    // preferences are read once at startup by design, and re-plumbing every one
+    // of them to be settable at runtime would be a lot of machinery for an
+    // action taken once in a while.
+    setTimeout(() => location.reload(), 700);
+  } catch (err) {
+    cfgErr.value = `load failed: ${(err as Error).message}`;
+  }
+}
 </script>
 
 <template>
@@ -209,6 +253,26 @@ onUnmounted(() => window.clearInterval(ticker));
         v-if="clients.length > 1" class="pill link"
         @click="setAllFolded(anyExpanded)"
       >{{ anyExpanded ? 'fold all' : 'expand all' }}</button>
+      <button
+        class="pill link" title="Download this box's setup: every device's
+conditioning, its ladders, saved and merged patterns, and this browser's chart
+preferences."
+        @click="onSaveConfig()"
+      >export config</button>
+      <!-- A label WRAPPING the input, not a button that clicks it from
+           script. Clicking a label opens its own file picker natively, with no
+           JavaScript and no question about user activation -- and a
+           script-driven .click() on a hidden input is exactly the kind of thing
+           a browser may decline without saying so, which is how this shipped
+           looking like a button that did nothing. -->
+      <label class="pill link" title="Restore a setup from a file. Merges: devices in
+the file are replaced, devices not mentioned are left alone.">
+        import config
+        <input
+          type="file" accept="application/json,.json"
+          class="hidden-file" @change="onLoadConfig"
+        />
+      </label>
       <a
         v-if="caps?.ntopng"
         class="pill link"
@@ -217,6 +281,9 @@ onUnmounted(() => window.clearInterval(ticker));
         title="Traffic analysis for the whole bridge, in ntopng"
       >ntopng ↗</a>
     </header>
+
+    <div v-if="cfgErr" class="notice bad">{{ cfgErr }}</div>
+    <div v-if="cfgMsg" class="notice">{{ cfgMsg }}</div>
 
     <!-- Actionable messages stay at the top: an error the reader has to
          scroll past every device to find is worse than clutter. -->
@@ -234,6 +301,9 @@ onUnmounted(() => window.clearInterval(ticker));
       @sort-mode="(v: SortMode) => (sortMode = v)"
       :show-live="chart.showLive" :show-sustained="chart.showSustained"
       :tall-charts="chart.tallCharts" :sustained-sec="chart.sustainedSec"
+      :show-down="chart.showDown" :show-up="chart.showUp"
+      @show-down="(v: boolean) => (chart = { ...chart, showDown: v })"
+      @show-up="(v: boolean) => (chart = { ...chart, showUp: v })"
       @sustained-sec="(v: number) => (chart = { ...chart, sustainedSec: v })"
       @tall-charts="(v: boolean) => (chart = { ...chart, tallCharts: v })"
       @range="(v: number) => (chart = { ...chart, rangeSec: v })"

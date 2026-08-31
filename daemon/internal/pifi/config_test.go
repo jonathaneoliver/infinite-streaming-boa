@@ -2,6 +2,7 @@ package pifi
 
 import (
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -20,49 +21,6 @@ func measuredLadder() Ladder {
 	}
 }
 
-// Export must be byte-stable across runs. These documents are meant to be
-// committed and diffed, and Go randomises map iteration -- so an unchanged
-// configuration exporting in a different order every time would make the diff
-// useless for the one job it has.
-func TestExportOrdersDevicesByMAC(t *testing.T) {
-	all := map[string]Policy{
-		"cc:cc:cc:cc:cc:cc": devPolicy("cc:cc:cc:cc:cc:cc", 3),
-		"aa:aa:aa:aa:aa:aa": devPolicy("aa:aa:aa:aa:aa:aa", 1),
-		"bb:bb:bb:bb:bb:bb": devPolicy("bb:bb:bb:bb:bb:bb", 2),
-	}
-	for i := 0; i < 8; i++ {
-		got := ExportConfig(all, nil)
-		if len(got.Devices) != 3 {
-			t.Fatalf("got %d devices, want 3", len(got.Devices))
-		}
-		if got.Devices[0].MAC != "aa:aa:aa:aa:aa:aa" ||
-			got.Devices[1].MAC != "bb:bb:bb:bb:bb:bb" ||
-			got.Devices[2].MAC != "cc:cc:cc:cc:cc:cc" {
-			t.Fatalf("run %d: out of order: %v", i, macsOf(got.Devices))
-		}
-	}
-}
-
-func macsOf(ps []Policy) []string {
-	out := make([]string, 0, len(ps))
-	for _, p := range ps {
-		out = append(out, p.MAC)
-	}
-	return out
-}
-
-// Rev belongs to one box's edit history. Carrying it into a document invites a
-// restore to write a revision from a different timeline, and churns the diff of
-// a committed file on every unrelated edit.
-func TestExportDropsTheRevisionCounter(t *testing.T) {
-	all := map[string]Policy{"aa:aa:aa:aa:aa:aa": {
-		MAC: "aa:aa:aa:aa:aa:aa", Rev: 47, Enabled: true,
-	}}
-	if got := ExportConfig(all, nil).Devices[0].Rev; got != 0 {
-		t.Fatalf("exported rev %d, want 0", got)
-	}
-}
-
 // A restore is not a hand edit. Every other write path demotes a ladder to
 // "typed" so that the authority of a measurement is never attached to a number
 // nobody measured -- but demoting on import would mean a box can never be
@@ -70,7 +28,9 @@ func TestExportDropsTheRevisionCounter(t *testing.T) {
 func TestImportPreservesLadderProvenance(t *testing.T) {
 	p := devPolicy("aa:aa:aa:aa:aa:aa", 0)
 	p.Ladders = []Ladder{measuredLadder()}
-	doc := ExportConfig(map[string]Policy{p.MAC: p}, nil)
+	// A version 1 document, which is what carried devices. Import still reads
+	// them so an older backup restores what it can.
+	doc := ConfigExport{Version: 1, Devices: []Policy{p}}
 
 	next, _, _ := doc.Apply(map[string]Policy{}, ImportMerge)
 	got := next["aa:aa:aa:aa:aa:aa"].Ladders[0]
@@ -181,9 +141,7 @@ func TestExportRoundTripsThroughImport(t *testing.T) {
 	p.Ladders = []Ladder{measuredLadder()}
 	p.Pattern = &Pattern{Keys: []Keyframe{
 		kf(0, 12, EaseHold), kf(30, 1.5, EaseHold)}, Loop: true}
-	orig := map[string]Policy{p.MAC: p}
-
-	doc := ExportConfig(orig, nil)
+	doc := ConfigExport{Version: 1, Devices: []Policy{p}}
 	if err := doc.Validate(); err != nil {
 		t.Fatalf("the box rejected its own export: %v", err)
 	}
@@ -224,5 +182,168 @@ func TestReplaceAllKeepsMemoryAndDiskTogetherOnFailure(t *testing.T) {
 	}
 	if _, ok := s.Get("bb:bb:bb:bb:bb:bb"); ok {
 		t.Fatal("kept the failed import in memory")
+	}
+}
+
+// A document from an older schema still imports. This is the whole point of
+// versioning it: adding a field must not make every file already saved
+// unreadable, or the format is only good until it changes once.
+func TestValidateAcceptsOlderVersions(t *testing.T) {
+	c := ConfigExport{Version: 1, Devices: []Policy{{MAC: "aa:bb:cc:dd:ee:ff"}}}
+	if err := c.Validate(); err != nil {
+		t.Fatalf("a version 1 document was refused: %v", err)
+	}
+}
+
+// A document from a NEWER schema is refused, and that asymmetry is deliberate:
+// this code has already understood the past, but would only half-understand the
+// future, and half-understanding means conditioning traffic by a policy the
+// operator did not describe.
+func TestValidateRefusesNewerVersions(t *testing.T) {
+	c := ConfigExport{Version: ConfigVersion + 1, Devices: []Policy{{MAC: "aa:bb:cc:dd:ee:ff"}}}
+	err := c.Validate()
+	if err == nil {
+		t.Fatal("a future document was accepted")
+	}
+	if !strings.Contains(err.Error(), "newer than this box understands") {
+		t.Errorf("the refusal does not say why: %v", err)
+	}
+	// And a missing version is not a very old document, it is not a document.
+	if err := (ConfigExport{Devices: []Policy{{MAC: "aa:bb:cc:dd:ee:ff"}}}).Validate(); err == nil {
+		t.Error("a document with no version was accepted")
+	}
+}
+
+// A pattern library with no devices is a valid document. Patterns are not
+// device-specific -- keyed by name, and generated from one ladder for the whole
+// box -- so a file carrying only patterns is the natural unit to send someone.
+func TestValidateAcceptsAPatternLibraryWithNoDevices(t *testing.T) {
+	c := ConfigExport{
+		Version: ConfigVersion,
+		Patterns: []Pattern{{
+			Name: "shared", Loop: true,
+			Keys: []Keyframe{
+				{AtSec: 0, Down: Shape{RateMbps: 5}, Ease: EaseHold},
+				{AtSec: 30, Down: Shape{RateMbps: 1}, Ease: EaseHold},
+				{AtSec: 60, Down: Shape{RateMbps: 5}, Ease: EaseHold},
+			},
+		}},
+	}
+	if err := c.Validate(); err != nil {
+		t.Fatalf("a pattern-only document was refused: %v", err)
+	}
+}
+
+// Empty of both is still refused. It is not a configuration, and in replace
+// mode applying it would delete every device to honour a document that says
+// nothing.
+func TestValidateRefusesADocumentThatSaysNothing(t *testing.T) {
+	if err := (ConfigExport{Version: ConfigVersion}).Validate(); err == nil {
+		t.Error("an empty document was accepted")
+	}
+}
+
+// Version 2 exports no devices. Half of a version 1 document was a MAC, a
+// label, a revision counter belonging to one box's edit history, working state
+// an operator re-sets per test, and a baked copy of each device's loaded
+// pattern duplicating the library. None of it restores anywhere else.
+func TestExportCarriesNoDevices(t *testing.T) {
+	l := measuredLadder()
+	doc := ExportConfig(&l, []Pattern{{Name: "mine", Keys: []Keyframe{
+		kf(0, 8, EaseHold), kf(30, 2, EaseHold)}}})
+	if len(doc.Devices) != 0 {
+		t.Errorf("exported %d device(s); version 2 carries none", len(doc.Devices))
+	}
+	if doc.Version != 2 {
+		t.Errorf("version %d, want 2", doc.Version)
+	}
+	if doc.Ladder == nil {
+		t.Fatal("the ladder was not exported, which is the one expensive thing here")
+	}
+	if len(doc.Patterns) != 1 {
+		t.Errorf("patterns %v", doc.Patterns)
+	}
+	if err := doc.Validate(); err != nil {
+		t.Fatalf("the box rejected its own export: %v", err)
+	}
+}
+
+// A ladder alone is a valid document: it is the hour of real streaming, and the
+// thing most worth carrying off the box before a reflash.
+func TestExportOfALadderAloneIsValid(t *testing.T) {
+	l := measuredLadder()
+	doc := ExportConfig(&l, nil)
+	if err := doc.Validate(); err != nil {
+		t.Fatalf("a ladder-only document was refused: %v", err)
+	}
+}
+
+// A ladder too short to walk is refused rather than stored, because it cannot
+// drive a pattern and would shadow a usable one.
+func TestValidateRefusesAnUnusableLadder(t *testing.T) {
+	doc := ConfigExport{Version: ConfigVersion, Ladder: &Ladder{
+		Service: "x", Rungs: []Rung{{Mbps: 1, UpAtMbps: 1.5}}}}
+	if err := doc.Validate(); err == nil {
+		t.Error("a one-rung ladder was accepted")
+	}
+}
+
+// The box's ladder wins over anything still recorded under a device, and the
+// device scan remains as the migration path for a box swept before the move.
+func TestGlobalLadderPrefersTheBoxOverADevice(t *testing.T) {
+	deviceLadder := Ladder{Service: "old", Provenance: LadderMeasured, MeasuredAt: 999,
+		Rungs: []Rung{{Mbps: 1, UpAtMbps: 1.5}, {Mbps: 2, UpAtMbps: 3}}}
+	boxLadder := Ladder{Service: "box", Provenance: LadderMeasured, MeasuredAt: 1,
+		Rungs: []Rung{{Mbps: 4, UpAtMbps: 6}, {Mbps: 8, UpAtMbps: 12}}}
+	all := map[string]Policy{"aa:bb": {Ladders: []Ladder{deviceLadder}}}
+
+	got, ok := GlobalLadder(boxLadder, true, all)
+	if !ok || got.Service != "box" {
+		t.Errorf("got %q, want the box's ladder even though the device's is newer", got.Service)
+	}
+	// Nothing stored: fall back to the device, so an old box keeps working
+	// without a re-sweep.
+	got, ok = GlobalLadder(Ladder{}, false, all)
+	if !ok || got.Service != "old" {
+		t.Errorf("migration path broken: got %q", got.Service)
+	}
+}
+
+// Importing a pattern library in merge mode must not destroy the one already
+// there. It used to: the library was replaced wholesale in both modes, which
+// was defensible while this document was a whole-box backup and stopped being
+// so the moment a patterns-only document became the way to send someone a
+// pattern. Replace mode still makes the library match the document.
+func TestPatternImportModeIsHonoured(t *testing.T) {
+	two := []Keyframe{kf(0, 8, EaseHold), kf(30, 2, EaseHold)}
+	mine := Pattern{Name: "mine", Keys: two, Loop: true}
+	theirs := Pattern{Name: "theirs", Keys: two, Loop: true}
+
+	dir := t.TempDir()
+	st := NewPatternStore(filepath.Join(dir, "patterns.json"))
+	if err := st.Put(mine); err != nil {
+		t.Fatal(err)
+	}
+	// Merge: theirs arrives, mine survives.
+	if err := st.Put(theirs); err != nil {
+		t.Fatal(err)
+	}
+	names := map[string]bool{}
+	for _, p := range st.All() {
+		names[p.Name] = true
+	}
+	if !names["mine"] || !names["theirs"] {
+		t.Fatalf("merge lost a pattern: %v", names)
+	}
+	// Replace: the library becomes exactly the document.
+	if err := st.ReplaceAll([]Pattern{theirs}); err != nil {
+		t.Fatal(err)
+	}
+	names = map[string]bool{}
+	for _, p := range st.All() {
+		names[p.Name] = true
+	}
+	if names["mine"] || !names["theirs"] {
+		t.Fatalf("replace did not make the library match: %v", names)
 	}
 }

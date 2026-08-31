@@ -7,10 +7,20 @@ import (
 
 // ConfigVersion is the schema version of an exported configuration.
 //
-// Written on export and checked on import. A refused import is recoverable; an
-// import that half-understands a future document is not, because it would write
-// a policy the operator did not describe and then condition traffic by it.
-const ConfigVersion = 1
+// Written on export. On import, OLDER documents are accepted and newer ones
+// refused, which is the asymmetry that matters: a document from the past is
+// one this code has already understood, while a document from the future would
+// be half-understood, and half-understanding it means writing a policy the
+// operator did not describe and then conditioning traffic by it. A refused
+// import is recoverable; that is not.
+//
+// The obligation this places on every future field: absent must mean what
+// happened before the field existed. A file saved today has no opinion about a
+// setting invented tomorrow, so tomorrow's zero value has to be today's
+// behaviour. A field that cannot honour that needs a version bump AND a
+// migration, not just a bump -- because a bump alone no longer refuses the old
+// file, it accepts it and gets it wrong.
+const ConfigVersion = 2
 
 // ConfigExport is the whole box's operator intent in one document: every
 // device's conditioning, sub-classes, ladders and pattern.
@@ -38,7 +48,13 @@ type ConfigExport struct {
 	// Devices is sorted by MAC. Go randomises map iteration, and these
 	// documents are meant to be committed to a repository and diffed, where
 	// unstable ordering turns a no-op export into a whole-file change.
-	Devices []Policy `json:"devices"`
+	// Devices is READ but no longer written; see ExportConfig for why. Kept so
+	// a version 1 document, which carried them, still restores what it can.
+	Devices []Policy `json:"devices,omitempty"`
+	// Ladder is the box's one measured ladder: the only genuinely expensive
+	// thing here, an hour of a real device streaming real content, and the
+	// reason this document exists at all.
+	Ladder *Ladder `json:"ladder,omitempty"`
 }
 
 // ImportMode decides what happens to devices the document does not mention.
@@ -60,8 +76,21 @@ const (
 // edit history: exporting it invites a restore to carry a stale value that
 // belongs to a different timeline, and it would churn the diff of a committed
 // file on every unrelated edit.
-func ExportConfig(all map[string]Policy, patterns []Pattern) ConfigExport {
-	out := ConfigExport{Version: ConfigVersion, ExportedAt: nowMs()}
+// Devices are no longer exported, as of version 2.
+//
+// Measured on a real box, they were half the document and almost none of it was
+// worth keeping: a MAC and a label that mean nothing anywhere else, a `rev`
+// that is one box's optimistic-concurrency counter, sub-classes and shapes that
+// are working state an operator re-sets per test -- and a baked copy of each
+// device's loaded pattern, roughly nine kilobytes of it, duplicating what the
+// library already holds.
+//
+// What was worth keeping was the ladder, and that is no longer device-specific
+// either: it is one ladder for the box (see LadderStore). Lifting it out leaves
+// a document with no MACs in it at all, which is both a smaller backup and a
+// thing that can simply be sent to someone.
+func ExportConfig(ladder *Ladder, patterns []Pattern) ConfigExport {
+	out := ConfigExport{Version: ConfigVersion, ExportedAt: nowMs(), Ladder: ladder}
 	for _, pat := range patterns {
 		if !IsBuiltin(pat.Name) {
 			out.Patterns = append(out.Patterns, pat)
@@ -69,13 +98,6 @@ func ExportConfig(all map[string]Policy, patterns []Pattern) ConfigExport {
 	}
 	sort.Slice(out.Patterns, func(i, j int) bool {
 		return out.Patterns[i].Name < out.Patterns[j].Name
-	})
-	for _, p := range all {
-		p.Rev = 0
-		out.Devices = append(out.Devices, p)
-	}
-	sort.Slice(out.Devices, func(i, j int) bool {
-		return out.Devices[i].MAC < out.Devices[j].MAC
 	})
 	return out
 }
@@ -86,12 +108,28 @@ func ExportConfig(all map[string]Policy, patterns []Pattern) ConfigExport {
 // conditioning traffic by a state that is neither the old one nor the new one,
 // and nothing in the UI would say so.
 func (c ConfigExport) Validate() error {
-	if c.Version != ConfigVersion {
-		return fmt.Errorf("unsupported config version %d, expected %d",
+	if c.Version > ConfigVersion {
+		return fmt.Errorf(
+			"config version %d is newer than this box understands (%d)",
 			c.Version, ConfigVersion)
 	}
-	if len(c.Devices) == 0 {
-		return fmt.Errorf("config contains no devices")
+	if c.Version < 1 {
+		return fmt.Errorf("config version %d is not a version", c.Version)
+	}
+	// Devices OR patterns. Requiring devices made a pattern library
+	// unshareable, and patterns are not device-specific: PatternStore is keyed
+	// by name, and since generation moved to one ladder for the box they are
+	// not device-specific in their VALUES either. A document carrying only
+	// patterns is a pattern library, which is a thing worth sending someone.
+	//
+	// Empty of both is still refused: that is not a configuration, and applying
+	// it in replace mode would delete every device to honour a document that
+	// says nothing.
+	if len(c.Devices) == 0 && len(c.Patterns) == 0 && c.Ladder == nil {
+		return fmt.Errorf("config contains no ladder, patterns or devices")
+	}
+	if c.Ladder != nil && len(c.Ladder.Rungs) < 2 {
+		return fmt.Errorf("ladder: needs at least 2 rungs, got %d", len(c.Ladder.Rungs))
 	}
 	seenPattern := map[string]bool{}
 	for i, pat := range c.Patterns {

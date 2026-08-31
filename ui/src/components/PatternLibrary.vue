@@ -312,6 +312,46 @@ const mergeDetail = computed(() => {
   return `${p.keys.length} steps · ${fmtDur(p.keys[p.keys.length - 1].at_sec)}`;
 });
 
+/**
+ * Saves the timeline back over the pattern it came from.
+ *
+ * Only for a SAVED pattern. A built-in has nothing to save back to -- it is
+ * regenerated from the ladder on every request, and the daemon refuses its name
+ * outright, because a stored pattern wearing the label "valley" would make that
+ * name mean different things on different boxes. For those, "save as..." under
+ * a name of your own is the only route, which is why it is the button that is
+ * always there.
+ *
+ * Without this, an edit to a saved pattern was live on the device but not in
+ * the library, and the only way to keep it was to save a second copy under a
+ * second name. Editing a thing and keeping the edit should not create a new
+ * thing.
+ */
+const canSaveInPlace = computed(() => !!props.current && !!sel.value && !sel.value.builtin);
+
+async function saveInPlace() {
+  const name = sel.value?.name;
+  if (!name || !props.current) return;
+  saveErr.value = '';
+  savedMsg.value = '';
+  const r = await fetch(`/api/patterns/${encodeURIComponent(name)}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ pattern: { ...props.current, name } }),
+  });
+  if (!r.ok) {
+    saveErr.value = (await r.json()).error ?? `HTTP ${r.status}`;
+    return;
+  }
+  savedMsg.value = `saved to ${name}`;
+  setTimeout(() => (savedMsg.value = ''), 2500);
+  await load();
+}
+
+/** Confirmation, because a save that looks like nothing happened reads as a
+ *  save that did not happen. Cleared on a timer: it is a receipt, not state. */
+const savedMsg = ref('');
+
 async function remove(name: string) {
   const r = await fetch(`/api/patterns/${encodeURIComponent(name)}`, {
     method: 'DELETE',
@@ -463,10 +503,17 @@ function detail(r: PatternEntry) {
 
       <span class="spacer"></span>
       <button
+        v-if="canSaveInPlace && !showSave" class="ghost"
+        :title="`overwrite ${sel?.name} with this timeline`"
+        @click="saveInPlace()"
+      >save</button>
+      <button
         v-if="current && !showSave" class="ghost"
-        title="keep this timeline in the library under a name"
+        title="keep this timeline in the library under a name of your own — the
+only route for a built-in, which is generated and cannot be saved back to"
         @click="showSave = true"
       >save as...</button>
+      <span v-if="savedMsg" class="meta">{{ savedMsg }}</span>
     </div>
 
     <!-- One line of context for the SELECTION only. The ladder picker lives

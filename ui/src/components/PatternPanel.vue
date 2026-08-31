@@ -993,7 +993,7 @@ const status = computed(() => {
         </button>
       </template>
       <button class="ghost" @click="setOpen(!open)">
-        {{ open ? 'done' : pattern ? 'edit' : 'add' }}
+        {{ open ? 'close' : pattern ? 'edit' : 'add' }}
       </button>
     </h3>
 

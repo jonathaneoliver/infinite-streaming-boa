@@ -826,4 +826,15 @@ export interface ChartPrefs {
    * or the axis rule, so the plot still means the same thing.
    */
   tallCharts: boolean;
+  /**
+   * Which directions to draw at all.
+   *
+   * A view setting, not a policy one: hiding a direction changes nothing about
+   * what is conditioned or measured, it stops drawing it. Uplink is the case
+   * this exists for -- most work here is downlink, the README says uplink is
+   * untested at any rate, and a column nobody reads is half the width of every
+   * card.
+   */
+  showDown: boolean;
+  showUp: boolean;
 }

@@ -280,3 +280,18 @@ select, input[type='text'], input[type='number'] {
 .pill.link:hover { color: var(--ink); border-color: var(--ink-faint); }
 
 .empty { text-align: center; padding: 56px 20px; color: var(--ink-faint); }
+
+/* The file input is driven by a button, so it never shows itself.
+
+   Hidden by SIZE, not by display:none. Safari refuses to open a file picker for
+   an input that is not rendered, so display:none makes the button silently do
+   nothing there while working perfectly in Chrome -- which is how it shipped,
+   because it was checked in Chrome. Kept in the layout at a pixel, transparent,
+   and out of the pointer's way. */
+.hidden-file {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
+}
