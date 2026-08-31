@@ -46,6 +46,7 @@ func (a *API) Routes() *http.ServeMux {
 	mux.HandleFunc("POST /api/devices/{mac}/pattern/play", a.playPattern)
 	mux.HandleFunc("DELETE /api/devices/{mac}/pattern/play", a.stopPattern)
 	mux.HandleFunc("GET /api/patterns", a.listPatterns)
+	mux.HandleFunc("GET /api/patterns/{name}", a.getPattern)
 	mux.HandleFunc("PUT /api/patterns/{name}", a.savePattern)
 	mux.HandleFunc("DELETE /api/patterns/{name}", a.deleteSavedPattern)
 	mux.HandleFunc("POST /api/devices/{mac}/pattern/select", a.selectPattern)
@@ -733,6 +734,63 @@ func (a *API) listPatterns(w http.ResponseWriter, r *http.Request) {
 		out = append(out, e)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"patterns": out})
+}
+
+// getPattern resolves ONE pattern to its concrete timeline, without selecting
+// it.
+//
+// A built-in has no stored keyframes -- it is generated from the device's
+// ladder on demand -- so there was previously no way to see its rates except by
+// selecting it onto a device, which changes what that device is set to. Reading
+// something must not have the side effect of applying it: cloning a pattern to
+// edit a copy, or simply looking at what a built-in would do, are both reads.
+//
+// mac and service pick the ladder for a built-in, and stretch scales the
+// result, exactly as they do for the list.
+func (a *API) getPattern(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	stretch, err := stretchParam(q.Get("stretch"))
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	name := normPatternName(r.PathValue("name"))
+
+	if IsBuiltin(name) {
+		mac := normMAC(q.Get("mac"))
+		if mac == "" {
+			writeErr(w, http.StatusBadRequest,
+				"a built-in is generated from a device's ladder; name a mac")
+			return
+		}
+		pat, l, real, err := a.resolveBuiltin(name, a.load(mac), q.Get("service"),
+			stretch)
+		if err != nil {
+			writeErr(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		ladder := "default"
+		if real {
+			ladder = string(l.Provenance)
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"pattern": pat, "builtin": true,
+			"ladder_service": l.Service, "ladder": ladder,
+		})
+		return
+	}
+
+	sp, ok := a.e.PatternStore().Get(name)
+	if !ok {
+		writeErr(w, http.StatusNotFound, "no pattern named "+name)
+		return
+	}
+	st, err := StretchPattern(sp, stretch)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"pattern": st, "builtin": false})
 }
 
 // savePattern stores an authored pattern under a name.

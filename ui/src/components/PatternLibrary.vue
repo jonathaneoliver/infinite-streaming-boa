@@ -159,14 +159,36 @@ async function choose(name: string) {
   void load();
 }
 
+/**
+ * Resolves the pattern being copied from.
+ *
+ * A built-in has no stored keyframes -- it is generated from the ladder on
+ * demand -- so its rates have to be asked for. Read-only: it must not select
+ * the pattern onto the device, because copying something is not choosing it.
+ */
+async function resolve(name: string): Promise<Pattern | null> {
+  const q = new URLSearchParams({ mac: props.mac, stretch: String(stretch.value) });
+  if (service.value) q.set('service', service.value);
+  const r = await fetch(`/api/patterns/${encodeURIComponent(name)}?${q}`);
+  if (!r.ok) {
+    saveErr.value = (await r.json()).error ?? `HTTP ${r.status}`;
+    return null;
+  }
+  return (await r.json()).pattern as Pattern;
+}
+
 async function saveAs() {
   const name = saveName.value.trim();
   saveErr.value = '';
-  if (!name || !props.current) return;
+  if (!name) return;
+  const src = cloneFrom.value
+    ? await resolve(cloneFrom.value)
+    : props.current;
+  if (!src) return;
   const r = await fetch(`/api/patterns/${encodeURIComponent(name)}`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ pattern: { ...props.current, name } }),
+    body: JSON.stringify({ pattern: { ...src, name } }),
   });
   if (!r.ok) {
     // The daemon refuses built-in names, because a saved copy wearing the
@@ -177,6 +199,7 @@ async function saveAs() {
   }
   saveName.value = '';
   showSave.value = false;
+  cloneFrom.value = '';
   await load();
   await choose(name);
 }
@@ -211,6 +234,44 @@ const sel = computed(() => rows.value.find((r) => r.name === currentName.value))
 
 /** The save field is revealed on request: naming is rare, the picker is not. */
 const showSave = ref(false);
+
+/*
+ * Which pattern a save will copy FROM.
+ *
+ * Empty means the timeline currently loaded on the device -- the plain
+ * "save as..." case. Set by right-clicking a chip, which seeds the field from
+ * that pattern instead, so a new one can be started from any pattern in the
+ * list without first selecting it onto the device and disturbing what it is
+ * set to.
+ */
+const cloneFrom = ref('');
+
+/*
+ * Right-click clones. It is the panel's existing idiom rather than a new one:
+ * the timeline below already uses right-click to add a keyframe at a point and
+ * to delete one.
+ *
+ * A clone is a SNAPSHOT. It takes the built-in's rates as they are now and
+ * stops tracking the ladder, which is the whole reason to make one -- an edited
+ * copy that silently reshaped itself on the next sweep would not be a copy of
+ * anything. The name is seeded with a suffix rather than left blank, because
+ * the one rule the operator has to satisfy is that it cannot be the built-in's
+ * own name.
+ */
+function startClone(r: PatternEntry) {
+  if (props.locked || r.unavailable) return;
+  cloneFrom.value = r.name;
+  saveName.value = `${r.name}-copy`;
+  saveErr.value = '';
+  showSave.value = true;
+}
+
+function cancelSave() {
+  showSave.value = false;
+  cloneFrom.value = '';
+  saveName.value = '';
+  saveErr.value = '';
+}
 
 /**
  * Which ladder a built-in was actually generated from.
@@ -267,8 +328,9 @@ function detail(r: PatternEntry) {
           v-for="r in rows" :key="r.name"
           class="seg-btn" :class="{ on: currentName === r.name, saved: !r.builtin }"
           :disabled="locked || !!r.unavailable"
-          :title="r.unavailable || r.name"
+          :title="r.unavailable || `${r.name} — right-click to copy it`"
           @click="choose(r.name)"
+          @contextmenu.prevent="startClone(r)"
         >{{ r.name }}</button>
       </div>
 
@@ -332,14 +394,17 @@ function detail(r: PatternEntry) {
       </template>
     </p>
 
-    <div v-if="showSave && current" class="saveas">
+    <div v-if="showSave" class="saveas">
+      <span class="meta">{{ cloneFrom ? `copy of ${cloneFrom}` : 'save this timeline' }}</span>
       <input
         v-model="saveName" placeholder="name this pattern"
-        @keyup.enter="saveAs()" @keyup.esc="showSave = false"
+        @keyup.enter="saveAs()" @keyup.esc="cancelSave()"
       />
       <button :disabled="!saveName.trim()" @click="saveAs()">save</button>
-      <button class="ghost" @click="showSave = false">cancel</button>
-      <span v-if="sel?.builtin" class="meta">a built-in needs a name of its own</span>
+      <button class="ghost" @click="cancelSave()">cancel</button>
+      <span v-if="!cloneFrom && sel?.builtin" class="meta">
+        a built-in needs a name of its own
+      </span>
     </div>
     <p v-if="saveErr" class="err">{{ saveErr }}</p>
     <p v-if="error" class="err">{{ error }}</p>

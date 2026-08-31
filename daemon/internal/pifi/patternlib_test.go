@@ -350,3 +350,60 @@ func TestGeneratedDwellIsRecoverableFromTheStoredPattern(t *testing.T) {
 		t.Fatalf("recovered dwell %v, want 75", dwell)
 	}
 }
+
+// Cloning a built-in needs its concrete rates, and reading them must not apply
+// them: selecting a pattern onto a device to find out what it contains would
+// change what that device is set to.
+func TestBuiltinResolvesToTheSameTimelineTheSelectionWouldStore(t *testing.T) {
+	l := testLadder()
+	for _, name := range BuiltinNames {
+		want, err := LadderPattern(name, l, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		want, err = StretchPattern(want, 2)
+		if err != nil {
+			t.Fatal(err)
+		}
+		// What the endpoint composes: generate at the default dwell, then
+		// stretch -- the same two steps, in the same order, as selection.
+		got, err := LadderPattern(name, l, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, err = StretchPattern(got, 2)
+		if err != nil {
+			t.Fatal(err)
+		}
+		eq(t, rates(got), rates(want))
+		if got.DurSec() != want.DurSec() {
+			t.Fatalf("%s: %v vs %v", name, got.DurSec(), want.DurSec())
+		}
+	}
+}
+
+// A clone is a saved pattern like any other, so it must not take a built-in's
+// name -- which is exactly the case a clone runs into, since the thing being
+// cloned is usually a built-in.
+func TestACloneMustBeSavedUnderItsOwnName(t *testing.T) {
+	s := NewPatternStore(filepath.Join(t.TempDir(), "patterns.json"))
+	src, err := LadderPattern(PatternValley, testLadder(), 30)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Put(src); err == nil {
+		t.Fatal("a clone kept the built-in name and was accepted")
+	}
+	clone := src
+	clone.Name = "valley-slow"
+	if err := s.Put(clone); err != nil {
+		t.Fatalf("refused a renamed clone: %v", err)
+	}
+	got, ok := s.Get("valley-slow")
+	if !ok {
+		t.Fatal("clone not stored")
+	}
+	// The clone is a snapshot: it keeps the rates it was taken from and does
+	// NOT track the ladder afterwards, which is the point of cloning one.
+	eq(t, rates(got), rates(src))
+}
