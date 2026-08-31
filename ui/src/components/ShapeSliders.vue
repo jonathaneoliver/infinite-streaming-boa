@@ -34,8 +34,15 @@ watch(
 const v = (k: keyof Shape) => local.value[k] ?? props.shape[k];
 
 function set(k: keyof Shape, value: number) {
-  local.value = { ...local.value, [k]: value };
-  emit('update', { ...props.shape, ...local.value, [k]: value });
+  const next: Partial<Shape> = { [k]: value };
+  // Lowering delay past the current jitter would send jitter > delay, which the
+  // daemon refuses -- so delay could not be reduced without first reducing
+  // jitter, and the slider simply stopped moving with the reason buried in a
+  // conflict message. Jitter follows delay down, because jitter is a width
+  // around delay and a width cannot outlive the thing it is a width of.
+  if (k === 'delay_ms' && v('jitter_ms') > value) next.jitter_ms = value;
+  local.value = { ...local.value, ...next };
+  emit('update', { ...props.shape, ...local.value, ...next });
 }
 
 // Rate uses an exponential slider; the scale itself lives in types.ts, shared
@@ -46,10 +53,37 @@ const rateText = computed(() =>
   v('rate_mbps') === 0 ? 'unlimited' : `${v('rate_mbps')} Mbps`,
 );
 
-// netem subtracts jitter from delay per packet, so jitter above delay asks for
-// negative latency. The kernel clamps it silently and the resulting
-// distribution is not what was configured, so the control is capped instead.
-const jitterMax = computed(() => Math.max(1, v('delay_ms')));
+/*
+ * Jitter is a WIDTH around delay, not a value of its own.
+ *
+ * netem draws each packet's latency uniformly from [delay - jitter,
+ * delay + jitter], so jitter above delay asks for negative latency; the kernel
+ * clamps that silently and the resulting distribution is not what was
+ * configured. The daemon refuses it, and the control is capped to match.
+ *
+ * The cap used to be max(1, delay), which made the zero case worse rather than
+ * better: with no delay the slider still offered a 0-1 ms range, every value in
+ * it except 0 was refused by the daemon, and because the local override only
+ * clears when the server agrees, the control wedged displaying "+/- 1 ms"
+ * forever -- a number that was neither stored nor enforced.
+ */
+const jitterMax = computed(() => v('delay_ms'));
+const jitterOff = computed(() => v('delay_ms') === 0);
+const jitterVal = computed(() => Math.min(v('jitter_ms'), jitterMax.value));
+
+/**
+ * The delay range jitter actually produces, which is the thing being chosen.
+ *
+ * Shown because "+/- 30 ms" does not say what it is +/- OF, and the
+ * relationship between the two sliders is otherwise invisible.
+ */
+const jitterText = computed(() => {
+  if (jitterOff.value) return 'needs a delay';
+  const d = v('delay_ms');
+  const j = jitterVal.value;
+  if (j === 0) return '± 0 ms';
+  return `± ${j} ms (${d - j}–${d + j})`;
+});
 </script>
 
 <template>
@@ -74,14 +108,21 @@ const jitterMax = computed(() => Math.max(1, v('delay_ms')));
       <span class="val num">{{ v('delay_ms') }} ms</span>
     </div>
 
-    <div class="row">
+    <!-- Disabled rather than hidden when there is no delay. Hiding it would
+         make the row appear and vanish as delay crosses zero, moving the loss
+         slider under the cursor, and would remove the explanation exactly when
+         it is needed: the control is temporarily inapplicable, not clutter. -->
+    <div class="row" :class="{ off: jitterOff }">
       <label>jitter</label>
       <input
-        type="range" min="0" :max="jitterMax" step="1"
-        :value="Math.min(v('jitter_ms'), jitterMax)" :disabled="disabled"
+        type="range" min="0" :max="Math.max(jitterMax, 1)" step="1"
+        :value="jitterVal" :disabled="disabled || jitterOff"
+        :title="jitterOff
+          ? 'jitter varies the delay, so it needs a delay to vary'
+          : 'each packet is delayed by a value drawn from this range'"
         @input="set('jitter_ms', +($event.target as HTMLInputElement).value)"
       />
-      <span class="val num">± {{ Math.min(v('jitter_ms'), jitterMax) }} ms</span>
+      <span class="val num">{{ jitterText }}</span>
     </div>
 
     <div class="row">
@@ -98,4 +139,7 @@ const jitterMax = computed(() => Math.max(1, v('delay_ms')));
 
 <style scoped>
 .rows.disabled { opacity: 0.45; pointer-events: none; }
+/* Dimmed, but the label and the reason stay readable: the row is explaining
+   itself, so blanking it would defeat the point of keeping it. */
+.row.off { opacity: 0.55; }
 </style>
