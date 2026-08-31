@@ -12,12 +12,17 @@
  * # Why the markers are shared and the lanes are not
  *
  * Because a keyframe carries every parameter, it belongs to the TIMELINE, not
- * to a lane. One ruler of markers therefore runs along the top and the lanes
- * below it only draw. Per-lane markers would imply four independent automation
- * tracks that could be keyed at different times, which is a different and much
- * worse data model: three lanes can disagree about what second 30 means, and
- * the operator reading a surprising result then has to reconstruct the
- * effective policy in their head.
+ * to a lane. One ruler of markers therefore runs along the top, and the lanes
+ * below it draw the value each keyframe holds. Per-lane markers would imply
+ * four independent automation tracks that could be keyed at different times,
+ * which is a different and much worse data model: three lanes can disagree
+ * about what second 30 means, and the operator reading a surprising result then
+ * has to reconstruct the effective policy in their head.
+ *
+ * Dragging a lane vertically is not a second set of markers and does not change
+ * that. It edits ONE parameter of the keyframe already governing that moment --
+ * the same value the card's slider edits, reached where it is being read
+ * instead of after a separate selection. Nothing new is keyed by it.
  *
  * # Why every lane is a step
  *
@@ -32,7 +37,7 @@
  */
 import { computed, ref, watch } from 'vue';
 import type { Keyframe, Ladder, Pattern, PatternView, Shape } from '@/types';
-import { PATTERN_TEMPLATES, RATE_MAX, rateToPos } from '@/types';
+import { PATTERN_TEMPLATES, RATE_MAX, posToRate, rateToPos } from '@/types';
 import PatternLibrary from './PatternLibrary.vue';
 
 const props = defineProps<{
@@ -424,6 +429,130 @@ function moveKey(i: number, sec: number) {
   scrub.value = clamped;
 }
 
+/*
+ * Dragging a lane up and down sets the value held at that moment.
+ *
+ * Which keyframe it edits is not a choice the operator has to make: a lane is
+ * flat between keyframes because the value IS held, so the keyframe governing a
+ * point is the last one at or before it. Pressing on a segment therefore has
+ * exactly one meaning.
+ *
+ * The scale is pinned for the gesture, for the same reason the time span is
+ * during a horizontal drag. Three of the lanes scale to the tallest value the
+ * pattern reaches, so dragging the tallest value would move the ceiling it is
+ * being measured against -- the line would chase the cursor and never arrive.
+ */
+const vdrag = ref<
+  { lane: LaneKey; i: number; ceil: number; y0: number; moved: boolean } | null
+>(null);
+
+/*
+ * The ceiling a flat-zero lane is dragged against.
+ *
+ * A lane whose values are all zero has no scale of its own, so there would be
+ * nothing to drag against and the gesture would do nothing at all -- which is
+ * exactly the case of adding delay to a pattern that has none. These are
+ * starting scales, not limits: once a lane holds any value it scales to the
+ * pattern like the others, and the sliders still reach the full range.
+ */
+const LANE_START_CEIL: Record<LaneKey, number> = {
+  rate_mbps: 0, // exponential, and never flat: unlimited draws at the top
+  delay_ms: 200,
+  jitter_ms: 200,
+  loss_pct: 5,
+};
+
+/** Which keyframe holds the value at this x. */
+function keyGoverning(clientX: number): number {
+  const t = timeAt(clientX, renderSpan.value);
+  let i = 0;
+  for (let n = 0; n < keys.value.length; n++) {
+    if (keys.value[n].at_sec <= t) i = n;
+  }
+  return i;
+}
+
+/** Invert yOf: where the cursor sits in the lane, 0 at the floor, 1 at the top. */
+function normFromY(clientY: number, el: HTMLElement): number {
+  const box = el.getBoundingClientRect();
+  if (box.height <= 0) return 0;
+  const y = ((clientY - box.top) / box.height) * VB;
+  return Math.min(Math.max((VB - 6 - y) / (VB - 14), 0), 1);
+}
+
+function startVDrag(lane: LaneKey, e: PointerEvent) {
+  if (props.run) return;
+  const i = keyGoverning(e.clientX);
+  try {
+    (e.target as HTMLElement).setPointerCapture(e.pointerId);
+  } catch {
+    /* no active pointer; the drag still tracks via bubbled events */
+  }
+  vdrag.value = {
+    lane, i, ceil: laneMax(lane) || LANE_START_CEIL[lane],
+    y0: e.clientY, moved: false,
+  };
+}
+
+function onVDrag(e: PointerEvent) {
+  const d = vdrag.value;
+  if (!d || !keys.value[d.i]) return;
+  // The same slop as the horizontal drag, and for the same reason: without it
+  // every click on a lane is a one-pixel drag that nudges a value on the way to
+  // moving the playhead, and neither action is what was asked for.
+  if (!d.moved && Math.abs(e.clientY - d.y0) < DRAG_SLOP_PX) return;
+  if (!d.moved) emit('select', d.i);
+  d.moved = true;
+  setLaneValue(d.i, d.lane, normFromY(e.clientY, e.currentTarget as HTMLElement), d.ceil);
+}
+
+function endVDrag(e: PointerEvent) {
+  if (!vdrag.value) return;
+  try {
+    (e.target as HTMLElement).releasePointerCapture(e.pointerId);
+  } catch {
+    /* nothing was captured */
+  }
+  // A drag ends in a click on the lane, which would otherwise move the playhead
+  // to wherever the gesture happened to finish.
+  if (vdrag.value.moved) suppressClick = true;
+  vdrag.value = null;
+}
+
+/**
+ * Writes one parameter of one keyframe from a lane position.
+ *
+ * The clamps are the daemon's own, applied here so a drag cannot compose a
+ * policy the box will refuse -- a slider that silently produces rejected writes
+ * is worse than one that cannot reach the value.
+ */
+function setLaneValue(i: number, lane: LaneKey, n: number, ceil: number) {
+  mutate((p) => {
+    const shape = p.keys[i][dir.value];
+    if (lane === 'rate_mbps') {
+      // Never 0 from a drag. Zero means unlimited, which is drawn at the TOP of
+      // the lane while the slider puts it at the bottom, so letting the floor
+      // produce it would send the line leaping to the ceiling as the cursor
+      // reached the bottom. Clearing a cap is the slider's job.
+      shape.rate_mbps = posToRate(Math.max(1, Math.round(n * 100)));
+      return;
+    }
+    if (lane === 'loss_pct') {
+      shape.loss_pct = Math.round(Math.min(n * ceil, 20) * 10) / 10;
+      return;
+    }
+    const v = Math.round(Math.min(n * ceil, 10000));
+    if (lane === 'delay_ms') {
+      shape.delay_ms = v;
+      // Jitter is a width around delay; the daemon refuses a width wider than
+      // the thing it is a width of, so it follows delay down.
+      if (shape.jitter_ms > v) shape.jitter_ms = v;
+    } else {
+      shape.jitter_ms = Math.min(v, shape.delay_ms);
+    }
+  });
+}
+
 function setLoop(on: boolean) {
   mutate((p) => {
     p.loop = on;
@@ -705,7 +834,15 @@ const status = computed(() => {
           ></button>
         </div>
 
-        <div v-for="l in LANES" :key="l.key" class="lane">
+        <div
+          v-for="l in LANES" :key="l.key" class="lane"
+          :class="{ grab: !run, dragging: vdrag?.lane === l.key }"
+          :title="run ? '' : `drag up and down to set ${l.label} at that moment`"
+          @pointerdown.stop="startVDrag(l.key, $event)"
+          @pointermove="onVDrag"
+          @pointerup="endVDrag"
+          @pointercancel="endVDrag"
+        >
           <svg :viewBox="`0 0 1000 ${VB}`" preserveAspectRatio="none">
             <path :d="lanePath(l.key)" class="line" vector-effect="non-scaling-stroke" />
           </svg>
@@ -871,6 +1008,12 @@ const status = computed(() => {
 /* Clickable, so it says so. The text inside stays selectable -- onHeadClick
    ignores a click that ends a selection, which is what makes that safe. */
 .head { cursor: pointer; }
+
+/* Only a cursor says a lane is draggable, so it has to. ns-resize rather than
+   grab: the gesture is vertical only, and a cursor promising both directions
+   would offer a horizontal drag that does nothing. */
+.lane.grab { cursor: ns-resize; }
+.lane.dragging { background: var(--line); }
 
 .spacer {
   flex: 1;
