@@ -31,11 +31,18 @@
  * timeline and the card owns it.
  */
 import { computed, ref, watch } from 'vue';
-import type { Keyframe, Pattern, PatternView, Shape } from '@/types';
+import type { Keyframe, Ladder, Pattern, PatternView, Shape } from '@/types';
 import { PATTERN_TEMPLATES, RATE_MAX, rateToPos } from '@/types';
+import PatternLibrary from './PatternLibrary.vue';
 
 const props = defineProps<{
   pattern: Pattern | null;
+  /** Identity, so the library can list and select against this device. */
+  mac: string;
+  rev: number;
+  /** The device's ladders, so the library can say which one a built-in
+   *  describes and let the operator pick when there is more than one. */
+  ladders: Ladder[];
   run?: PatternView;
   /** Which keyframe the card's sliders are editing, if any. */
   selected: number | null;
@@ -594,9 +601,23 @@ const status = computed(() => {
          settings, and a folded panel must not hide that. -->
     <p v-if="run && !open" class="meta folded-status">{{ status }}</p>
 
-    <!-- No timeline yet. Both routes start from something concrete: the
-         device's current settings, or a named link. An empty editor with a
-         single keyframe at zero would be a worse blank page. -->
+    <!-- The library comes first, and stays visible whether or not a timeline
+         is loaded. Choosing what to play is the common action; authoring one
+         is the rare one, so the picker is not buried behind the editor. -->
+    <PatternLibrary
+      v-if="open"
+      :mac="mac"
+      :rev="rev"
+      :ladders="ladders"
+      :current="pattern"
+      :locked="running"
+      @changed="emit('select', null)"
+    />
+
+    <!-- Hand-authoring, for a shape the ladder does not describe. Both routes
+         start from something concrete: the device's current settings, or a
+         named link. An empty editor with a single keyframe at zero would be a
+         worse blank page. -->
     <div v-if="open && !pattern" class="start">
       <button @click="emit('create')">start from these settings</button>
       <select @change="useTemplate(($event.target as HTMLSelectElement).value)">
