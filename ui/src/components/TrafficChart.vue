@@ -663,7 +663,13 @@ const gid = `g${Math.random().toString(36).slice(2, 8)}`;
 .tick-text text { fill: var(--ink-faint); font-size: 10px; }
 .axis-text text { fill: var(--ink-faint); font-size: 10px; }
 
-.cap line { stroke-width: 1; stroke-dasharray: 4 3; opacity: 0.8; }
+/* Both shapes: the cap is a <line> when it never moved and a <polyline> when it
+   stepped, and they must look identical -- a threshold that changes weight
+   depending on whether a pattern happened to run is two different meanings for
+   one thing. Styling only `line` left the stepped version solid and full
+   weight, reading as a data series rather than as a threshold. */
+.cap line,
+.cap polyline { stroke-width: 1; stroke-dasharray: 4 3; opacity: 0.8; fill: none; }
 .cap-text { fill: var(--ink-dim); font-size: 10px; }
 
 .crosshair line { stroke: var(--ink-faint); stroke-width: 1; opacity: 0.6; }
