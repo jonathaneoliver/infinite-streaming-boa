@@ -55,7 +55,13 @@ body {
   font-variant-numeric: tabular-nums;
 }
 
-.wrap { max-width: 1180px; margin: 0 auto; padding: 20px 16px 64px; }
+/* Full width, deliberately. 1180px was a reading measure, and this page is not
+   prose: its content is charts whose x axis is time, so every extra pixel of
+   width is extra temporal resolution -- a 5m range at 1180px gives about 4px
+   per second, and a wide monitor doubles that. The cards below are a grid that
+   was already fluid, and each chart sizes itself from a ResizeObserver rather
+   than from a fixed width, so nothing here needed a breakpoint to follow. */
+.wrap { padding: 20px 16px 64px; }
 
 /* --- header ------------------------------------------------------------- */
 header.top {
