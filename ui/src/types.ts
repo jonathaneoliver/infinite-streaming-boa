@@ -6,8 +6,24 @@ export interface Shape {
   rate_mbps: number;
   delay_ms: number;
   jitter_ms: number;
+  /** Mean loss. With `loss_burst` above 1 it is the long-run fraction lost,
+   *  not the chance of losing any one packet. */
   loss_pct: number;
+  /**
+   * Mean loss burst length in packets. 1 — and absent, for policy stored
+   * before this existed — is uniform loss, each packet independently, which is
+   * netem's default and essentially never happens on a real link.
+   *
+   * Packets rather than milliseconds because netem's model steps per packet,
+   * so packets is defined even at an unlimited rate. The controls derive the
+   * wall-clock equivalent for display.
+   */
+  loss_burst?: number;
 }
+
+/** The longest burst the API accepts. Past this you are describing an outage,
+ *  which belongs on a pattern where it is visible and timed. */
+export const BURST_MAX = 50;
 
 export interface Match {
   dst_port?: number;
@@ -206,6 +222,12 @@ export interface Capabilities {
   /** True only when the iperf3 server is LISTENING, not merely installed. */
   iperf: boolean;
   iperf_port: number;
+  /** True when this kernel's netem accepts a Gilbert-Elliott loss model,
+   *  asked at startup rather than assumed. False disables the burst control
+   *  with `loss_burst_note` as the reason: a control that says "bursty" while
+   *  the kernel delivers uniform loss is worse than no control. */
+  loss_burst: boolean;
+  loss_burst_note?: string;
   reason?: string;
 }
 
@@ -255,6 +277,12 @@ export const CLEAN: Shape = {
 // Named starting points. These are approximations of real-world links, not
 // standards -- the numbers come from typical measured behaviour and are meant
 // as a place to start rather than a certification profile.
+//
+// Burst lengths follow the same rule and are the least certain numbers here:
+// nobody has fitted them to a measured link. The shape of the claim is what
+// matters -- a router dropping from a full queue loses single packets, while a
+// radio fade loses a run of them -- so congestion-like presets stay near
+// uniform and the mobile ones do not.
 export interface Preset {
   name: string;
   note: string;
@@ -273,38 +301,38 @@ export const PRESETS: Preset[] = [
   {
     name: 'Cable',
     note: '30 Mbps, 30 ms',
-    down: { rate_mbps: 30, delay_ms: 15, jitter_ms: 4, loss_pct: 0.05 },
-    up: { rate_mbps: 6, delay_ms: 15, jitter_ms: 4, loss_pct: 0.05 },
+    down: { rate_mbps: 30, delay_ms: 15, jitter_ms: 4, loss_pct: 0.05, loss_burst: 2 },
+    up: { rate_mbps: 6, delay_ms: 15, jitter_ms: 4, loss_pct: 0.05, loss_burst: 2 },
   },
   {
     name: '4G good',
     note: '20 Mbps, 50 ms',
-    down: { rate_mbps: 20, delay_ms: 25, jitter_ms: 8, loss_pct: 0.1 },
-    up: { rate_mbps: 8, delay_ms: 25, jitter_ms: 8, loss_pct: 0.1 },
+    down: { rate_mbps: 20, delay_ms: 25, jitter_ms: 8, loss_pct: 0.1, loss_burst: 4 },
+    up: { rate_mbps: 8, delay_ms: 25, jitter_ms: 8, loss_pct: 0.1, loss_burst: 4 },
   },
   {
     name: '4G weak',
     note: '3 Mbps, 120 ms, 1%',
-    down: { rate_mbps: 3, delay_ms: 60, jitter_ms: 25, loss_pct: 1 },
-    up: { rate_mbps: 1, delay_ms: 60, jitter_ms: 25, loss_pct: 1 },
+    down: { rate_mbps: 3, delay_ms: 60, jitter_ms: 25, loss_pct: 1, loss_burst: 10 },
+    up: { rate_mbps: 1, delay_ms: 60, jitter_ms: 25, loss_pct: 1, loss_burst: 10 },
   },
   {
     name: '3G',
     note: '1.5 Mbps, 200 ms, 1.5%',
-    down: { rate_mbps: 1.5, delay_ms: 100, jitter_ms: 40, loss_pct: 1.5 },
-    up: { rate_mbps: 0.5, delay_ms: 100, jitter_ms: 40, loss_pct: 1.5 },
+    down: { rate_mbps: 1.5, delay_ms: 100, jitter_ms: 40, loss_pct: 1.5, loss_burst: 10 },
+    up: { rate_mbps: 0.5, delay_ms: 100, jitter_ms: 40, loss_pct: 1.5, loss_burst: 10 },
   },
   {
     name: 'Satellite',
     note: '25 Mbps, 600 ms',
-    down: { rate_mbps: 25, delay_ms: 300, jitter_ms: 20, loss_pct: 0.2 },
-    up: { rate_mbps: 3, delay_ms: 300, jitter_ms: 20, loss_pct: 0.2 },
+    down: { rate_mbps: 25, delay_ms: 300, jitter_ms: 20, loss_pct: 0.2, loss_burst: 5 },
+    up: { rate_mbps: 3, delay_ms: 300, jitter_ms: 20, loss_pct: 0.2, loss_burst: 5 },
   },
   {
     name: 'Lossy',
-    note: '10 Mbps, 5% loss',
-    down: { rate_mbps: 10, delay_ms: 20, jitter_ms: 10, loss_pct: 5 },
-    up: { rate_mbps: 5, delay_ms: 20, jitter_ms: 10, loss_pct: 5 },
+    note: '10 Mbps, 5% loss in bursts',
+    down: { rate_mbps: 10, delay_ms: 20, jitter_ms: 10, loss_pct: 5, loss_burst: 20 },
+    up: { rate_mbps: 5, delay_ms: 20, jitter_ms: 10, loss_pct: 5, loss_burst: 20 },
   },
 ];
 

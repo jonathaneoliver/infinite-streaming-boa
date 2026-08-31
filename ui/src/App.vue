@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onUnmounted, ref, watch } from 'vue';
+import { computed, onUnmounted, provide, ref, watch } from 'vue';
 import { useSnapshot } from '@/composables/useSnapshot';
 import { useDevice } from '@/composables/useDevice';
 import type { Client, Shape, ChartPrefs, YMode, Pattern } from '@/types';
@@ -12,6 +12,23 @@ const dev = useDevice();
 
 const clients = computed(() => snap.value?.clients ?? []);
 const caps = computed(() => snap.value?.caps);
+
+/*
+ * Whether the box can do bursty loss, provided once for every ShapeSliders on
+ * the page. A property of the kernel rather than of any device, so threading it
+ * through ClientCard and SubClasses -- neither of which has any use for it --
+ * would be plumbing for its own sake.
+ *
+ * Defaults to available while the first snapshot is in flight, so the control
+ * does not flicker through a disabled state on every page load.
+ */
+provide(
+  'lossBurst',
+  computed(() => ({
+    ok: caps.value?.loss_burst ?? true,
+    note: caps.value?.loss_burst_note ?? '',
+  })),
+);
 const presentCount = computed(() => clients.value.filter((c) => c.present).length);
 
 /**

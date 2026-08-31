@@ -204,9 +204,33 @@ func validShape(s Shape) error {
 		return fmt.Errorf("jitter_ms cannot exceed delay_ms")
 	case s.LossPct < 0 || s.LossPct > 100:
 		return fmt.Errorf("loss_pct must be between 0 and 100")
+	case s.LossBurst < 0 || s.LossBurst > maxLossBurst:
+		// Above this you are describing an outage rather than correlated loss
+		// inside a working link, and an outage is a keyframe on a pattern --
+		// where it is visible, timed and reproducible.
+		return fmt.Errorf("loss_burst must be between 1 (uniform) and %d packets, "+
+			"or 0 for uniform; a longer dropout belongs on a pattern", maxLossBurst)
+	// Guarded on LossPct > 0 to match Shape.Bursty exactly. Without it, turning
+	// loss OFF while a burst length is still set -- the ordinary way anyone
+	// stops using this -- is refused, because zero is below the floor.
+	case s.LossBurst > 1 && s.LossPct > 0 && s.LossPct < minBurstyLossPct:
+		// Bursts this rare cannot be expressed: the Gilbert-Elliott transition
+		// probability rounds to zero at the precision tc takes, which would
+		// mean no loss at all rather than the loss that was asked for.
+		return fmt.Errorf("bursty loss needs loss_pct of at least %g; "+
+			"below that the bursts are too rare to configure", minBurstyLossPct)
 	}
 	return nil
 }
+
+const (
+	// maxLossBurst bounds a burst at what still reads as a lossy link rather
+	// than an outage. See validShape.
+	maxLossBurst = 50
+	// minBurstyLossPct is the smallest mean loss whose Gilbert-Elliott
+	// parameters survive tc's percentage precision at the longest burst.
+	minBurstyLossPct = 0.01
+)
 
 // load fetches the stored policy for a MAC, or a blank enabled one if the
 // device has never been configured. A device seen on the network but never

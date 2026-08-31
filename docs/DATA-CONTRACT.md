@@ -132,6 +132,24 @@ never as presence.
 | `options["loss-random"].loss` | **FRACTION.** `0.005` = 0.5 % |
 | `options.limit` | Queue depth in **packets** |
 
+**Bursty loss reports under a different key.** When a shape asks for correlated
+loss, pifi writes `loss gemodel` instead of `loss`, and the readback carries
+`options["loss-gemodel"]` with `p`, `r`, `h`, `k` — *not* `loss-random`, and no
+`loss` field at all. Anything reading loss back has to handle both shapes, or a
+bursty client silently reports zero configured loss.
+
+The four are the Gilbert-Elliott transition and error probabilities, not the two
+numbers the operator set. Recover those with
+
+```
+mean loss   L = p / (p + r)
+mean burst  B = 1 / r          (packets)
+```
+
+which holds because pifi always writes `1-h = 100%` and `1-k = 0%`. Report the
+derived pair rather than the raw four: `p = 0.204%` answers no question anyone
+asked, and the round trip is what would catch a kernel clamping something.
+
 **Semantics that bite**
 
 - Three different units from the three fields a user sets in one row of the UI.

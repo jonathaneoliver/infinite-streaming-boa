@@ -32,9 +32,31 @@ type Shape struct {
 	DelayMs float64 `json:"delay_ms"`
 	// JitterMs randomises DelayMs by +/- this amount.
 	JitterMs float64 `json:"jitter_ms"`
-	// LossPct is random packet loss, 0-100.
+	// LossPct is packet loss, 0-100. With LossBurst above 1 it is the MEAN loss
+	// rate rather than an independent per-packet probability -- the long-run
+	// fraction of packets lost, not the chance of losing any given one.
 	LossPct float64 `json:"loss_pct"`
+	// LossBurst is the mean length of a loss burst, in packets. 1 (and 0, for
+	// stored policy written before this existed) means uniform loss: each
+	// packet independently, which is what netem does by default and what
+	// essentially never happens on a real link.
+	//
+	// Above 1 the kernel runs a Gilbert-Elliott model instead, and LossPct
+	// becomes the mean over time. The two knobs are chosen so that 1
+	// reproduces the old behaviour exactly, which is what lets every stored
+	// policy and keyframe keep meaning what it meant.
+	//
+	// Packets rather than milliseconds because netem's state machine steps per
+	// packet: packets is always defined, including at an unlimited rate where
+	// a duration is unknowable. The interface derives and shows the wall-clock
+	// equivalent from the configured rate.
+	LossBurst float64 `json:"loss_burst,omitempty"`
 }
+
+// Bursty reports whether this shape asks for correlated loss. Burst length
+// without loss imposes nothing -- there are no bursts of nothing -- so it is
+// deliberately not part of IsClean.
+func (s Shape) Bursty() bool { return s.LossPct > 0 && s.LossBurst > 1 }
 
 // IsClean reports whether this direction imposes nothing at all, which lets the
 // engine skip building a netem qdisc rather than installing an identity one.
@@ -376,6 +398,13 @@ type Capabilities struct {
 	NamesLearned int    `json:"names_learned"`
 	NamesByMAC   int    `json:"names_by_mac"`
 	Reason       string `json:"reason,omitempty"`
+	// LossBurst reports whether this kernel's netem accepts a Gilbert-Elliott
+	// loss model, asked at startup rather than assumed. False disables the
+	// burst control with LossBurstNote as the reason -- the alternative is an
+	// interface that says "bursty" while the kernel delivers uniform loss,
+	// which is the failure the feature exists to fix, wearing a disguise.
+	LossBurst     bool   `json:"loss_burst"`
+	LossBurstNote string `json:"loss_burst_note,omitempty"`
 }
 
 // Snapshot is the whole server state, delivered complete on every SSE event.
