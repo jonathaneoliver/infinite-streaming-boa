@@ -28,6 +28,7 @@ export interface ConfigDoc {
   exported_at?: number;
   devices?: unknown[];
   patterns?: unknown[];
+  ladder?: unknown;
   ui?: Record<string, string>;
 }
 
@@ -94,7 +95,9 @@ export async function exportConfig(): Promise<string> {
  * silently delete a device's measured ladder, an hour of real streaming each,
  * is not a button worth having; that operation stays where it has to be typed.
  */
-export async function importConfig(file: File): Promise<{ devices: number; patterns: number }> {
+export async function importConfig(
+  file: File,
+): Promise<{ devices: number; patterns: number; ladder: boolean }> {
   const text = await file.text();
   let doc: ConfigDoc;
   try {
@@ -102,8 +105,23 @@ export async function importConfig(file: File): Promise<{ devices: number; patte
   } catch (e) {
     throw new Error(`not valid JSON: ${(e as Error).message}`);
   }
-  if (!doc || typeof doc !== 'object' || !Array.isArray(doc.devices)) {
-    throw new Error('not a boa configuration: no "devices" array');
+  // Mirrors ConfigExport.Validate on the box: a version, and at least one of
+  // ladder, patterns or devices. This guard used to require `devices`, which
+  // rejected every document the box produces -- version 2 stopped writing
+  // devices, so an export could not be read back by the button that wrote it.
+  // Anything stricter than the daemon is a bug twice over: it refuses valid
+  // documents, and it refuses them client-side where the reason is guesswork.
+  if (!doc || typeof doc !== 'object') {
+    throw new Error('not a boa configuration: not a JSON object');
+  }
+  if (typeof doc.version !== 'number' || doc.version < 1) {
+    throw new Error('not a boa configuration: no "version"');
+  }
+  const devices = Array.isArray(doc.devices) ? doc.devices : [];
+  const patterns = Array.isArray(doc.patterns) ? doc.patterns : [];
+  const ladder = doc.ladder != null;
+  if (devices.length === 0 && patterns.length === 0 && !ladder) {
+    throw new Error('config contains no ladder, patterns or devices');
   }
   const r = await fetch('/api/config?mode=merge', {
     method: 'POST',
@@ -113,5 +131,5 @@ export async function importConfig(file: File): Promise<{ devices: number; patte
   if (!r.ok) throw new Error((await r.json()).error ?? `HTTP ${r.status}`);
   // The box first: if it refused the document, the view should not have moved.
   writeUIPrefs(doc.ui);
-  return { devices: doc.devices.length, patterns: (doc.patterns ?? []).length };
+  return { devices: devices.length, patterns: patterns.length, ladder };
 }
