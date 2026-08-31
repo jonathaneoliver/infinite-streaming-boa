@@ -72,18 +72,16 @@ const jitterOff = computed(() => v('delay_ms') === 0);
 const jitterVal = computed(() => Math.min(v('jitter_ms'), jitterMax.value));
 
 /**
- * The delay range jitter actually produces, which is the thing being chosen.
+ * Just the width, in every state.
  *
- * Shown because "+/- 30 ms" does not say what it is +/- OF, and the
- * relationship between the two sliders is otherwise invisible.
+ * Two wordier versions came and went. The resulting span -- "+/- 30 ms
+ * (70-130)" -- is arithmetic the reader can do and mostly does not want, and
+ * "needs a delay" spent a whole readout explaining a control that is already
+ * visibly disabled. A greyed "+/- 0 ms" says the same thing in the same shape
+ * as every other row, so the eye can still scan the column. The reason stays on
+ * hover, where it costs nothing.
  */
-const jitterText = computed(() => {
-  if (jitterOff.value) return 'needs a delay';
-  const d = v('delay_ms');
-  const j = jitterVal.value;
-  if (j === 0) return '± 0 ms';
-  return `± ${j} ms (${d - j}–${d + j})`;
-});
+const jitterText = computed(() => `± ${jitterVal.value} ms`);
 </script>
 
 <template>
