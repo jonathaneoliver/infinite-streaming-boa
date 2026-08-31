@@ -180,13 +180,18 @@ const reorderBlocked = computed(() => v('delay_ms') <= 0);
           type="range" min="0" :max="e.max" :step="e.step"
           :value="v(e.key)"
           :disabled="disabled || (e.needsDelay && reorderBlocked)"
+          :title="e.needsDelay && reorderBlocked
+            ? 'netem reorders by letting packets skip the delay queue. With no delay there is no queue, and it refuses the whole rule.'
+            : e.title"
           @input="set(e.key, +($event.target as HTMLInputElement).value)"
         />
-        <span
-          v-if="e.needsDelay && reorderBlocked" class="val need"
-          title="netem reorders by letting packets skip the delay queue. With no delay there is no queue, and it refuses the whole rule."
-        >needs delay</span>
-        <span v-else class="val num">{{ v(e.key) }} {{ e.unit }}</span>
+        <!-- Always the number, in every state. A row that swaps its readout for
+             a sentence explains a control that is already visibly disabled, and
+             breaks the shape of the column: numbers are scanned down this
+             stack, and one row ending in words costs more than it says. The
+             reason moves to the slider's tooltip, where it takes no space.
+             Same call as the jitter row above. -->
+        <span class="val num">{{ v(e.key) }} {{ e.unit }}</span>
       </div>
       <button
         v-if="!extrasActive" class="more" :disabled="disabled"
@@ -217,5 +222,4 @@ const reorderBlocked = computed(() => v('delay_ms') <= 0);
 /* A blocked row stays legible rather than greying to nothing: the reason it is
    unavailable is the useful part, and it is written where the value goes. */
 .row.blocked label { color: var(--ink-faint); }
-.val.need { font-size: 10px; color: var(--warn); white-space: nowrap; }
 </style>
