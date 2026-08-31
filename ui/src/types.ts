@@ -459,6 +459,82 @@ export interface Series {
 export const DEVELOPER =
   new URLSearchParams(window.location.search).get('developer') === '1';
 
+/**
+ * How the device list is ordered.
+ *
+ * 'busy' puts whatever is happening at the top; 'name' is the plain
+ * alphabetical list; 'traffic' is by current throughput.
+ */
+export type SortMode = 'busy' | 'name' | 'traffic';
+
+export const SORT_MODES: { v: SortMode; label: string; title: string }[] = [
+  {
+    v: 'busy',
+    label: 'busy first',
+    title:
+      'Sweeping, then playing a pattern, then conditioned, then present. ' +
+      'Ordered by what is happening rather than by how much traffic is moving, ' +
+      'so rows only move when something actually changes.',
+  },
+  { v: 'name', label: 'name', title: 'Alphabetical, present devices first.' },
+  {
+    v: 'traffic',
+    label: 'traffic',
+    title:
+      'Busiest downlink first. This one DOES reorder as traffic changes — ' +
+      'useful for finding the active device, awkward for clicking one.',
+  },
+];
+
+/**
+ * How interesting a device is, low is more interesting.
+ *
+ * Deliberately derived from STATE, not from telemetry. The server's own comment
+ * on the fallback order says why: "so the list does not reshuffle as telemetry
+ * changes". Sorting on throughput moves rows under the cursor every second,
+ * which is worse than no ordering at all — you cannot click a row that will not
+ * hold still. Every tier here changes only when an operator does something or a
+ * device comes and goes, which is rare and never mid-click.
+ */
+export function busyRank(c: Client): number {
+  if (c.sweep?.state === 'running') return 0; // a half-hour measurement
+  if (c.pattern_run?.state === 'running') return 1;
+  if (c.pattern_run) return 2; // paused or stopped, but loaded and mid-test
+  if (!isCleanPolicy(c.policy)) return 3; // conditioned right now
+  if (c.present) return 4;
+  return 5; // gone: nothing can be done with it
+}
+
+/** Whether a device's stored policy imposes nothing in either direction. */
+export function isCleanPolicy(p: Policy): boolean {
+  const clean = (s: Shape) =>
+    !s.rate_mbps && !s.delay_ms && !s.jitter_ms && !s.loss_pct &&
+    !s.reorder_pct && !s.corrupt_pct;
+  return clean(p.down) && clean(p.up);
+}
+
+/** Order a device list for display. Never mutates the input. */
+export function sortClients(list: Client[], mode: SortMode): Client[] {
+  const byName = (a: Client, b: Client) =>
+    a.label.localeCompare(b.label) || a.mac.localeCompare(b.mac);
+  const out = [...list];
+  if (mode === 'name') {
+    return out.sort(
+      (a, b) => Number(b.present) - Number(a.present) || byName(a, b),
+    );
+  }
+  if (mode === 'traffic') {
+    return out.sort(
+      (a, b) =>
+        b.down_counters.throughput_mbps - a.down_counters.throughput_mbps ||
+        byName(a, b),
+    );
+  }
+  // Ties broken by name, never by a live value: two idle devices must not swap
+  // places because one moved a stray packet.
+  return out.sort((a, b) => busyRank(a) - busyRank(b) || byName(a, b));
+}
+
 /** Chart time ranges, in the `{ v, label }` shape the streaming dashboard uses. */
 export const RANGES = [
   { v: 60, label: '1m' },

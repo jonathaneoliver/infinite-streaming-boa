@@ -2,15 +2,42 @@
 import { computed, onUnmounted, provide, ref, watch } from 'vue';
 import { useSnapshot } from '@/composables/useSnapshot';
 import { useDevice } from '@/composables/useDevice';
-import type { Client, Shape, ChartPrefs, YMode, Pattern } from '@/types';
-import { ntopngUrl } from '@/types';
+import type { Client, Shape, ChartPrefs, SortMode, YMode, Pattern } from '@/types';
+import { ntopngUrl, sortClients } from '@/types';
 import ClientCard from '@/components/ClientCard.vue';
 import ChartToolbar from '@/components/ChartToolbar.vue';
 
 const { snap, connected, transport, series, bucketMs, setRange } = useSnapshot();
 const dev = useDevice();
 
-const clients = computed(() => snap.value?.clients ?? []);
+/*
+ * The order the list is drawn in.
+ *
+ * Stored beside the chart preferences because it is the same kind of thing: a
+ * view setting that should survive a reload rather than resetting every time
+ * the page is opened to check on something.
+ */
+const SORT_KEY = 'pifi.sort';
+function loadSort(): SortMode {
+  try {
+    const v = localStorage.getItem(SORT_KEY);
+    return v === 'name' || v === 'traffic' ? v : 'busy';
+  } catch {
+    return 'busy';
+  }
+}
+const sortMode = ref<SortMode>(loadSort());
+watch(sortMode, (v) => {
+  try {
+    localStorage.setItem(SORT_KEY, v);
+  } catch {
+    /* private windows and blocked storage must not break the page */
+  }
+});
+
+const clients = computed(() =>
+  sortClients(snap.value?.clients ?? [], sortMode.value),
+);
 const caps = computed(() => snap.value?.caps);
 
 /*
@@ -200,7 +227,8 @@ onUnmounted(() => window.clearInterval(ticker));
     <ChartToolbar
       v-if="clients.length"
       :range-sec="chart.rangeSec" :y-mode="chart.yMode" :y-manual="chart.yManual"
-      :bucket-ms="bucketMs"
+      :bucket-ms="bucketMs" :sort-mode="sortMode"
+      @sort-mode="(v: SortMode) => (sortMode = v)"
       :show-live="chart.showLive" :show-sustained="chart.showSustained"
       @range="(v: number) => (chart = { ...chart, rangeSec: v })"
       @y-mode="(v: YMode) => (chart = { ...chart, yMode: v })"
