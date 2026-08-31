@@ -1,6 +1,6 @@
 //go:build linux
 
-package pifi
+package boa
 
 import (
 	"encoding/json"
@@ -18,7 +18,7 @@ import (
 //
 // # Why passive learning is needed
 //
-// pifi is a transparent bridge. A router knows every client's address because
+// boa is a transparent bridge. A router knows every client's address because
 // it issued the lease; a bridge issues nothing and is not the destination of
 // most traffic, so the kernel's own neighbour table stays largely empty --
 // Linux updates existing entries from overheard ARP but will not create new
@@ -48,7 +48,7 @@ import (
 // # Why sampling
 //
 // ETH_P_ALL means every forwarded frame is a candidate. Copying all of them
-// into userspace would burn a core at line rate for no benefit: pifi needs one
+// into userspace would burn a core at line rate for no benefit: boa needs one
 // packet per MAC every few seconds, not all of them. The socket has a small
 // receive buffer and is drained in bursts with a pause between, so the kernel
 // discards the excess. Any device doing anything at all appears within seconds.
@@ -581,7 +581,7 @@ func copyNames(m map[string]string) map[string]string {
 func (l *Learner) listenMDNS(network string, group *net.UDPAddr) {
 	ifi, err := net.InterfaceByName(l.bridge)
 	if err != nil {
-		fmt.Printf("infinite-streaming-pifi: mDNS %s: no interface %s: %v\n",
+		fmt.Printf("infinite-streaming-boa: mDNS %s: no interface %s: %v\n",
 			network, l.bridge, err)
 		return
 	}
@@ -591,11 +591,11 @@ func (l *Learner) listenMDNS(network string, group *net.UDPAddr) {
 	// with no indication why, is the worst outcome.
 	conn, err := net.ListenMulticastUDP(network, ifi, group)
 	if err != nil {
-		fmt.Printf("infinite-streaming-pifi: mDNS %s join failed on %s: %v "+
+		fmt.Printf("infinite-streaming-boa: mDNS %s join failed on %s: %v "+
 			"(device names will not be learned)\n", network, l.bridge, err)
 		return
 	}
-	fmt.Printf("infinite-streaming-pifi: mDNS %s listening on %s\n", network, l.bridge)
+	fmt.Printf("infinite-streaming-boa: mDNS %s listening on %s\n", network, l.bridge)
 	defer conn.Close()
 	_ = conn.SetReadBuffer(64 * 1024)
 

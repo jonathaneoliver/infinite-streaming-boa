@@ -1,6 +1,6 @@
 //go:build linux
 
-package pifi
+package boa
 
 import (
 	"os"

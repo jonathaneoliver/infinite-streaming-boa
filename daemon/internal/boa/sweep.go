@@ -1,4 +1,4 @@
-package pifi
+package boa
 
 import (
 	"fmt"
@@ -48,7 +48,7 @@ import (
 // # Why only one sweep at a time
 //
 // Wi-Fi airtime is shared (PRD 7), so a second device streaming hard during a
-// sweep contends for the same radio and the plateaus read low. pifi cannot stop
+// sweep contends for the same radio and the plateaus read low. boa cannot stop
 // the rest of the world contending, but it can decline to contend with itself.
 type Sweeper struct {
 	mu  sync.Mutex
@@ -640,7 +640,7 @@ func (s *Sweeper) Start(mac, service string, p SweepParams, now time.Time) error
 		phaseAt: now, capAt: now,
 		state: "running",
 	}
-	fmt.Printf("infinite-streaming-pifi: sweep %s (%s): level 0, unconditioned, "+
+	fmt.Printf("infinite-streaming-boa: sweep %s (%s): level 0, unconditioned, "+
 		"measuring the ceiling to climb towards\n", mac, service)
 	return nil
 }
@@ -753,7 +753,7 @@ func (r *sweepRun) advanceDwell(samples []Sample, now time.Time) {
 		r.pinned = true
 		if r.phase == phaseCeiling {
 			r.ceilingLinkLimited = true
-			fmt.Printf("infinite-streaming-pifi: sweep %s: WARNING: client never "+
+			fmt.Printf("infinite-streaming-boa: sweep %s: WARNING: client never "+
 				"stopped fetching continuously unconditioned -- the link, not the "+
 				"player, may be setting this ceiling\n", r.mac)
 		}
@@ -806,7 +806,7 @@ func (r *sweepRun) evaluate(samples []Sample, now time.Time) {
 	if r.phase == phaseCeiling {
 		r.ceiling = rate
 		r.levels = append(r.levels, lv)
-		fmt.Printf("infinite-streaming-pifi: sweep %s: ceiling %.2f Mbps%s -- "+
+		fmt.Printf("infinite-streaming-boa: sweep %s: ceiling %.2f Mbps%s -- "+
 			"dropping to %.2f Mbps and climbing\n",
 			r.mac, rate, driftFlag(drift), r.params.StartMbps)
 		r.phase = phaseClimb
@@ -829,7 +829,7 @@ func (r *sweepRun) evaluate(samples []Sample, now time.Time) {
 			CapMbps: round2(r.capMbps), DeliveredMbps: round2(rate),
 			Ratio: round3(rate / r.capMbps), Variation: round3(cv),
 		})
-		fmt.Printf("infinite-streaming-pifi: sweep %s: level %d, cap %.2f Mbps: "+
+		fmt.Printf("infinite-streaming-boa: sweep %s: level %d, cap %.2f Mbps: "+
 			"starved at %.2f Mbps (%.1f%% of cap, %.1f%% variation), "+
 			"no rendition fits under this cap\n",
 			r.mac, lv.Level, lv.CapMbps, rate, 100*rate/r.capMbps, 100*cv)
@@ -855,14 +855,14 @@ func (r *sweepRun) evaluate(samples []Sample, now time.Time) {
 			if n := len(r.rungs); n > 0 {
 				r.rungs[n-1].suspect = true
 			}
-			fmt.Printf("infinite-streaming-pifi: sweep %s: level %d: %.2f -> %.2f Mbps "+
+			fmt.Printf("infinite-streaming-boa: sweep %s: level %d: %.2f -> %.2f Mbps "+
 				"is a %.2fx jump; a rendition may sit between them\n",
 				r.mac, r.level, prev, rate, rate/prev)
 		}
-		fmt.Printf("infinite-streaming-pifi: sweep %s: level %d, cap %.2f Mbps: "+
+		fmt.Printf("infinite-streaming-boa: sweep %s: level %d, cap %.2f Mbps: "+
 			"rung at %.2f Mbps%s\n", r.mac, lv.Level, lv.CapMbps, rate, driftFlag(drift))
 	} else {
-		fmt.Printf("infinite-streaming-pifi: sweep %s: level %d, cap %.2f Mbps: "+
+		fmt.Printf("infinite-streaming-boa: sweep %s: level %d, cap %.2f Mbps: "+
 			"still %.2f Mbps, no higher rendition fits yet%s\n",
 			r.mac, lv.Level, lv.CapMbps, rate, driftFlag(drift))
 	}
@@ -1099,13 +1099,13 @@ func (r *sweepRun) mergeWithin(mbps float64) float64 {
 
 func (r *sweepRun) finish(reason string) {
 	r.state, r.reason = "done", reason
-	fmt.Printf("infinite-streaming-pifi: sweep %s: done, %d rungs (%s)\n",
+	fmt.Printf("infinite-streaming-boa: sweep %s: done, %d rungs (%s)\n",
 		r.mac, len(r.rungs), reason)
 }
 
 func (r *sweepRun) fail(reason string) {
 	r.state, r.reason = "failed", reason
-	fmt.Printf("infinite-streaming-pifi: sweep %s: failed: %s\n", r.mac, reason)
+	fmt.Printf("infinite-streaming-boa: sweep %s: failed: %s\n", r.mac, reason)
 }
 
 // plateau reduces an observation window to a rate, a drift measure, and a

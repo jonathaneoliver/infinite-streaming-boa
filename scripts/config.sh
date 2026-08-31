@@ -10,14 +10,14 @@
 #   ./scripts/config.sh export > profiles/box.json
 #   ./scripts/config.sh import profiles/box.json          # merge (default)
 #   ./scripts/config.sh import profiles/box.json replace  # box matches the file
-#   ./scripts/config.sh export pifi@192.168.1.9 > out.json
+#   ./scripts/config.sh export boa@192.168.1.9 > out.json
 #
 # merge   upserts the devices in the file and leaves every other device alone.
 # replace additionally DELETES devices the file does not mention.
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
-BOX_DEFAULT=pifi@infinite-streaming-pifi.local
+BOX_DEFAULT=boa@infinite-streaming-boa.local
 
 log() { printf '\033[36m==>\033[0m %s\n' "$*" >&2; }
 die() { printf '\033[31merror:\033[0m %s\n' "$*" >&2; exit 1; }

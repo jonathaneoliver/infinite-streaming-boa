@@ -1,4 +1,4 @@
-package pifi
+package boa
 
 import (
 	"net"
@@ -7,13 +7,13 @@ import (
 
 // Minimal mDNS parsing, enough to learn what a device calls itself.
 //
-// Why parse this at all: pifi shows bare MAC addresses, which are unreadable,
+// Why parse this at all: boa shows bare MAC addresses, which are unreadable,
 // and every other source came up empty on a real network -- reverse DNS has no
 // PTR records, the kernel neighbour table has no names, and ntopng knows the
 // name but only behind an HTTP credential this box should not have to store.
 //
 // mDNS is the source that actually works. Devices announce themselves
-// unprompted and repeatedly on 224.0.0.251:5353 and ff02::fb, and pifi is a
+// unprompted and repeatedly on 224.0.0.251:5353 and ff02::fb, and boa is a
 // bridge, so it already sees every one of those packets. Nothing is queried and
 // nothing is injected -- the appliance stays invisible.
 //

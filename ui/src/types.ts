@@ -1,4 +1,4 @@
-// Mirrors daemon/internal/pifi/model.go. Units are the human-facing ones --
+// Mirrors daemon/internal/boa/model.go. Units are the human-facing ones --
 // megabits, milliseconds, percent -- and are converted to the kernel's
 // bits/seconds/fractions in exactly one place on the server.
 
@@ -309,7 +309,7 @@ export interface Capabilities {
  * Build a deep link into ntopng.
  *
  * The host comes from the current page rather than being hardcoded, so links
- * work however you reached it -- infinite-streaming-pifi.local, its DHCP address, or the rescue
+ * work however you reached it -- infinite-streaming-boa.local, its DHCP address, or the rescue
  * address. Only the port is fixed.
  *
  * ifid=0 is br-lan: ntopng watches the bridge, the one interface that sees
@@ -707,7 +707,7 @@ export function lossToPos(l: number): number {
 /**
  * Starting timelines.
  *
- * Absolute Mbps, deliberately: pifi cannot read a manifest, so it does not know
+ * Absolute Mbps, deliberately: boa cannot read a manifest, so it does not know
  * where this device's renditions sit. A step at "4 Mbps" says a player got
  * 4 Mbps; a step at "just above rung 3" would say which rendition it should
  * have sustained, which is the better question — and the one #28 exists to

@@ -1,6 +1,6 @@
 [Unit]
-Description=infinite-streaming-pifi per-client network link conditioner
-Documentation=https://github.com/jonathaneoliver/infinite-streaming-pifi
+Description=infinite-streaming-boa per-client network link conditioner
+Documentation=https://github.com/jonathaneoliver/infinite-streaming-boa
 # The bridge must exist before queueing disciplines can be attached to its
 # ports, and NetworkManager is what creates it.
 After=network-online.target NetworkManager.service
@@ -8,14 +8,14 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-EnvironmentFile=/etc/default/infinite-streaming-pifi
-ExecStart=/usr/local/bin/infinite-streaming-pifid \
-  -addr ${PIFI_ADDR} \
-  -bridge ${PIFI_BRIDGE} \
-  -wan ${PIFI_WAN_PORT} \
-  -wlan ${PIFI_WLAN_PORT} \
-  -lan ${PIFI_LAN_PORT} \
-  -state ${PIFI_STATE}
+EnvironmentFile=/etc/default/infinite-streaming-boa
+ExecStart=/usr/local/bin/boad \
+  -addr ${BOA_ADDR} \
+  -bridge ${BOA_BRIDGE} \
+  -wan ${BOA_WAN_PORT} \
+  -wlan ${BOA_WLAN_PORT} \
+  -lan ${BOA_LAN_PORT} \
+  -state ${BOA_STATE}
 Restart=always
 RestartSec=3
 
@@ -31,9 +31,9 @@ ProtectSystem=strict
 # a RuntimeDirectory (tmpfs): it must survive a daemon restart, which happens on
 # every deploy, but writing a time series to the SD card every few seconds is
 # how a Pi appliance wears out its storage.
-RuntimeDirectory=infinite-streaming-pifi
+RuntimeDirectory=infinite-streaming-boa
 RuntimeDirectoryPreserve=restart
-ReadWritePaths=/var/lib/infinite-streaming-pifi
+ReadWritePaths=/var/lib/infinite-streaming-boa
 PrivateTmp=yes
 
 [Install]

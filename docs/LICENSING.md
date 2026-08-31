@@ -1,6 +1,6 @@
 # Licensing
 
-pifi is MIT licensed and is designed so that it *stays* cleanly redistributable.
+boa is MIT licensed and is designed so that it *stays* cleanly redistributable.
 This document records the deliberate choices that keep it that way, so a future
 change does not quietly compromise the position.
 
@@ -29,7 +29,7 @@ and not something to do casually.
 
 The conditioner drives the kernel through command-line tools:
 
-| Tool | License | How pifi uses it |
+| Tool | License | How boa uses it |
 |---|---|---|
 | `tc` (iproute2) | GPL-2.0-or-later | subprocess |
 | `ip` (iproute2) | GPL-2.0-or-later | subprocess |
@@ -39,7 +39,7 @@ The conditioner drives the kernel through command-line tools:
 | dnsmasq | GPL-2.0 or GPL-3.0 | started by NetworkManager; we read its lease file |
 
 Running a GPL program as a separate process and reading its output is ordinary
-use, not derivation — no copyleft obligation propagates to pifi. This is why the
+use, not derivation — no copyleft obligation propagates to boa. This is why the
 daemon shells out to `tc` rather than linking a netlink library that carries a
 copyleft license.
 

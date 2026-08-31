@@ -13,14 +13,14 @@
 # redistribute from this repository. It is built on the user's own machine from
 # upstream source, and stays there.
 #
-#   ./scripts/package-ntopng.sh [pifi@infinite-streaming-pifi.local]
+#   ./scripts/package-ntopng.sh [boa@infinite-streaming-boa.local]
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
 log() { printf '\033[36m==>\033[0m %s\n' "$*"; }
 die() { printf '\033[31merror:\033[0m %s\n' "$*" >&2; exit 1; }
 
-TARGET="${1:-pifi@infinite-streaming-pifi.local}"
+TARGET="${1:-boa@infinite-streaming-boa.local}"
 OUT="cache/ntopng-arm64.tar.gz"
 DEPS="cache/ntopng-runtime-deps.txt"
 

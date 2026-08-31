@@ -22,7 +22,7 @@ import { ref, watch } from 'vue';
  * control that is doing something is the failure this design exists to avoid,
  * and a preference that could cause it would reintroduce it by the back door.
  */
-const KEY = 'pifi.extras';
+const KEY = 'boa.extras';
 
 function load(): boolean {
   try {

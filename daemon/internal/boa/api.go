@@ -1,4 +1,4 @@
-package pifi
+package boa
 
 import (
 	"encoding/json"
@@ -1265,7 +1265,7 @@ func (a *API) resetDevice(w http.ResponseWriter, r *http.Request) {
 // the row; this drops it.
 //
 // A device that is still on the network will simply reappear, unconfigured,
-// which is the correct outcome: pifi is describing what it sees.
+// which is the correct outcome: boa is describing what it sees.
 func (a *API) forgetDevice(w http.ResponseWriter, r *http.Request) {
 	mac := normMAC(r.PathValue("mac"))
 	if err := a.e.Store().Delete(mac); err != nil {

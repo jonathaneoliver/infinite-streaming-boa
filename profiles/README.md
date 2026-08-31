@@ -15,7 +15,7 @@ limit is not.
 ./scripts/config.sh export > profiles/box.json
 ./scripts/config.sh import profiles/box.json           # merge (default)
 ./scripts/config.sh import profiles/box.json replace   # box matches the file
-./scripts/config.sh export pifi@192.168.1.9 > other.json
+./scripts/config.sh export boa@192.168.1.9 > other.json
 ```
 
 - **merge** upserts the devices in the file and leaves every other device

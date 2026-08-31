@@ -1,4 +1,4 @@
-# Data Contract — pifi monitoring and enforcement
+# Data Contract — boa monitoring and enforcement
 
 Written **before** the daemon's transform code, per the project convention that
 data semantics get agreed up front rather than discovered during QA.
@@ -15,7 +15,7 @@ they mean** (the semantics that bite), edge cases, and a confidence level.
 
 ## Source A — DHCP leases · NOT USED IN BRIDGE MODE
 
-Retained for reference only. As a transparent bridge pifi runs no DHCP server,
+Retained for reference only. As a transparent bridge boa runs no DHCP server,
 so there is no lease file to read: addresses come from the upstream router and
 are learned by ARP (Source F) instead.
 
@@ -81,7 +81,7 @@ never as presence.
 
 ## Source D — `tc -s -j class show dev <iface>` · enforcement counters
 
-**VERIFIED.** Real output from the stack pifi builds:
+**VERIFIED.** Real output from the stack boa builds:
 
 ```json
 {"class":"htb","handle":"1:10","leaf":"0x110","rate":1500000,"ceil":1500000,
@@ -91,7 +91,7 @@ never as presence.
 
 | Field | Meaning |
 |---|---|
-| `handle` | Class id, e.g. `1:10`. pifi's own map binds this to a device + sub-class |
+| `handle` | Class id, e.g. `1:10`. boa's own map binds this to a device + sub-class |
 | `rate` / `ceil` | **BYTES per second** — see below |
 | `stats.bytes` / `stats.packets` | Cumulative since the class was **created** |
 | `stats.drops` | Packets dropped because the queue was full |
@@ -133,7 +133,7 @@ never as presence.
 | `options.limit` | Queue depth in **packets** |
 
 **Bursty loss reports under a different key.** When a shape asks for correlated
-loss, pifi writes `loss gemodel` instead of `loss`, and the readback carries
+loss, boa writes `loss gemodel` instead of `loss`, and the readback carries
 `options["loss-gemodel"]` with `p`, `r`, `h`, `k` — *not* `loss-random`, and no
 `loss` field at all. Anything reading loss back has to handle both shapes, or a
 bursty client silently reports zero configured loss.
@@ -146,7 +146,7 @@ mean loss   L = p / (p + r)
 mean burst  B = 1 / r          (packets)
 ```
 
-which holds because pifi always writes `1-h = 100%` and `1-k = 0%`. Report the
+which holds because boa always writes `1-h = 100%` and `1-k = 0%`. Report the
 derived pair rather than the raw four: `p = 0.204%` answers no question anyone
 asked, and the round trip is what would catch a kernel clamping something.
 
@@ -159,7 +159,7 @@ asked, and the round trip is what would catch a kernel clamping something.
   bandwidth-delay product of a 50 Mbps link at 500 ms is roughly 2100 full-size
   packets — so a "50 Mbps, 500 ms, 0 % loss" profile would drop ~50 % of traffic
   while reporting zero configured loss, and the tester would blame the
-  application. pifi must size `limit` from the configured rate and delay
+  application. boa must size `limit` from the configured rate and delay
   (`rate_bps x delay_s / (8 x 1500)`, with headroom) rather than accept the
   default.
 
@@ -204,7 +204,7 @@ cannot be shaped yet, because every `tc` filter needs an IP to match on.
 ## Enforcement semantics
 
 Both directions are shaped on a **true egress queue**, on the last interface the
-packet crosses before leaving pifi:
+packet crosses before leaving boa:
 
 | Direction | Where | Filter matches |
 |---|---|---|
@@ -296,13 +296,13 @@ existing entries from overheard ARP but will not create new ones for exchanges
 it is not party to. A bridge does, however, physically receive every ARP
 broadcast on the segment, and any active client ARPs for its gateway regularly.
 Listening is therefore accurate, immediate and silent — no probing, no scanning,
-nothing injected onto a network pifi is meant to be invisible on.
+nothing injected onto a network boa is meant to be invisible on.
 
 **Semantics that bite**
 
 - **The arrival interface is the BRIDGE, not the physical port.** The bridge
   rewrites `skb->dev` before delivering locally, so a frame that physically
-  arrived on wlan0 is reported as arriving on br-lan. An early version of pifi
+  arrived on wlan0 is reported as arriving on br-lan. An early version of boa
   discarded bridge-delivered frames in order to read the port from them, which
   silently discarded *every* frame and left every client undiscovered and
   unconditioned while the interface showed policies applied.
@@ -310,7 +310,7 @@ nothing injected onto a network pifi is meant to be invisible on.
   comes from the forwarding database and the wireless station table, which are
   the right tools for that question and were verified to work on real forwarded
   traffic.
-- Hosts upstream of pifi ARP too. Anything the forwarding database places on the
+- Hosts upstream of boa ARP too. Anything the forwarding database places on the
   WAN port is excluded, or the client list fills with the rest of the network.
 - Entries older than 5 minutes are dropped: a stale binding would aim a shaping
   filter at an address that may since have moved to another device.
@@ -337,9 +337,9 @@ and AAAA answers are read: `name` → the address the record binds it to.
 **Semantics that bite**
 
 - **A name must be keyed by MAC, not by address.** Measured on a real network on
-  2026-08-29: 16 of 22 learned bindings were IPv6 against 6 IPv4, and pifi learns
+  2026-08-29: 16 of 22 learned bindings were IPv6 against 6 IPv4, and boa learns
   a client's IPv6 addresses only by observing its traffic. An idle device
-  announcing over v6 has no address pifi knows, so an address-keyed name can
+  announcing over v6 has no address boa knows, so an address-keyed name can
   never be joined to it. The MAC is on the frame either way.
 - **`ETH_P_ALL`, not `ETH_P_IP`.** A protocol-specific packet socket only
   receives frames delivered LOCALLY; the bridge claims a forwarded frame first.

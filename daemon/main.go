@@ -1,4 +1,4 @@
-// Command infinite-streaming-pifid is the infinite-streaming-pifi link-conditioner daemon.
+// Command boad is the infinite-streaming-boa link-conditioner daemon.
 //
 // It runs on a Raspberry Pi configured as a transparent bridge, conditions each
 // client's traffic independently, and serves a web interface for control and
@@ -17,12 +17,12 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/jonathaneoliver/infinite-streaming-pifi/daemon/internal/pifi"
-	"github.com/jonathaneoliver/infinite-streaming-pifi/daemon/web"
+	"github.com/jonathaneoliver/infinite-streaming-boa/daemon/internal/boa"
+	"github.com/jonathaneoliver/infinite-streaming-boa/daemon/web"
 )
 
 func main() {
-	cfg := pifi.Config{}
+	cfg := boa.Config{}
 	var tickMs int
 
 	flag.StringVar(&cfg.Addr, "addr", ":80", "address to serve the web interface on")
@@ -31,7 +31,7 @@ func main() {
 		"bridge port cabled to the existing network; uplink is shaped here")
 	flag.StringVar(&cfg.WlanPort, "wlan", "wlan0", "wireless AP interface")
 	flag.StringVar(&cfg.LanPort, "lan", "lan0", "downstream wired port (USB adapter)")
-	flag.StringVar(&cfg.StatePath, "state", "/var/lib/infinite-streaming-pifi/policies.json",
+	flag.StringVar(&cfg.StatePath, "state", "/var/lib/infinite-streaming-boa/policies.json",
 		"where operator policy is persisted")
 	flag.IntVar(&tickMs, "tick", 1000, "telemetry poll interval in milliseconds")
 	flag.BoolVar(&cfg.Demo, "demo", false,
@@ -44,17 +44,17 @@ func main() {
 	// far kinder than starting up and conditioning nothing.
 	if os.Geteuid() != 0 && !cfg.Demo {
 		fmt.Fprintln(os.Stderr,
-			"infinite-streaming-pifid must run as root: it configures queueing disciplines and "+
+			"boad must run as root: it configures queueing disciplines and "+
 				"opens a packet socket")
 		os.Exit(1)
 	}
 
-	eng := pifi.NewEngine(cfg)
+	eng := boa.NewEngine(cfg)
 	eng.Start()
 
 	srv := &http.Server{
 		Addr:              cfg.Addr,
-		Handler:           pifi.NewAPI(eng, web.FS()).Routes(),
+		Handler:           boa.NewAPI(eng, web.FS()).Routes(),
 		ReadHeaderTimeout: 10 * time.Second,
 		// No WriteTimeout: server-sent event streams are long-lived by design
 		// and a write deadline would sever them on a fixed interval.
@@ -62,13 +62,13 @@ func main() {
 
 	go func() {
 		if cfg.Demo {
-			fmt.Printf("infinite-streaming-pifi: DEMO MODE on %s -- synthetic clients, nothing is shaped\n", cfg.Addr)
+			fmt.Printf("infinite-streaming-boa: DEMO MODE on %s -- synthetic clients, nothing is shaped\n", cfg.Addr)
 		} else {
-			fmt.Printf("infinite-streaming-pifi: serving on %s (wan=%s bridge=%s)\n",
+			fmt.Printf("infinite-streaming-boa: serving on %s (wan=%s bridge=%s)\n",
 				cfg.Addr, cfg.WANPort, cfg.Bridge)
 		}
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			fmt.Fprintln(os.Stderr, "pifi:", err)
+			fmt.Fprintln(os.Stderr, "boa:", err)
 			os.Exit(1)
 		}
 	}()
@@ -81,7 +81,7 @@ func main() {
 	// mean a stopped daemon silently continues to condition traffic, which is
 	// the single most confusing failure this box could present.
 	if !cfg.Demo {
-		fmt.Println("infinite-streaming-pifi: shutting down, removing traffic conditioning")
+		fmt.Println("infinite-streaming-boa: shutting down, removing traffic conditioning")
 		eng.FlushNames()
 		eng.Shaper().Teardown()
 	}
