@@ -442,9 +442,15 @@ function moveKey(i: number, sec: number) {
  * pattern reaches, so dragging the tallest value would move the ceiling it is
  * being measured against -- the line would chase the cursor and never arrive.
  */
-const vdrag = ref<
-  { lane: LaneKey; i: number; ceil: number; y0: number; moved: boolean } | null
->(null);
+const vdrag = ref<{
+  lane: LaneKey;
+  i: number;
+  ceil: number;
+  y0: number;
+  /** Where the value sat when the press landed, 0 at the floor and 1 at the top. */
+  n0: number;
+  moved: boolean;
+} | null>(null);
 
 /*
  * The ceiling a flat-zero lane is dragged against.
@@ -472,12 +478,35 @@ function keyGoverning(clientX: number): number {
   return i;
 }
 
-/** Invert yOf: where the cursor sits in the lane, 0 at the floor, 1 at the top. */
-function normFromY(clientY: number, el: HTMLElement): number {
+/**
+ * Where a value sits in its lane at the moment a drag begins.
+ *
+ * Mirrors norm(), but against the ceiling PINNED for the gesture rather than
+ * the live one, so the starting point cannot move as the value does.
+ */
+function normOf(v: number, lane: LaneKey, ceil: number): number {
+  if (lane === 'rate_mbps') return v <= 0 ? 1 : rateToPos(v) / 100;
+  return ceil > 0 ? Math.min(Math.max(v / ceil, 0), 1) : 0;
+}
+
+/**
+ * How far a vertical movement shifts a value, as a fraction of the lane.
+ *
+ * RELATIVE to where the press landed, not the cursor's absolute height. Reading
+ * the absolute position meant the value jumped to wherever the pointer happened
+ * to be the instant the drag registered -- and since the line is what you aim
+ * at, pressing on a rate near the top of its lane snapped it to the 200 Mbps
+ * ceiling before the cursor had moved a millimetre. A drag should nudge the
+ * value it grabbed, not replace it.
+ *
+ * The divisor is the lane's usable height in pixels: yOf spends VB-14 of the
+ * viewBox's VB units on the value, so the same fraction of the rendered box.
+ */
+function normDelta(dyPx: number, el: HTMLElement): number {
   const box = el.getBoundingClientRect();
-  if (box.height <= 0) return 0;
-  const y = ((clientY - box.top) / box.height) * VB;
-  return Math.min(Math.max((VB - 6 - y) / (VB - 14), 0), 1);
+  const usable = (box.height * (VB - 14)) / VB;
+  if (usable <= 0) return 0;
+  return dyPx / usable;
 }
 
 function startVDrag(lane: LaneKey, e: PointerEvent) {
@@ -488,9 +517,12 @@ function startVDrag(lane: LaneKey, e: PointerEvent) {
   } catch {
     /* no active pointer; the drag still tracks via bubbled events */
   }
+  const ceil = laneMax(lane) || LANE_START_CEIL[lane];
   vdrag.value = {
-    lane, i, ceil: laneMax(lane) || LANE_START_CEIL[lane],
-    y0: e.clientY, moved: false,
+    lane, i, ceil,
+    y0: e.clientY,
+    n0: normOf(valueAt(keys.value[i], lane), lane, ceil),
+    moved: false,
   };
 }
 
@@ -503,7 +535,9 @@ function onVDrag(e: PointerEvent) {
   if (!d.moved && Math.abs(e.clientY - d.y0) < DRAG_SLOP_PX) return;
   if (!d.moved) emit('select', d.i);
   d.moved = true;
-  setLaneValue(d.i, d.lane, normFromY(e.clientY, e.currentTarget as HTMLElement), d.ceil);
+  // Up is positive: the screen's y grows downward and a value grows upward.
+  const n = d.n0 + normDelta(d.y0 - e.clientY, e.currentTarget as HTMLElement);
+  setLaneValue(d.i, d.lane, Math.min(Math.max(n, 0), 1), d.ceil);
 }
 
 function endVDrag(e: PointerEvent) {
