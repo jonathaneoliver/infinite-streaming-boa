@@ -36,7 +36,7 @@ watch(sortMode, (v) => {
 });
 
 const clients = computed(() =>
-  sortClients(snap.value?.clients ?? [], sortMode.value),
+  sortClients(snap.value?.clients ?? [], sortMode.value, snap.value?.time ?? Date.now()),
 );
 const caps = computed(() => snap.value?.caps);
 

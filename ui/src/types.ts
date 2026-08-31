@@ -277,6 +277,8 @@ export interface Client {
   down_counters: Counters;
   up_counters: Counters;
   sub_counters?: Record<string, Counters>;
+  /** Last time this device moved more than a trickle, unix ms. 0 = never. */
+  last_active_ms?: number;
   sweep?: SweepView;
   pattern_run?: PatternView;
 }
@@ -472,9 +474,10 @@ export const SORT_MODES: { v: SortMode; label: string; title: string }[] = [
     v: 'busy',
     label: 'busy first',
     title:
-      'Sweeping, then playing a pattern, then conditioned, then present. ' +
-      'Ordered by what is happening rather than by how much traffic is moving, ' +
-      'so rows only move when something actually changes.',
+      'Sweeping, then playing a pattern, then conditioned, then moving traffic. ' +
+      'Devices doing none of those are ordered by when they last moved any, so ' +
+      'the one that was streaming a minute ago sits above the one silent since ' +
+      'Tuesday.',
   },
   { v: 'name', label: 'name', title: 'Alphabetical, present devices first.' },
   {
@@ -487,22 +490,40 @@ export const SORT_MODES: { v: SortMode; label: string; title: string }[] = [
 ];
 
 /**
+ * How recently a device must have moved traffic to count as active.
+ *
+ * Longer than a segment interval on purpose. A player is bursty by nature --
+ * fetch a segment, idle, fetch the next -- so a threshold shorter than the gap
+ * would have it dropping out of "active" between every segment and climbing
+ * back, which is exactly the churn this ordering exists to prevent. Thirty
+ * seconds spans any normal segment cadence, so a working player stays put and
+ * one that genuinely stops falls out once.
+ */
+const ACTIVE_WITHIN_MS = 30_000;
+
+/**
  * How interesting a device is, low is more interesting.
  *
- * Deliberately derived from STATE, not from telemetry. The server's own comment
- * on the fallback order says why: "so the list does not reshuffle as telemetry
- * changes". Sorting on throughput moves rows under the cursor every second,
- * which is worse than no ordering at all — you cannot click a row that will not
- * hold still. Every tier here changes only when an operator does something or a
- * device comes and goes, which is rare and never mid-click.
+ * Deliberately derived from STATE, not from live values. The server's own
+ * comment on the fallback order says why: "so the list does not reshuffle as
+ * telemetry changes". Sorting on throughput moves rows under the cursor every
+ * second, and a row that will not hold still cannot be clicked. Every tier here
+ * changes only when an operator does something, or when a device starts or
+ * stops for longer than ACTIVE_WITHIN_MS.
  */
-export function busyRank(c: Client): number {
+export function busyRank(c: Client, now: number): number {
   if (c.sweep?.state === 'running') return 0; // a half-hour measurement
   if (c.pattern_run?.state === 'running') return 1;
   if (c.pattern_run) return 2; // paused or stopped, but loaded and mid-test
   if (!isCleanPolicy(c.policy)) return 3; // conditioned right now
-  if (c.present) return 4;
-  return 5; // gone: nothing can be done with it
+  if (c.present && isActive(c, now)) return 4; // doing something of its own
+  if (c.present) return 5;
+  return 6; // gone: nothing can be done with it
+}
+
+/** Whether this device has moved traffic recently enough to count as busy. */
+export function isActive(c: Client, now: number): boolean {
+  return !!c.last_active_ms && now - c.last_active_ms < ACTIVE_WITHIN_MS;
 }
 
 /** Whether a device's stored policy imposes nothing in either direction. */
@@ -514,7 +535,7 @@ export function isCleanPolicy(p: Policy): boolean {
 }
 
 /** Order a device list for display. Never mutates the input. */
-export function sortClients(list: Client[], mode: SortMode): Client[] {
+export function sortClients(list: Client[], mode: SortMode, now: number): Client[] {
   const byName = (a: Client, b: Client) =>
     a.label.localeCompare(b.label) || a.mac.localeCompare(b.mac);
   const out = [...list];
@@ -530,9 +551,27 @@ export function sortClients(list: Client[], mode: SortMode): Client[] {
         byName(a, b),
     );
   }
-  // Ties broken by name, never by a live value: two idle devices must not swap
-  // places because one moved a stray packet.
-  return out.sort((a, b) => busyRank(a) - busyRank(b) || byName(a, b));
+  return out.sort((a, b) => {
+    const ra = busyRank(a, now);
+    const rb = busyRank(b, now);
+    if (ra !== rb) return ra - rb;
+    // Recency orders the QUIET devices, and is deliberately not consulted for
+    // active ones.
+    //
+    // For anything idle the timestamp is frozen, so the order cannot move --
+    // and it answers the useful question about a row that is doing nothing:
+    // was it doing something a minute ago, or has it been silent for days?
+    // Alphabetical says nothing at all about that.
+    //
+    // For active devices it would be the opposite. Their timestamps all sit at
+    // roughly now and update as each one fetches, so two bursty players would
+    // take it in turns to be most recent and trade places every few seconds.
+    // They sort by name instead, which cannot move.
+    if (!isActive(a, now) && (a.last_active_ms ?? 0) !== (b.last_active_ms ?? 0)) {
+      return (b.last_active_ms ?? 0) - (a.last_active_ms ?? 0);
+    }
+    return byName(a, b);
+  });
 }
 
 /** Chart time ranges, in the `{ v, label }` shape the streaming dashboard uses. */

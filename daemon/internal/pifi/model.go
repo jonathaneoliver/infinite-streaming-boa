@@ -348,6 +348,15 @@ type Client struct {
 	Station  *Station `json:"station,omitempty"`
 	Policy   Policy   `json:"policy"`
 	LastSeen int64    `json:"last_seen"`
+	// LastActiveMs is the last time this client moved more than a trickle of
+	// traffic, in unix milliseconds. 0 means never seen doing anything.
+	//
+	// Distinct from LastSeen, which only says the device was THERE: a phone in a
+	// pocket is seen continuously and does nothing for hours. This is what
+	// orders a list of devices that are all equally idle right now, where
+	// "streaming ten seconds ago" and "silent since Tuesday" are the difference
+	// between the one worth looking at and the rest.
+	LastActiveMs int64 `json:"last_active_ms,omitempty"`
 
 	// DownCounters and UpCounters are the device default class. Sub-class
 	// counters are keyed by SubClass.ID.
