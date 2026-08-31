@@ -14,7 +14,7 @@
 /dist/
 
 # Compiled payload, produced by scripts/build-payload.sh
-overlay/usr/local/bin/infinite-streaming-pifid
+overlay/usr/local/bin/boad
 # Compiled web interface. Everything here is a build product; only an empty
 # marker is tracked, which is enough to satisfy //go:embed all:dist so a fresh
 # clone compiles before the UI has been built.

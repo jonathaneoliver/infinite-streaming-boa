@@ -31,6 +31,6 @@ and documented so they are not rediscovered.
   Layer *above* TLS, so even a successful interception yields encrypted blobs
   rather than an `.m3u8`. Manifest-level work needs a proxy that is the origin
   path — which the infinite-streamer harness already is, and which composes with
-  pifi rather than competing with it.
+  boa rather than competing with it.
 - **A truly global downlink budget conflicts with client-port pacing.** See
   *Shared bottleneck budget* above.

@@ -1,4 +1,4 @@
-package pifi
+package boa
 
 import (
 	"bufio"
@@ -259,7 +259,7 @@ func atofSafe(s string) float64 {
 }
 
 // WANSideMACs returns the MACs the bridge has learned on the WAN port, i.e.
-// everything living upstream of pifi. They are excluded from the client list:
+// everything living upstream of boa. They are excluded from the client list:
 // they generate ARP like anything else, but they are not devices this box is
 // conditioning, and listing them would bury the real clients.
 func WANSideMACs(bridge, wanPort string) map[string]bool {

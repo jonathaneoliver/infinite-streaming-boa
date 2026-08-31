@@ -1,4 +1,4 @@
-package pifi
+package boa
 
 import (
 	"fmt"
@@ -170,7 +170,7 @@ func (e *Engine) Start() {
 		return
 	}
 	if err := e.sh.Setup(); err != nil {
-		fmt.Printf("infinite-streaming-pifi: shaping unavailable: %v\n", err)
+		fmt.Printf("infinite-streaming-boa: shaping unavailable: %v\n", err)
 	}
 	// Devices announce only occasionally -- on join, on wake, when services
 	// change -- so an in-memory-only name table means every daemon restart
@@ -180,7 +180,7 @@ func (e *Engine) Start() {
 	// tmpfs, not the state directory: history must survive a daemon restart --
 	// which happens on every deploy -- but writing a time series to the SD card
 	// every second is how a Pi appliance kills its storage.
-	e.histPath = "/run/infinite-streaming-pifi/history.json"
+	e.histPath = "/run/infinite-streaming-boa/history.json"
 	e.hist.Load(e.histPath)
 
 	e.namesPath = filepath.Join(filepath.Dir(e.cfg.StatePath), "names.json")
@@ -196,7 +196,7 @@ func (e *Engine) Start() {
 	}()
 	go func() {
 		if err := e.learn.Run(); err != nil {
-			fmt.Printf("infinite-streaming-pifi: passive learner stopped: %v\n", err)
+			fmt.Printf("infinite-streaming-boa: passive learner stopped: %v\n", err)
 		}
 	}()
 	go func() {
@@ -409,7 +409,7 @@ func (e *Engine) tick() {
 	// forwarding database. The bridge ages FDB entries out after ~300s while
 	// the learner keeps bindings for 20 minutes, so relying on the FDB alone
 	// let every host on the upstream LAN drift into the client list once its
-	// FDB entry expired -- pifi listed six of the house's devices as clients.
+	// FDB entry expired -- boa listed six of the house's devices as clients.
 	//
 	// A device is only a client of this box if its traffic arrived on a
 	// DOWNSTREAM port. Anything seen on the WAN port lives upstream, and a
@@ -462,7 +462,7 @@ func (e *Engine) tick() {
 		// The MAC-keyed binding comes first because it is the one that holds:
 		// a device announces on whatever address it likes, including one this
 		// box has never otherwise seen, and on a real network most of those
-		// announcements are IPv6. Matching by address needs pifi to already
+		// announcements are IPv6. Matching by address needs boa to already
 		// know the address, which for an idle device it often does not.
 		//
 		// The address-keyed table is the fallback, for an announcement whose
@@ -522,7 +522,7 @@ func (e *Engine) tick() {
 
 	if ready, _ := e.sh.Ready(); ready {
 		for _, err := range e.sh.Apply(e.desired(clients)) {
-			fmt.Printf("infinite-streaming-pifi: shaping: %v\n", err)
+			fmt.Printf("infinite-streaming-boa: shaping: %v\n", err)
 		}
 	}
 
@@ -651,12 +651,12 @@ func (e *Engine) storeSweepResult() {
 	// Reported rather than swallowed: a sweep that measured a ladder nothing
 	// will use is an hour of streaming wasted silently.
 	if err := e.lad.Put(ladder); err != nil {
-		fmt.Printf("infinite-streaming-pifi: sweep %s: measured ladder not stored: %v\n",
+		fmt.Printf("infinite-streaming-boa: sweep %s: measured ladder not stored: %v\n",
 			mac, err)
 	}
 	p.Rev++
 	if err := e.st.Put(p); err != nil {
-		fmt.Printf("infinite-streaming-pifi: sweep %s: ladder measured but NOT saved: %v\n",
+		fmt.Printf("infinite-streaming-boa: sweep %s: ladder measured but NOT saved: %v\n",
 			mac, err)
 		return
 	}
@@ -664,7 +664,7 @@ func (e *Engine) storeSweepResult() {
 	for _, r := range ladder.Rungs {
 		rungs = append(rungs, r.Mbps)
 	}
-	fmt.Printf("infinite-streaming-pifi: sweep %s: saved ladder for %q: %v Mbps\n",
+	fmt.Printf("infinite-streaming-boa: sweep %s: saved ladder for %q: %v Mbps\n",
 		mac, ladder.Service, rungs)
 	// The ladder is operator-visible configuration, so the UI must resync
 	// rather than wait for its next full reload.

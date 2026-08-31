@@ -1,6 +1,6 @@
 # Product Requirements Document (PRD)
 
-**Product:** infinite-streaming-pifi ("pifi") — per-client network link
+**Product:** infinite-streaming-boa ("boa") — per-client network link
 conditioner on a transparent bridge
 
 This describes the behaviour the product **has**, not aspirational scope.
@@ -9,7 +9,7 @@ behaviour, it aligns with this document or updates it in the same PR.
 
 ## 1) Purpose & Vision
 
-pifi sits invisibly in an existing network and conditions each client's internet
+boa sits invisibly in an existing network and conditions each client's internet
 connection independently — rate, latency, jitter and loss, per device and per
 direction — adjustable live from a web interface.
 
@@ -39,7 +39,7 @@ Intended for:
 
 ## 3) Non-Goals
 
-- A router, firewall or gateway. pifi issues no addresses and performs no NAT.
+- A router, firewall or gateway. boa issues no addresses and performs no NAT.
 - A production traffic shaper or QoS system. It exists to degrade links
   deliberately, not to manage them.
 - Decrypting or inspecting application payloads. Conditioning is transport-level.
@@ -63,7 +63,7 @@ wireless AP (`wlan0`) and a USB ethernet port (`lan0`). Clients get addresses
 from the **existing upstream router**. The bridge holds a management address by
 DHCP plus a fixed rescue address, so the box is reachable without being a hop.
 
-**Daemon** (`infinite-streaming-pifid`) — a single Go binary with the Vue
+**Daemon** (`boad`) — a single Go binary with the Vue
 interface embedded. Serves :80. Requires root: it configures queueing
 disciplines and opens a packet socket.
 
@@ -135,7 +135,7 @@ put it on a network where that is acceptable.
   Where it does not, the control is disabled and says why; loss is never
   silently downgraded to uniform, because a test run against the wrong loss
   model gives a confident wrong answer.
-- **Loss does not repeat between runs, because pifi does not ask it to.** Rate,
+- **Loss does not repeat between runs, because boa does not ask it to.** Rate,
   delay and a pattern's schedule are deterministic; loss is a random process, and
   two runs of the same configuration lose different packets. Today it is
   reproducible only statistically, over enough packets.

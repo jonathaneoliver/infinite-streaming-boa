@@ -65,7 +65,7 @@ outside the binary changes** — network profiles, systemd units, packages,
 kernel settings.
 
 ```sh
-cd daemon && go vet ./... && go test ./internal/pifi/ -count=1
+cd daemon && go vet ./... && go test ./internal/boa/ -count=1
 cd ui && npm run typecheck
 ```
 

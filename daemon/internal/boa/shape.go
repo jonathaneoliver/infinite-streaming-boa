@@ -1,4 +1,4 @@
-package pifi
+package boa
 
 import (
 	"encoding/json"
@@ -17,7 +17,7 @@ import (
 // # Where each direction is shaped, and why
 //
 // Both directions are shaped on a TRUE EGRESS queue, on the last interface the
-// packet crosses before leaving pifi:
+// packet crosses before leaving boa:
 //
 //	downlink (internet -> client): egress of the CLIENT'S OWN port (wlan0/lan0)
 //	uplink   (client -> internet): egress of the WAN port
@@ -157,7 +157,7 @@ func (s *Shaper) localIPv4() []string {
 
 // writeExemptions excuses this box's MANAGEMENT traffic from shaping.
 //
-// Without an exemption the web interface throttles itself. A reply from pifi to
+// Without an exemption the web interface throttles itself. A reply from boa to
 // a client leaves via that client's own port, where the downlink filter matches
 // on destination address -- so the dashboard's own responses, and the SSE
 // stream, get conditioned by whatever policy the operator just set from it.
@@ -205,7 +205,7 @@ func (s *Shaper) writeExemptions(dev string, ips []string) {
 	for _, ip := range ips {
 		for _, port := range s.mgmtPorts {
 			if slot >= exemptSlots {
-				fmt.Printf("infinite-streaming-pifi: out of exemption slots on %s; "+
+				fmt.Printf("infinite-streaming-boa: out of exemption slots on %s; "+
 					"%s:%d is NOT exempt and may be shaped\n", dev, ip, port)
 				return
 			}
@@ -216,7 +216,7 @@ func (s *Shaper) writeExemptions(dev string, ips []string) {
 				"flowid", fmt.Sprintf("1:%x", defaultMinor)); err != nil {
 				// Loud: a failed exemption is how the interface disappears the
 				// next time someone sets a low cap from a conditioned device.
-				fmt.Printf("infinite-streaming-pifi: could not exempt %s:%d on %s: %v\n",
+				fmt.Printf("infinite-streaming-boa: could not exempt %s:%d on %s: %v\n",
 					ip, port, dev, err)
 			}
 			slot++
@@ -268,7 +268,7 @@ func (s *Shaper) ensurePort(dev string) error {
 				s.applied[key] = r
 			}
 		}
-		fmt.Printf("infinite-streaming-pifi: %s was replaced; rebuilding its queueing\n", dev)
+		fmt.Printf("infinite-streaming-boa: %s was replaced; rebuilding its queueing\n", dev)
 	}
 	if exec.Command("ip", "link", "show", dev).Run() != nil {
 		return fmt.Errorf("interface %s does not exist", dev)
@@ -298,7 +298,7 @@ func (s *Shaper) Setup() error {
 
 	s.lossBurst, s.lossBurstNote = probeLossBurst()
 	if !s.lossBurst {
-		fmt.Printf("infinite-streaming-pifi: bursty loss unavailable: %s\n", s.lossBurstNote)
+		fmt.Printf("infinite-streaming-boa: bursty loss unavailable: %s\n", s.lossBurstNote)
 	}
 
 	if err := s.ensurePort(s.wan); err != nil {
@@ -318,7 +318,7 @@ func (s *Shaper) LossBurst() (bool, string) {
 }
 
 // geProbeIface is a throwaway interface used only to ask the kernel a question.
-const geProbeIface = "pifi-geprobe"
+const geProbeIface = "boa-geprobe"
 
 // probeLossBurst asks the kernel once, at startup, whether it will accept
 // `loss gemodel`.

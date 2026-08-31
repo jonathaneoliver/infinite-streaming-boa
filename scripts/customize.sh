@@ -7,7 +7,7 @@
 # Because the Mac is arm64 and Raspberry Pi OS is arm64, we can chroot into
 # the mounted rootfs and run its native apt/dpkg with no qemu emulation.
 #
-# Inputs: AP_*/PIFI_* environment variables, /cache (downloads), /work
+# Inputs: AP_*/BOA_* environment variables, /cache (downloads), /work
 # (scratch), /out (finished images), /overlay (files to graft into rootfs),
 # /packages.txt (extra apt packages).
 set -euo pipefail
@@ -99,39 +99,39 @@ touch "$BOOT/ssh"
 # Recent Raspberry Pi OS ships with NO default user; if userconf.txt is absent
 # the first boot stops at an interactive account-creation prompt, which on a
 # headless box means a device that never comes up.
-if [ -n "${PIFI_PASSWORD:-}" ]; then
-  HASH=$(openssl passwd -6 "$PIFI_PASSWORD")
+if [ -n "${BOA_PASSWORD:-}" ]; then
+  HASH=$(openssl passwd -6 "$BOA_PASSWORD")
 else
   HASH='*'   # locked password — key-only login
 fi
-printf '%s:%s\n' "$PIFI_USER" "$HASH" > "$BOOT/userconf.txt"
-log "User '$PIFI_USER' will be created on first boot"
+printf '%s:%s\n' "$BOA_USER" "$HASH" > "$BOOT/userconf.txt"
+log "User '$BOA_USER' will be created on first boot"
 
-if [ -n "${PIFI_SSH_PUBKEY:-}" ]; then
+if [ -n "${BOA_SSH_PUBKEY:-}" ]; then
   # Keys go under /etc/ssh rather than ~/.ssh because the user's home does not
   # exist yet — it is created by the first-boot account step.
   install -d -m 0755 "$ROOT/etc/ssh/authorized_keys.d"
-  printf '%s\n' "$PIFI_SSH_PUBKEY" > "$ROOT/etc/ssh/authorized_keys.d/$PIFI_USER"
-  chmod 0644 "$ROOT/etc/ssh/authorized_keys.d/$PIFI_USER"
+  printf '%s\n' "$BOA_SSH_PUBKEY" > "$ROOT/etc/ssh/authorized_keys.d/$BOA_USER"
+  chmod 0644 "$ROOT/etc/ssh/authorized_keys.d/$BOA_USER"
   {
-    echo "# pifi: key-based login for the preconfigured account"
+    echo "# boa: key-based login for the preconfigured account"
     echo "AuthorizedKeysFile .ssh/authorized_keys /etc/ssh/authorized_keys.d/%u"
-    [ -z "${PIFI_PASSWORD:-}" ] && echo "PasswordAuthentication no"
-  } > "$ROOT/etc/ssh/sshd_config.d/pifi.conf"
-  log "SSH public key installed${PIFI_PASSWORD:+ (password login also enabled)}"
+    [ -z "${BOA_PASSWORD:-}" ] && echo "PasswordAuthentication no"
+  } > "$ROOT/etc/ssh/sshd_config.d/boa.conf"
+  log "SSH public key installed${BOA_PASSWORD:+ (password login also enabled)}"
 fi
 
 ## 4. Identity --------------------------------------------------------------
-echo "$PIFI_HOSTNAME" > "$ROOT/etc/hostname"
-sed -i "s/^127\.0\.1\.1.*/127.0.1.1\t${PIFI_HOSTNAME}/" "$ROOT/etc/hosts"
+echo "$BOA_HOSTNAME" > "$ROOT/etc/hostname"
+sed -i "s/^127\.0\.1\.1.*/127.0.1.1\t${BOA_HOSTNAME}/" "$ROOT/etc/hosts"
 
-if [ -n "${PIFI_TIMEZONE:-}" ]; then
-  echo "$PIFI_TIMEZONE" > "$ROOT/etc/timezone"
-  ln -sf "/usr/share/zoneinfo/$PIFI_TIMEZONE" "$ROOT/etc/localtime"
+if [ -n "${BOA_TIMEZONE:-}" ]; then
+  echo "$BOA_TIMEZONE" > "$ROOT/etc/timezone"
+  ln -sf "/usr/share/zoneinfo/$BOA_TIMEZONE" "$ROOT/etc/localtime"
 fi
 
 ## 5. Transparent bridge ---------------------------------------------------
-# pifi operates as a transparent bridge (layer 2): the WAN port, the wireless
+# boa operates as a transparent bridge (layer 2): the WAN port, the wireless
 # AP and the USB wired port all sit in ONE bridge, so clients get their
 # addresses from the EXISTING upstream router and land on the existing subnet.
 # Nothing under test can tell the Pi is in the path -- it is not a hop and does
@@ -158,13 +158,13 @@ write_conn() {
   chown 0:0 "$f"
 }
 
-# The bridge itself. STP stays on: pifi has two downstream ports plus a WAN
+# The bridge itself. STP stays on: boa has two downstream ports plus a WAN
 # port, so miscabling can physically create a loop, and a bridging loop takes
 # down the entire upstream network rather than just this box. forward-delay is
 # trimmed to the spec minimum so boot-to-traffic is ~4s rather than ~30s.
-write_conn infinite-streaming-pifi-br <<EOF
+write_conn infinite-streaming-boa-br <<EOF
 [connection]
-id=infinite-streaming-pifi-br
+id=infinite-streaming-boa-br
 uuid=$(uuidgen)
 type=bridge
 interface-name=br-lan
@@ -189,12 +189,12 @@ EOF
 
 # WAN port: the link to the existing network. Enslaved to the bridge, so it
 # carries no address of its own.
-write_conn infinite-streaming-pifi-wan <<EOF
+write_conn infinite-streaming-boa-wan <<EOF
 [connection]
-id=infinite-streaming-pifi-wan
+id=infinite-streaming-boa-wan
 uuid=$(uuidgen)
 type=ethernet
-interface-name=${PIFI_WAN_PORT}
+interface-name=${BOA_WAN_PORT}
 master=br-lan
 slave-type=bridge
 autoconnect=true
@@ -203,9 +203,9 @@ EOF
 
 # Downstream wired port (the USB adapter), renamed to lan0 by the udev rule
 # below. Absent hardware simply means this profile never activates.
-write_conn infinite-streaming-pifi-lan <<EOF
+write_conn infinite-streaming-boa-lan <<EOF
 [connection]
-id=infinite-streaming-pifi-lan
+id=infinite-streaming-boa-lan
 uuid=$(uuidgen)
 type=ethernet
 interface-name=lan0
@@ -221,7 +221,7 @@ EOF
 {
   cat <<EOF
 [connection]
-id=infinite-streaming-pifi-ap
+id=infinite-streaming-boa-ap
 uuid=$(uuidgen)
 type=wifi
 interface-name=wlan0
@@ -247,14 +247,14 @@ pairwise=ccmp
 group=ccmp
 psk=${AP_PASSWORD}
 EOF
-} | write_conn infinite-streaming-pifi-ap
+} | write_conn infinite-streaming-boa-ap
 
-log "Bridge br-lan: ${PIFI_WAN_PORT} (wan) + wlan0 (ap '${AP_SSID}') + lan0 (usb)"
+log "Bridge br-lan: ${BOA_WAN_PORT} (wan) + wlan0 (ap '${AP_SSID}') + lan0 (usb)"
 
 # Stable name for the USB ethernet adapter. On a Pi 4/5 the onboard NIC is not
 # a USB device, so ID_BUS==usb identifies the add-on adapter unambiguously.
 # (On a Pi 3 the onboard NIC *is* USB and this heuristic would not hold.)
-cat > "$ROOT/etc/udev/rules.d/76-infinite-streaming-pifi-usb-lan.rules" <<'UDEV'
+cat > "$ROOT/etc/udev/rules.d/76-infinite-streaming-boa-usb-lan.rules" <<'UDEV'
 # First USB ethernet adapter becomes lan0, the downstream wired port.
 SUBSYSTEM=="net", ACTION=="add", ENV{ID_BUS}=="usb", ATTR{address}!="", NAME="lan0"
 UDEV
@@ -263,22 +263,22 @@ UDEV
 # if upstream DHCP is missing -- or the box is bench-tested with nothing in the
 # WAN port -- there would be no way to reach the UI on a headless device. This
 # secondary address is present regardless of DHCP.
-install -D -m 0644 /dev/stdin "$ROOT/etc/systemd/system/infinite-streaming-pifi-rescue-ip.service" <<EOF
+install -D -m 0644 /dev/stdin "$ROOT/etc/systemd/system/infinite-streaming-boa-rescue-ip.service" <<EOF
 [Unit]
-Description=pifi fixed rescue address on br-lan
+Description=boa fixed rescue address on br-lan
 After=NetworkManager.service
 Wants=NetworkManager.service
 
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-ExecStart=/usr/local/sbin/infinite-streaming-pifi-rescue-ip
+ExecStart=/usr/local/sbin/infinite-streaming-boa-rescue-ip
 
 [Install]
 WantedBy=multi-user.target
 EOF
 
-install -D -m 0755 /dev/stdin "$ROOT/usr/local/sbin/infinite-streaming-pifi-rescue-ip" <<EOF
+install -D -m 0755 /dev/stdin "$ROOT/usr/local/sbin/infinite-streaming-boa-rescue-ip" <<EOF
 #!/bin/sh
 # Waits for the bridge, then pins a known address so the box is always
 # reachable. "replace" rather than "add" so a re-run is idempotent.
@@ -286,13 +286,13 @@ for i in \$(seq 1 30); do
   ip link show br-lan >/dev/null 2>&1 && break
   sleep 2
 done
-exec ip addr replace ${PIFI_RESCUE_IP}/24 dev br-lan
+exec ip addr replace ${BOA_RESCUE_IP}/24 dev br-lan
 EOF
 
 install -d -m 0755 "$ROOT/etc/systemd/system/multi-user.target.wants"
-ln -sf /etc/systemd/system/infinite-streaming-pifi-rescue-ip.service \
-  "$ROOT/etc/systemd/system/multi-user.target.wants/infinite-streaming-pifi-rescue-ip.service"
-log "Rescue address ${PIFI_RESCUE_IP}/24 on br-lan"
+ln -sf /etc/systemd/system/infinite-streaming-boa-rescue-ip.service \
+  "$ROOT/etc/systemd/system/multi-user.target.wants/infinite-streaming-boa-rescue-ip.service"
+log "Rescue address ${BOA_RESCUE_IP}/24 on br-lan"
 
 ## 6. Wireless regulatory domain -------------------------------------------
 # The radio is rfkill-blocked until a country is set — the single most common
@@ -300,7 +300,7 @@ log "Rescue address ${PIFI_RESCUE_IP}/24 on br-lan"
 # the module option applies from the first moment cfg80211 loads, and the
 # first-boot script sets the same value through the Pi's own config path.
 echo "options cfg80211 ieee80211_regdom=${AP_COUNTRY}" \
-  > "$ROOT/etc/modprobe.d/infinite-streaming-pifi-regdom.conf"
+  > "$ROOT/etc/modprobe.d/infinite-streaming-boa-regdom.conf"
 
 ## 7. Overlay files ---------------------------------------------------------
 if [ -d /overlay ] && [ -n "$(ls -A /overlay 2>/dev/null)" ]; then
@@ -316,7 +316,7 @@ mount --bind /dev "$ROOT/dev"
 mount --bind /dev/pts "$ROOT/dev/pts"
 mount -t proc proc "$ROOT/proc"
 mount -t sysfs sys "$ROOT/sys"
-cp "$ROOT/etc/resolv.conf" "$ROOT/etc/resolv.conf.pifi-bak" 2>/dev/null || true
+cp "$ROOT/etc/resolv.conf" "$ROOT/etc/resolv.conf.boa-bak" 2>/dev/null || true
 echo "nameserver 1.1.1.1" > "$ROOT/etc/resolv.conf"
 
 WANT=()
@@ -349,7 +349,7 @@ for bin in NetworkManager dnsmasq avahi-daemon tc; do
   fi
 done
 
-mv -f "$ROOT/etc/resolv.conf.pifi-bak" "$ROOT/etc/resolv.conf" 2>/dev/null || true
+mv -f "$ROOT/etc/resolv.conf.boa-bak" "$ROOT/etc/resolv.conf" 2>/dev/null || true
 
 ## 8b. Kernel module check --------------------------------------------------
 # The conditioner needs sch_htb + sch_netem (queueing disciplines) and ifb, the
@@ -379,32 +379,32 @@ done
 [ -n "$MODFAIL" ] && die "base image kernel lacks modules the conditioner requires"
 
 # Load at boot so the daemon never races a first modprobe.
-printf 'sch_htb\nsch_netem\ncls_u32\n' > "$ROOT/etc/modules-load.d/infinite-streaming-pifi.conf"
+printf 'sch_htb\nsch_netem\ncls_u32\n' > "$ROOT/etc/modules-load.d/infinite-streaming-boa.conf"
 
-## 8c. pifi daemon ----------------------------------------------------------
+## 8c. boa daemon ----------------------------------------------------------
 # The daemon's runtime configuration is written here rather than baked into the
 # unit file, so the same overlay works for any port layout and the values stay
 # editable on a running box.
 install -d -m 0755 "$ROOT/etc/systemd/system/multi-user.target.wants"
-install -D -m 0644 /dev/stdin "$ROOT/etc/default/infinite-streaming-pifi" <<EOF
-# infinite-streaming-pifi daemon configuration. Changing a value here and restarting
-# infinite-streaming-pifi.service is enough; nothing needs rebuilding.
-PIFI_ADDR=:80
-PIFI_BRIDGE=br-lan
-PIFI_WAN_PORT=${PIFI_WAN_PORT}
-PIFI_WLAN_PORT=wlan0
-PIFI_LAN_PORT=lan0
-PIFI_STATE=/var/lib/infinite-streaming-pifi/policies.json
+install -D -m 0644 /dev/stdin "$ROOT/etc/default/infinite-streaming-boa" <<EOF
+# infinite-streaming-boa daemon configuration. Changing a value here and restarting
+# infinite-streaming-boa.service is enough; nothing needs rebuilding.
+BOA_ADDR=:80
+BOA_BRIDGE=br-lan
+BOA_WAN_PORT=${BOA_WAN_PORT}
+BOA_WLAN_PORT=wlan0
+BOA_LAN_PORT=lan0
+BOA_STATE=/var/lib/infinite-streaming-boa/policies.json
 EOF
 
-install -d -m 0755 "$ROOT/var/lib/infinite-streaming-pifi"
+install -d -m 0755 "$ROOT/var/lib/infinite-streaming-boa"
 
-if [ -x "$ROOT/usr/local/bin/infinite-streaming-pifid" ]; then
-  ln -sf /etc/systemd/system/infinite-streaming-pifi.service \
-    "$ROOT/etc/systemd/system/multi-user.target.wants/infinite-streaming-pifi.service"
-  log "pifi daemon enabled ($(du -h "$ROOT/usr/local/bin/infinite-streaming-pifid" | cut -f1))"
+if [ -x "$ROOT/usr/local/bin/boad" ]; then
+  ln -sf /etc/systemd/system/infinite-streaming-boa.service \
+    "$ROOT/etc/systemd/system/multi-user.target.wants/infinite-streaming-boa.service"
+  log "boa daemon enabled ($(du -h "$ROOT/usr/local/bin/boad" | cut -f1))"
 else
-  warn "overlay/usr/local/bin/infinite-streaming-pifid missing -- image will boot as a plain"
+  warn "overlay/usr/local/bin/boad missing -- image will boot as a plain"
   warn "bridge with no conditioning. Run scripts/build-payload.sh first."
 fi
 
@@ -434,7 +434,7 @@ if [ -f /cache/ntopng-arm64.tar.gz ]; then
   # every client in both directions.
   install -d -m 0755 "$ROOT/etc/ntopng" "$ROOT/var/lib/ntopng"
   cat > "$ROOT/etc/ntopng/ntopng.conf" <<EOF
-# Managed by infinite-streaming-pifi. ntopng serves :3000; infinite-streaming-pifid owns :80.
+# Managed by infinite-streaming-boa. ntopng serves :3000; boad owns :80.
 -i=br-lan
 -w=3000
 -d=/var/lib/ntopng
@@ -511,7 +511,7 @@ UNIT
     fi
   fi
   # ntopng keeps its admin password as an unsalted MD5 hex digest in redis
-  # (mg_md5 + strcmp, see src/Ntop.cpp). Seeding it from PIFI_PASSWORD means one
+  # (mg_md5 + strcmp, see src/Ntop.cpp). Seeding it from BOA_PASSWORD means one
   # credential for the box instead of ntopng's admin/admin and a forced change
   # wizard on every reflash.
   #
@@ -523,11 +523,11 @@ UNIT
   # Only the digest goes into the image, never the plaintext. Note this is a
   # WEAKER store of the same secret than the system account, which uses a salted
   # SHA-512 crypt -- an unavoidable consequence of ntopng's scheme, not ours.
-  NTOP_MD5=$(printf '%s' "${PIFI_PASSWORD}" | md5sum | cut -d' ' -f1)
+  NTOP_MD5=$(printf '%s' "${BOA_PASSWORD}" | md5sum | cut -d' ' -f1)
   printf '%s\n' "$NTOP_MD5" > "$ROOT/etc/ntopng/admin.md5"
   chmod 0600 "$ROOT/etc/ntopng/admin.md5"
 
-  install -D -m 0755 /dev/stdin "$ROOT/usr/local/sbin/infinite-streaming-pifi-ntopng-passwd" <<'SEED'
+  install -D -m 0755 /dev/stdin "$ROOT/usr/local/sbin/infinite-streaming-boa-ntopng-passwd" <<'SEED'
 #!/bin/sh
 # Overwrites ntopng's admin password with the one configured for this box.
 # Runs after ntopng has created its default admin user: seeding before that
@@ -544,22 +544,22 @@ redis-cli SET ntopng.user.admin.password "$HASH" >/dev/null 2>&1 || exit 0
 redis-cli SET ntopng.prefs.admin_password_changed 1 >/dev/null 2>&1 || true
 SEED
 
-  install -D -m 0644 /dev/stdin "$ROOT/etc/systemd/system/infinite-streaming-pifi-ntopng-passwd.service" <<'UNIT'
+  install -D -m 0644 /dev/stdin "$ROOT/etc/systemd/system/infinite-streaming-boa-ntopng-passwd.service" <<'UNIT'
 [Unit]
-Description=Set ntopng admin password from pifi configuration
+Description=Set ntopng admin password from boa configuration
 After=ntopng.service redis-server.service
 Requires=redis-server.service
 
 [Service]
 Type=oneshot
-ExecStart=/usr/local/sbin/infinite-streaming-pifi-ntopng-passwd
+ExecStart=/usr/local/sbin/infinite-streaming-boa-ntopng-passwd
 RemainAfterExit=yes
 
 [Install]
 WantedBy=multi-user.target
 UNIT
-  ln -sf /etc/systemd/system/infinite-streaming-pifi-ntopng-passwd.service \
-    "$ROOT/etc/systemd/system/multi-user.target.wants/infinite-streaming-pifi-ntopng-passwd.service"
+  ln -sf /etc/systemd/system/infinite-streaming-boa-ntopng-passwd.service \
+    "$ROOT/etc/systemd/system/multi-user.target.wants/infinite-streaming-boa-ntopng-passwd.service"
 
   log "ntopng will serve on :3000"
 else
@@ -567,7 +567,7 @@ else
 fi
 
 ## 9. First-boot service ----------------------------------------------------
-install -D -m 0755 /dev/stdin "$ROOT/usr/local/sbin/infinite-streaming-pifi-firstboot" <<EOF
+install -D -m 0755 /dev/stdin "$ROOT/usr/local/sbin/infinite-streaming-boa-firstboot" <<EOF
 #!/bin/sh
 # Runs once on first boot, then disables itself.
 set -e
@@ -577,21 +577,21 @@ set -e
 raspi-config nonint do_wifi_country "${AP_COUNTRY}" || true
 rfkill unblock wifi || true
 
-# avahi publishes ${PIFI_HOSTNAME}.local so the box is reachable by name.
+# avahi publishes ${BOA_HOSTNAME}.local so the box is reachable by name.
 systemctl enable --now avahi-daemon 2>/dev/null || true
 
-systemctl disable infinite-streaming-pifi-firstboot.service || true
+systemctl disable infinite-streaming-boa-firstboot.service || true
 EOF
 
-install -D -m 0644 /dev/stdin "$ROOT/etc/systemd/system/infinite-streaming-pifi-firstboot.service" <<'EOF'
+install -D -m 0644 /dev/stdin "$ROOT/etc/systemd/system/infinite-streaming-boa-firstboot.service" <<'EOF'
 [Unit]
-Description=pifi one-time first boot setup
+Description=boa one-time first boot setup
 After=multi-user.target NetworkManager.service
-ConditionPathExists=/usr/local/sbin/infinite-streaming-pifi-firstboot
+ConditionPathExists=/usr/local/sbin/infinite-streaming-boa-firstboot
 
 [Service]
 Type=oneshot
-ExecStart=/usr/local/sbin/infinite-streaming-pifi-firstboot
+ExecStart=/usr/local/sbin/infinite-streaming-boa-firstboot
 RemainAfterExit=yes
 
 [Install]
@@ -599,8 +599,8 @@ WantedBy=multi-user.target
 EOF
 
 install -d -m 0755 "$ROOT/etc/systemd/system/multi-user.target.wants"
-ln -sf /etc/systemd/system/infinite-streaming-pifi-firstboot.service \
-  "$ROOT/etc/systemd/system/multi-user.target.wants/infinite-streaming-pifi-firstboot.service"
+ln -sf /etc/systemd/system/infinite-streaming-boa-firstboot.service \
+  "$ROOT/etc/systemd/system/multi-user.target.wants/infinite-streaming-boa-firstboot.service"
 
 ## 10. Finish ---------------------------------------------------------------
 sync

@@ -1,7 +1,7 @@
-# pifi
+# boa
 
 Part of the infinite-streaming family. The repository is
-`infinite-streaming-pifi`; `pifi` is the appliance itself — the binary, the
+`infinite-streaming-boa`; `boa` is the appliance itself — the binary, the
 hostname, the SSID.
 
 [`PRD.md`](PRD.md) is the product behaviour source of truth.
@@ -20,7 +20,7 @@ is there.
                               │
                             eth0                       ← WAN port, conditioning
                        ┌──────────────┐                  is applied here
-                       │     pifi     │
+                       │     boa     │
                        └──────────────┘
                          br-lan  (one layer-2 segment)
                           ╱          ╲
@@ -55,12 +55,12 @@ is there.
 ## How this compares to what already exists
 
 Deliberately degrading a link is a well-worn idea, and most of the tools below
-do it with the same kernel machinery pifi does. What differs is **where the
+do it with the same kernel machinery boa does. What differs is **where the
 impairment sits** — and therefore what has to cooperate for it to work.
 
 | | Runs where | Reaches a TV, console or set-top box | Per device | Cost |
 |---|---|---|---|---|
-| **pifi** | a transparent bridge in the path | yes | yes | a Pi 5 |
+| **boa** | a transparent bridge in the path | yes | yes | a Pi 5 |
 | [Network Link Conditioner](https://nshipster.com/network-link-conditioner/) | on the Mac or iOS device under test | no — macOS and iOS only | it *is* the device | free with Xcode's Additional Tools |
 | `tc` / `netem` by hand | a Linux host, or a router you assemble yourself | only via that router | you write the filters | free |
 | [Toxiproxy](https://github.com/Shopify/toxiproxy) | between an application and its backend | no | per proxy, not per device | free |
@@ -69,13 +69,13 @@ impairment sits** — and therefore what has to cooperate for it to work.
 | [Facebook ATC](https://github.com/facebookarchive/augmented-traffic-control) | your gateway | yes | yes, per source IP | free; archived October 2018 |
 | [Netropy](https://apposite-tech.com/products/netropy-network-emulation/) / Linktropy and similar | a rack appliance in the path | yes | per emulated WAN link | thousands to tens of thousands |
 
-**What pifi is actually for.** Every other entry in that table asks for
+**What boa is actually for.** Every other entry in that table asks for
 cooperation of some kind. Network Link Conditioner needs to run on the device,
 which rules out anything you cannot install on, and conditions your debugging
 tools along with the app. Toxiproxy needs the application pointed at it. Charles
 needs the device to honour a proxy and trust an installed CA, which streaming
 apps increasingly refuse. pfSense and a hand-rolled `tc` router both work, and
-both make the box a hop with its own subnet and its own DHCP. pifi asks for nothing: cable it in, and a device keeps
+both make the box a hop with its own subnet and its own DHCP. boa asks for nothing: cable it in, and a device keeps
 its address, its DHCP lease, its mDNS discovery, and its view of the network.
 That is the whole design, and the rest of this README is the consequences of it.
 
@@ -90,16 +90,16 @@ running on a device that routes the traffic and sees the real IP address of the
 device, like your network gateway for instance." Routing the traffic is *how it
 identifies a device*, and that is also its price — adopting it meant re-homing
 the network under test behind it, with the new subnet, the new DHCP authority
-and the changed addresses that implies. pifi identifies a device by the MAC on a
+and the changed addresses that implies. boa identifies a device by the MAC on a
 frame it is already forwarding, which requires no address of its own and no
 routing role. ATC was archived on 30 October 2018 and is read-only.
 
 **Where the others are better.** A rack emulator is calibrated, repeatable and
-certified; pifi is explicitly none of those (see [Non-Goals](PRD.md#3-non-goals)).
+certified; boa is explicitly none of those (see [Non-Goals](PRD.md#3-non-goals)).
 Caps here are verified from 0.25 to 50 Mbps and nothing above that has been
 measured. Loss is deliberately not reproducible run to run. Over Wi-Fi the
 conditioning is additive on top of a shared, variable radio baseline rather than
-absolute — a wired emulator gives you a number you can put in a report, and pifi
+absolute — a wired emulator gives you a number you can put in a report, and boa
 does not. If you need a per-application policy on one device rather than a
 per-device one, Toxiproxy or a proxy is the right tool and composes with this
 one. And if the device under test is a Mac you already control, Network Link
@@ -117,7 +117,7 @@ own to the upstream, so there are two TCP connections with two independent
 congestion-control loops. Charles occupies the same position for HTTP. Either
 way, the throughput a player measures, the round-trip time it estimates and the
 retransmits it counts are formed against a local proxy socket and that proxy's
-userspace buffer — not against a constrained link. pifi shapes the frames it
+userspace buffer — not against a constrained link. boa shapes the frames it
 forwards and terminates nothing, so the client's own congestion control meets
 the path directly. For a player deciding which rendition to fetch next, that
 difference is the entire measurement.
@@ -138,14 +138,14 @@ certificate trusted: "If you add the Charles CA Certificate to your trusted
 certificates you will no longer see any warnings." A television or a console
 often exposes no proxy field at all, and an app that pins its certificate
 rejects an installed CA by design — which is the case for most streaming apps
-worth testing. pifi is addressed by MAC and asks the device for nothing.
+worth testing. boa is addressed by MAC and asks the device for nothing.
 
 **They are scoped along a different axis, and it is a real one.** Charles can
 throttle selected hosts, and a Toxiproxy proxy is defined per upstream service;
-both give per-application resolution on a machine you administer. pifi gives
+both give per-application resolution on a machine you administer. boa gives
 per-device resolution on a machine you cannot touch, and cannot tell two apps on
 one device apart. If the question is "what is this app requesting, and what came
-back", Charles answers it and pifi cannot — this box sees ciphertext and flow
+back", Charles answers it and boa cannot — this box sees ciphertext and flow
 metadata. The tools compose. They do not substitute.
 
 Toxiproxy is also deterministic where this box deliberately is not: an HTTP API
@@ -173,11 +173,11 @@ adapter in for a wired device under test, then:
 
 | | |
 |---|---|
-| Web interface | `http://infinite-streaming-pifi.local/` |
-| ntopng | `http://infinite-streaming-pifi.local:3000/` — no login |
-| iperf3 | `iperf3 -c infinite-streaming-pifi.local` from a device under test |
-| SSH | `ssh pifi@infinite-streaming-pifi.local` |
-| Rescue | `http://<PIFI_RESCUE_IP>/` when upstream DHCP is absent |
+| Web interface | `http://infinite-streaming-boa.local/` |
+| ntopng | `http://infinite-streaming-boa.local:3000/` — no login |
+| iperf3 | `iperf3 -c infinite-streaming-boa.local` from a device under test |
+| SSH | `ssh boa@infinite-streaming-boa.local` |
+| Rescue | `http://<BOA_RESCUE_IP>/` when upstream DHCP is absent |
 
 **The two directions measure different things.** `iperf3 -c <pi> -R` sends from
 the box to the device, which is that device's downlink — conditioned by its
@@ -191,10 +191,10 @@ from shaping, so a cap can never throttle the dashboard needed to undo it.
 Everything else the box sends is conditioned like any other traffic.
 
 **Bind the test to the path you mean.** A laptop on both Wi-Fi and ethernet has
-two addresses, and only the one pifi lists as a client is conditioned by that
+two addresses, and only the one boa lists as a client is conditioned by that
 client's policy: `iperf3 -c <pi> -R -B <the address on that card>`.
 
-**The WAN port must be connected.** Being invisible means pifi issues no
+**The WAN port must be connected.** Being invisible means boa issues no
 addresses: with no live upstream, clients associate to the Wi-Fi and then sit
 there without one.
 
@@ -217,14 +217,14 @@ Everything lives in `.env`; see `.env.example` for the full annotated list.
 | `AP_SSID`, `AP_PASSWORD` | The wireless network the Pi publishes |
 | `AP_COUNTRY` | Regulatory domain. **The radio stays blocked until this is right** |
 | `AP_BAND`, `AP_CHANNEL` | `bg` (2.4GHz) or `a` (5GHz); 5GHz AP mode is limited to channels 36/40/44/48 |
-| `PIFI_WAN_PORT` | The port cabled to your existing network. Conditioning is applied here |
-| `PIFI_RESCUE_IP` | A fixed address on the bridge so the box is reachable even with no upstream DHCP |
-| `PIFI_USER`, `PIFI_PASSWORD`, `PIFI_SSH_PUBKEY` | Headless login |
+| `BOA_WAN_PORT` | The port cabled to your existing network. Conditioning is applied here |
+| `BOA_RESCUE_IP` | A fixed address on the bridge so the box is reachable even with no upstream DHCP |
+| `BOA_USER`, `BOA_PASSWORD`, `BOA_SSH_PUBKEY` | Headless login |
 
 ## How the conditioning works
 
 Both directions are shaped on a **true egress queue** — the last interface the
-packet crosses before leaving pifi:
+packet crosses before leaving boa:
 
 | Direction | Where | Filter matches |
 |---|---|---|
@@ -284,7 +284,7 @@ on the ports it hands out — the two compose.
   link carrying 2 Mbps.
 - **The queue is sized from rate × delay.** netem's default 1000-packet queue
   would silently drop half the traffic on a "50 Mbps, 500 ms, 0 % loss" profile.
-  pifi computes the queue depth instead, so configured loss is the only loss.
+  boa computes the queue depth instead, so configured loss is the only loss.
 
 ## Layout
 
@@ -329,7 +329,7 @@ Throughput responds to the sliders, so the controls feel live.
 ### 2. Interface against a real Pi — sub-second, real data
 
 ```sh
-./scripts/dev.sh infinite-streaming-pifi.local
+./scripts/dev.sh infinite-streaming-boa.local
 ```
 
 Same hot reload, but the API calls proxy to a running Pi. Note this is
@@ -338,8 +338,8 @@ read-write: moving a slider really does condition that device's traffic.
 ### 3. Full deploy to a Pi — about ten seconds
 
 ```sh
-./scripts/deploy.sh                    # pifi@infinite-streaming-pifi.local
-./scripts/deploy.sh pifi@192.168.1.9
+./scripts/deploy.sh                    # boa@infinite-streaming-boa.local
+./scripts/deploy.sh boa@192.168.1.9
 ```
 
 Builds the interface, cross-compiles the daemon, copies one binary, restarts one
@@ -353,7 +353,7 @@ work never touches the card.
 Set up a key first, since this runs often:
 
 ```sh
-ssh-copy-id pifi@infinite-streaming-pifi.local
+ssh-copy-id boa@infinite-streaming-boa.local
 ```
 
 ### Useful
@@ -361,8 +361,8 @@ ssh-copy-id pifi@infinite-streaming-pifi.local
 ```sh
 cd ui && npm run typecheck              # vue-tsc, no build
 cd daemon && go vet ./...               # daemon also compiles on macOS
-ssh pifi@infinite-streaming-pifi.local 'journalctl -u infinite-streaming-pifi -f'
-ssh pifi@infinite-streaming-pifi.local 'tc -s class show dev wlan0'   # what the kernel really has
+ssh boa@infinite-streaming-boa.local 'journalctl -u infinite-streaming-boa -f'
+ssh boa@infinite-streaming-boa.local 'tc -s class show dev wlan0'   # what the kernel really has
 ```
 
 ## Licence

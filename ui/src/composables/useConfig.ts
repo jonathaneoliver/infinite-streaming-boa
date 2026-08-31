@@ -21,7 +21,7 @@
 
 /** Every preference key the interface keeps. Adding one here is the whole cost
  *  of including it in a saved configuration. */
-const UI_KEYS = ['pifi.sort', 'pifi.folded', 'pifi.chart', 'pifi.extras'] as const;
+const UI_KEYS = ['boa.sort', 'boa.folded', 'boa.chart', 'boa.extras'] as const;
 
 export interface ConfigDoc {
   version?: number;
@@ -64,7 +64,7 @@ function filename(): string {
   const d = new Date();
   const p = (n: number) => String(n).padStart(2, '0');
   const stamp = `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}`;
-  return `pifi-${location.hostname.split('.')[0]}-${stamp}.json`;
+  return `boa-${location.hostname.split('.')[0]}-${stamp}.json`;
 }
 
 export async function exportConfig(): Promise<string> {
@@ -103,7 +103,7 @@ export async function importConfig(file: File): Promise<{ devices: number; patte
     throw new Error(`not valid JSON: ${(e as Error).message}`);
   }
   if (!doc || typeof doc !== 'object' || !Array.isArray(doc.devices)) {
-    throw new Error('not a pifi configuration: no "devices" array');
+    throw new Error('not a boa configuration: no "devices" array');
   }
   const r = await fetch('/api/config?mode=merge', {
     method: 'POST',

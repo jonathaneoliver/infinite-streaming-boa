@@ -18,7 +18,7 @@ const dev = useDevice();
  * view setting that should survive a reload rather than resetting every time
  * the page is opened to check on something.
  */
-const SORT_KEY = 'pifi.sort';
+const SORT_KEY = 'boa.sort';
 function loadSort(): SortMode {
   try {
     const v = localStorage.getItem(SORT_KEY);
@@ -90,7 +90,7 @@ const rev = (c: Client) => c.policy.rev;
  * deliberately opened stays open across a reload. Stored per MAC; unknown
  * devices simply fall back to the default.
  */
-const STORE_KEY = 'pifi.folded';
+const STORE_KEY = 'boa.folded';
 
 function loadPrefs(): Record<string, boolean> {
   try {
@@ -134,7 +134,7 @@ const anyExpanded = computed(() => clients.value.some((c) => !isFolded(c.mac)));
  * working setup, and having it reset on every reload makes the page feel like
  * it forgets what you were doing.
  */
-const CHART_KEY = 'pifi.chart';
+const CHART_KEY = 'boa.chart';
 const CHART_DEFAULTS: ChartPrefs = {
   rangeSec: 300, yMode: 'auto', yManual: 10,
   // Both on by default: the live trace is the record, and the mean is the
@@ -233,7 +233,7 @@ async function onLoadConfig(e: Event) {
 <template>
   <div class="wrap">
     <header class="top">
-      <h1>infinite-streaming-pifi</h1>
+      <h1>infinite-streaming-boa</h1>
       <span class="sub">per-client network link conditioner</span>
       <span class="spacer"></span>
 

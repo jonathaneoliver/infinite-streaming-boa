@@ -1,6 +1,6 @@
 //go:build !linux
 
-package pifi
+package boa
 
 import (
 	"errors"
@@ -8,7 +8,7 @@ import (
 )
 
 // Stub so the daemon compiles and its tests run on a developer's macOS
-// machine. AF_PACKET has no portable equivalent; pifi only ever runs on the Pi,
+// machine. AF_PACKET has no portable equivalent; boa only ever runs on the Pi,
 // but being unable to build locally would make development needlessly painful.
 type Learner struct{ bridge string }
 

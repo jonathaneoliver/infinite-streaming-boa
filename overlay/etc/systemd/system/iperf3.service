@@ -17,7 +17,7 @@
 # To measure conditioning, the load has to arrive through the WAN port from a
 # host that is not this box.
 Description=iperf3 server for measuring the unshaped link
-Documentation=https://github.com/jonathaneoliver/infinite-streaming-pifi
+Documentation=https://github.com/jonathaneoliver/infinite-streaming-boa
 After=network-online.target
 Wants=network-online.target
 

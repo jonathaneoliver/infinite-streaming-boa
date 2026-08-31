@@ -1,4 +1,4 @@
-package pifi
+package boa
 
 import (
 	"encoding/json"
@@ -316,5 +316,5 @@ func (h *History) warnOnce(msg string) {
 		return
 	}
 	h.warned = true
-	fmt.Printf("infinite-streaming-pifi: chart history will not persist: %s\n", msg)
+	fmt.Printf("infinite-streaming-boa: chart history will not persist: %s\n", msg)
 }

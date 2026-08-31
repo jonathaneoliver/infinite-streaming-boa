@@ -7,7 +7,7 @@ at a series of rates and reports what fraction of each cap actually arrived,
 how repeatable that is, and whether delivery stalled.
 
     ./scripts/measure-throttle.py \\
-        --pi pifi@infinite-streaming-pifi.local \\
+        --pi boa@infinite-streaming-boa.local \\
         --mac 12:bb:19:0e:ac:7c \\
         --bind 192.168.0.25 \\
         --master https://example/live/master.m3u8

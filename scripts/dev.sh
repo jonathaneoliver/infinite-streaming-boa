@@ -8,7 +8,7 @@
 # to rebuild.
 #
 #   ./scripts/dev.sh              synthetic clients
-#   ./scripts/dev.sh infinite-streaming-pifi.local   live data from a real Pi (read-write: writes
+#   ./scripts/dev.sh infinite-streaming-boa.local   live data from a real Pi (read-write: writes
 #                                 to the UI really do condition its traffic)
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
@@ -19,17 +19,17 @@ PI="${1:-}"
 API_PORT=8099
 
 if [ -n "$PI" ]; then
-  export PIFI_API="http://${PI}"
-  log "UI will talk to the real Pi at $PIFI_API"
+  export BOA_API="http://${PI}"
+  log "UI will talk to the real Pi at $BOA_API"
   log "Changes you make WILL condition that device's traffic"
 else
   log "Starting daemon in demo mode on :${API_PORT} (synthetic clients)"
-  ( cd daemon && go run . -demo -addr ":${API_PORT}" -state /tmp/infinite-streaming-pifi-demo.json ) &
+  ( cd daemon && go run . -demo -addr ":${API_PORT}" -state /tmp/infinite-streaming-boa-demo.json ) &
   DAEMON=$!
   # Kill the daemon whenever this script ends, however it ends -- otherwise a
   # stale one holds the port and the next run silently talks to old code.
   trap 'kill $DAEMON 2>/dev/null || true' EXIT INT TERM
-  export PIFI_API="http://localhost:${API_PORT}"
+  export BOA_API="http://localhost:${API_PORT}"
   sleep 1
 fi
 

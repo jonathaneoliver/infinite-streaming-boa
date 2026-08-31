@@ -85,11 +85,11 @@ if ! grep -q "Removable Media: *Removable" <<<"$INFO"; then
   a hard disk rather than a card. Refusing by default.
 
   If you are certain this is your card reader, re-run with:
-      PIFI_ALLOW_FIXED=1 ./flash.sh "$IMG" $DISK
+      BOA_ALLOW_FIXED=1 ./flash.sh "$IMG" $DISK
 
 WARN
-  [ "${PIFI_ALLOW_FIXED:-}" = "1" ] || die "refusing a non-removable disk"
-  log "PIFI_ALLOW_FIXED is set -- proceeding against a fixed disk"
+  [ "${BOA_ALLOW_FIXED:-}" = "1" ] || die "refusing a non-removable disk"
+  log "BOA_ALLOW_FIXED is set -- proceeding against a fixed disk"
 fi
 
 SIZE=$(awk -F'[()]' '/Disk Size/{print $1; exit}' <<<"$INFO" | awk -F': +' '{print $2}')
@@ -138,8 +138,8 @@ cat <<'DONE'
     WAN port (eth0)  ->  your existing network   (required: clients get their
                                                   addresses from your router)
     USB ethernet     ->  a wired device under test   (optional)
-    Wi-Fi            ->  clients join the pifi SSID
+    Wi-Fi            ->  clients join the boa SSID
 
-  Then open  http://infinite-streaming-pifi.local/  from anywhere on your network.
+  Then open  http://infinite-streaming-boa.local/  from anywhere on your network.
 
 DONE

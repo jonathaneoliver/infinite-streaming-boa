@@ -1,4 +1,4 @@
-package pifi
+package boa
 
 import "testing"
 

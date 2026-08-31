@@ -1,4 +1,4 @@
-// Package pifi implements the per-client network link conditioner that runs on
+// Package boa implements the per-client network link conditioner that runs on
 // the access point.
 //
 // The types in this file are the wire contract shared with the Vue UI. Field
@@ -13,7 +13,7 @@
 // The kernel's own JSON reports class rates in BYTES per second and netem delay
 // in seconds, which is why every conversion is funnelled through one file
 // instead of being scattered across the collectors.
-package pifi
+package boa
 
 import (
 	"sort"

@@ -1,6 +1,6 @@
 //go:build linux
 
-package pifi
+package boa
 
 import (
 	"fmt"
@@ -166,13 +166,13 @@ func openMDNSSocket() (int, error) {
 func (l *Learner) startMDNSCapture() bool {
 	fd, err := openMDNSSocket()
 	if err != nil {
-		fmt.Printf("infinite-streaming-pifi: mDNS capture unavailable: %v "+
+		fmt.Printf("infinite-streaming-boa: mDNS capture unavailable: %v "+
 			"(falling back to multicast listeners: names by address, and the "+
 			"whole segment rather than this box's clients)\n", err)
 		return false
 	}
 	l.mdnsFd = fd
-	fmt.Println("infinite-streaming-pifi: mDNS capture running (names keyed by MAC)")
+	fmt.Println("infinite-streaming-boa: mDNS capture running (names keyed by MAC)")
 	go l.snoopMDNS(fd)
 	return true
 }
@@ -187,7 +187,7 @@ func (l *Learner) snoopMDNS(fd int) {
 	for {
 		n, from, err := syscall.Recvfrom(fd, buf, 0)
 		if err != nil {
-			fmt.Printf("infinite-streaming-pifi: mDNS capture stopped: %v\n", err)
+			fmt.Printf("infinite-streaming-boa: mDNS capture stopped: %v\n", err)
 			return
 		}
 		ll, ok := from.(*syscall.SockaddrLinklayer)

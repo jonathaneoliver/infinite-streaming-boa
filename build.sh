@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 #
-# pifi image builder.
+# boa image builder.
 #
 # Produces a ready-to-burn Raspberry Pi OS image with the access point and the
-# pifi link conditioner baked in. Nothing is fetched on first boot.
+# boa link conditioner baked in. Nothing is fetched on first boot.
 #
 # The host needs only curl + docker: macOS can neither mount ext4 nor
 # loop-mount a partition table, so all image surgery happens in a privileged
@@ -28,14 +28,14 @@ set -a; . "./$ENV_FILE"; set +a
 AP_COUNTRY="${AP_COUNTRY:-US}"
 AP_BAND="${AP_BAND:-bg}"
 AP_CHANNEL="${AP_CHANNEL:-6}"
-PIFI_WAN_PORT="${PIFI_WAN_PORT:-eth0}"
-PIFI_RESCUE_IP="${PIFI_RESCUE_IP:-192.168.99.1}"
+BOA_WAN_PORT="${BOA_WAN_PORT:-eth0}"
+BOA_RESCUE_IP="${BOA_RESCUE_IP:-192.168.99.1}"
 AP_HIDDEN="${AP_HIDDEN:-false}"
-PIFI_HOSTNAME="${PIFI_HOSTNAME:-pifi}"
-PIFI_USER="${PIFI_USER:-pifi}"
-PIFI_PASSWORD="${PIFI_PASSWORD:-}"
-PIFI_SSH_PUBKEY="${PIFI_SSH_PUBKEY:-}"
-PIFI_TIMEZONE="${PIFI_TIMEZONE:-}"
+BOA_HOSTNAME="${BOA_HOSTNAME:-boa}"
+BOA_USER="${BOA_USER:-boa}"
+BOA_PASSWORD="${BOA_PASSWORD:-}"
+BOA_SSH_PUBKEY="${BOA_SSH_PUBKEY:-}"
+BOA_TIMEZONE="${BOA_TIMEZONE:-}"
 
 (( ${#AP_SSID} >= 1 && ${#AP_SSID} <= 32 )) \
   || die "AP_SSID must be 1-32 characters (got ${#AP_SSID})"
@@ -45,12 +45,12 @@ PIFI_TIMEZONE="${PIFI_TIMEZONE:-}"
   || die "AP_COUNTRY must be a 2-letter ISO country code like US or GB (got '$AP_COUNTRY')"
 [[ "$AP_BAND" == "bg" || "$AP_BAND" == "a" ]] \
   || die "AP_BAND must be 'bg' (2.4GHz) or 'a' (5GHz) (got '$AP_BAND')"
-[[ "$PIFI_RESCUE_IP" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]] \
-  || die "PIFI_RESCUE_IP must be a plain IPv4 address (got '$PIFI_RESCUE_IP')"
-[[ "$PIFI_WAN_PORT" =~ ^[a-zA-Z0-9_-]+$ ]] \
-  || die "PIFI_WAN_PORT must be an interface name like eth0 (got '$PIFI_WAN_PORT')"
-[ -n "$PIFI_PASSWORD" ] || [ -n "$PIFI_SSH_PUBKEY" ] \
-  || die "set PIFI_PASSWORD or PIFI_SSH_PUBKEY, or you cannot log in to the Pi"
+[[ "$BOA_RESCUE_IP" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]] \
+  || die "BOA_RESCUE_IP must be a plain IPv4 address (got '$BOA_RESCUE_IP')"
+[[ "$BOA_WAN_PORT" =~ ^[a-zA-Z0-9_-]+$ ]] \
+  || die "BOA_WAN_PORT must be an interface name like eth0 (got '$BOA_WAN_PORT')"
+[ -n "$BOA_PASSWORD" ] || [ -n "$BOA_SSH_PUBKEY" ] \
+  || die "set BOA_PASSWORD or BOA_SSH_PUBKEY, or you cannot log in to the Pi"
 
 # The Pi's onboard radio cannot run an AP on a DFS channel (radar-avoidance
 # channels require a detection capability the chip does not expose in AP mode).
@@ -91,16 +91,16 @@ fi
 
 ## Payload ------------------------------------------------------------------
 if [ -x ./scripts/build-payload.sh ]; then
-  log "Building pifi payload (Vue UI + Go daemon)"
+  log "Building boa payload (Vue UI + Go daemon)"
   ./scripts/build-payload.sh
 fi
 
 ## Build --------------------------------------------------------------------
 STAMP=$(date +%Y%m%d)
-OUT_NAME="infinite-streaming-pifi-${STAMP}.img"
+OUT_NAME="infinite-streaming-boa-${STAMP}.img"
 
 log "Preparing builder container"
-docker build -q -t pifi-builder . >/dev/null
+docker build -q -t boa-builder . >/dev/null
 
 log "Customizing image"
 docker run --rm --privileged \
@@ -113,10 +113,10 @@ docker run --rm --privileged \
   -e XZ_NAME="$XZ_NAME" \
   -e OUT_NAME="$OUT_NAME" \
   -e AP_SSID -e AP_PASSWORD -e AP_COUNTRY -e AP_BAND -e AP_CHANNEL \
-  -e AP_HIDDEN -e PIFI_WAN_PORT -e PIFI_RESCUE_IP \
-  -e PIFI_HOSTNAME -e PIFI_USER -e PIFI_PASSWORD -e PIFI_SSH_PUBKEY \
-  -e PIFI_TIMEZONE \
-  pifi-builder
+  -e AP_HIDDEN -e BOA_WAN_PORT -e BOA_RESCUE_IP \
+  -e BOA_HOSTNAME -e BOA_USER -e BOA_PASSWORD -e BOA_SSH_PUBKEY \
+  -e BOA_TIMEZONE \
+  boa-builder
 
 BAND_LABEL="2.4GHz"
 [ "$AP_BAND" = "a" ] && BAND_LABEL="5GHz"
@@ -125,10 +125,10 @@ cat <<EOF
 
   Image:    dist/${OUT_NAME}
   SSID:     ${AP_SSID}  (${BAND_LABEL} ch ${AP_CHANNEL}, country ${AP_COUNTRY})
-  Login:    ssh ${PIFI_USER}@${PIFI_HOSTNAME}.local
-  Mode:     transparent bridge (${PIFI_WAN_PORT} + wlan0 + lan0 -> br-lan)
+  Login:    ssh ${BOA_USER}@${BOA_HOSTNAME}.local
+  Mode:     transparent bridge (${BOA_WAN_PORT} + wlan0 + lan0 -> br-lan)
             clients keep their existing LAN addresses; the Pi is not a hop
-  Web UI:   http://${PIFI_HOSTNAME}.local/   or  http://${PIFI_RESCUE_IP}/ (rescue)
+  Web UI:   http://${BOA_HOSTNAME}.local/   or  http://${BOA_RESCUE_IP}/ (rescue)
 
   Burn it:  ./flash.sh dist/${OUT_NAME}
 

@@ -1,4 +1,4 @@
-package pifi
+package boa
 
 import (
 	"net"
@@ -182,7 +182,7 @@ func TestParseMDNSFrame_NamesTheSender(t *testing.T) {
 	}
 
 	// IPv6 is the case that matters most: measured on a real network, most
-	// announcements arrive over v6, on addresses pifi has not otherwise seen.
+	// announcements arrive over v6, on addresses boa has not otherwise seen.
 	v6 := append(name("AppleTV", "local"),
 		0, dnsTypeAAAA, 0x80, 1, 0, 0, 0, 120, 0, 16,
 		0xfd, 0xd5, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x05)

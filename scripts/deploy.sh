@@ -6,8 +6,8 @@
 # round trip. This is about ten seconds: build the interface, cross-compile the
 # daemon, copy one binary, restart one unit.
 #
-#   ./scripts/deploy.sh                  -> pifi@infinite-streaming-pifi.local
-#   ./scripts/deploy.sh pifi@192.168.1.9
+#   ./scripts/deploy.sh                  -> boa@infinite-streaming-boa.local
+#   ./scripts/deploy.sh boa@192.168.1.9
 #   ./scripts/deploy.sh --ui-only        -> skip the Go build when only the
 #                                           interface changed
 set -euo pipefail
@@ -27,8 +27,8 @@ for a in "$@"; do
     *) TARGET="$a" ;;
   esac
 done
-TARGET="${TARGET:-pifi@infinite-streaming-pifi.local}"
-NEW=infinite-streaming-pifi
+TARGET="${TARGET:-boa@infinite-streaming-boa.local}"
+NEW=infinite-streaming-boa
 
 # Fail early with a clear message rather than midway through a build.
 log "Checking $TARGET"
@@ -110,14 +110,14 @@ if [ "$UI_ONLY" = "0" ]; then
   log "Cross-compiling daemon for the Pi"
 fi
 ( cd daemon && CGO_ENABLED=0 GOOS=linux GOARCH=arm64 \
-    go build -trimpath -ldflags='-s -w' -o ../overlay/usr/local/bin/infinite-streaming-pifid . )
+    go build -trimpath -ldflags='-s -w' -o ../overlay/usr/local/bin/boad . )
 
-SIZE=$(du -h overlay/usr/local/bin/infinite-streaming-pifid | cut -f1)
+SIZE=$(du -h overlay/usr/local/bin/boad | cut -f1)
 log "Copying ${SIZE} binary"
 # To a temp path first: overwriting a running executable in place fails with
 # ETXTBSY, and a partial copy over the real path would leave the Pi with a
 # broken binary if the transfer were interrupted.
-scp -q overlay/usr/local/bin/infinite-streaming-pifid "$TARGET:/tmp/infinite-streaming-pifid.new"
+scp -q overlay/usr/local/bin/boad "$TARGET:/tmp/boad.new"
 
 # The systemd unit is part of the deployable payload too. Shipping only the
 # binary meant a unit change silently required a reflash to take effect -- which
@@ -135,11 +135,11 @@ if [ -f "$UNIT" ]; then
 fi
 
 log "Installing and restarting"
-ssh "$TARGET" 'sudo install -m 0755 /tmp/infinite-streaming-pifid.new /usr/local/bin/infinite-streaming-pifid \
-  && sudo systemctl restart infinite-streaming-pifi \
-  && rm -f /tmp/infinite-streaming-pifid.new \
+ssh "$TARGET" 'sudo install -m 0755 /tmp/boad.new /usr/local/bin/boad \
+  && sudo systemctl restart infinite-streaming-boa \
+  && rm -f /tmp/boad.new \
   && sleep 1 \
-  && systemctl is-active infinite-streaming-pifi'
+  && systemctl is-active infinite-streaming-boa'
 
 # Ask the daemon itself, not just systemd: the unit can be "active" while the
 # daemon is failing to configure the kernel, and that distinction is the whole
@@ -152,4 +152,4 @@ ssh "$TARGET" 'curl -s --max-time 5 http://localhost/api/health' \
 HOSTONLY="${TARGET#*@}"
 echo
 log "Live at http://${HOSTONLY}/"
-log "Logs:   ssh $TARGET 'journalctl -u infinite-streaming-pifi -f'"
+log "Logs:   ssh $TARGET 'journalctl -u infinite-streaming-boa -f'"
