@@ -142,9 +142,33 @@ log "Passwordless sudo enabled for '$BOA_USER' (deploy.sh needs it)"
 if [ -n "${BOA_SSH_PUBKEY:-}" ]; then
   # Keys go under /etc/ssh rather than ~/.ssh because the user's home does not
   # exist yet — it is created by the first-boot account step.
+  #
+  # BOA_SSH_PUBKEY may hold SEVERAL keys, one per line, so a spare on another
+  # machine survives losing the primary. With password login disabled the key is
+  # the only way in over the network, and a single key means one lost laptop is a
+  # reflash.
+  #
+  # Lines are copied through individually rather than dumping the variable
+  # whole: a trailing blank line, an indented paste or a CR from a Windows
+  # clipboard all produce an authorized_keys entry sshd silently ignores, and
+  # "silently ignores" here means locked out of a headless box.
+  AK="$ROOT/etc/ssh/authorized_keys.d/$BOA_USER"
   install -d -m 0755 "$ROOT/etc/ssh/authorized_keys.d"
-  printf '%s\n' "$BOA_SSH_PUBKEY" > "$ROOT/etc/ssh/authorized_keys.d/$BOA_USER"
-  chmod 0644 "$ROOT/etc/ssh/authorized_keys.d/$BOA_USER"
+  : > "$AK"
+  NKEYS=0
+  while IFS= read -r line; do
+    line="${line%$'\r'}"                       # CRLF paste
+    line="${line#"${line%%[![:space:]]*}"}"    # leading whitespace
+    [ -z "$line" ] && continue
+    case "$line" in \#*) continue ;; esac
+    printf '%s\n' "$line" >> "$AK"
+    NKEYS=$((NKEYS + 1))
+  done <<EOF
+$BOA_SSH_PUBKEY
+EOF
+  chmod 0644 "$AK"
+  [ "$NKEYS" -gt 0 ] || die "BOA_SSH_PUBKEY is set but contained no usable key lines"
+  log "Authorised $NKEYS SSH key(s) for '$BOA_USER'"
   # PasswordAuthentication is disabled whenever a key is present, INDEPENDENT of
   # whether an account password is set. Those are two different doors and were
   # previously conflated: setting a password for console access silently left

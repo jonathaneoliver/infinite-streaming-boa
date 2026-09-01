@@ -262,6 +262,12 @@ authentication, and the key becomes the only way in over the network.
 key is lost — leaving it empty locks the account outright, which turns a lost
 key into a reflash.
 
+Give it **more than one key**, one per line, if you have a second machine. A
+single key is a single point of failure once password login is off. `build.sh`
+parses each one with `ssh-keygen` and prints its fingerprint, so a truncated
+paste fails the build rather than producing a box nobody can log into — a
+malformed `authorized_keys` line is ignored by sshd without any complaint.
+
 The image also grants `BOA_USER` passwordless sudo. That is deliberate, and it
 is safe *because* of the above rather than in spite of it. A shell as
 `BOA_USER` is already the whole box, so a sudo prompt asking a second time for

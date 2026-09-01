@@ -63,6 +63,38 @@ if [ -z "$BOA_SSH_PUBKEY" ]; then
   warn "  Recommended: ssh-keygen if needed, then put the PUBLIC key in .env as"
   warn "  BOA_SSH_PUBKEY. The image then disables password login over the network"
   warn "  and keeps BOA_PASSWORD for the console and for recovery."
+else
+  # BOA_SSH_PUBKEY may hold several keys, one per line. Each is checked here
+  # rather than on the Pi, because sshd ignores a malformed authorized_keys line
+  # WITHOUT COMPLAINING -- and with password login disabled, a key truncated by a
+  # bad paste is a headless box nobody can reach.
+  # Each key is PARSED, not pattern-matched. A regex only checks shape, and a
+  # key truncated by a bad paste -- "ssh-ed25519 AAAAC3Nz" -- keeps the shape
+  # perfectly while being useless. ssh-keygen decodes the blob and fails on it.
+  KEYTMP=$(mktemp); trap 'rm -f "$KEYTMP"' EXIT
+  KEYCOUNT=0
+  while IFS= read -r k; do
+    k="${k%$'\r'}"
+    k="${k#"${k%%[![:space:]]*}"}"
+    [ -z "$k" ] && continue
+    case "$k" in \#*) continue ;; esac
+    KEYCOUNT=$((KEYCOUNT + 1))
+    printf '%s\n' "$k" > "$KEYTMP"
+    FPR=$(ssh-keygen -lf "$KEYTMP" 2>/dev/null) \
+      || die "BOA_SSH_PUBKEY line $KEYCOUNT is not a usable public key.
+  ssh-keygen could not parse it, which usually means a truncated or wrapped
+  paste. Expected one line, e.g. the contents of ~/.ssh/id_ed25519.pub.
+  A PRIVATE key ('-----BEGIN OPENSSH PRIVATE KEY-----') is the wrong file and
+  must never go in .env."
+    log "  key $KEYCOUNT: $FPR"
+  done <<< "$BOA_SSH_PUBKEY"
+  rm -f "$KEYTMP"; trap - EXIT
+  [ "$KEYCOUNT" -gt 0 ] \
+    || die "BOA_SSH_PUBKEY is set but holds no key lines"
+  log "SSH: $KEYCOUNT key(s) authorised; password login will be disabled"
+  [ "$KEYCOUNT" -eq 1 ] \
+    && warn "Only one SSH key. Losing it means the console or a reflash — add a
+  spare on a second line of BOA_SSH_PUBKEY if you have another machine."
 fi
 
 # The Pi's onboard radio cannot run an AP on a DFS channel (radar-avoidance
