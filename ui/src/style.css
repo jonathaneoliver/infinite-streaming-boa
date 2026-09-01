@@ -226,6 +226,11 @@ input[type='range']::-moz-range-thumb {
 }
 
 /* --- footers, tables ---------------------------------------------------- */
+.notes .version {
+  font-size: 0.8em;
+  opacity: 0.55;
+  font-variant-numeric: tabular-nums;
+}
 .card-foot {
   padding: 10px 14px;
   border-top: 1px solid var(--line);

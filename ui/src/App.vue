@@ -73,6 +73,10 @@ const clients = computed(() =>
 );
 const offlineCount = computed(() => allClients.value.filter((c) => !c.present).length);
 const caps = computed(() => snap.value?.caps);
+// The running build's version, stamped into the daemon at build time and shown
+// in the footer so an operator can tell which build a box is on. "dev" for a
+// development build; see main.version and scripts/version.sh.
+const version = computed(() => snap.value?.version);
 
 /*
  * Whether the box can do bursty loss, provided once for every ShapeSliders on
@@ -445,7 +449,7 @@ the file are replaced, devices not mentioned are left alone.">
     <!-- Standing truths about how the box behaves. They never change and never
          need acting on, so they read as footnotes rather than pushing the
          devices -- the actual content -- below the fold. -->
-    <footer v-if="infoNotices.length || iperfCmd" class="notes">
+    <footer v-if="infoNotices.length || iperfCmd || version" class="notes">
       <div v-for="n in infoNotices" :key="n.text" class="notice info">
         {{ n.text }}
       </div>
@@ -462,6 +466,9 @@ the file are replaced, devices not mentioned are left alone.">
         allows. Verifying <strong>uplink</strong> needs load from a host beyond
         {{ caps?.uplink_if }}.
       </div>
+      <!-- Which build this box is on. Quiet by design: an operator needs it
+           when reporting a result or an issue, not while working. -->
+      <div v-if="version" class="version">boa {{ version }}</div>
     </footer>
   </div>
 </template>

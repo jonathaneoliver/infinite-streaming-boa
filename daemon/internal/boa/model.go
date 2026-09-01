@@ -464,6 +464,9 @@ type Capabilities struct {
 // The UI resyncs slider positions only when ControlRevision changes, so live
 // telemetry updates never yank a control out from under the operator's cursor.
 type Snapshot struct {
+	// Version is the running build's version string (see main.version). The UI
+	// shows it so an operator can tell which build a box is on.
+	Version         string       `json:"version"`
 	Revision        uint64       `json:"revision"`
 	ControlRevision uint64       `json:"control_revision"`
 	Time            int64        `json:"time"`

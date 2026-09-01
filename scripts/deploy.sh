@@ -106,11 +106,12 @@ log "Building web interface"
 # The interface is embedded in the binary, so a UI-only change still needs the
 # Go build. --ui-only exists only to skip the typecheck-and-bundle when nothing
 # in ui/ changed; the link step is unavoidable either way.
+VER="$(bash scripts/version.sh)"
 if [ "$UI_ONLY" = "0" ]; then
-  log "Cross-compiling daemon for the Pi"
+  log "Cross-compiling daemon for the Pi, version ${VER}"
 fi
 ( cd daemon && CGO_ENABLED=0 GOOS=linux GOARCH=arm64 \
-    go build -trimpath -ldflags='-s -w' -o ../overlay/usr/local/bin/boad . )
+    go build -trimpath -ldflags="-s -w -X main.version=${VER}" -o ../overlay/usr/local/bin/boad . )
 
 SIZE=$(du -h overlay/usr/local/bin/boad | cut -f1)
 log "Copying ${SIZE} binary"

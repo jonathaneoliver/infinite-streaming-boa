@@ -24,14 +24,15 @@ log "Building web interface"
   npm run build --silent
 )
 
-log "Cross-compiling daemon for the Pi (linux/arm64)"
+VER="$(bash scripts/version.sh)"
+log "Cross-compiling daemon for the Pi (linux/arm64), version ${VER}"
 mkdir -p overlay/usr/local/bin
 (
   cd daemon
   # -s -w strips the symbol table and DWARF data: the binary lives on an SD
-  # card and nobody debugs it with gdb.
+  # card and nobody debugs it with gdb. -X stamps the git-derived version.
   CGO_ENABLED=0 GOOS=linux GOARCH=arm64 \
-    go build -trimpath -ldflags='-s -w' -o ../overlay/usr/local/bin/boad .
+    go build -trimpath -ldflags="-s -w -X main.version=${VER}" -o ../overlay/usr/local/bin/boad .
 )
 chmod 0755 overlay/usr/local/bin/boad
 
