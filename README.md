@@ -376,7 +376,7 @@ Everything lives in `.env`; see `.env.example` for the full annotated list.
 | `BOA_WAN_PORT` | The port cabled to your existing network. Conditioning is applied here |
 | `BOA_RESCUE_IP` | A fixed address on the bridge so the box is reachable even with no upstream DHCP |
 | `BOA_USER`, `BOA_PASSWORD`, `BOA_SSH_PUBKEY` | Headless login — see below |
-| `BOA_NTOPNG_PASSWORD` | ntopng's admin password. Empty reuses `BOA_PASSWORD` |
+| `BOA_NTOPNG_PASSWORD` | ntopng's admin password. **Keep it different from `BOA_PASSWORD`** — leaving it empty falls back to that, which stores your login password on the box a second time as an unsalted MD5 |
 | `AP_SSID_USB` | A different SSID for the USB radio while testing it. Empty means both publish `AP_SSID` |
 
 ### Which radio serves the access point
