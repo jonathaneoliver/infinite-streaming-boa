@@ -345,6 +345,11 @@ player does *through* a transition is the question this box exists to answer.
   never crosses the WAN port.
 - **A shared budget across media is not expressible** while downlink is shaped
   per client port. See the open decision in the issues.
+- **The Wi-Fi passphrase is the only perimeter.** The AP bridges onto the
+  existing LAN and the management interfaces do not authenticate (§5), so
+  `AP_PASSWORD` alone gates both access to the network and the ability to
+  black-hole any device on it. A weak WPA2 passphrase is crackable offline from
+  one handshake; use a strong one.
 - **Encrypted payloads stay encrypted.** Manifest-level inspection needs a proxy
   that is the origin path.
 - **A measured ladder is the effective one, not the manifest's.** A rendition the

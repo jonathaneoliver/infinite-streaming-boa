@@ -470,6 +470,21 @@ default if login is ever re-enabled. Keep it *different from* `BOA_PASSWORD`:
 ntopng stores its secret as an unsalted MD5, and reusing your login password
 would put that password on the box in a second, weaker form.
 
+### The Wi-Fi passphrase is the whole perimeter
+
+`AP_PASSWORD` is not just Wi-Fi security — it is the *only* thing standing between
+a stranger in radio range and your network. The AP is a **transparent bridge onto
+your existing LAN**, not an isolated guest network with its own subnet, so a
+device that associates lands on the real segment beside everything else. And the
+interface on `:80` and ntopng on `:3000` have **no login** ([PRD §5](PRD.md)), so
+whoever associates can also re-shape or **black-hole any device on the network** —
+a one-line denial of service — and read ntopng's per-device traffic breakdown.
+
+WPA2-PSK with a weak passphrase is crackable offline: capture one handshake and
+run a dictionary against it at leisure. So use a **strong, random** passphrase,
+treat it as the credential it is, and keep the box on a network where a person who
+gets past it is someone you would have let on anyway.
+
 ## How the conditioning works
 
 Both directions are shaped on a **true egress queue** — the last interface the
