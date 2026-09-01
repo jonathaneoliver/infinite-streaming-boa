@@ -343,12 +343,25 @@ EOF
 
 log "Bridge br-lan: ${BOA_WAN_PORT} (wan) + wlan0 (ap '${AP_SSID}') + lan0 (usb)"
 
-# Stable name for the USB ethernet adapter. On a Pi 4/5 the onboard NIC is not
-# a USB device, so ID_BUS==usb identifies the add-on adapter unambiguously.
+# Stable names for USB network adapters. On a Pi 4/5 the onboard NIC is not a
+# USB device, so ID_BUS==usb identifies an add-on adapter unambiguously.
 # (On a Pi 3 the onboard NIC *is* USB and this heuristic would not hold.)
+#
+# DEVTYPE is what separates them, and its absence was a real bug: the rule said
+# "first USB ethernet adapter" but only tested ID_BUS, so it matched ANY USB
+# network device. Plugging in a USB Wi-Fi dongle renamed the RADIO to lan0 --
+# the name reserved for the wired downstream port -- and NetworkManager then
+# declined to bind its 802-3-ethernet profile to a wireless interface, leaving
+# the wired port nameless and the dongle unusable. Nothing logged an error.
+#
+# Wireless devices set DEVTYPE=wlan; wired ones set no DEVTYPE at all, and an
+# unset key compares unequal, so the first rule still matches USB ethernet.
 cat > "$ROOT/etc/udev/rules.d/76-infinite-streaming-boa-usb-lan.rules" <<'UDEV'
-# First USB ethernet adapter becomes lan0, the downstream wired port.
-SUBSYSTEM=="net", ACTION=="add", ENV{ID_BUS}=="usb", ATTR{address}!="", NAME="lan0"
+# USB ethernet becomes lan0, the downstream wired port.
+SUBSYSTEM=="net", ACTION=="add", ENV{ID_BUS}=="usb", ENV{DEVTYPE}!="wlan", ATTR{address}!="", NAME="lan0"
+# A USB Wi-Fi adapter gets its own stable name, so it can never take lan0 and
+# so the access point can be pointed at it by name.
+SUBSYSTEM=="net", ACTION=="add", ENV{ID_BUS}=="usb", ENV{DEVTYPE}=="wlan", ATTR{address}!="", NAME="wlan-usb"
 UDEV
 
 # Rescue address. A transparent bridge has no address of its own by design, so
