@@ -251,7 +251,28 @@ Everything lives in `.env`; see `.env.example` for the full annotated list.
 | `AP_BAND`, `AP_CHANNEL` | `bg` (2.4GHz) or `a` (5GHz); 5GHz AP mode is limited to channels 36/40/44/48 |
 | `BOA_WAN_PORT` | The port cabled to your existing network. Conditioning is applied here |
 | `BOA_RESCUE_IP` | A fixed address on the bridge so the box is reachable even with no upstream DHCP |
-| `BOA_USER`, `BOA_PASSWORD`, `BOA_SSH_PUBKEY` | Headless login |
+| `BOA_USER`, `BOA_PASSWORD`, `BOA_SSH_PUBKEY` | Headless login — see below |
+| `BOA_NTOPNG_PASSWORD` | ntopng's admin password. Empty reuses `BOA_PASSWORD` |
+
+### Logging in, and why sudo has no password
+
+**Set `BOA_SSH_PUBKEY`.** With a key present the image disables SSH password
+authentication, and the key becomes the only way in over the network.
+`BOA_PASSWORD` stays for the physical console and for getting back in if the
+key is lost — leaving it empty locks the account outright, which turns a lost
+key into a reflash.
+
+The image also grants `BOA_USER` passwordless sudo. That is deliberate, and it
+is safe *because* of the above rather than in spite of it. A shell as
+`BOA_USER` is already the whole box, so a sudo prompt asking a second time for
+the same short password protects nothing — while genuinely breaking
+`scripts/deploy.sh`, which runs over a non-interactive ssh session that has no
+terminal to answer a prompt on. The credential worth strengthening is the key,
+not the prompt.
+
+Without a key, sshd accepts `BOA_PASSWORD` from anyone associated to the AP,
+and those characters are all the security there is. `build.sh` warns when it
+sees that combination.
 
 ## How the conditioning works
 

@@ -145,12 +145,32 @@ if [ -n "${BOA_SSH_PUBKEY:-}" ]; then
   install -d -m 0755 "$ROOT/etc/ssh/authorized_keys.d"
   printf '%s\n' "$BOA_SSH_PUBKEY" > "$ROOT/etc/ssh/authorized_keys.d/$BOA_USER"
   chmod 0644 "$ROOT/etc/ssh/authorized_keys.d/$BOA_USER"
+  # PasswordAuthentication is disabled whenever a key is present, INDEPENDENT of
+  # whether an account password is set. Those are two different doors and were
+  # previously conflated: setting a password for console access silently left
+  # password login enabled over the network too, so the box accepted an
+  # eight-character secret from anyone associated to a broadcasting AP.
+  #
+  # The account password stays. It is what the physical console asks for, and it
+  # is the way back in if the key is ever lost -- emptying BOA_PASSWORD locks the
+  # account with '*' and makes a lost key mean reflashing the card.
+  #
+  # This is also what makes the passwordless sudo rule above defensible rather
+  # than a shortcut: the credential guarding the box becomes the key, not a short
+  # password, and anyone who gets a shell as $BOA_USER already has the box
+  # regardless of what sudo asks for.
   {
     echo "# boa: key-based login for the preconfigured account"
     echo "AuthorizedKeysFile .ssh/authorized_keys /etc/ssh/authorized_keys.d/%u"
-    [ -z "${BOA_PASSWORD:-}" ] && echo "PasswordAuthentication no"
+    echo "PasswordAuthentication no"
+    echo "KbdInteractiveAuthentication no"
   } > "$ROOT/etc/ssh/sshd_config.d/boa.conf"
-  log "SSH public key installed${BOA_PASSWORD:+ (password login also enabled)}"
+  log "SSH key installed; password login over the network disabled"
+  [ -n "${BOA_PASSWORD:-}" ] \
+    && log "Account password kept for the console and for recovery"
+else
+  warn "No BOA_SSH_PUBKEY: the box will accept password logins over SSH."
+  warn "Set one in .env — it is the credential the sudo rule relies on."
 fi
 
 ## 4. Identity --------------------------------------------------------------
@@ -555,7 +575,19 @@ UNIT
   # Only the digest goes into the image, never the plaintext. Note this is a
   # WEAKER store of the same secret than the system account, which uses a salted
   # SHA-512 crypt -- an unavoidable consequence of ntopng's scheme, not ours.
-  NTOP_MD5=$(printf '%s' "${BOA_PASSWORD}" | md5sum | cut -d' ' -f1)
+  # BOA_NTOPNG_PASSWORD exists so the login password does not have to be the one
+  # stored this weakly. Falling back to BOA_PASSWORD keeps existing .env files
+  # working, but say so: reusing it means the account secret also exists on the
+  # box as an unsalted MD5, which is a strictly worse store than the SHA-512
+  # crypt the system account uses.
+  NTOP_PW="${BOA_NTOPNG_PASSWORD:-${BOA_PASSWORD}}"
+  if [ -n "${BOA_NTOPNG_PASSWORD:-}" ]; then
+    log "ntopng admin password set from BOA_NTOPNG_PASSWORD"
+  else
+    warn "ntopng admin password reuses BOA_PASSWORD, stored as unsalted MD5;"
+    warn "set BOA_NTOPNG_PASSWORD in .env to keep the two secrets separate"
+  fi
+  NTOP_MD5=$(printf '%s' "${NTOP_PW}" | md5sum | cut -d' ' -f1)
   printf '%s\n' "$NTOP_MD5" > "$ROOT/etc/ntopng/admin.md5"
   chmod 0600 "$ROOT/etc/ntopng/admin.md5"
 
