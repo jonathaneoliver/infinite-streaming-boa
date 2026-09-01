@@ -46,6 +46,12 @@ Intended for:
 - **Honest measurement.** The interface reports what the kernel is doing, and
   states plainly where the numbers cannot be trusted.
 - **Self-contained appliance.** Boots ready; no first-boot internet required.
+- **One credential, and it is the SSH key.** When a public key is configured the
+  image disables SSH password authentication, keeping the account password for
+  the console and for recovery, and grants the login account passwordless sudo.
+  A shell on the box is already the whole box, so the boundary worth defending
+  is getting that shell — not a second prompt for the same short secret, which
+  only breaks the non-interactive deploy path.
 
 ## 3) Non-Goals
 

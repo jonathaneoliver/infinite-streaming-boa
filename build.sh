@@ -12,6 +12,7 @@ set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")"
 
 log()  { printf '\033[36m==>\033[0m %s\n' "$*"; }
+warn() { printf '\033[33m warn:\033[0m %s\n' "$*" >&2; }
 die()  { printf '\033[31merror:\033[0m %s\n' "$*" >&2; exit 1; }
 
 ENV_FILE="${ENV_FILE:-.env}"
@@ -35,6 +36,8 @@ BOA_HOSTNAME="${BOA_HOSTNAME:-boa}"
 BOA_USER="${BOA_USER:-boa}"
 BOA_PASSWORD="${BOA_PASSWORD:-}"
 BOA_SSH_PUBKEY="${BOA_SSH_PUBKEY:-}"
+BOA_NTOPNG_PASSWORD="${BOA_NTOPNG_PASSWORD:-}"
+BOA_SSH_PASSWORD_LOGIN="${BOA_SSH_PASSWORD_LOGIN:-false}"
 BOA_TIMEZONE="${BOA_TIMEZONE:-}"
 
 (( ${#AP_SSID} >= 1 && ${#AP_SSID} <= 32 )) \
@@ -51,6 +54,62 @@ BOA_TIMEZONE="${BOA_TIMEZONE:-}"
   || die "BOA_WAN_PORT must be an interface name like eth0 (got '$BOA_WAN_PORT')"
 [ -n "$BOA_PASSWORD" ] || [ -n "$BOA_SSH_PUBKEY" ] \
   || die "set BOA_PASSWORD or BOA_SSH_PUBKEY, or you cannot log in to the Pi"
+[[ "$BOA_SSH_PASSWORD_LOGIN" == "true" || "$BOA_SSH_PASSWORD_LOGIN" == "false" ]] \
+  || die "BOA_SSH_PASSWORD_LOGIN must be 'true' or 'false' (got '$BOA_SSH_PASSWORD_LOGIN')"
+# Guard the combination that locks you out: no password to type, and password
+# login turned on as the way in. sshd would offer a method that cannot succeed.
+[ "$BOA_SSH_PASSWORD_LOGIN" = "true" ] && [ -z "$BOA_PASSWORD" ] \
+  && die "BOA_SSH_PASSWORD_LOGIN=true needs BOA_PASSWORD set; an empty password
+  locks the account with '*' and password login could never succeed"
+
+# A key is what makes the box's passwordless sudo rule reasonable, so the
+# combination with no key gets called out rather than built quietly. Without one,
+# sshd accepts BOA_PASSWORD over the network from anyone associated to the AP,
+# and that password is the whole of the box's security.
+if [ -z "$BOA_SSH_PUBKEY" ]; then
+  warn "BOA_SSH_PUBKEY is not set: the Pi will accept SSH password logins."
+  warn "  Recommended: ssh-keygen if needed, then put the PUBLIC key in .env as"
+  warn "  BOA_SSH_PUBKEY. The image then disables password login over the network"
+  warn "  and keeps BOA_PASSWORD for the console and for recovery."
+else
+  # BOA_SSH_PUBKEY may hold several keys, one per line, and each is PARSED here
+  # rather than pattern-matched. A regex only checks shape, and a key truncated
+  # by a bad paste -- "ssh-ed25519 AAAAC3Nz" -- keeps the shape perfectly while
+  # being useless. sshd then ignores that line WITHOUT COMPLAINING, which on a
+  # headless box with no password login is a box nobody can reach. ssh-keygen
+  # decodes the blob and fails on it.
+  KEYTMP=$(mktemp); trap 'rm -f "$KEYTMP"' EXIT
+  KEYCOUNT=0
+  while IFS= read -r k; do
+    k="${k%$'\r'}"
+    k="${k#"${k%%[![:space:]]*}"}"
+    [ -z "$k" ] && continue
+    case "$k" in \#*) continue ;; esac
+    KEYCOUNT=$((KEYCOUNT + 1))
+    printf '%s\n' "$k" > "$KEYTMP"
+    FPR=$(ssh-keygen -lf "$KEYTMP" 2>/dev/null) \
+      || die "BOA_SSH_PUBKEY line $KEYCOUNT is not a usable public key.
+  ssh-keygen could not parse it, which usually means a truncated or wrapped
+  paste. Expected one line, e.g. the contents of ~/.ssh/id_ed25519.pub.
+  A PRIVATE key ('-----BEGIN OPENSSH PRIVATE KEY-----') is the wrong file and
+  must never go in .env."
+    log "  key $KEYCOUNT: $FPR"
+  done <<< "$BOA_SSH_PUBKEY"
+  rm -f "$KEYTMP"; trap - EXIT
+  [ "$KEYCOUNT" -gt 0 ] \
+    || die "BOA_SSH_PUBKEY is set but holds no key lines"
+  if [ "$BOA_SSH_PASSWORD_LOGIN" = "true" ]; then
+    log "SSH: $KEYCOUNT key(s) authorised"
+    warn "BOA_SSH_PASSWORD_LOGIN=true: sshd will ALSO accept BOA_PASSWORD over the
+  network, from anything associated to the AP. The key is the stronger
+  credential; set this back to false once you no longer need the fallback."
+  else
+    log "SSH: $KEYCOUNT key(s) authorised; password login will be disabled"
+  fi
+  [ "$KEYCOUNT" -eq 1 ] \
+    && warn "Only one SSH key. Losing it means the console or a reflash — add a
+  spare on a second line of BOA_SSH_PUBKEY if you have another machine."
+fi
 
 # The Pi's onboard radio cannot run an AP on a DFS channel (radar-avoidance
 # channels require a detection capability the chip does not expose in AP mode).
@@ -115,6 +174,7 @@ docker run --rm --privileged \
   -e AP_SSID -e AP_PASSWORD -e AP_COUNTRY -e AP_BAND -e AP_CHANNEL \
   -e AP_HIDDEN -e BOA_WAN_PORT -e BOA_RESCUE_IP \
   -e BOA_HOSTNAME -e BOA_USER -e BOA_PASSWORD -e BOA_SSH_PUBKEY \
+  -e BOA_NTOPNG_PASSWORD -e BOA_SSH_PASSWORD_LOGIN \
   -e BOA_TIMEZONE \
   boa-builder
 

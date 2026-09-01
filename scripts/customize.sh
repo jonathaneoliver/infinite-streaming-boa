@@ -142,15 +142,75 @@ log "Passwordless sudo enabled for '$BOA_USER' (deploy.sh needs it)"
 if [ -n "${BOA_SSH_PUBKEY:-}" ]; then
   # Keys go under /etc/ssh rather than ~/.ssh because the user's home does not
   # exist yet — it is created by the first-boot account step.
+  #
+  # BOA_SSH_PUBKEY may hold SEVERAL keys, one per line, so a spare on another
+  # machine survives losing the primary. With password login disabled the key is
+  # the only way in over the network, and a single key means one lost laptop is a
+  # reflash.
+  #
+  # Lines are copied through individually rather than dumping the variable
+  # whole: a trailing blank line, an indented paste or a CR from a Windows
+  # clipboard all produce an authorized_keys entry sshd silently ignores, and
+  # "silently ignores" here means locked out of a headless box.
+  AK="$ROOT/etc/ssh/authorized_keys.d/$BOA_USER"
   install -d -m 0755 "$ROOT/etc/ssh/authorized_keys.d"
-  printf '%s\n' "$BOA_SSH_PUBKEY" > "$ROOT/etc/ssh/authorized_keys.d/$BOA_USER"
-  chmod 0644 "$ROOT/etc/ssh/authorized_keys.d/$BOA_USER"
+  : > "$AK"
+  NKEYS=0
+  while IFS= read -r line; do
+    line="${line%$'\r'}"                       # CRLF paste
+    line="${line#"${line%%[![:space:]]*}"}"    # leading whitespace
+    [ -z "$line" ] && continue
+    case "$line" in \#*) continue ;; esac
+    printf '%s\n' "$line" >> "$AK"
+    NKEYS=$((NKEYS + 1))
+  done <<EOF
+$BOA_SSH_PUBKEY
+EOF
+  chmod 0644 "$AK"
+  [ "$NKEYS" -gt 0 ] || die "BOA_SSH_PUBKEY is set but contained no usable key lines"
+  log "Authorised $NKEYS SSH key(s) for '$BOA_USER'"
+  # PasswordAuthentication is disabled whenever a key is present, INDEPENDENT of
+  # whether an account password is set. Those are two different doors and were
+  # previously conflated: setting a password for console access silently left
+  # password login enabled over the network too, so the box accepted an
+  # eight-character secret from anyone associated to a broadcasting AP.
+  #
+  # The account password stays. It is what the physical console asks for, and it
+  # is the way back in if the key is ever lost -- emptying BOA_PASSWORD locks the
+  # account with '*' and makes a lost key mean reflashing the card.
+  #
+  # This is also what makes the passwordless sudo rule above defensible rather
+  # than a shortcut: the credential guarding the box becomes the key, not a short
+  # password, and anyone who gets a shell as $BOA_USER already has the box
+  # regardless of what sudo asks for.
+  #
+  # BOA_SSH_PASSWORD_LOGIN=true opts back into password authentication, for the
+  # operator who wants a way in from a machine that has no key on it. It is off
+  # by default because that fallback is reachable by everyone else too: sshd will
+  # accept BOA_PASSWORD from anything associated to the AP. Keep it deliberate
+  # and visible rather than implied by whether a password happens to be set,
+  # which is the coupling that hid this for so long.
+  if [ "${BOA_SSH_PASSWORD_LOGIN:-false}" = "true" ]; then
+    PW_AUTH="yes"
+  else
+    PW_AUTH="no"
+  fi
   {
     echo "# boa: key-based login for the preconfigured account"
     echo "AuthorizedKeysFile .ssh/authorized_keys /etc/ssh/authorized_keys.d/%u"
-    [ -z "${BOA_PASSWORD:-}" ] && echo "PasswordAuthentication no"
+    echo "PasswordAuthentication $PW_AUTH"
+    echo "KbdInteractiveAuthentication no"
   } > "$ROOT/etc/ssh/sshd_config.d/boa.conf"
-  log "SSH public key installed${BOA_PASSWORD:+ (password login also enabled)}"
+  if [ "$PW_AUTH" = "yes" ]; then
+    log "SSH keys installed; password login ALSO enabled (BOA_SSH_PASSWORD_LOGIN)"
+  else
+    log "SSH key installed; password login over the network disabled"
+  fi
+  [ -n "${BOA_PASSWORD:-}" ] \
+    && log "Account password kept for the console and for recovery"
+else
+  warn "No BOA_SSH_PUBKEY: the box will accept password logins over SSH."
+  warn "Set one in .env — it is the credential the sudo rule relies on."
 fi
 
 ## 4. Identity --------------------------------------------------------------
@@ -555,7 +615,19 @@ UNIT
   # Only the digest goes into the image, never the plaintext. Note this is a
   # WEAKER store of the same secret than the system account, which uses a salted
   # SHA-512 crypt -- an unavoidable consequence of ntopng's scheme, not ours.
-  NTOP_MD5=$(printf '%s' "${BOA_PASSWORD}" | md5sum | cut -d' ' -f1)
+  # BOA_NTOPNG_PASSWORD exists so the login password does not have to be the one
+  # stored this weakly. Falling back to BOA_PASSWORD keeps existing .env files
+  # working, but say so: reusing it means the account secret also exists on the
+  # box as an unsalted MD5, which is a strictly worse store than the SHA-512
+  # crypt the system account uses.
+  NTOP_PW="${BOA_NTOPNG_PASSWORD:-${BOA_PASSWORD}}"
+  if [ -n "${BOA_NTOPNG_PASSWORD:-}" ]; then
+    log "ntopng admin password set from BOA_NTOPNG_PASSWORD"
+  else
+    warn "ntopng admin password reuses BOA_PASSWORD, stored as unsalted MD5;"
+    warn "set BOA_NTOPNG_PASSWORD in .env to keep the two secrets separate"
+  fi
+  NTOP_MD5=$(printf '%s' "${NTOP_PW}" | md5sum | cut -d' ' -f1)
   printf '%s\n' "$NTOP_MD5" > "$ROOT/etc/ntopng/admin.md5"
   chmod 0600 "$ROOT/etc/ntopng/admin.md5"
 
