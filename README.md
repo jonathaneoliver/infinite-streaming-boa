@@ -270,9 +270,27 @@ same radio without complaint. So: hostapd for a USB adapter, NetworkManager for
 the onboard radio.
 
 It is worth the trouble because the AP's ceiling bounds the top of a measured
-ladder. On a Pi 5 the onboard radio runs the AP at 20 MHz; an mt7921u adapter
-was measured here at 80 MHz and 802.11ax, with a client linking at 720 Mbit/s
-(`HE-MCS 7 HE-NSS 2`) against a signal of −38 dBm.
+ladder. On a Pi 5 the onboard radio runs the AP at 20 MHz. Measured here with a
+Panda PAU0F (mt7921u) at 80 MHz and 802.11ax, iperf3 to the box over Wi-Fi:
+
+| | Downlink | Uplink |
+|---|---|---|
+| USB 3.0 port | **717 Mbit/s** | 375 Mbit/s |
+| Same adapter, USB 2.0 | 117 Mbit/s | 135 Mbit/s |
+| Wired, for reference | 924 Mbit/s | — |
+
+**Put the adapter in a SuperSpeed port and check that it got one.** At USB 2.0
+it still works, still reports 80 MHz and 802.11ax, and still shows a PHY rate
+over 1 Gbit/s — it just quietly delivers a sixth of the throughput, and nothing
+says why. A USB 3.0 adapter that is not fully seated, or is on an extension
+cable without SuperSpeed pins, enumerates as USB 2.0 in a blue port and looks
+identical from every angle except the descriptor:
+
+```sh
+lsusb -v -d <id> | grep bcdUSB       # 3.20 is right; 2.10 means High-Speed only
+lsusb -t                             # the adapter's line should read 5000M, not 480M
+dmesg | grep -i "new .* USB device"  # "new SuperSpeed USB device" is the one you want
+```
 
 One thing that will mislead you: `iw dev wlan-usb info` reports
 `txpower 3.00 dBm` on this adapter no matter what it is set to. It is a driver
