@@ -270,6 +270,21 @@ priority=32768
 
 [ipv4]
 method=auto
+# The rescue address is HERE, on the profile, not applied afterwards by a
+# separate service.
+#
+# It used to be assigned by infinite-streaming-boa-rescue-ip.service once br-lan
+# appeared, and that raced NetworkManager: putting an address on the bridge
+# before NM activated its own profile made NM conclude the connection was
+# externally managed, generate a throwaway connection named "br-lan", adopt it,
+# and NEVER RUN DHCP. Measured: rescue-ip finished at 20:00:31.438, NM logged
+# 'connection-assumed' at 20:00:31.483, and the box came up with a working
+# bridge, a working AP and no lease.
+#
+# NM applies a static address alongside a DHCP one perfectly well, so letting it
+# own both removes the race by construction rather than by ordering two units
+# and hoping. Verified live: managed-type 'full', both addresses present.
+address1=${BOA_RESCUE_IP}/24
 # A missing upstream DHCP server must never block the bridge from coming up:
 # the data path has to work even when management addressing does not.
 may-fail=true
@@ -368,88 +383,7 @@ UDEV
 # if upstream DHCP is missing -- or the box is bench-tested with nothing in the
 # WAN port -- there would be no way to reach the UI on a headless device. This
 # secondary address is present regardless of DHCP.
-install -D -m 0644 /dev/stdin "$ROOT/etc/systemd/system/infinite-streaming-boa-rescue-ip.service" <<EOF
-[Unit]
-Description=boa fixed rescue address on br-lan
-After=NetworkManager.service
-Wants=NetworkManager.service
-
-[Service]
-Type=oneshot
-RemainAfterExit=yes
-ExecStart=/usr/local/sbin/infinite-streaming-boa-rescue-ip
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
-install -D -m 0755 /dev/stdin "$ROOT/usr/local/sbin/infinite-streaming-boa-rescue-ip" <<EOF
-#!/bin/sh
-# Waits for the bridge, then pins its MAC and a known address so the box is
-# always reachable. "replace" rather than "add" so a re-run is idempotent.
-for i in \$(seq 1 30); do
-  ip link show br-lan >/dev/null 2>&1 && break
-  sleep 2
-done
-
-# Pin the bridge MAC to the WAN port's, BEFORE anything else can join br-lan.
-#
-# A Linux bridge takes the LOWEST MAC among its members and recalculates when
-# members come and go. Plugging in a USB Wi-Fi adapter whose MAC sorts below
-# the onboard NIC therefore changes the bridge's identity underneath
-# NetworkManager -- and with it, the identity DHCP is negotiating with. Booting
-# with such an adapter present produced a box with no lease at all: bridge up,
-# rescue address only, unreachable on the LAN, and nothing logged as an error
-# anywhere. Measured: br-lan moved from d8:3a:dd:ad:00:86 to 9c:ef:d5:f6:3f:f2
-# the moment hostapd added wlan-usb.
-#
-# Setting it explicitly stops the kernel recalculating, so members may come and
-# go without the box changing address.
-# Belt and braces only: the pre-up hook has normally done this already. Guarded
-# on a DIFFERENCE, because re-setting a MAC to the value it already holds still
-# raises a netlink change event, and doing that during a DHCP transaction is the
-# very failure this is meant to prevent.
-WANMAC=\$(cat /sys/class/net/${BOA_WAN_PORT}/address 2>/dev/null)
-HAVEMAC=\$(cat /sys/class/net/br-lan/address 2>/dev/null)
-if [ -n "\$WANMAC" ] && [ "\$WANMAC" != "\$HAVEMAC" ]; then
-  ip link set dev br-lan address "\$WANMAC" 2>/dev/null \
-    || echo "boa: could not pin br-lan MAC to \$WANMAC" >&2
-fi
-
-# scope link, not global. The rescue address is for a machine cabled directly to
-# this box that has set an address on the same subnet by hand -- it is not
-# routable from anywhere else. As a global address avahi published it in the
-# mDNS answer for this host, so <hostname>.local resolved to TWO addresses, one
-# of them unreachable, and anything that took the first answer -- ping, curl, a
-# browser -- failed roughly half the time for no visible reason.
-exec ip addr replace ${BOA_RESCUE_IP}/24 dev br-lan scope link
-EOF
-
-install -d -m 0755 "$ROOT/etc/systemd/system/multi-user.target.wants"
-ln -sf /etc/systemd/system/infinite-streaming-boa-rescue-ip.service \
-  "$ROOT/etc/systemd/system/multi-user.target.wants/infinite-streaming-boa-rescue-ip.service"
-# Keep the journal across reboots.
-#
-# Raspberry Pi OS ships /usr/lib/systemd/journald.conf.d/40-rpi-volatile-storage.conf
-# forcing Storage=volatile, to spare the SD card. Reasonable for an appliance
-# that always works; useless for one being developed, because every failure
-# that requires a reboot to observe destroys its own evidence. Two separate
-# boot failures were investigated blind here before this was noticed.
-#
-# The name matters: drop-ins merge in LEXICAL order across all directories, so
-# a file sorting below 40- is silently overridden. 99- wins.
-install -D -m 0644 /dev/stdin \
-  "$ROOT/etc/systemd/journald.conf.d/99-boa-persistent.conf" <<'JOURNAL'
-[Journal]
-Storage=persistent
-# Bounded, because this is an SD card. A few boots of history is all that is
-# ever wanted; the alternative is a card that fills up months later.
-SystemMaxUse=64M
-JOURNAL
-install -d -m 2755 "$ROOT/var/log/journal"
-log "Journal persists across reboots (64M cap)"
-
-log "Rescue address ${BOA_RESCUE_IP}/24 on br-lan"
+log "Rescue address ${BOA_RESCUE_IP}/24 carried by the bridge profile"
 
 ## 5a. A console that answers "what is its address?" ------------------------
 # Twice in one afternoon this box came up with a working bridge, a working
@@ -640,8 +574,20 @@ EOF
 install -D -m 0644 /dev/stdin "$ROOT/etc/systemd/system/infinite-streaming-boa-hostapd.service" <<'UNIT'
 [Unit]
 Description=boa access point on the USB radio
+# After, but deliberately NOT BindsTo.
+#
+# BindsTo= on a .device unit makes systemd TRIGGER this service the moment the
+# device appears -- systemctl show reported TriggeredBy=...wlan-usb.device --
+# so hostapd started itself at boot without the selector running at all. That
+# defeated the entire point of having a selector: the onboard radio was never
+# switched off, BOA_WLAN_PORT was never updated, and every ordering constraint
+# placed on select-radio was irrelevant because the unit being ordered was not
+# the one starting. Measured on a boot that failed: select-radio "not started",
+# hostapd active, NetworkManager having assumed br-lan as an external
+# connection and never run DHCP.
+#
+# The selector starts and stops this service. It is the only thing that should.
 After=NetworkManager.service sys-subsystem-net-devices-wlan\x2dusb.device
-BindsTo=sys-subsystem-net-devices-wlan\x2dusb.device
 
 [Service]
 ExecStart=/usr/sbin/hostapd /etc/hostapd/boa.conf
@@ -682,11 +628,15 @@ onboard_rfkill() {
 if [ -d /sys/class/net/wlan-usb ]; then
   WANT=wlan-usb
   log "USB radio present: hostapd on wlan-usb, onboard radio off"
-  # Pin the bridge MAC before hostapd adds wlan-usb to br-lan. The rescue-ip
-  # unit does this too, but the two are not ordered against each other, and
-  # losing the race means the bridge changes identity mid-DHCP and the box comes
-  # up with no lease. Idempotent, so doing it twice costs nothing.
-  # Only if it is actually wrong -- see the note in the rescue-ip script.
+  # Pin the bridge MAC before hostapd adds wlan-usb to br-lan. A bridge takes
+  # the LOWEST MAC among its members and recalculates as members come and go,
+  # so an adapter sorting below the onboard NIC changes the box's identity --
+  # and with it the IPv6 link-local address that is the no-configuration way
+  # back in when DHCP has failed.
+  #
+  # Guarded on a DIFFERENCE: re-setting a MAC to the value it already holds
+  # still raises a netlink change event, and doing that while NetworkManager is
+  # mid-DHCP is the kind of thing that costs an evening.
   WANMAC=$(cat "/sys/class/net/$WAN_PORT/address" 2>/dev/null)
   HAVEMAC=$(cat /sys/class/net/br-lan/address 2>/dev/null)
   [ -n "$WANMAC" ] && [ "$WANMAC" != "$HAVEMAC" ] \
