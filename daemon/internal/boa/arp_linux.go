@@ -314,6 +314,13 @@ func (l *Learner) Run() error {
 		go l.listenMDNS("udp6", &net.UDPAddr{IP: net.ParseIP("ff02::fb"), Port: mdnsPort})
 	}
 
+	// Names from DHCP, alongside mDNS rather than instead of it. The two see
+	// different devices: mDNS names whatever advertises a service, DHCP names
+	// whatever asks for an address, and the second set is the one that would
+	// otherwise show as a bare MAC forever. Runs unconditionally -- unlike the
+	// mDNS listeners above it is not a fallback for the capture socket.
+	go l.listenDHCP()
+
 	fd, err := syscall.Socket(syscall.AF_PACKET, syscall.SOCK_DGRAM, int(htons(ethPALL)))
 	if err != nil {
 		return err
