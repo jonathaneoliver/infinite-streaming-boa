@@ -17,6 +17,16 @@ It exists so that a player, app or device can be tested against a *specific*
 network, on the device's own hardware and its own network stack, without
 installing anything on it or changing how it connects.
 
+The property everything else follows from is that **neither end has to
+cooperate**. Because conditioning happens to forwarded frames at layer 2, the
+device needs no proxy setting, no trusted certificate and no software, and the
+far end needs nothing at all — there is no endpoint to point it at. Any client
+talking to any server on any provider is conditioned alike, over any protocol,
+including destinations that cannot be configured, instrumented or even
+identified. The matching cost, following from the same position in the path:
+traffic is told apart by destination network, port and protocol, never by
+application or by name.
+
 Intended for:
 
 - Adaptive-bitrate player testing: watching a real client adapt to a real cap
