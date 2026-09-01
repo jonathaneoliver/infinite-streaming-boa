@@ -347,6 +347,7 @@ export interface Notice {
 }
 
 export interface Snapshot {
+  version: string;
   revision: number;
   control_revision: number;
   time: number;

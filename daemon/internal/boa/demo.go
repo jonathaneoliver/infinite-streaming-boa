@@ -313,6 +313,7 @@ func (e *Engine) demoTick() {
 	e.mu.Lock()
 	e.rev++
 	snap := Snapshot{
+		Version:  e.cfg.Version,
 		Revision: e.rev, ControlRevision: e.ctrlRev, Time: now.UnixMilli(),
 		Clients: clients,
 		Caps: Capabilities{

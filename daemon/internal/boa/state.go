@@ -12,6 +12,9 @@ import (
 
 // Config is the daemon's view of the box it is running on.
 type Config struct {
+	// Version is the running build's version string, threaded in from main so
+	// the snapshot can report which build a box is on. See main.version.
+	Version   string
 	Bridge    string // br-lan
 	WANPort   string // the port cabled to the existing network; uplink shaped here
 	WlanPort  string // wlan0
@@ -637,6 +640,7 @@ func (e *Engine) tick() {
 	ready, reason := e.sh.Ready()
 	burstOK, burstNote := e.sh.LossBurst()
 	snap := Snapshot{
+		Version:  e.cfg.Version,
 		Revision: e.rev, ControlRevision: e.ctrlRev, Time: now.UnixMilli(),
 		Clients: clients,
 		Caps: Capabilities{

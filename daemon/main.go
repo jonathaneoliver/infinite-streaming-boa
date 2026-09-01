@@ -21,9 +21,19 @@ import (
 	"github.com/jonathaneoliver/infinite-streaming-boa/daemon/web"
 )
 
+// version is the product version, stamped at build time via
+//
+//	go build -ldflags "-X main.version=$(scripts/version.sh)"
+//
+// It stays "dev" for a plain `go build` or `go run`, which is what the
+// development loops use. scripts/version.sh derives the string from git.
+var version = "dev"
+
 func main() {
 	cfg := boa.Config{}
+	cfg.Version = version
 	var tickMs int
+	var showVersion bool
 
 	flag.StringVar(&cfg.Addr, "addr", ":80", "address to serve the web interface on")
 	flag.StringVar(&cfg.Bridge, "bridge", "br-lan", "bridge interface")
@@ -36,7 +46,13 @@ func main() {
 	flag.IntVar(&tickMs, "tick", 1000, "telemetry poll interval in milliseconds")
 	flag.BoolVar(&cfg.Demo, "demo", false,
 		"serve synthetic clients and touch no kernel state; for UI development")
+	flag.BoolVar(&showVersion, "version", false, "print the version and exit")
 	flag.Parse()
+
+	if showVersion {
+		fmt.Println(version)
+		return
+	}
 
 	cfg.Tick = time.Duration(tickMs) * time.Millisecond
 
