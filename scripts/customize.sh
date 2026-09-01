@@ -270,6 +270,21 @@ priority=32768
 
 [ipv4]
 method=auto
+# The rescue address is HERE, on the profile, not applied afterwards by a
+# separate service.
+#
+# It used to be assigned by infinite-streaming-boa-rescue-ip.service once br-lan
+# appeared, and that raced NetworkManager: putting an address on the bridge
+# before NM activated its own profile made NM conclude the connection was
+# externally managed, generate a throwaway connection named "br-lan", adopt it,
+# and NEVER RUN DHCP. Measured: rescue-ip finished at 20:00:31.438, NM logged
+# 'connection-assumed' at 20:00:31.483, and the box came up with a working
+# bridge, a working AP and no lease.
+#
+# NM applies a static address alongside a DHCP one perfectly well, so letting it
+# own both removes the race by construction rather than by ordering two units
+# and hoping. Verified live: managed-type 'full', both addresses present.
+address1=${BOA_RESCUE_IP}/24
 # A missing upstream DHCP server must never block the bridge from coming up:
 # the data path has to work even when management addressing does not.
 may-fail=true
@@ -368,36 +383,343 @@ UDEV
 # if upstream DHCP is missing -- or the box is bench-tested with nothing in the
 # WAN port -- there would be no way to reach the UI on a headless device. This
 # secondary address is present regardless of DHCP.
-install -D -m 0644 /dev/stdin "$ROOT/etc/systemd/system/infinite-streaming-boa-rescue-ip.service" <<EOF
+log "Rescue address ${BOA_RESCUE_IP}/24 carried by the bridge profile"
+
+## 5a. A console that answers "what is its address?" ------------------------
+# Twice in one afternoon this box came up with a working bridge, a working
+# access point and NO DHCP lease -- reachable by nobody, and the only thing on
+# the screen was a login banner rendered seconds into boot, before DHCP had
+# finished, showing 127.0.0.1 and the rescue address. It looked like a box with
+# no network. It was a box whose banner was older than its network.
+#
+# Two separate faults, fixed separately below.
+#
+# 1. /etc/issue is rendered ONCE, when getty starts. Whatever is true a second
+#    into boot is what stays on the screen. So the address is refreshed on a
+#    timer, and reprinted to the console whenever it CHANGES -- which is the
+#    moment an operator standing at the box actually needs to see.
+#
+# 2. The virtual terminal is wiped when getty starts, taking the boot messages
+#    with it. TTYVTDisallocate=no keeps them, so whatever failed on the way up
+#    is still on screen to read.
+install -D -m 0644 /dev/stdin \
+  "$ROOT/etc/systemd/system/getty@tty1.service.d/10-boa-keep-console.conf" <<'GETTY'
+[Service]
+# Keep the boot messages. The default wipes the VT, which discards exactly the
+# output you need when the box did not come up the way you expected.
+TTYVTDisallocate=no
+GETTY
+
+install -D -m 0755 /dev/stdin "$ROOT/usr/local/sbin/infinite-streaming-boa-console" <<CONSOLE
+#!/bin/sh
+# Keeps the console honest about how to reach this box.
+#
+# Prints ADDRESSES, not interfaces. ${BOA_WAN_PORT} has no address of its own --
+# it is a bridge port, which is the whole design -- so "the eth0 IP" does not
+# exist. What an operator wants is the address that answers, which lives on
+# br-lan, plus whether the WAN port has a cable in it.
+last=""
+while :; do
+  # Split them: the DHCP address is the one to type, the rescue address only
+  # works from a machine cabled to this box with an address on that subnet.
+  # Showing them as one undifferentiated list is how an operator ends up
+  # pinging the unroutable one and concluding the box is dead.
+  lan=\$(ip -4 -br addr show scope global br-lan 2>/dev/null | awk '{\$1="";\$2="";print}' | tr -s ' ')
+  # The link-local address is the recovery path that costs the operator
+  # nothing: it exists with or without DHCP, needs no router, and no
+  # reconfiguration at the far end. It is derived by EUI-64 from the bridge
+  # MAC, which is pinned above precisely so that it does not move.
+  ll=\$(ip -6 -br addr show br-lan 2>/dev/null | tr ' ' '\n' | grep -m1 '^fe80::' | cut -d/ -f1)
+  rescue=\$(ip -4 -br addr show scope link br-lan 2>/dev/null | awk '{\$1="";\$2="";print}' | tr -s ' ')
+  [ -z "\$lan" ] && lan=" NONE -- no DHCP lease"
+  carrier=\$(cat /sys/class/net/${BOA_WAN_PORT}/carrier 2>/dev/null)
+  case "\$carrier" in 1) wan="up" ;; 0) wan="NO CABLE" ;; *) wan="?" ;; esac
+  radio=\$(cat /etc/default/infinite-streaming-boa 2>/dev/null | sed -n 's/^BOA_WLAN_PORT=//p')
+  ssid=\$(iw dev "\$radio" info 2>/dev/null | awk '/ssid/{print \$2}')
+
+  now="\$lan|\$wan|\$radio|\$ssid"
+  ip4=\$(echo \$lan | awk '{print \$1}' | cut -d/ -f1)
+  {
+    echo ""
+    echo "  ${BOA_HOSTNAME}"
+    echo "  address:  \$lan\${ip4:+     http://\$ip4/}"
+    echo "  rescue:  \$rescue   (needs an address on that subnet at your end)"
+    echo "  no DHCP?  ssh ${BOA_USER}@\${ll}%<your-interface>"
+    echo "            IPv6 link-local: always present, needs no configuration"
+    echo "  ${BOA_WAN_PORT} (wan): \$wan     radio: \${radio:-none} \${ssid:+(\$ssid)}"
+    echo ""
+  } > /etc/issue
+
+  # Reprint on change, so it appears without anyone pressing a key. This is the
+  # case that matters: an address arriving late, or going away.
+  if [ "\$now" != "\$last" ]; then
+    cat /etc/issue > /dev/tty1 2>/dev/null
+    last="\$now"
+  fi
+  sleep 10
+done
+CONSOLE
+
+install -D -m 0644 /dev/stdin "$ROOT/etc/systemd/system/infinite-streaming-boa-console.service" <<'UNIT'
 [Unit]
-Description=boa fixed rescue address on br-lan
+Description=boa console address readout
 After=NetworkManager.service
-Wants=NetworkManager.service
 
 [Service]
-Type=oneshot
-RemainAfterExit=yes
-ExecStart=/usr/local/sbin/infinite-streaming-boa-rescue-ip
+ExecStart=/usr/local/sbin/infinite-streaming-boa-console
+Restart=always
+RestartSec=5
 
 [Install]
 WantedBy=multi-user.target
+UNIT
+
+ln -sf /etc/systemd/system/infinite-streaming-boa-console.service \
+  "$ROOT/etc/systemd/system/multi-user.target.wants/infinite-streaming-boa-console.service"
+log "Console will show live addresses and keep boot messages"
+
+## 5b. The access point radio: USB adapter preferred ------------------------
+# The onboard radio runs the AP through NetworkManager, which drives AP mode via
+# wpa_supplicant. That path does not work with a MediaTek mt7921u: activation
+# ends in "Hotspot network creation took too long, failing activation", with
+# wpa_supplicant noting "nl80211 driver interface is not designed to be used
+# with ap_scan=2". Measured on a Panda/mt7921u adapter, on both bands.
+#
+# hostapd drives the same radio without complaint, and gets 80MHz where the
+# onboard chip is running 20MHz -- which is the point of plugging one in, since
+# the AP's ceiling is what bounds the top of a measured ladder.
+#
+# So: hostapd when a USB radio is present, NetworkManager on the onboard radio
+# when it is not. Exactly ONE of them runs, because the daemon has a single
+# BOA_WLAN_PORT -- StationDump() and the bridge FDB scan both key off it, so a
+# client associated to a second AP would be invisible to conditioning.
+NL_UNMANAGED="$ROOT/etc/NetworkManager/conf.d/10-boa-unmanaged-usb-wifi.conf"
+install -D -m 0644 /dev/stdin "$NL_UNMANAGED" <<'NMCONF'
+# hostapd owns the USB radio. Without this NetworkManager also claims it and the
+# two fight over the interface -- NM wins the race often enough to look random.
+[keyfile]
+unmanaged-devices=interface-name:wlan-usb
+NMCONF
+
+# hostapd's own config. The AP settings come from .env, so both radios publish
+# the same SSID and passphrase and a client sees one network either way.
+#
+# ieee80211ax is on: verified bringing up AP-ENABLED at 80MHz on mt7921u. It is
+# ignored by radios that cannot do it rather than being fatal.
+if [ "$AP_BAND" = "a" ]; then
+  HW_MODE=a
+  if [ "$AP_CHANNEL" = "0" ]; then
+    # Automatic channel selection. hostapd picks the channel itself, so a fixed
+    # 80MHz centre index cannot be named in advance -- it would contradict
+    # whatever ACS chooses and hostapd refuses to start.
+    WIDE_CONF="acs_num_scans=5"
+  else
+    # HT40 FIRST. Without ht_capab, hostapd cannot set up VHT80 and dies with
+    # "Could not set channel for kernel driver" -- an error that says nothing
+    # about the actual cause. Measured on mt7921u at channel 36.
+    #
+    # The secondary channel sits above the primary for 36 and 44, below it for
+    # 40 and 48; naming the wrong side is the same failure. The centre index is
+    # the 80MHz block containing the primary, and 42 covers all four channels
+    # build.sh permits.
+    case "$AP_CHANNEL" in
+      40|48) HT40="[HT40-]" ;;
+      *)     HT40="[HT40+]" ;;
+    esac
+    WIDE_CONF="ht_capab=$HT40
+vht_oper_chwidth=1
+vht_oper_centr_freq_seg0_idx=42
+he_oper_chwidth=1
+he_oper_centr_freq_seg0_idx=42"
+  fi
+else
+  HW_MODE=g
+  # No 80MHz on 2.4GHz, and 40MHz there is antisocial in a crowded band.
+  [ "$AP_CHANNEL" = "0" ] && WIDE_CONF="acs_num_scans=5" || WIDE_CONF=""
+fi
+
+# The USB radio may publish a different SSID. Same name as the onboard radio is
+# the point in normal use -- a client sees one network whichever radio is up --
+# but a distinct one makes it visible which radio a device actually joined,
+# which is the difference between testing this and guessing at it.
+USB_SSID="${AP_SSID_USB:-$AP_SSID}"
+install -D -m 0600 /dev/stdin "$ROOT/etc/hostapd/boa.conf" <<EOF
+# Managed by infinite-streaming-boa. Used only when a USB Wi-Fi adapter is
+# present; the onboard radio is run by NetworkManager instead.
+interface=wlan-usb
+bridge=br-lan
+driver=nl80211
+country_code=${AP_COUNTRY}
+ieee80211d=1
+hw_mode=${HW_MODE}
+channel=${AP_CHANNEL}
+ssid=${USB_SSID}
+ignore_broadcast_ssid=$([ "$AP_HIDDEN" = "true" ] && echo 1 || echo 0)
+wmm_enabled=1
+ieee80211n=1
+ieee80211ac=1
+ieee80211ax=1
+${WIDE_CONF}
+auth_algs=1
+wpa=2
+wpa_key_mgmt=WPA-PSK
+rsn_pairwise=CCMP
+wpa_passphrase=${AP_PASSWORD}
 EOF
 
-install -D -m 0755 /dev/stdin "$ROOT/usr/local/sbin/infinite-streaming-boa-rescue-ip" <<EOF
+# Our own unit rather than the packaged hostapd.service, which Debian ships
+# masked and pointed at /etc/default/hostapd. Ours is started and stopped by the
+# selector below, never enabled directly: with no adapter plugged in it would
+# fail on every boot and look like a broken box.
+install -D -m 0644 /dev/stdin "$ROOT/etc/systemd/system/infinite-streaming-boa-hostapd.service" <<'UNIT'
+[Unit]
+Description=boa access point on the USB radio
+# After, but deliberately NOT BindsTo.
+#
+# BindsTo= on a .device unit makes systemd TRIGGER this service the moment the
+# device appears -- systemctl show reported TriggeredBy=...wlan-usb.device --
+# so hostapd started itself at boot without the selector running at all. That
+# defeated the entire point of having a selector: the onboard radio was never
+# switched off, BOA_WLAN_PORT was never updated, and every ordering constraint
+# placed on select-radio was irrelevant because the unit being ordered was not
+# the one starting. Measured on a boot that failed: select-radio "not started",
+# hostapd active, NetworkManager having assumed br-lan as an external
+# connection and never run DHCP.
+#
+# The selector starts and stops this service. It is the only thing that should.
+After=NetworkManager.service sys-subsystem-net-devices-wlan\x2dusb.device
+
+[Service]
+ExecStart=/usr/sbin/hostapd /etc/hostapd/boa.conf
+Restart=on-failure
+RestartSec=5
+UNIT
+
+install -D -m 0755 /dev/stdin "$ROOT/usr/local/sbin/infinite-streaming-boa-select-radio" <<'SEL'
 #!/bin/sh
-# Waits for the bridge, then pins a known address so the box is always
-# reachable. "replace" rather than "add" so a re-run is idempotent.
-for i in \$(seq 1 30); do
-  ip link show br-lan >/dev/null 2>&1 && break
-  sleep 2
-done
-exec ip addr replace ${BOA_RESCUE_IP}/24 dev br-lan
-EOF
+# Picks the radio that serves the access point, and makes sure only one does.
+#
+# USB adapter present -> hostapd on wlan-usb, onboard radio switched OFF at the
+# rfkill level so it cannot beacon or be associated to. Absent -> NetworkManager
+# brings the onboard AP back.
+#
+# The onboard radio is identified by its rfkill device path NOT containing
+# /usb, rather than by phy index or driver name: phy numbering depends on probe
+# order, so "phy0 is the built-in" is true until the day it is not.
+set -u
+AP_PROFILE=infinite-streaming-boa-ap
+DEFAULTS=/etc/default/infinite-streaming-boa
+# Read from the daemon's config rather than baked in, so the two cannot disagree.
+WAN_PORT=$(sed -n 's/^BOA_WAN_PORT=//p' "$DEFAULTS" 2>/dev/null)
+WAN_PORT=${WAN_PORT:-eth0}
+log() { logger -t boa-select-radio "$*"; echo "$*"; }
 
-install -d -m 0755 "$ROOT/etc/systemd/system/multi-user.target.wants"
-ln -sf /etc/systemd/system/infinite-streaming-boa-rescue-ip.service \
-  "$ROOT/etc/systemd/system/multi-user.target.wants/infinite-streaming-boa-rescue-ip.service"
-log "Rescue address ${BOA_RESCUE_IP}/24 on br-lan"
+onboard_rfkill() {
+  for r in /sys/class/rfkill/rfkill*; do
+    [ -e "$r/type" ] || continue
+    [ "$(cat "$r/type")" = "wlan" ] || continue
+    case "$(readlink -f "$r/device")" in
+      */usb*) ;;
+      *) echo "$r" ;;
+    esac
+  done
+}
+
+if [ -d /sys/class/net/wlan-usb ]; then
+  WANT=wlan-usb
+  log "USB radio present: hostapd on wlan-usb, onboard radio off"
+  # Pin the bridge MAC before hostapd adds wlan-usb to br-lan. A bridge takes
+  # the LOWEST MAC among its members and recalculates as members come and go,
+  # so an adapter sorting below the onboard NIC changes the box's identity --
+  # and with it the IPv6 link-local address that is the no-configuration way
+  # back in when DHCP has failed.
+  #
+  # Guarded on a DIFFERENCE: re-setting a MAC to the value it already holds
+  # still raises a netlink change event, and doing that while NetworkManager is
+  # mid-DHCP is the kind of thing that costs an evening.
+  WANMAC=$(cat "/sys/class/net/$WAN_PORT/address" 2>/dev/null)
+  HAVEMAC=$(cat /sys/class/net/br-lan/address 2>/dev/null)
+  [ -n "$WANMAC" ] && [ "$WANMAC" != "$HAVEMAC" ] \
+    && ip link set dev br-lan address "$WANMAC" 2>/dev/null
+  nmcli con down "$AP_PROFILE" >/dev/null 2>&1
+  for r in $(onboard_rfkill); do echo 1 > "$r/soft" 2>/dev/null; done
+  systemctl start infinite-streaming-boa-hostapd.service
+else
+  WANT=wlan0
+  log "No USB radio: onboard AP via NetworkManager"
+  systemctl stop infinite-streaming-boa-hostapd.service 2>/dev/null
+  for r in $(onboard_rfkill); do echo 0 > "$r/soft" 2>/dev/null; done
+  # NM will not re-activate a profile whose device was rfkilled while it was
+  # down, so ask explicitly rather than waiting for autoconnect.
+  #
+  # RETRY, because unblocking rfkill does not make the device usable
+  # immediately. NetworkManager has to notice the radio return and restart the
+  # supplicant interface, and until it does it answers "No suitable device found
+  # for this connection" and gives up. Measured: the activation failed at
+  # 17:58:47.9100 and wlan0 reached "disconnected" at 17:58:47.9452 -- 350ms
+  # later. A single attempt therefore loses the race about as often as it wins,
+  # and losing it means the adapter was unplugged and NO access point came back
+  # at all: hostapd stopped, onboard idle, the box silently off the air.
+  for _ in $(seq 1 20); do
+    nmcli con up "$AP_PROFILE" >/dev/null 2>&1 && break
+    sleep 1
+  done
+fi
+
+# The daemon watches ONE wlan interface. Point it at whichever radio won, and
+# restart only when it actually changed -- a restart drops a running sweep.
+CUR=$(sed -n 's/^BOA_WLAN_PORT=//p' "$DEFAULTS" 2>/dev/null)
+if [ "$CUR" != "$WANT" ]; then
+  sed -i "s/^BOA_WLAN_PORT=.*/BOA_WLAN_PORT=$WANT/" "$DEFAULTS"
+  log "BOA_WLAN_PORT $CUR -> $WANT; restarting daemon"
+  systemctl restart infinite-streaming-boa.service
+fi
+SEL
+
+install -D -m 0644 /dev/stdin "$ROOT/etc/systemd/system/infinite-streaming-boa-select-radio.service" <<'UNIT'
+[Unit]
+Description=boa access point radio selection
+# After the network is actually UP, not merely after NetworkManager started.
+#
+# This unit starts hostapd, which adds wlan-usb to br-lan. Adding a port to a
+# bridge running STP triggers a topology recalculation, and br-lan can drop
+# carrier for a moment. If that lands in the middle of NetworkManager's DHCP
+# transaction, the lease never arrives -- the box comes up with a working
+# bridge, a working access point, and no address, reachable by nobody. That
+# happened twice, and both times the boot before it had worked, because
+# After=NetworkManager.service only orders against the daemon STARTING and
+# leaves the rest to chance.
+#
+# Measured on a boot that succeeded: the lease landed at 19:05:43.16 and
+# hostapd added the interface at 19:05:44.57 -- a margin of 1.4 seconds. That
+# margin is what wait-online makes deterministic instead of lucky.
+#
+# Wants, not Requires: if wait-online times out because there is genuinely no
+# upstream DHCP, the radio must still come up. An access point with no internet
+# is a working appliance; no access point is not.
+After=NetworkManager.service NetworkManager-wait-online.service infinite-streaming-boa.service
+Wants=NetworkManager.service NetworkManager-wait-online.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/infinite-streaming-boa-select-radio
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+
+# Hotplug. --no-block matters: udev waits for RUN programs, and this one starts
+# a unit that restarts the daemon, which would deadlock against udev settling.
+cat > "$ROOT/etc/udev/rules.d/77-infinite-streaming-boa-radio.rules" <<'UDEV'
+SUBSYSTEM=="net", ENV{DEVTYPE}=="wlan", ENV{ID_BUS}=="usb", ACTION=="add", \
+  RUN+="/usr/bin/systemctl restart --no-block infinite-streaming-boa-select-radio.service"
+SUBSYSTEM=="net", ENV{DEVTYPE}=="wlan", ACTION=="remove", \
+  RUN+="/usr/bin/systemctl restart --no-block infinite-streaming-boa-select-radio.service"
+UDEV
+
+ln -sf /etc/systemd/system/infinite-streaming-boa-select-radio.service \
+  "$ROOT/etc/systemd/system/multi-user.target.wants/infinite-streaming-boa-select-radio.service"
+log "AP radio: USB adapter preferred (hostapd), onboard fallback (NetworkManager)"
 
 ## 6. Wireless regulatory domain -------------------------------------------
 # The radio is rfkill-blocked until a country is set — the single most common
