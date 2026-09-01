@@ -128,8 +128,10 @@ routing role. ATC was archived on 30 October 2018 and is read-only.
 
 **Where the others are better.** A rack emulator is calibrated, repeatable and
 certified; boa is explicitly none of those (see [Non-Goals](PRD.md#3-non-goals)).
-Caps here are verified from 0.25 to 50 Mbps and nothing above that has been
-measured. Loss is deliberately not reproducible run to run. Over Wi-Fi the
+Caps here are verified from 0.25 to 50 Mbps; above that a cap exceeds what the
+radio itself can carry, so a high cap was measured only for the ~1.5 % overhead
+of putting netem in the path (below), not as a calibrated rate. Loss is
+deliberately not reproducible run to run. Over Wi-Fi the
 conditioning is additive on top of a shared, variable radio baseline rather than
 absolute — a wired emulator gives you a number you can put in a report, and boa
 does not. If you need a per-application policy on one device rather than a
@@ -487,6 +489,18 @@ a client sees missing is the Ethernet, IP and TCP framing the cap counts and a
 payload byte-count does not — the same overhead a real link of that speed would
 impose. **Uplink is untested at any rate.** A configured 200 ms one-way delay
 measured 200.6 ms RTT.
+
+**A cap above the link's own ceiling costs about 1.5 %.** Set well past what the
+medium can carry — 700 Mbps and 1 Gbps over a Wi-Fi link that tops out near
+510 Mbps — the cap is not the binding constraint, so this measures what merely
+having netem in the path costs, not rate accuracy. The radio's own baseline
+drifts ~100 Mbps across a 90 s run, far more than the effect, so a single
+capped-vs-uncapped comparison is useless and even gets the sign wrong;
+interleaving capped and uncapped 15 s runs, the paired mean was −1.5 % (505.8
+against 513.7 Mbps downlink). Measured 2026-09-01 on a Pi 5 with the mt7921u
+USB-3 radio, one client, over IPv6. netem adds no meaningful ceiling of its own
+at these rates; whether it holds nearer a gigabit on the wired path, where the
+baseline is steady, is untested.
 
 Policies are keyed by **MAC**, not IP, so they survive a DHCP renewal, a reboot,
 and a client roaming between the wireless and wired ports.
