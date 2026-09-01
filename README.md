@@ -7,7 +7,9 @@
 
 Part of the infinite-streaming family. The repository is
 `infinite-streaming-boa`; `boa` is the appliance itself — the binary, the
-hostname, the SSID.
+hostname, the SSID. The name is apt: a boa constricts and releases, and the box
+does the same to a link — tightening the cap and easing it off over time, most
+visibly in the `valley` pattern below.
 
 [`PRD.md`](PRD.md) is the product behaviour source of truth.
 
