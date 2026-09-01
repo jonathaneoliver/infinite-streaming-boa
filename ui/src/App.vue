@@ -28,6 +28,35 @@ function loadSort(): SortMode {
   }
 }
 const sortMode = ref<SortMode>(loadSort());
+
+/*
+ * Whether devices that are not currently connected are listed.
+ *
+ * Off by default. The learner deliberately keeps a binding for twenty minutes
+ * after a device goes quiet -- see the comment on the ARP merge in state.go --
+ * so a phone that left the building stays in the list long enough to look like
+ * a client that is still there. On a box whose whole purpose is measuring what
+ * is on the air, that reads as contention that does not exist.
+ *
+ * They are hidden rather than dropped: a device keeps its policy while it is
+ * away, and the button says how many are hidden so nothing disappears silently.
+ */
+const OFFLINE_KEY = 'boa.offline';
+function loadShowOffline(): boolean {
+  try {
+    return localStorage.getItem(OFFLINE_KEY) === 'true';
+  } catch {
+    return false;
+  }
+}
+const showOffline = ref<boolean>(loadShowOffline());
+watch(showOffline, (v) => {
+  try {
+    localStorage.setItem(OFFLINE_KEY, String(v));
+  } catch {
+    /* as above */
+  }
+});
 watch(sortMode, (v) => {
   try {
     localStorage.setItem(SORT_KEY, v);
@@ -36,9 +65,13 @@ watch(sortMode, (v) => {
   }
 });
 
-const clients = computed(() =>
+const allClients = computed(() =>
   sortClients(snap.value?.clients ?? [], sortMode.value, snap.value?.time ?? Date.now()),
 );
+const clients = computed(() =>
+  showOffline.value ? allClients.value : allClients.value.filter((c) => c.present),
+);
+const offlineCount = computed(() => allClients.value.filter((c) => !c.present).length);
 const caps = computed(() => snap.value?.caps);
 
 /*
@@ -57,7 +90,44 @@ provide(
     note: caps.value?.loss_burst_note ?? '',
   })),
 );
-const presentCount = computed(() => clients.value.filter((c) => c.present).length);
+const presentCount = computed(() => allClients.value.filter((c) => c.present).length);
+
+// The AP radio, named in the header. USB adapters report the speed they
+// NEGOTIATED, which is the number worth showing: a USB 3 adapter on a bad port
+// or a cable without SuperSpeed pins enumerates as USB 2 and then looks correct
+// everywhere else while delivering a fraction of the throughput.
+const radioLabel = computed(() => {
+  const a = caps.value?.adapter;
+  if (!a?.iface) return '';
+  if (a.bus !== 'usb') return `radio: ${a.iface} (onboard)`;
+  // link_mbps is what it negotiated, not what it can do. 5000 and above is
+  // SuperSpeed; 480 is High-Speed and worth flagging.
+  const gen = !a.link_mbps ? '' : a.link_mbps >= 5000 ? ' · USB 3' : ' · USB 2';
+  return `radio: ${a.iface}${gen}`;
+});
+
+// True only for the case that is wrong but looks right: a USB adapter running
+// at High-Speed. An onboard radio is not degraded, it is just not on the bus.
+const radioDegraded = computed(() => {
+  const a = caps.value?.adapter;
+  return !!a && a.bus === 'usb' && !!a.link_mbps && a.link_mbps < 5000;
+});
+
+const radioTitle = computed(() => {
+  const a = caps.value?.adapter;
+  if (!a?.iface) return '';
+  if (a.bus !== 'usb') return `onboard radio${a.driver ? ` (${a.driver})` : ''}`;
+  const bits = [
+    [a.vendor, a.product].filter(Boolean).join(' ') || 'USB adapter',
+    a.driver && `driver ${a.driver}`,
+    a.usb_version && `declares USB ${a.usb_version}`,
+    a.link_mbps && `negotiated ${a.link_mbps} Mb/s`,
+  ].filter(Boolean);
+  if (radioDegraded.value) {
+    bits.push('running at USB 2 speed — reseat it in a SuperSpeed port');
+  }
+  return bits.join(' · ');
+});
 
 /**
  * The command that points a device at the box's iperf3 server.
@@ -251,9 +321,27 @@ async function onLoadConfig(e: Event) {
       <span v-if="caps" class="pill">
         bridge via {{ caps.uplink_if }}
       </span>
+      <!-- Which radio is serving, and whether a USB one got the bus speed it
+           was sold at. A USB 3 adapter that quietly enumerated at USB 2 is
+           identical from every other angle -- same channel, same 802.11ax,
+           same PHY rate -- while carrying a fraction of the throughput, so it
+           is worth a permanent readout rather than a note in a document. -->
+      <span v-if="radioLabel" class="pill" :class="{ warn: radioDegraded }" :title="radioTitle">
+        {{ radioLabel }}
+      </span>
       <span class="pill">
         {{ presentCount }} connected
       </span>
+      <!-- Hidden devices are announced rather than merely absent: a device that
+           has gone quiet keeps its policy, and silently dropping it from the
+           list would look like the policy went with it. -->
+      <button
+        v-if="offlineCount || showOffline" class="pill link"
+        :title="showOffline
+          ? 'hide devices that are not currently connected'
+          : `${offlineCount} device(s) seen recently but not connected now`"
+        @click="showOffline = !showOffline"
+      >{{ showOffline ? 'hide offline' : `${offlineCount} offline` }}</button>
       <!-- One control for the whole list rather than only per-card, so a page
            of devices can be opened or put away in a single action. -->
       <button

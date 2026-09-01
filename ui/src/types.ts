@@ -283,6 +283,16 @@ export interface Client {
   pattern_run?: PatternView;
 }
 
+export interface RadioInfo {
+  iface: string;
+  driver?: string;
+  bus: 'usb' | 'onboard';
+  product?: string;
+  vendor?: string;
+  link_mbps?: number;
+  usb_version?: string;
+}
+
 export interface Capabilities {
   shaping: boolean;
   uplink: boolean;
@@ -290,6 +300,10 @@ export interface Capabilities {
   leases: boolean;
   wlan_iface: string;
   uplink_if: string;
+  /** The radio actually serving the AP. `bus` is "usb" or "onboard"; for a USB
+   *  adapter `link_mbps` is the speed it NEGOTIATED (5000 = SuperSpeed,
+   *  480 = High-Speed), which is not always the speed it is capable of. */
+  adapter: RadioInfo;
   /** True only when ntopng is ANSWERING, not merely installed. */
   ntopng: boolean;
   ntopng_port: number;
