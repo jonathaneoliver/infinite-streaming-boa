@@ -280,6 +280,17 @@ Without a key, sshd accepts `BOA_PASSWORD` from anyone associated to the AP,
 and those characters are all the security there is. `build.sh` warns when it
 sees that combination.
 
+`BOA_SSH_PASSWORD_LOGIN="true"` keeps password logins available *alongside* the
+keys, for getting in from a machine that has no key on it. It is off by default,
+because the fallback is reachable by everyone else on the network too — the box
+becomes only as strong as `BOA_PASSWORD` however good the key is.
+
+`BOA_NTOPNG_PASSWORD` is separate on purpose. ntopng runs with login disabled
+(`-l=1`), so nothing checks it; it exists so the account is not left on ntopng's
+default if login is ever re-enabled. Keep it *different from* `BOA_PASSWORD`:
+ntopng stores its secret as an unsalted MD5, and reusing your login password
+would put that password on the box in a second, weaker form.
+
 ## How the conditioning works
 
 Both directions are shaped on a **true egress queue** — the last interface the

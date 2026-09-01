@@ -37,6 +37,7 @@ BOA_USER="${BOA_USER:-boa}"
 BOA_PASSWORD="${BOA_PASSWORD:-}"
 BOA_SSH_PUBKEY="${BOA_SSH_PUBKEY:-}"
 BOA_NTOPNG_PASSWORD="${BOA_NTOPNG_PASSWORD:-}"
+BOA_SSH_PASSWORD_LOGIN="${BOA_SSH_PASSWORD_LOGIN:-false}"
 BOA_TIMEZONE="${BOA_TIMEZONE:-}"
 
 (( ${#AP_SSID} >= 1 && ${#AP_SSID} <= 32 )) \
@@ -53,6 +54,13 @@ BOA_TIMEZONE="${BOA_TIMEZONE:-}"
   || die "BOA_WAN_PORT must be an interface name like eth0 (got '$BOA_WAN_PORT')"
 [ -n "$BOA_PASSWORD" ] || [ -n "$BOA_SSH_PUBKEY" ] \
   || die "set BOA_PASSWORD or BOA_SSH_PUBKEY, or you cannot log in to the Pi"
+[[ "$BOA_SSH_PASSWORD_LOGIN" == "true" || "$BOA_SSH_PASSWORD_LOGIN" == "false" ]] \
+  || die "BOA_SSH_PASSWORD_LOGIN must be 'true' or 'false' (got '$BOA_SSH_PASSWORD_LOGIN')"
+# Guard the combination that locks you out: no password to type, and password
+# login turned on as the way in. sshd would offer a method that cannot succeed.
+[ "$BOA_SSH_PASSWORD_LOGIN" = "true" ] && [ -z "$BOA_PASSWORD" ] \
+  && die "BOA_SSH_PASSWORD_LOGIN=true needs BOA_PASSWORD set; an empty password
+  locks the account with '*' and password login could never succeed"
 
 # A key is what makes the box's passwordless sudo rule reasonable, so the
 # combination with no key gets called out rather than built quietly. Without one,
@@ -64,13 +72,12 @@ if [ -z "$BOA_SSH_PUBKEY" ]; then
   warn "  BOA_SSH_PUBKEY. The image then disables password login over the network"
   warn "  and keeps BOA_PASSWORD for the console and for recovery."
 else
-  # BOA_SSH_PUBKEY may hold several keys, one per line. Each is checked here
-  # rather than on the Pi, because sshd ignores a malformed authorized_keys line
-  # WITHOUT COMPLAINING -- and with password login disabled, a key truncated by a
-  # bad paste is a headless box nobody can reach.
-  # Each key is PARSED, not pattern-matched. A regex only checks shape, and a
-  # key truncated by a bad paste -- "ssh-ed25519 AAAAC3Nz" -- keeps the shape
-  # perfectly while being useless. ssh-keygen decodes the blob and fails on it.
+  # BOA_SSH_PUBKEY may hold several keys, one per line, and each is PARSED here
+  # rather than pattern-matched. A regex only checks shape, and a key truncated
+  # by a bad paste -- "ssh-ed25519 AAAAC3Nz" -- keeps the shape perfectly while
+  # being useless. sshd then ignores that line WITHOUT COMPLAINING, which on a
+  # headless box with no password login is a box nobody can reach. ssh-keygen
+  # decodes the blob and fails on it.
   KEYTMP=$(mktemp); trap 'rm -f "$KEYTMP"' EXIT
   KEYCOUNT=0
   while IFS= read -r k; do
@@ -91,7 +98,14 @@ else
   rm -f "$KEYTMP"; trap - EXIT
   [ "$KEYCOUNT" -gt 0 ] \
     || die "BOA_SSH_PUBKEY is set but holds no key lines"
-  log "SSH: $KEYCOUNT key(s) authorised; password login will be disabled"
+  if [ "$BOA_SSH_PASSWORD_LOGIN" = "true" ]; then
+    log "SSH: $KEYCOUNT key(s) authorised"
+    warn "BOA_SSH_PASSWORD_LOGIN=true: sshd will ALSO accept BOA_PASSWORD over the
+  network, from anything associated to the AP. The key is the stronger
+  credential; set this back to false once you no longer need the fallback."
+  else
+    log "SSH: $KEYCOUNT key(s) authorised; password login will be disabled"
+  fi
   [ "$KEYCOUNT" -eq 1 ] \
     && warn "Only one SSH key. Losing it means the console or a reflash — add a
   spare on a second line of BOA_SSH_PUBKEY if you have another machine."
@@ -160,7 +174,7 @@ docker run --rm --privileged \
   -e AP_SSID -e AP_PASSWORD -e AP_COUNTRY -e AP_BAND -e AP_CHANNEL \
   -e AP_HIDDEN -e BOA_WAN_PORT -e BOA_RESCUE_IP \
   -e BOA_HOSTNAME -e BOA_USER -e BOA_PASSWORD -e BOA_SSH_PUBKEY \
-  -e BOA_NTOPNG_PASSWORD \
+  -e BOA_NTOPNG_PASSWORD -e BOA_SSH_PASSWORD_LOGIN \
   -e BOA_TIMEZONE \
   boa-builder
 

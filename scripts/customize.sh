@@ -183,13 +183,29 @@ EOF
   # than a shortcut: the credential guarding the box becomes the key, not a short
   # password, and anyone who gets a shell as $BOA_USER already has the box
   # regardless of what sudo asks for.
+  #
+  # BOA_SSH_PASSWORD_LOGIN=true opts back into password authentication, for the
+  # operator who wants a way in from a machine that has no key on it. It is off
+  # by default because that fallback is reachable by everyone else too: sshd will
+  # accept BOA_PASSWORD from anything associated to the AP. Keep it deliberate
+  # and visible rather than implied by whether a password happens to be set,
+  # which is the coupling that hid this for so long.
+  if [ "${BOA_SSH_PASSWORD_LOGIN:-false}" = "true" ]; then
+    PW_AUTH="yes"
+  else
+    PW_AUTH="no"
+  fi
   {
     echo "# boa: key-based login for the preconfigured account"
     echo "AuthorizedKeysFile .ssh/authorized_keys /etc/ssh/authorized_keys.d/%u"
-    echo "PasswordAuthentication no"
+    echo "PasswordAuthentication $PW_AUTH"
     echo "KbdInteractiveAuthentication no"
   } > "$ROOT/etc/ssh/sshd_config.d/boa.conf"
-  log "SSH key installed; password login over the network disabled"
+  if [ "$PW_AUTH" = "yes" ]; then
+    log "SSH keys installed; password login ALSO enabled (BOA_SSH_PASSWORD_LOGIN)"
+  else
+    log "SSH key installed; password login over the network disabled"
+  fi
   [ -n "${BOA_PASSWORD:-}" ] \
     && log "Account password kept for the console and for recovery"
 else
