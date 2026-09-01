@@ -485,6 +485,38 @@ run a dictionary against it at leisure. So use a **strong, random** passphrase,
 treat it as the credential it is, and keep the box on a network where a person who
 gets past it is someone you would have let on anyway.
 
+## Security
+
+boa is a **bench appliance for a network you already control**, and its whole
+security model is that one assumption — stated here so it is a choice rather than
+a surprise.
+
+- **No login, and plain HTTP.** The interface on `:80` and ntopng on `:3000` have
+  no authentication, and neither uses TLS — the box has no domain, so any
+  certificate would be self-signed. On a shared layer-2 segment an on-path
+  attacker can read a management session, and the mDNS `.local` name it answers to
+  can be spoofed. Reach it over a network you trust.
+- **The daemon runs as root** — shaping and the packet socket require it — and its
+  API is unauthenticated and reachable by anything on the bridge. The box is only
+  as contained as the network it sits on.
+- **Cross-site requests are not blocked.** A page a browser on the network loads
+  can trigger some state-changing `POST`s, up to black-holing a device. Tracked in
+  [#130](https://github.com/jonathaneoliver/infinite-streaming-boa/issues/130); the
+  trusted-network assumption is what stands in until it is fixed.
+- **ntopng and iperf3 are open.** Anyone on the network can read ntopng's
+  per-device traffic breakdown on `:3000` and load the box with iperf3 on `:5201`.
+  Both are deliberate and neither is gated.
+- **Secrets live in the image.** The AP and login passwords are baked into the SD
+  card (the NetworkManager and hostapd files are mode 0600). Treat the card — and
+  any image written from it — as carrying them; it is another reason images are
+  never redistributed (see [`docs/LICENSING.md`](docs/LICENSING.md)).
+- **It is not a firewall.** A transparent bridge forwards everything and gives the
+  devices it conditions no protection they did not already have (see
+  [Non-Goals](PRD.md#3-non-goals)).
+
+The Wi-Fi passphrase is what enforces all of this — see [The Wi-Fi passphrase is
+the whole perimeter](#the-wi-fi-passphrase-is-the-whole-perimeter) above.
+
 ## How the conditioning works
 
 Both directions are shaped on a **true egress queue** — the last interface the
