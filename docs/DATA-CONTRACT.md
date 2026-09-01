@@ -594,3 +594,40 @@ observe.
 
 Measuring the shaper's own pacing requires a packet capture at the egress
 interface, before the radio.
+
+## Source H — DHCP requests · MAC→name
+
+**VERIFIED** on hardware on 2026-09-01, on the device that motivated it: an
+Apple Watch joined, took a lease, and named itself. A `UDP` socket bound to
+port 67 on the bridge. A client's request is broadcast to 255.255.255.255, so a
+transparent bridge sees it without any capture machinery, and nothing is
+queried or injected.
+
+Complements Source G rather than replacing it. mDNS is **opt-in advertising**:
+a device announces because it has a service to offer, so anything that offers
+none — a watch, a plug, a camera, a printer with sharing disabled — stays a
+bare MAC forever. DHCP is not opt-in: anything that wants an address asks, and
+almost everything puts its own name in option 12.
+
+| Field | Meaning |
+|---|---|
+| `op` | 1 is a client request. **2 is a server reply and is ignored** — a reply's option 12 is the SERVER's idea of the client's name, not the device's own |
+| `chaddr` | Client hardware address. **The key.** |
+| Option 12 | The host name the client claims for itself |
+
+**Semantics that bite**
+
+- **Only a lease being NEGOTIATED is seen.** A renewal is unicast to the
+  server, not broadcast, so the bridge never sees it. A device that got its
+  address before the box started stays anonymous until it rejoins. This is the
+  single biggest limitation and it is not fixable from a UDP socket.
+- The name is **client-supplied**, arbitrary bytes, and not unique. It labels a
+  client and nothing more; shaping is attached by the port traffic actually
+  arrives on, which no packet can assert about itself.
+- Values are sanitised before display: NUL padding truncates, control
+  characters are dropped, trailing dots and spaces are trimmed, and the whole
+  thing is capped at 63 characters. A device chooses these bytes and the
+  interface has to render them.
+- Binding port 67 is safe **only because this box runs no DHCP server** — an
+  explicit non-goal in `PRD.md`. If one is ever added, the bind fails, the
+  daemon logs it once, and every other source of names carries on.

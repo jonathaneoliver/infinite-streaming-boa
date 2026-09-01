@@ -107,7 +107,12 @@ put it on a network where that is acceptable.
   outlives the client that held it.
 - A client may hold several IPv6 addresses at once (privacy extensions); all are
   tracked and all are conditioned.
-- Names are learned from mDNS announcements the device makes anyway, and are
+- Names are learned from **mDNS announcements and DHCP requests** the device
+  makes anyway. The two see different devices: mDNS names whatever advertises a
+  service, DHCP names whatever asks for an address, and the second is the set
+  that would otherwise stay a bare MAC forever. DHCP sees only a lease being
+  negotiated, never a renewal, so a device that settled before the box started
+  stays anonymous until it rejoins. Both are
   keyed by **MAC**: a name is bound to the device that announced it, not to the
   address it announced on. A device is named even when it announces on an
   address this box has never otherwise seen — the common case on IPv6.
