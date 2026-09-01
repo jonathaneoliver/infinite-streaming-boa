@@ -333,8 +333,18 @@ table. On Linux no container runtime is needed at all.
 ```sh
 cp .env.example .env      # set your SSID, passphrase and country
 ./build.sh                # ~5 min first time, then cached
-./flash.sh                # writes the newest image to an SD card
 ```
+
+`build.sh` leaves a `.img` in `dist/`. Write it to a card with a proven imager —
+**[Raspberry Pi Imager](https://www.raspberrypi.com/software/)** (choose *Use
+custom* and select the file) or **[balenaEtcher](https://etcher.balena.io/)**.
+Both verify the write, refuse your system disk, and run on macOS, Linux and
+Windows.
+
+A `./flash.sh` helper is included for macOS, but it is **not the recommended
+path**: it is a raw `dd` write to a block device you name by hand, and one
+mistyped identifier erases that disk in seconds. It has guards, but reach for an
+imager instead unless you know exactly why you are not.
 
 Cable the Pi's `eth0` to your existing network, optionally plug a USB ethernet
 adapter in for a wired device under test, then:
@@ -577,7 +587,7 @@ on the ports it hands out — the two compose.
 
 ```
 build.sh              orchestrates the build; validates .env
-flash.sh              writes an image to an SD card (macOS)
+flash.sh              optional raw dd write to a card (macOS); prefer an imager
 scripts/customize.sh  all image surgery; runs in a privileged arm64 container
 scripts/build-payload.sh  builds the UI and cross-compiles the daemon
 daemon/               Go daemon; embeds the compiled UI, ships as one binary
