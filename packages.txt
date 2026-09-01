@@ -9,3 +9,9 @@ iw
 # from conditioning, so this answers "what is the ceiling", never "is the cap
 # being enforced" -- see overlay/etc/systemd/system/iperf3.service.
 iperf3
+
+# Runs the access point when a USB Wi-Fi adapter is present. NetworkManager
+# drives AP mode through wpa_supplicant, which times out on mt7921u
+# ("Hotspot network creation took too long"); hostapd brings the same radio up
+# at 80MHz where wpa_supplicant managed nothing at all.
+hostapd

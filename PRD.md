@@ -46,6 +46,10 @@ Intended for:
 - **Honest measurement.** The interface reports what the kernel is doing, and
   states plainly where the numbers cannot be trusted.
 - **Self-contained appliance.** Boots ready; no first-boot internet required.
+- **The best radio available serves the AP.** A USB Wi-Fi adapter takes over the
+  access point when present and the onboard radio is switched off; unplugging it
+  restores the onboard AP. Exactly one radio serves at a time, because
+  conditioning follows a single interface.
 - **One credential, and it is the SSH key.** When a public key is configured the
   image disables SSH password authentication, keeping the account password for
   the console and for recovery, and grants the login account passwordless sudo.
