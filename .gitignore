@@ -39,4 +39,10 @@ node_modules/
 # Claude Code local state: machine-specific settings, and worktrees/ which
 # holds whole checkouts of this repo -- committing it would nest the tree
 # inside itself.
-.claude/
+#
+# Written as .claude/* rather than .claude/, because git does not descend into
+# an ignored DIRECTORY and the un-ignore below would never be reached. skills/
+# is shared project tooling and belongs in the repository; everything else here
+# is per-machine.
+.claude/*
+!.claude/skills/
