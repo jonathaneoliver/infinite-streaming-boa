@@ -414,7 +414,14 @@ type Capabilities struct {
 	Radio     bool   `json:"radio"`
 	Leases    bool   `json:"leases"`
 	WlanIface string `json:"wlan_iface"`
-	UplinkIf  string `json:"uplink_if"`
+	// Adapter names the radio actually serving the AP and, when it is a USB
+	// one, the speed it NEGOTIATED. Both matter to an operator: which radio is
+	// live is otherwise a guess when two are plugged in, and a USB 3 adapter
+	// that quietly enumerated at USB 2 looks identical everywhere else while
+	// delivering a sixth of the throughput. Distinct from Radio above, which
+	// only says whether an interface is present at all.
+	Adapter  RadioInfo `json:"adapter"`
+	UplinkIf string    `json:"uplink_if"`
 	// Ntopng reports whether ntopng is actually ANSWERING, not merely
 	// installed. The UI hides its deep links otherwise, because a reflashed
 	// image without the prebuilt artifact would otherwise show dead links.
