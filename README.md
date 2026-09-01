@@ -195,11 +195,39 @@ every number in this document.
 
 | Part | What was used | Why it matters |
 |---|---|---|
-| Board | [Raspberry Pi 5 Model B, 4 GB](https://www.amazon.com/dp/B0CK3L9WD3) | A Pi 4 works; the onboard NIC must not be USB, which is why a Pi 3 does not — see the udev rule in `scripts/customize.sh` |
+| Board | [Raspberry Pi 5 Model B, 4 GB](https://www.amazon.com/dp/B0CK3L9WD3) — or the cheaper [2 GB](https://www.amazon.com/dp/B0DDL91V2R), see below | A Pi 4 works; the onboard NIC must not be USB, which is why a Pi 3 does not — see the udev rule in `scripts/customize.sh` |
 | Power | [Official Raspberry Pi 27 W USB-C PSU](https://www.amazon.com/dp/B0CW7XCY75) | A SuperSpeed Wi-Fi adapter is a real load. Check `vcgencmd get_throttled` reads `0x0` |
-| Storage | SanDisk Ultra 16 GB microSD | The build grows the image ~1.6 GB; 16 GB is enough |
+| Storage | [SanDisk Ultra 16 GB microSDHC](https://www.amazon.com/dp/B074B4P7KD) | What was used, and enough — the finished image is ~4.6 GB. A 32 GB card costs little more and leaves room for `ntopng` data |
 | Wi-Fi adapter | [Panda Wireless PAU0F AXE3000 (mt7921u)](https://www.amazon.com/dp/B0D972VY9B) | Optional, and the single biggest change to what the box can test — see below |
 | Wired downstream | Any USB ethernet adapter | Becomes `lan0`. Optional |
+
+### How much RAM this actually needs
+
+Measured on a running box: **539 MB used of 4 GB**, 3.5 GB available, swap
+untouched, and the kernel's own `Committed_AS` estimate at 733 MB.
+
+| | RSS |
+|---|---|
+| ntopng | 278 MB |
+| NetworkManager | 21 MB |
+| redis (for ntopng) | 16 MB |
+| **boad** — the conditioner itself | **14 MB** |
+| hostapd | 9 MB |
+
+The appliance's own work is 14 MB. Over half the footprint is ntopng, which is
+optional to the conditioning and only there for flow visibility. **A 2 GB Pi 5
+has ample headroom**, and the 4 GB board this was built on is not a
+requirement — it is what happened to be to hand.
+
+One caveat before buying the smaller board. Nothing bounds ntopng's growth:
+its config sets no memory limit and redis runs with `maxmemory 0`. It holds
+per-host and per-flow state, so 278 MB is a floor measured on a quiet segment,
+not a ceiling. On a busy network over days it will be larger. If you run 2 GB
+and ntopng grows into it, the answer is a retention limit rather than a bigger
+board — unbounded growth eventually fills a 16 GB card whatever the RAM.
+
+There is **no 3 GB Pi 5**; that variant is a Pi 4. The Pi 5 ships in 2, 4, 8
+and 16 GB.
 
 ## Access point performance
 
