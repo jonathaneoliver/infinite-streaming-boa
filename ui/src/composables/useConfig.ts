@@ -21,7 +21,7 @@
 
 /** Every preference key the interface keeps. Adding one here is the whole cost
  *  of including it in a saved configuration. */
-const UI_KEYS = ['boa.sort', 'boa.folded', 'boa.chart', 'boa.extras'] as const;
+const UI_KEYS = ['boa.sort', 'boa.folded', 'boa.chart', 'boa.extras', 'boa.offline'] as const;
 
 export interface ConfigDoc {
   version?: number;

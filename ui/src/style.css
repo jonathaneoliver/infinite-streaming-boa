@@ -276,6 +276,10 @@ select, input[type='text'], input[type='number'] {
 }
 
 .presets { display: flex; gap: 6px; flex-wrap: wrap; }
+/* A pill that is reporting something wrong but not broken -- the USB radio
+   running at High-Speed is the case this exists for. Uses the same amber as a
+   stale dot and a notice's rule, so "worth a look" reads the same everywhere. */
+.pill.warn { color: var(--warn); border-color: var(--warn); }
 .pill.link { text-decoration: none; }
 .pill.link:hover { color: var(--ink); border-color: var(--ink-faint); }
 
