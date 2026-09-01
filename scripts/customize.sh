@@ -399,6 +399,191 @@ ln -sf /etc/systemd/system/infinite-streaming-boa-rescue-ip.service \
   "$ROOT/etc/systemd/system/multi-user.target.wants/infinite-streaming-boa-rescue-ip.service"
 log "Rescue address ${BOA_RESCUE_IP}/24 on br-lan"
 
+## 5b. The access point radio: USB adapter preferred ------------------------
+# The onboard radio runs the AP through NetworkManager, which drives AP mode via
+# wpa_supplicant. That path does not work with a MediaTek mt7921u: activation
+# ends in "Hotspot network creation took too long, failing activation", with
+# wpa_supplicant noting "nl80211 driver interface is not designed to be used
+# with ap_scan=2". Measured on a Panda/mt7921u adapter, on both bands.
+#
+# hostapd drives the same radio without complaint, and gets 80MHz where the
+# onboard chip is running 20MHz -- which is the point of plugging one in, since
+# the AP's ceiling is what bounds the top of a measured ladder.
+#
+# So: hostapd when a USB radio is present, NetworkManager on the onboard radio
+# when it is not. Exactly ONE of them runs, because the daemon has a single
+# BOA_WLAN_PORT -- StationDump() and the bridge FDB scan both key off it, so a
+# client associated to a second AP would be invisible to conditioning.
+NL_UNMANAGED="$ROOT/etc/NetworkManager/conf.d/10-boa-unmanaged-usb-wifi.conf"
+install -D -m 0644 /dev/stdin "$NL_UNMANAGED" <<'NMCONF'
+# hostapd owns the USB radio. Without this NetworkManager also claims it and the
+# two fight over the interface -- NM wins the race often enough to look random.
+[keyfile]
+unmanaged-devices=interface-name:wlan-usb
+NMCONF
+
+# hostapd's own config. The AP settings come from .env, so both radios publish
+# the same SSID and passphrase and a client sees one network either way.
+#
+# ieee80211ax is on: verified bringing up AP-ENABLED at 80MHz on mt7921u. It is
+# ignored by radios that cannot do it rather than being fatal.
+if [ "$AP_BAND" = "a" ]; then
+  HW_MODE=a
+  if [ "$AP_CHANNEL" = "0" ]; then
+    # Automatic channel selection. hostapd picks the channel itself, so a fixed
+    # 80MHz centre index cannot be named in advance -- it would contradict
+    # whatever ACS chooses and hostapd refuses to start.
+    WIDE_CONF="acs_num_scans=5"
+  else
+    # HT40 FIRST. Without ht_capab, hostapd cannot set up VHT80 and dies with
+    # "Could not set channel for kernel driver" -- an error that says nothing
+    # about the actual cause. Measured on mt7921u at channel 36.
+    #
+    # The secondary channel sits above the primary for 36 and 44, below it for
+    # 40 and 48; naming the wrong side is the same failure. The centre index is
+    # the 80MHz block containing the primary, and 42 covers all four channels
+    # build.sh permits.
+    case "$AP_CHANNEL" in
+      40|48) HT40="[HT40-]" ;;
+      *)     HT40="[HT40+]" ;;
+    esac
+    WIDE_CONF="ht_capab=$HT40
+vht_oper_chwidth=1
+vht_oper_centr_freq_seg0_idx=42
+he_oper_chwidth=1
+he_oper_centr_freq_seg0_idx=42"
+  fi
+else
+  HW_MODE=g
+  # No 80MHz on 2.4GHz, and 40MHz there is antisocial in a crowded band.
+  [ "$AP_CHANNEL" = "0" ] && WIDE_CONF="acs_num_scans=5" || WIDE_CONF=""
+fi
+
+# The USB radio may publish a different SSID. Same name as the onboard radio is
+# the point in normal use -- a client sees one network whichever radio is up --
+# but a distinct one makes it visible which radio a device actually joined,
+# which is the difference between testing this and guessing at it.
+USB_SSID="${AP_SSID_USB:-$AP_SSID}"
+install -D -m 0600 /dev/stdin "$ROOT/etc/hostapd/boa.conf" <<EOF
+# Managed by infinite-streaming-boa. Used only when a USB Wi-Fi adapter is
+# present; the onboard radio is run by NetworkManager instead.
+interface=wlan-usb
+bridge=br-lan
+driver=nl80211
+country_code=${AP_COUNTRY}
+ieee80211d=1
+hw_mode=${HW_MODE}
+channel=${AP_CHANNEL}
+ssid=${USB_SSID}
+ignore_broadcast_ssid=$([ "$AP_HIDDEN" = "true" ] && echo 1 || echo 0)
+wmm_enabled=1
+ieee80211n=1
+ieee80211ac=1
+ieee80211ax=1
+${WIDE_CONF}
+auth_algs=1
+wpa=2
+wpa_key_mgmt=WPA-PSK
+rsn_pairwise=CCMP
+wpa_passphrase=${AP_PASSWORD}
+EOF
+
+# Our own unit rather than the packaged hostapd.service, which Debian ships
+# masked and pointed at /etc/default/hostapd. Ours is started and stopped by the
+# selector below, never enabled directly: with no adapter plugged in it would
+# fail on every boot and look like a broken box.
+install -D -m 0644 /dev/stdin "$ROOT/etc/systemd/system/infinite-streaming-boa-hostapd.service" <<'UNIT'
+[Unit]
+Description=boa access point on the USB radio
+After=NetworkManager.service sys-subsystem-net-devices-wlan\x2dusb.device
+BindsTo=sys-subsystem-net-devices-wlan\x2dusb.device
+
+[Service]
+ExecStart=/usr/sbin/hostapd /etc/hostapd/boa.conf
+Restart=on-failure
+RestartSec=5
+UNIT
+
+install -D -m 0755 /dev/stdin "$ROOT/usr/local/sbin/infinite-streaming-boa-select-radio" <<'SEL'
+#!/bin/sh
+# Picks the radio that serves the access point, and makes sure only one does.
+#
+# USB adapter present -> hostapd on wlan-usb, onboard radio switched OFF at the
+# rfkill level so it cannot beacon or be associated to. Absent -> NetworkManager
+# brings the onboard AP back.
+#
+# The onboard radio is identified by its rfkill device path NOT containing
+# /usb, rather than by phy index or driver name: phy numbering depends on probe
+# order, so "phy0 is the built-in" is true until the day it is not.
+set -u
+AP_PROFILE=infinite-streaming-boa-ap
+DEFAULTS=/etc/default/infinite-streaming-boa
+log() { logger -t boa-select-radio "$*"; echo "$*"; }
+
+onboard_rfkill() {
+  for r in /sys/class/rfkill/rfkill*; do
+    [ -e "$r/type" ] || continue
+    [ "$(cat "$r/type")" = "wlan" ] || continue
+    case "$(readlink -f "$r/device")" in
+      */usb*) ;;
+      *) echo "$r" ;;
+    esac
+  done
+}
+
+if [ -d /sys/class/net/wlan-usb ]; then
+  WANT=wlan-usb
+  log "USB radio present: hostapd on wlan-usb, onboard radio off"
+  nmcli con down "$AP_PROFILE" >/dev/null 2>&1
+  for r in $(onboard_rfkill); do echo 1 > "$r/soft" 2>/dev/null; done
+  systemctl start infinite-streaming-boa-hostapd.service
+else
+  WANT=wlan0
+  log "No USB radio: onboard AP via NetworkManager"
+  systemctl stop infinite-streaming-boa-hostapd.service 2>/dev/null
+  for r in $(onboard_rfkill); do echo 0 > "$r/soft" 2>/dev/null; done
+  # NM will not re-activate a profile whose device was rfkilled while it was
+  # down, so ask explicitly rather than waiting for autoconnect.
+  nmcli con up "$AP_PROFILE" >/dev/null 2>&1
+fi
+
+# The daemon watches ONE wlan interface. Point it at whichever radio won, and
+# restart only when it actually changed -- a restart drops a running sweep.
+CUR=$(sed -n 's/^BOA_WLAN_PORT=//p' "$DEFAULTS" 2>/dev/null)
+if [ "$CUR" != "$WANT" ]; then
+  sed -i "s/^BOA_WLAN_PORT=.*/BOA_WLAN_PORT=$WANT/" "$DEFAULTS"
+  log "BOA_WLAN_PORT $CUR -> $WANT; restarting daemon"
+  systemctl restart infinite-streaming-boa.service
+fi
+SEL
+
+install -D -m 0644 /dev/stdin "$ROOT/etc/systemd/system/infinite-streaming-boa-select-radio.service" <<'UNIT'
+[Unit]
+Description=boa access point radio selection
+After=NetworkManager.service infinite-streaming-boa.service
+Wants=NetworkManager.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/infinite-streaming-boa-select-radio
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+
+# Hotplug. --no-block matters: udev waits for RUN programs, and this one starts
+# a unit that restarts the daemon, which would deadlock against udev settling.
+cat > "$ROOT/etc/udev/rules.d/77-infinite-streaming-boa-radio.rules" <<'UDEV'
+SUBSYSTEM=="net", ENV{DEVTYPE}=="wlan", ENV{ID_BUS}=="usb", ACTION=="add", \
+  RUN+="/usr/bin/systemctl restart --no-block infinite-streaming-boa-select-radio.service"
+SUBSYSTEM=="net", ENV{DEVTYPE}=="wlan", ACTION=="remove", \
+  RUN+="/usr/bin/systemctl restart --no-block infinite-streaming-boa-select-radio.service"
+UDEV
+
+ln -sf /etc/systemd/system/infinite-streaming-boa-select-radio.service \
+  "$ROOT/etc/systemd/system/multi-user.target.wants/infinite-streaming-boa-select-radio.service"
+log "AP radio: USB adapter preferred (hostapd), onboard fallback (NetworkManager)"
+
 ## 6. Wireless regulatory domain -------------------------------------------
 # The radio is rfkill-blocked until a country is set — the single most common
 # reason a home-built Pi AP comes up with no wireless at all. Belt and braces:

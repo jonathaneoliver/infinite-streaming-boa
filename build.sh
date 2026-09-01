@@ -32,6 +32,7 @@ AP_CHANNEL="${AP_CHANNEL:-6}"
 BOA_WAN_PORT="${BOA_WAN_PORT:-eth0}"
 BOA_RESCUE_IP="${BOA_RESCUE_IP:-192.168.99.1}"
 AP_HIDDEN="${AP_HIDDEN:-false}"
+AP_SSID_USB="${AP_SSID_USB:-}"
 BOA_HOSTNAME="${BOA_HOSTNAME:-boa}"
 BOA_USER="${BOA_USER:-boa}"
 BOA_PASSWORD="${BOA_PASSWORD:-}"
@@ -46,6 +47,9 @@ BOA_TIMEZONE="${BOA_TIMEZONE:-}"
   || die "AP_PASSWORD must be 8-63 characters (got ${#AP_PASSWORD}) — WPA2 requires it"
 [[ "$AP_COUNTRY" =~ ^[A-Z]{2}$ ]] \
   || die "AP_COUNTRY must be a 2-letter ISO country code like US or GB (got '$AP_COUNTRY')"
+# Only checked when set; empty means the USB radio publishes AP_SSID too.
+[ -z "$AP_SSID_USB" ] || (( ${#AP_SSID_USB} >= 1 && ${#AP_SSID_USB} <= 32 )) \
+  || die "AP_SSID_USB must be 1-32 characters (got ${#AP_SSID_USB})"
 [[ "$AP_BAND" == "bg" || "$AP_BAND" == "a" ]] \
   || die "AP_BAND must be 'bg' (2.4GHz) or 'a' (5GHz) (got '$AP_BAND')"
 [[ "$BOA_RESCUE_IP" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]] \
@@ -171,7 +175,7 @@ docker run --rm --privileged \
   -v "$PWD/packages.txt:/packages.txt:ro" \
   -e XZ_NAME="$XZ_NAME" \
   -e OUT_NAME="$OUT_NAME" \
-  -e AP_SSID -e AP_PASSWORD -e AP_COUNTRY -e AP_BAND -e AP_CHANNEL \
+  -e AP_SSID -e AP_SSID_USB -e AP_PASSWORD -e AP_COUNTRY -e AP_BAND -e AP_CHANNEL \
   -e AP_HIDDEN -e BOA_WAN_PORT -e BOA_RESCUE_IP \
   -e BOA_HOSTNAME -e BOA_USER -e BOA_PASSWORD -e BOA_SSH_PUBKEY \
   -e BOA_NTOPNG_PASSWORD -e BOA_SSH_PASSWORD_LOGIN \

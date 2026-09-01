@@ -253,6 +253,31 @@ Everything lives in `.env`; see `.env.example` for the full annotated list.
 | `BOA_RESCUE_IP` | A fixed address on the bridge so the box is reachable even with no upstream DHCP |
 | `BOA_USER`, `BOA_PASSWORD`, `BOA_SSH_PUBKEY` | Headless login — see below |
 | `BOA_NTOPNG_PASSWORD` | ntopng's admin password. Empty reuses `BOA_PASSWORD` |
+| `AP_SSID_USB` | A different SSID for the USB radio while testing it. Empty means both publish `AP_SSID` |
+
+### Which radio serves the access point
+
+If a USB Wi-Fi adapter is plugged in, it serves the AP and **the onboard radio
+is switched off at the rfkill level**. Unplug it and the onboard radio comes
+back. Exactly one runs, because the daemon watches a single interface — a
+client associated to a second AP would be invisible to conditioning.
+
+The two are driven differently, and not by choice. NetworkManager runs AP mode
+through wpa_supplicant, which does not work with an mt7921u: activation ends in
+`Hotspot network creation took too long`, with wpa_supplicant noting `nl80211
+driver interface is not designed to be used with ap_scan=2`. hostapd drives the
+same radio without complaint. So: hostapd for a USB adapter, NetworkManager for
+the onboard radio.
+
+It is worth the trouble because the AP's ceiling bounds the top of a measured
+ladder. On a Pi 5 the onboard radio runs the AP at 20 MHz; an mt7921u adapter
+was measured here at 80 MHz and 802.11ax, with a client linking at 720 Mbit/s
+(`HE-MCS 7 HE-NSS 2`) against a signal of −38 dBm.
+
+One thing that will mislead you: `iw dev wlan-usb info` reports
+`txpower 3.00 dBm` on this adapter no matter what it is set to. It is a driver
+misreport, not the radio — clients see −27 to −38 dBm and negotiate full rates.
+Trust the client-side signal, not that field.
 
 ### Logging in, and why sudo has no password
 
