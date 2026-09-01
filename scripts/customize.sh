@@ -385,19 +385,164 @@ EOF
 
 install -D -m 0755 /dev/stdin "$ROOT/usr/local/sbin/infinite-streaming-boa-rescue-ip" <<EOF
 #!/bin/sh
-# Waits for the bridge, then pins a known address so the box is always
-# reachable. "replace" rather than "add" so a re-run is idempotent.
+# Waits for the bridge, then pins its MAC and a known address so the box is
+# always reachable. "replace" rather than "add" so a re-run is idempotent.
 for i in \$(seq 1 30); do
   ip link show br-lan >/dev/null 2>&1 && break
   sleep 2
 done
-exec ip addr replace ${BOA_RESCUE_IP}/24 dev br-lan
+
+# Pin the bridge MAC to the WAN port's, BEFORE anything else can join br-lan.
+#
+# A Linux bridge takes the LOWEST MAC among its members and recalculates when
+# members come and go. Plugging in a USB Wi-Fi adapter whose MAC sorts below
+# the onboard NIC therefore changes the bridge's identity underneath
+# NetworkManager -- and with it, the identity DHCP is negotiating with. Booting
+# with such an adapter present produced a box with no lease at all: bridge up,
+# rescue address only, unreachable on the LAN, and nothing logged as an error
+# anywhere. Measured: br-lan moved from d8:3a:dd:ad:00:86 to 9c:ef:d5:f6:3f:f2
+# the moment hostapd added wlan-usb.
+#
+# Setting it explicitly stops the kernel recalculating, so members may come and
+# go without the box changing address.
+# Belt and braces only: the pre-up hook has normally done this already. Guarded
+# on a DIFFERENCE, because re-setting a MAC to the value it already holds still
+# raises a netlink change event, and doing that during a DHCP transaction is the
+# very failure this is meant to prevent.
+WANMAC=\$(cat /sys/class/net/${BOA_WAN_PORT}/address 2>/dev/null)
+HAVEMAC=\$(cat /sys/class/net/br-lan/address 2>/dev/null)
+if [ -n "\$WANMAC" ] && [ "\$WANMAC" != "\$HAVEMAC" ]; then
+  ip link set dev br-lan address "\$WANMAC" 2>/dev/null \
+    || echo "boa: could not pin br-lan MAC to \$WANMAC" >&2
+fi
+
+# scope link, not global. The rescue address is for a machine cabled directly to
+# this box that has set an address on the same subnet by hand -- it is not
+# routable from anywhere else. As a global address avahi published it in the
+# mDNS answer for this host, so <hostname>.local resolved to TWO addresses, one
+# of them unreachable, and anything that took the first answer -- ping, curl, a
+# browser -- failed roughly half the time for no visible reason.
+exec ip addr replace ${BOA_RESCUE_IP}/24 dev br-lan scope link
 EOF
 
 install -d -m 0755 "$ROOT/etc/systemd/system/multi-user.target.wants"
 ln -sf /etc/systemd/system/infinite-streaming-boa-rescue-ip.service \
   "$ROOT/etc/systemd/system/multi-user.target.wants/infinite-streaming-boa-rescue-ip.service"
+# Keep the journal across reboots.
+#
+# Raspberry Pi OS ships /usr/lib/systemd/journald.conf.d/40-rpi-volatile-storage.conf
+# forcing Storage=volatile, to spare the SD card. Reasonable for an appliance
+# that always works; useless for one being developed, because every failure
+# that requires a reboot to observe destroys its own evidence. Two separate
+# boot failures were investigated blind here before this was noticed.
+#
+# The name matters: drop-ins merge in LEXICAL order across all directories, so
+# a file sorting below 40- is silently overridden. 99- wins.
+install -D -m 0644 /dev/stdin \
+  "$ROOT/etc/systemd/journald.conf.d/99-boa-persistent.conf" <<'JOURNAL'
+[Journal]
+Storage=persistent
+# Bounded, because this is an SD card. A few boots of history is all that is
+# ever wanted; the alternative is a card that fills up months later.
+SystemMaxUse=64M
+JOURNAL
+install -d -m 2755 "$ROOT/var/log/journal"
+log "Journal persists across reboots (64M cap)"
+
 log "Rescue address ${BOA_RESCUE_IP}/24 on br-lan"
+
+## 5a. A console that answers "what is its address?" ------------------------
+# Twice in one afternoon this box came up with a working bridge, a working
+# access point and NO DHCP lease -- reachable by nobody, and the only thing on
+# the screen was a login banner rendered seconds into boot, before DHCP had
+# finished, showing 127.0.0.1 and the rescue address. It looked like a box with
+# no network. It was a box whose banner was older than its network.
+#
+# Two separate faults, fixed separately below.
+#
+# 1. /etc/issue is rendered ONCE, when getty starts. Whatever is true a second
+#    into boot is what stays on the screen. So the address is refreshed on a
+#    timer, and reprinted to the console whenever it CHANGES -- which is the
+#    moment an operator standing at the box actually needs to see.
+#
+# 2. The virtual terminal is wiped when getty starts, taking the boot messages
+#    with it. TTYVTDisallocate=no keeps them, so whatever failed on the way up
+#    is still on screen to read.
+install -D -m 0644 /dev/stdin \
+  "$ROOT/etc/systemd/system/getty@tty1.service.d/10-boa-keep-console.conf" <<'GETTY'
+[Service]
+# Keep the boot messages. The default wipes the VT, which discards exactly the
+# output you need when the box did not come up the way you expected.
+TTYVTDisallocate=no
+GETTY
+
+install -D -m 0755 /dev/stdin "$ROOT/usr/local/sbin/infinite-streaming-boa-console" <<CONSOLE
+#!/bin/sh
+# Keeps the console honest about how to reach this box.
+#
+# Prints ADDRESSES, not interfaces. ${BOA_WAN_PORT} has no address of its own --
+# it is a bridge port, which is the whole design -- so "the eth0 IP" does not
+# exist. What an operator wants is the address that answers, which lives on
+# br-lan, plus whether the WAN port has a cable in it.
+last=""
+while :; do
+  # Split them: the DHCP address is the one to type, the rescue address only
+  # works from a machine cabled to this box with an address on that subnet.
+  # Showing them as one undifferentiated list is how an operator ends up
+  # pinging the unroutable one and concluding the box is dead.
+  lan=\$(ip -4 -br addr show scope global br-lan 2>/dev/null | awk '{\$1="";\$2="";print}' | tr -s ' ')
+  # The link-local address is the recovery path that costs the operator
+  # nothing: it exists with or without DHCP, needs no router, and no
+  # reconfiguration at the far end. It is derived by EUI-64 from the bridge
+  # MAC, which is pinned above precisely so that it does not move.
+  ll=\$(ip -6 -br addr show br-lan 2>/dev/null | tr ' ' '\n' | grep -m1 '^fe80::' | cut -d/ -f1)
+  rescue=\$(ip -4 -br addr show scope link br-lan 2>/dev/null | awk '{\$1="";\$2="";print}' | tr -s ' ')
+  [ -z "\$lan" ] && lan=" NONE -- no DHCP lease"
+  carrier=\$(cat /sys/class/net/${BOA_WAN_PORT}/carrier 2>/dev/null)
+  case "\$carrier" in 1) wan="up" ;; 0) wan="NO CABLE" ;; *) wan="?" ;; esac
+  radio=\$(cat /etc/default/infinite-streaming-boa 2>/dev/null | sed -n 's/^BOA_WLAN_PORT=//p')
+  ssid=\$(iw dev "\$radio" info 2>/dev/null | awk '/ssid/{print \$2}')
+
+  now="\$lan|\$wan|\$radio|\$ssid"
+  ip4=\$(echo \$lan | awk '{print \$1}' | cut -d/ -f1)
+  {
+    echo ""
+    echo "  ${BOA_HOSTNAME}"
+    echo "  address:  \$lan\${ip4:+     http://\$ip4/}"
+    echo "  rescue:  \$rescue   (needs an address on that subnet at your end)"
+    echo "  no DHCP?  ssh ${BOA_USER}@\${ll}%<your-interface>"
+    echo "            IPv6 link-local: always present, needs no configuration"
+    echo "  ${BOA_WAN_PORT} (wan): \$wan     radio: \${radio:-none} \${ssid:+(\$ssid)}"
+    echo ""
+  } > /etc/issue
+
+  # Reprint on change, so it appears without anyone pressing a key. This is the
+  # case that matters: an address arriving late, or going away.
+  if [ "\$now" != "\$last" ]; then
+    cat /etc/issue > /dev/tty1 2>/dev/null
+    last="\$now"
+  fi
+  sleep 10
+done
+CONSOLE
+
+install -D -m 0644 /dev/stdin "$ROOT/etc/systemd/system/infinite-streaming-boa-console.service" <<'UNIT'
+[Unit]
+Description=boa console address readout
+After=NetworkManager.service
+
+[Service]
+ExecStart=/usr/local/sbin/infinite-streaming-boa-console
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+
+ln -sf /etc/systemd/system/infinite-streaming-boa-console.service \
+  "$ROOT/etc/systemd/system/multi-user.target.wants/infinite-streaming-boa-console.service"
+log "Console will show live addresses and keep boot messages"
 
 ## 5b. The access point radio: USB adapter preferred ------------------------
 # The onboard radio runs the AP through NetworkManager, which drives AP mode via
@@ -518,6 +663,9 @@ install -D -m 0755 /dev/stdin "$ROOT/usr/local/sbin/infinite-streaming-boa-selec
 set -u
 AP_PROFILE=infinite-streaming-boa-ap
 DEFAULTS=/etc/default/infinite-streaming-boa
+# Read from the daemon's config rather than baked in, so the two cannot disagree.
+WAN_PORT=$(sed -n 's/^BOA_WAN_PORT=//p' "$DEFAULTS" 2>/dev/null)
+WAN_PORT=${WAN_PORT:-eth0}
 log() { logger -t boa-select-radio "$*"; echo "$*"; }
 
 onboard_rfkill() {
@@ -534,6 +682,15 @@ onboard_rfkill() {
 if [ -d /sys/class/net/wlan-usb ]; then
   WANT=wlan-usb
   log "USB radio present: hostapd on wlan-usb, onboard radio off"
+  # Pin the bridge MAC before hostapd adds wlan-usb to br-lan. The rescue-ip
+  # unit does this too, but the two are not ordered against each other, and
+  # losing the race means the bridge changes identity mid-DHCP and the box comes
+  # up with no lease. Idempotent, so doing it twice costs nothing.
+  # Only if it is actually wrong -- see the note in the rescue-ip script.
+  WANMAC=$(cat "/sys/class/net/$WAN_PORT/address" 2>/dev/null)
+  HAVEMAC=$(cat /sys/class/net/br-lan/address 2>/dev/null)
+  [ -n "$WANMAC" ] && [ "$WANMAC" != "$HAVEMAC" ] \
+    && ip link set dev br-lan address "$WANMAC" 2>/dev/null
   nmcli con down "$AP_PROFILE" >/dev/null 2>&1
   for r in $(onboard_rfkill); do echo 1 > "$r/soft" 2>/dev/null; done
   systemctl start infinite-streaming-boa-hostapd.service
@@ -544,7 +701,19 @@ else
   for r in $(onboard_rfkill); do echo 0 > "$r/soft" 2>/dev/null; done
   # NM will not re-activate a profile whose device was rfkilled while it was
   # down, so ask explicitly rather than waiting for autoconnect.
-  nmcli con up "$AP_PROFILE" >/dev/null 2>&1
+  #
+  # RETRY, because unblocking rfkill does not make the device usable
+  # immediately. NetworkManager has to notice the radio return and restart the
+  # supplicant interface, and until it does it answers "No suitable device found
+  # for this connection" and gives up. Measured: the activation failed at
+  # 17:58:47.9100 and wlan0 reached "disconnected" at 17:58:47.9452 -- 350ms
+  # later. A single attempt therefore loses the race about as often as it wins,
+  # and losing it means the adapter was unplugged and NO access point came back
+  # at all: hostapd stopped, onboard idle, the box silently off the air.
+  for _ in $(seq 1 20); do
+    nmcli con up "$AP_PROFILE" >/dev/null 2>&1 && break
+    sleep 1
+  done
 fi
 
 # The daemon watches ONE wlan interface. Point it at whichever radio won, and
@@ -560,8 +729,26 @@ SEL
 install -D -m 0644 /dev/stdin "$ROOT/etc/systemd/system/infinite-streaming-boa-select-radio.service" <<'UNIT'
 [Unit]
 Description=boa access point radio selection
-After=NetworkManager.service infinite-streaming-boa.service
-Wants=NetworkManager.service
+# After the network is actually UP, not merely after NetworkManager started.
+#
+# This unit starts hostapd, which adds wlan-usb to br-lan. Adding a port to a
+# bridge running STP triggers a topology recalculation, and br-lan can drop
+# carrier for a moment. If that lands in the middle of NetworkManager's DHCP
+# transaction, the lease never arrives -- the box comes up with a working
+# bridge, a working access point, and no address, reachable by nobody. That
+# happened twice, and both times the boot before it had worked, because
+# After=NetworkManager.service only orders against the daemon STARTING and
+# leaves the rest to chance.
+#
+# Measured on a boot that succeeded: the lease landed at 19:05:43.16 and
+# hostapd added the interface at 19:05:44.57 -- a margin of 1.4 seconds. That
+# margin is what wait-online makes deterministic instead of lucky.
+#
+# Wants, not Requires: if wait-online times out because there is genuinely no
+# upstream DHCP, the radio must still come up. An access point with no internet
+# is a working appliance; no access point is not.
+After=NetworkManager.service NetworkManager-wait-online.service infinite-streaming-boa.service
+Wants=NetworkManager.service NetworkManager-wait-online.service
 
 [Service]
 Type=oneshot
