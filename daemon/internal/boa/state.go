@@ -58,6 +58,13 @@ type Engine struct {
 	// prev is keyed "dev/minor" and holds the last byte count seen there.
 	prev map[string]counterSample
 
+	// lastAssoc is when each MAC was last present in the radio's station
+	// table. Wi-Fi association is the one fact about a wireless client that is
+	// not a guess -- the driver either has the station or it does not -- so it
+	// is what decides whether a wireless client is still here. In memory only,
+	// like lastActive: it rebuilds on the first tick after a restart.
+	lastAssoc map[string]int64
+
 	// lastActive is when each MAC was last moving more than a trickle.
 	// Telemetry, so it is held in memory and never written to the store: it
 	// rebuilds itself within seconds of a restart for anything actually doing
@@ -116,6 +123,7 @@ func NewEngine(cfg Config) *Engine {
 		learn:      NewLearner(cfg.Bridge, cfg.WlanPort, cfg.LanPort),
 		prev:       map[string]counterSample{},
 		lastActive: map[string]int64{},
+		lastAssoc:  map[string]int64{},
 		demo:       newDemoFleet(),
 		demoBytes:  map[string]uint64{},
 		hist:       NewHistory(),
@@ -356,6 +364,12 @@ func (e *Engine) ntopngUp() bool {
 	return true
 }
 
+// wlanPresenceGrace is how long a wireless client may be missing from the
+// station table before it stops counting as present. Long enough to ride out a
+// roam or a power-save blip, short enough that a device which has actually gone
+// leaves the list while the operator is still looking at it.
+const wlanPresenceGrace = time.Minute
+
 func (e *Engine) tick() {
 	now := time.Now()
 
@@ -381,6 +395,11 @@ func (e *Engine) tick() {
 		present      bool
 	}
 	merged := map[string]*acc{}
+	// Remember who is associated right now, so a wireless client that has left
+	// can be told from one that is merely quiet.
+	for mac := range stations {
+		e.lastAssoc[mac] = now.UnixMilli()
+	}
 	// Anything the bridge learned on the WAN port lives upstream. Those MACs
 	// ARP too, and without this they would appear as clients of this box.
 	wanSide := WANSideMACs(e.cfg.Bridge, e.cfg.WANPort)
@@ -426,6 +445,27 @@ func (e *Engine) tick() {
 				a.port = sn.Port
 			}
 			continue
+		}
+		// A wireless client that is not in the station table is NOT here,
+		// whatever the learner still remembers. Association is definitive: the
+		// driver either holds the station or it does not.
+		//
+		// The learner keeps bindings for twenty minutes on purpose, so a device
+		// that goes quiet keeps its policy and its label. That is right for
+		// bookkeeping and wrong for presence -- a phone carried out of the
+		// building read as a client of this box for the next twenty minutes,
+		// and on an appliance whose whole subject is who is contending for
+		// airtime, that is the one direction not to err in.
+		//
+		// One minute of grace, not zero: a station can briefly drop out of the
+		// table across a roam or a power-save transition, and flapping the list
+		// would be worse than a stale entry. The device stays LISTED either
+		// way; only "present" changes.
+		if sn.Port == e.cfg.WlanPort {
+			if last, seen := e.lastAssoc[mac]; !seen ||
+				now.Sub(time.UnixMilli(last)) > wlanPresenceGrace {
+				continue
+			}
 		}
 		if !downstream[sn.Port] {
 			continue // not on a port of ours: upstream, or not yet placed

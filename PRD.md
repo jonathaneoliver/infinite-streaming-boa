@@ -105,6 +105,11 @@ put it on a network where that is acceptable.
   traffic. Nothing is probed, scanned or injected.
 - Presence comes from the radio and the bridge, never from a DHCP lease: a lease
   outlives the client that held it.
+- For a **wireless** client the station table is authoritative. A device absent
+  from it for more than a minute stops counting as present, whatever else still
+  remembers it. It stays LISTED, keeping its policy and label, so nothing is
+  lost while a device is away — only "present" changes. The minute of grace
+  rides out a roam or a power-save blip rather than flapping the list.
 - A client may hold several IPv6 addresses at once (privacy extensions); all are
   tracked and all are conditioned.
 - Names are learned from mDNS announcements the device makes anyway, and are
