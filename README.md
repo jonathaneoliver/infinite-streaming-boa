@@ -494,6 +494,17 @@ on the ports it hands out — the two compose.
 - **The queue is sized from rate × delay.** netem's default 1000-packet queue
   would silently drop half the traffic on a "50 Mbps, 500 ms, 0 % loss" profile.
   boa computes the queue depth instead, so configured loss is the only loss.
+- **A phone's MAC is not stable.** Policy is keyed by MAC, but iOS and macOS
+  present a randomised, per-SSID address that changes when the network is
+  rejoined or the setting is toggled — and on iOS 18, on its own schedule. When
+  it rotates, the device arrives as a brand-new client with no policy, and its
+  configuration and its *measured ladder* — half an hour of real playback —
+  are stranded on a row that will never return. On any device you control, set
+  **Settings → Wi-Fi → (the network) → Private Wi-Fi Address** to **Off** (or
+  **Fixed** on iOS 18) before a long measurement. A device you cannot
+  instrument — most TVs and set-top boxes — is covered only once the hostname
+  adoption in [#45](https://github.com/jonathaneoliver/infinite-streaming-boa/issues/45)
+  is built.
 
 ## Layout
 
