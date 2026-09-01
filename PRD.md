@@ -53,6 +53,11 @@ Intended for:
 - A production traffic shaper or QoS system. It exists to degrade links
   deliberately, not to manage them.
 - Decrypting or inspecting application payloads. Conditioning is transport-level.
+- Application-level fault injection or content manipulation. HTTP status codes,
+  stalled or truncated responses, corrupted segments and rewritten manifests all
+  sit above the transport. That work belongs on the origin path — the
+  infinite-streamer harness in this family — which composes with boa rather than
+  being duplicated by it.
 - Certification-grade impairment. Profiles approximate real links; they are a
   place to start, not a standard.
 
