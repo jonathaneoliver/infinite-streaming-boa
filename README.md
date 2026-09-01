@@ -15,6 +15,21 @@ normal addresses on your normal network, discovery protocols keep working, and
 the Pi never appears as a hop in `traceroute`. Nothing being tested can tell it
 is there.
 
+What that buys, and it is the whole point: **neither end has to cooperate.**
+Conditioning happens to forwarded frames, so the device under test gets no proxy
+setting, no installed certificate and no software — and the far end gets nothing
+either, because there is no endpoint to point it at. Any client talking to any
+server on any provider is conditioned alike: a streaming service, a game server,
+a firmware update and a DNS lookup at once, over TCP, UDP or QUIC, including
+destinations you could never configure and do not control. A proxy can do none
+of that, and the reasons are structural rather than a matter of features — see
+[Why a proxy is a different instrument](#why-a-proxy-is-a-different-instrument).
+
+The matching cost: traffic is told apart by destination network, port and
+protocol — see [Sub-classes](#sub-classes) — and never by application or by
+name. This box sees ciphertext, so two apps on one device, or two services
+behind one CDN, look the same to it.
+
 ```
                     [ your existing router ]
                               │
