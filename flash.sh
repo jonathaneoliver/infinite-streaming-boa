@@ -120,12 +120,54 @@ diskutil unmountDisk "/dev/$DISK"
 # /dev/rdiskN is the raw character device: it bypasses the buffer cache and is
 # roughly an order of magnitude faster than the buffered /dev/diskN.
 #
-# No status= operand here, deliberately. `status=none` tidies the output but
-# also silences the SIGINFO handler, so Ctrl-T would report only the kernel's
-# "cmd: dd ... uninterruptible" line and never dd's byte count -- removing the
-# one progress indicator available during a multi-minute write.
-log "Writing (several minutes; press Ctrl-T for a progress report)"
-sudo dd if="$IMG" of="/dev/r$DISK" bs=4m
+# Progress, because this is a multi-minute write to a card the user has just
+# been asked to confirm is the right one. "Press Ctrl-T" was the previous
+# answer, which requires knowing that SIGINFO exists and leaves the operator
+# with no idea whether a silent minute means progress or a stall.
+#
+# pv when it is available -- it is the better tool and gives a rate and ETA
+# from a single stream. Otherwise the image is written in chunks and the
+# percentage is computed from the chunk index, which needs no extra program
+# and no signal handling.
+CHUNK_MB=32
+render_bar() { # $1 = bytes done, $2 = bytes total, $3 = start epoch
+  local done=$1 total=$2 start=$3 pct width filled elapsed rate eta
+  pct=$(( done * 100 / total ))
+  width=32
+  filled=$(( pct * width / 100 ))
+  elapsed=$(( $(date +%s) - start ))
+  [ "$elapsed" -lt 1 ] && elapsed=1
+  rate=$(( done / elapsed / 1048576 ))
+  [ "$rate" -lt 1 ] && rate=1
+  eta=$(( (total - done) / (rate * 1048576) ))
+  printf '\r  [%-*s] %3d%%  %4d/%d MB  %d MB/s  ETA %d:%02d' \
+    "$width" "$(printf '%*s' "$filled" '' | tr ' ' '#')" \
+    "$pct" "$(( done / 1048576 ))" "$(( total / 1048576 ))" \
+    "$rate" "$(( eta / 60 ))" "$(( eta % 60 ))"
+}
+
+if command -v pv >/dev/null 2>&1; then
+  log "Writing ${IMGBYTES} bytes"
+  sudo sh -c "pv -s '$IMGBYTES' '$IMG' | dd of='/dev/r$DISK' bs=4m" \
+    || die "write failed"
+else
+  log "Writing (no pv installed; using chunked dd for progress)"
+  # skip/seek are counted in units of bs, so both walk the same block index.
+  # The final chunk is short and dd simply writes what remains.
+  total_blocks=$(( (IMGBYTES + 4194303) / 4194304 ))
+  start=$(date +%s)
+  b=0
+  while [ "$b" -lt "$total_blocks" ]; do
+    sudo dd if="$IMG" of="/dev/r$DISK" bs=4m count="$CHUNK_MB" \
+      skip="$b" seek="$b" conv=notrunc 2>/dev/null \
+      || die "write failed at block $b of $total_blocks"
+    b=$(( b + CHUNK_MB ))
+    done_bytes=$(( b * 4194304 ))
+    [ "$done_bytes" -gt "$IMGBYTES" ] && done_bytes=$IMGBYTES
+    render_bar "$done_bytes" "$IMGBYTES" "$start"
+  done
+  printf '\n'
+fi
 
 log "Flushing"
 sync
