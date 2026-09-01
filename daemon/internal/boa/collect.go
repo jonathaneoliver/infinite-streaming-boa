@@ -7,6 +7,7 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 )
@@ -282,4 +283,86 @@ func WANSideMACs(bridge, wanPort string) map[string]bool {
 		}
 	}
 	return out
+}
+
+// RadioInfo describes the interface serving the access point: whether it is
+// the onboard chip or a plugged-in USB adapter, and for USB, which speed the
+// link actually negotiated.
+//
+// The speed is here because getting it wrong is invisible and expensive. A USB
+// 3.0 Wi-Fi adapter that is not fully seated, or is on a cable without
+// SuperSpeed pins, enumerates as High-Speed and then behaves like a working
+// adapter in every respect that is normally checked -- same 80MHz channel, same
+// 802.11ax, same PHY rate over 1 Gbit/s -- while delivering about a sixth of
+// the throughput. Measured here: 717 Mbit/s on USB 3.0 against 117 on USB 2.0,
+// same adapter, same radio settings, no error logged anywhere.
+type RadioInfo struct {
+	Iface  string `json:"iface"`
+	Driver string `json:"driver,omitempty"`
+	// Bus is "usb" or "onboard". Onboard is not a judgement: the Pi 5's chip is
+	// simply not on the USB bus, so none of the fields below apply to it.
+	Bus string `json:"bus"`
+	// Product and Vendor are the USB descriptor strings, so the interface can
+	// name the adapter rather than making the operator run lsusb.
+	Product string `json:"product,omitempty"`
+	Vendor  string `json:"vendor,omitempty"`
+	// LinkMbps is the NEGOTIATED speed, from sysfs `speed`: 5000 for
+	// SuperSpeed, 480 for High-Speed. Not the advertised capability -- that is
+	// the whole point, since the two disagree exactly when it matters.
+	LinkMbps int `json:"link_mbps,omitempty"`
+	// USBVersion is bcdUSB as the device declares it, e.g. "3.20" or "2.10".
+	USBVersion string `json:"usb_version,omitempty"`
+}
+
+// Radio inspects the interface serving the AP. Everything comes from sysfs
+// rather than lsusb, which is not installed on a minimal image.
+func Radio(iface string) RadioInfo {
+	info := RadioInfo{Iface: iface, Bus: "onboard"}
+	if iface == "" {
+		return info
+	}
+	base := filepath.Join("/sys/class/net", iface, "device")
+	if drv, err := os.Readlink(filepath.Join(base, "driver")); err == nil {
+		info.Driver = filepath.Base(drv)
+	}
+	// The USB device is the PARENT of the interface's device node: the device
+	// link points at the USB *interface* (2-1:1.0), and speed, version and the
+	// descriptor strings all live one level up on the device itself (2-1).
+	//
+	// EvalSymlinks first, and that is the whole subtlety. `device` is a symlink
+	// into /sys/devices, and filepath.Join(base, "..") cleans the path
+	// LEXICALLY -- it yields /sys/class/net/<iface> rather than the USB device,
+	// so every read below quietly returns empty and a USB adapter reports as
+	// onboard. Resolve, then take the parent.
+	realBase, err := filepath.EvalSymlinks(base)
+	if err != nil {
+		return info
+	}
+	parent := filepath.Dir(realBase)
+	speed := strings.TrimSpace(readSysfs(filepath.Join(parent, "speed")))
+	if speed == "" {
+		// No speed file means not a USB device. The onboard radio hangs off
+		// SDIO, so this is the normal case, not a failure to read.
+		return info
+	}
+	info.Bus = "usb"
+	if n, err := strconv.Atoi(speed); err == nil {
+		info.LinkMbps = n
+	}
+	info.USBVersion = strings.TrimSpace(readSysfs(filepath.Join(parent, "version")))
+	info.Product = strings.TrimSpace(readSysfs(filepath.Join(parent, "product")))
+	info.Vendor = strings.TrimSpace(readSysfs(filepath.Join(parent, "manufacturer")))
+	return info
+}
+
+// SuperSpeed reports whether a USB radio negotiated USB 3 rates. False for an
+// onboard radio, which is not slow -- it is simply not on the bus.
+func (r RadioInfo) SuperSpeed() bool { return r.Bus == "usb" && r.LinkMbps >= 5000 }
+
+func readSysfs(path string) string {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	return string(b)
 }

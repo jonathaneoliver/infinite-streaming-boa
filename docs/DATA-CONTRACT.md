@@ -594,3 +594,31 @@ observe.
 
 Measuring the shaper's own pacing requires a packet capture at the egress
 interface, before the radio.
+
+## Source I — sysfs · which radio is serving, and at what bus speed
+
+**VERIFIED** on hardware on 2026-09-01, against the same adapter on a
+High-Speed and a SuperSpeed port. Read from `/sys/class/net/<iface>/device`,
+not from `lsusb`, which a minimal image does not have.
+
+| Path | Meaning |
+|---|---|
+| `device/driver` (symlink) | Driver name, e.g. `mt7921u`, `brcmfmac` |
+| `device/../speed` | **Negotiated** link speed in Mbit/s: 5000 SuperSpeed, 480 High-Speed. Absent for a non-USB radio |
+| `device/../version` | `bcdUSB` as the device declares it, e.g. `3.20` |
+| `device/../product`, `manufacturer` | USB descriptor strings, so the interface can name the adapter |
+
+**Semantics that bite**
+
+- **`speed` is what was NEGOTIATED, not what the device is capable of**, and
+  that distinction is the entire reason this exists. A USB 3.0 adapter that is
+  not fully seated, or on a cable without SuperSpeed pins, enumerates as
+  High-Speed and is then indistinguishable from a working one by every other
+  measure: same 80MHz channel, same 802.11ax, same PHY rate over 1 Gbit/s, no
+  error logged anywhere. Measured on one adapter minutes apart: 717 Mbit/s on
+  USB 3.0 against 117 on USB 2.0.
+- The absence of `speed` means **not a USB device**, which for the onboard
+  radio is the normal case and not a failure to read. It hangs off SDIO.
+- `device` is a **symlink**, and the USB device is its parent. Resolve it
+  before taking `..`: a lexical join yields `/sys/class/net/<iface>` instead,
+  every read returns empty, and a USB adapter reports as onboard.

@@ -604,7 +604,8 @@ func (e *Engine) tick() {
 			Radio:     LinkExists(e.cfg.WlanPort),
 			Leases:    false, // transparent bridge: upstream owns DHCP
 			WlanIface: e.cfg.WlanPort, UplinkIf: e.cfg.WANPort,
-			Ntopng: e.ntopngUp(), NtopngPort: ntopngPort,
+			Adapter: Radio(e.cfg.WlanPort),
+			Ntopng:  e.ntopngUp(), NtopngPort: ntopngPort,
 			Iperf: PortListening(iperfPort), IperfPort: iperfPort,
 			LossBurst: burstOK, LossBurstNote: burstNote,
 			NamesLearned: len(names), NamesByMAC: len(macNames),
