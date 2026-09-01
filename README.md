@@ -187,6 +187,102 @@ on `:8474` lets a test set up and tear down its own faults, and its toxics —
 netem cannot produce. For proving a service survives a flaky dependency in CI,
 it is the right tool and this one is not.
 
+## Hardware
+
+What this box was built and measured on. Nothing here is required — it is a
+Raspberry Pi 5 and a USB Wi-Fi adapter — but these are the exact parts behind
+every number in this document.
+
+| Part | What was used | Why it matters |
+|---|---|---|
+| Board | [Raspberry Pi 5 Model B, 4 GB](https://www.amazon.com/dp/B0CK3L9WD3) | A Pi 4 works; the onboard NIC must not be USB, which is why a Pi 3 does not — see the udev rule in `scripts/customize.sh` |
+| Power | [Official Raspberry Pi 27 W USB-C PSU](https://www.amazon.com/dp/B0CW7XCY75) | A SuperSpeed Wi-Fi adapter is a real load. Check `vcgencmd get_throttled` reads `0x0` |
+| Storage | SanDisk Ultra 16 GB microSD | The build grows the image ~1.6 GB; 16 GB is enough |
+| Wi-Fi adapter | [Panda Wireless PAU0F AXE3000 (mt7921u)](https://www.amazon.com/dp/B0D972VY9B) | Optional, and the single biggest change to what the box can test — see below |
+| Wired downstream | Any USB ethernet adapter | Becomes `lan0`. Optional |
+
+## Access point performance
+
+The AP's ceiling bounds the top of a measured ladder, so it decides which
+renditions can be tested at all. Measured with `iperf3` **to the box**, which
+means the link **unshaped** — the ceiling a cap must sit under, never evidence
+that a cap is working.
+
+| Radio | Downlink | Uplink | Channel | Run |
+|---|---|---|---|---|
+| Onboard (brcmfmac) | 55 Mbit/s | 57 Mbit/s | 20 MHz | 60s, sole client |
+| PAU0F on **USB 2.0** | 162 Mbit/s | 146 Mbit/s | 80 MHz, 802.11ax | 15s, 2 clients |
+| PAU0F on **USB 3.0** | **~540 Mbit/s** | ~156 Mbit/s | 80 MHz, 802.11ax | 15s, 2 clients |
+| Wired, for reference | 924 Mbit/s | — | — | 8s |
+
+Same MacBook, same afternoon. The adapter on a SuperSpeed port is **~10x the
+onboard radio downlink** — the difference between a ladder whose top rung means
+"uncapped" and one that can be measured.
+
+**The run column is not decoration.** The same onboard radio measured 39 Mbit/s
+over 15s with three clients associated and 55 Mbit/s over 60s alone. Neither is
+wrong; a figure here without its conditions is.
+
+What costs you is not the NUMBER of associated clients but how *active* and how
+*slow* they are: dropping from two clients to one moved downlink 54.4 -> 54.9,
+because the second was idle. A single station linked at 65 Mbit/s, or one
+actually transferring, is worth far more than a headcount.
+
+The daemon's own numbers agree with iperf3, which is worth knowing given how
+much rests on them: sampling `station dump` counters during a run gave a mean of
+55.2 Mbit/s against iperf3's 56.2 over the same interval. The chart will still
+show a higher **peak** — 63 Mbit/s in that run — because it plots per-sample
+throughput while iperf3 reports a whole-run mean. Compare against the chart's
+`MEAN OVER` line, not the live trace.
+
+Both adapter rows negotiated the same PHY rate (1200 Mbit/s, `HE-MCS 11
+HE-NSS 2`) with the same clients. **The bus is the only difference.** Downlink
+falls 3.3× on USB 2.0 while uplink barely moves, because uplink was already
+limited by something other than the bus.
+
+**Check the adapter got a SuperSpeed port.** A USB 3.0 adapter that is not
+fully seated, or on a cable without SuperSpeed pins, enumerates as USB 2.0 in a
+blue port and is otherwise indistinguishable — same channel, same 802.11ax,
+same PHY rate, no error anywhere. The interface reports it in the header
+(`radio: wlan-usb · USB 2` in amber), and from a shell:
+
+```sh
+lsusb -t                             # the adapter's line: 5000M good, 480M not
+lsusb -v -d 0e8d:7961 | grep bcdUSB  # 3.20 good, 2.10 means High-Speed only
+```
+
+### Measuring it yourself
+
+`iperf3` runs on the box already. From a Mac **joined to the box's SSID**:
+
+```sh
+# 1. What address did the Wi-Fi interface get? (en0 is usually Wi-Fi)
+ipconfig getifaddr en0
+
+# 2. Downlink -- the direction that matters for a player
+iperf3 -c infinite-streaming-boa.local -B "$(ipconfig getifaddr en0)" -t 15 -f m -R
+
+# 3. Uplink
+iperf3 -c infinite-streaming-boa.local -B "$(ipconfig getifaddr en0)" -t 15 -f m
+```
+
+**`-B` is the part that is easy to miss.** If the Mac is also on ethernet, both
+interfaces sit on the same subnet and macOS will route to the box over the
+cable — reporting a wired figure while you believe you are testing Wi-Fi.
+Binding the client to the Wi-Fi address forces the traffic out of the radio.
+Without it, expect a suspiciously excellent number.
+
+Two more things that will mislead you here:
+
+- **Airtime is shared, so who else is associated changes the answer.** One
+  802.11n client linked at 65 Mbit/s moved measured downlink between 356 and
+  717 Mbit/s while transferring 4 KB of its own — it holds the channel roughly
+  18× longer per byte than an 802.11ax client. Check `iw dev <iface> station
+  dump` before trusting a number, and quote a range with conditions.
+- **`txpower` from `iw` is not reliable on every adapter.** The mt7921u reports
+  `3.00 dBm` whatever it is set to, while clients see −27 to −38 dBm and
+  negotiate full rates. Trust the client-side signal.
+
 ## Build an image
 
 Needs `curl`, `docker`, `go` and `npm`. On macOS the Docker engine can come from
