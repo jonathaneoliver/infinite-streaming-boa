@@ -30,6 +30,13 @@ protocol — see [Sub-classes](#sub-classes) — and never by application or by
 name. This box sees ciphertext, so two apps on one device, or two services
 behind one CDN, look the same to it.
 
+And it conditions the link, never the content. Returning an HTTP 500, stalling
+or truncating a response, corrupting a segment, rewriting a manifest — all of
+that lives above the transport and none of it happens here. That work belongs on
+the origin path, which is what the infinite-streamer harness in this family
+already is. The two compose rather than compete: degrade the link with boa,
+manipulate what travels over it there.
+
 ```
                     [ your existing router ]
                               │
