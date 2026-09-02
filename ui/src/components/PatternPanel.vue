@@ -36,7 +36,7 @@
  */
 import { computed, ref, watch } from 'vue';
 import type { Keyframe, Ladder, LinkEvent, Pattern, PatternView, Shape } from '@/types';
-import { EXTRA_IMPAIRMENTS, PATTERN_TEMPLATES, RATE_MAX, posToRate, rateToPos } from '@/types';
+import { PATTERN_TEMPLATES, RATE_MAX, posToRate, rateToPos } from '@/types';
 import {
   addStep,
   decomposeAll,
@@ -50,7 +50,7 @@ import {
   type Step,
   type Timelines,
 } from '@/lib/pattern';
-import { useExtras } from '@/composables/useExtras';
+import { useFields } from '@/composables/useFields';
 import PatternLibrary from './PatternLibrary.vue';
 
 const props = defineProps<{
@@ -919,25 +919,11 @@ type LaneKey =
   | 'rate_mbps' | 'delay_ms' | 'jitter_ms' | 'loss_pct'
   | 'reorder_pct' | 'corrupt_pct';
 
-const CORE_LANES: { key: LaneKey; label: string; unit: string }[] = [
+const ALL_LANES: { key: LaneKey; label: string; unit: string }[] = [
   { key: 'rate_mbps', label: 'rate', unit: 'Mbps' },
   { key: 'delay_ms', label: 'delay', unit: 'ms' },
   { key: 'jitter_ms', label: 'jitter', unit: 'ms' },
   { key: 'loss_pct', label: 'loss', unit: '%' },
-];
-
-/**
- * The second-tier impairments get a lane only when the pattern uses one.
- *
- * Same rule as the sliders, for the same reason as the note above about eight
- * lanes: a timeline that always drew seven would be unreadable for the patterns
- * that vary one thing, which is most of them. A lane that is flat at zero for
- * the whole run says nothing and costs a quarter of the panel.
- *
- * Derived from the keyframes rather than from a setting, so a pattern that uses
- * reorder always shows reorder, in every session and for whoever opens it.
- */
-const EXTRA_LANES: { key: LaneKey; label: string; unit: string }[] = [
   { key: 'reorder_pct', label: 'reorder', unit: '%' },
   { key: 'corrupt_pct', label: 'corrupt', unit: '%' },
 ];
@@ -953,63 +939,50 @@ function laneMax(lane: LaneKey): number {
   return keys.value.reduce((m, k) => Math.max(m, valueAt(k, lane)), 0);
 }
 
-// A second-tier lane earns its place by being used in EITHER direction: the
-// panel shows one direction at a time, and a lane appearing when you switch
-// direction would read as the interface losing track of the pattern.
-const { show: showExtras, toggle: toggleExtras } = useExtras();
-
-// The same switch the sliders use, so a reorder slider and a reorder lane are
-// never one without the other. ORed with "the pattern actually uses it": a lane
-// carrying data is drawn whatever the switch says, because a keyframe changing
-// something the timeline does not draw is the timeline lying about the run.
-const LANES = computed(() => [
-  ...CORE_LANES,
-  ...EXTRA_LANES.filter(
-    (l) =>
-      showExtras.value ||
-      keys.value.some((k) => k.down[l.key] > 0 || k.up[l.key] > 0),
-  ),
-]);
-
-/** True when the switch is the only reason the extra lanes are up. */
-const extrasUnused = computed(() =>
-  EXTRA_LANES.every((l) => !keys.value.some((k) => k.down[l.key] > 0 || k.up[l.key] > 0)),
-);
-
 /*
- * The wifi link lanes get their OWN expander, separate from reorder/corrupt --
- * they are a different kind of impairment (association events, not packet
- * shaping). Same rule as the extras: local to this panel (there is no wifi
- * slider elsewhere to keep in step), persisted, and ORed with "the pattern
- * actually uses it" so a collapsed group can never hide an event in force.
+ * Every field shows only while it is doing something, or when the operator
+ * reveals it -- the same rule as the card sliders, sharing the same reveal
+ * state (useFields) so the two match. rate is always shown; jitter rides with
+ * delay (it is a width of it); the rest collapse to a "+ field" chip below the
+ * chart. A field the pattern actually uses is never collapsible: it cannot be
+ * hidden while it is conditioning the run.
  */
-const WIFI_KEY = 'boa.wifi';
-const showWifi = ref(
-  (() => {
-    try {
-      return localStorage.getItem(WIFI_KEY) === '1';
-    } catch {
-      return false;
-    }
-  })(),
-);
-watch(showWifi, (v) => {
-  try {
-    localStorage.setItem(WIFI_KEY, v ? '1' : '0');
-  } catch {
-    /* not worth breaking a control over */
-  }
-});
+const { revealed, reveal, hide } = useFields();
 
-const shownLinkLanes = computed(() =>
-  LINK_LANES.filter((ll) => showWifi.value || links.value.some((l) => l.kind === ll.kind)),
-);
+function laneUses(key: LaneKey): boolean {
+  return keys.value.some((k) => k.down[key] > 0 || k.up[key] > 0);
+}
+function laneShown(key: LaneKey): boolean {
+  if (key === 'rate_mbps') return true;
+  if (key === 'jitter_ms') return laneShown('delay_ms');
+  return laneUses(key) || revealed.value.has(key);
+}
+const LANES = computed(() => ALL_LANES.filter((l) => laneShown(l.key)));
 
-/** Show the wifi toggle whenever a kind is hidden (so its lane can be revealed
- *  to add events). Unlike the extras, the three kinds are independent -- having
- *  a drop must not hide the way to reach the nudge and deadzone lanes. */
-const wifiUnused = computed(() =>
-  LINK_LANES.some((ll) => !links.value.some((l) => l.kind === ll.kind)),
+function linkUses(kind: LinkEvent['kind']): boolean {
+  return links.value.some((l) => l.kind === kind);
+}
+function linkShown(kind: LinkEvent['kind']): boolean {
+  return linkUses(kind) || revealed.value.has(kind);
+}
+const shownLinkLanes = computed(() => LINK_LANES.filter((ll) => linkShown(ll.kind)));
+
+// The chips below the chart: one "+ field" to reveal each collapsed lane, one
+// "- field" to put a revealed-but-empty one away. jitter has none (rides with
+// delay), rate none (always on), and a field in force none (it stays up).
+const CHIP_FIELDS: { key: LaneKey; label: string }[] = [
+  { key: 'delay_ms', label: 'delay' },
+  { key: 'loss_pct', label: 'loss' },
+  { key: 'reorder_pct', label: 'reorder' },
+  { key: 'corrupt_pct', label: 'corrupt' },
+];
+const addFieldChips = computed(() => CHIP_FIELDS.filter((f) => !laneShown(f.key)));
+const dropFieldChips = computed(() =>
+  CHIP_FIELDS.filter((f) => laneShown(f.key) && !laneUses(f.key)),
+);
+const addLinkChips = computed(() => LINK_LANES.filter((ll) => !linkShown(ll.kind)));
+const dropLinkChips = computed(() =>
+  LINK_LANES.filter((ll) => linkShown(ll.kind) && !linkUses(ll.kind)),
 );
 
 /**
@@ -1314,21 +1287,15 @@ const status = computed(() => {
         </div>
       </div>
 
-      <!-- Two expanders, side by side: the second-tier packet impairments
-           (reorder, corrupt) and the wifi link lanes (drop, nudge, deadzone).
-           Each is hidden while nothing uses it, and each cannot hide a lane
-           that carries data -- a control that cannot do anything is worse than
-           none. -->
-      <div class="head-row">
-        <button
-          v-if="extrasUnused" class="more"
-          @click="toggleExtras()"
-        >{{ showExtras ? '−' : '+' }}
-          {{ EXTRA_IMPAIRMENTS.map((e) => e.label).join(', ') }}</button>
-        <button
-          v-if="wifiUnused" class="more"
-          @click="showWifi = !showWifi"
-        >{{ showWifi ? '−' : '+' }} wifi</button>
+      <!-- One chip per field: "+ field" reveals a collapsed lane so you can add
+           to it, "- field" puts a revealed-but-empty one away. A field the
+           pattern uses has no chip -- it stays on the chart. Same set the card
+           sliders carry, sharing useFields, so the two show and hide together. -->
+      <div v-if="addFieldChips.length || dropFieldChips.length || addLinkChips.length || dropLinkChips.length" class="head-row chips">
+        <button v-for="f in addFieldChips" :key="`+${f.key}`" class="more" @click="reveal(f.key)">+ {{ f.label }}</button>
+        <button v-for="ll in addLinkChips" :key="`+${ll.kind}`" class="more" @click="reveal(ll.kind)">+ {{ ll.label }}</button>
+        <button v-for="f in dropFieldChips" :key="`-${f.key}`" class="more" @click="hide(f.key)">− {{ f.label }}</button>
+        <button v-for="ll in dropLinkChips" :key="`-${ll.kind}`" class="more" @click="hide(ll.kind)">− {{ ll.label }}</button>
       </div>
 
       <!-- What the sliders above are pointed at. Stated rather than implied:
@@ -1666,6 +1633,10 @@ const status = computed(() => {
   gap: 8px;
   align-items: center;
   margin-top: 10px;
+}
+.head-row.chips {
+  flex-wrap: wrap;
+  gap: 4px 10px;
 }
 .scrub {
   flex: 1;

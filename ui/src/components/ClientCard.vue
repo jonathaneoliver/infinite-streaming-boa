@@ -138,6 +138,13 @@ function fireDeadzone() {
   flashLink('deadzone');
 }
 
+// Past a few seconds of blackout a phone stops waiting and leaves the AP for
+// another network -- iOS gives up around 3s. That is a different outcome from a
+// rebuffer: the device is then off boa's Wi-Fi entirely, so it stops appearing
+// as traffic and cannot be conditioned until it rejoins THIS AP on its own.
+const ROAM_AWAY_SEC = 3;
+const deadzoneRisky = computed(() => deadzoneSec.value >= ROAM_AWAY_SEC);
+
 /**
  * The downlink cap actually in force, which is NOT always the stored policy.
  *
@@ -153,12 +160,20 @@ function fireDeadzone() {
 const sweeping = computed(() => props.client.sweep?.state === 'running');
 const patRun = computed(() => props.client.pattern_run);
 const playing = computed(() => patRun.value?.state === 'running');
-// The link kinds the current pattern actually sets -- so their buttons show as
-// "active" whenever the pattern includes that event, not just while it plays.
-// (An empty pattern, or one with none of a kind, leaves that button plain.)
+// A link button highlights only while the pattern is PLAYING and that kind is
+// firing at the playhead -- a deadzone for the whole of its block, a drop/nudge
+// for a short window around its pulse (wide enough to catch at the snapshot
+// cadence). Not while it is merely present in a stopped pattern, and not from a
+// press (that is the separate transient flash). It returns to plain as the
+// playhead leaves the event.
 const activeLinkKinds = computed(() => {
   const s = new Set<string>();
-  for (const l of pattern.value?.links ?? []) s.add(l.kind);
+  const run = patRun.value;
+  if (run?.state !== 'running') return s;
+  for (const l of props.client.policy.pattern?.links ?? []) {
+    const window = Math.max(l.dur_sec ?? 0, 1);
+    if (run.pos_sec >= l.at_sec && run.pos_sec <= l.at_sec + window) s.add(l.kind);
+  }
   return s;
 });
 const downCap = computed(() => {
@@ -607,6 +622,14 @@ function fmtBytes(n: number): string {
       />
       <span class="link-hint meta">watch <b>assoc</b> above reset when it lands</span>
     </div>
+    <!-- A long blackout does not rebuffer, it evicts: the device leaves this AP
+         and boa can no longer see or shape it until it comes back. -->
+    <p v-if="linkControl && client.present && deadzoneRisky" class="meta dz-warn">
+      A deadzone this long can make the device give up on this Wi-Fi and switch
+      to another network (iOS around 3s). It then leaves boa entirely — not just
+      shown offline, but gone: no traffic and nothing to condition until it
+      rejoins the Pi's Wi-Fi on its own.
+    </p>
 
     <!-- The timeline sits directly under the controls that author it. The
          sliders above ARE the keyframe editor, and putting the playhead
@@ -713,6 +736,10 @@ function fmtBytes(n: number): string {
    editable, but it must still be readable -- the whole point is watching it
    move. Dimmed, not hidden. */
 .swept-note {
+  color: var(--warn);
+  margin: 6px 0 0;
+}
+.dz-warn {
   color: var(--warn);
   margin: 6px 0 0;
 }
