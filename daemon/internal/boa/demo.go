@@ -326,7 +326,8 @@ func (e *Engine) demoTick() {
 			// No kernel here to ask, so the control is offered: demo exists to
 			// develop the interface, and a permanently disabled control cannot
 			// be developed against.
-			LossBurst: true,
+			LinkControl: true,
+			LossBurst:   true,
 		},
 		Notices: []Notice{
 			{"error", "DEMO MODE - these clients are synthetic. No traffic is being conditioned."},

@@ -310,6 +310,11 @@ export interface Capabilities {
   /** True only when the iperf3 server is LISTENING, not merely installed. */
   iperf: boolean;
   iperf_port: number;
+  /** True when per-client link events (deauth/disassoc) can be driven -- i.e.
+   *  hostapd is serving the AP and exposing its control socket. False on the
+   *  onboard/NetworkManager radio, so the link actions are hidden rather than
+   *  offered as dead buttons. */
+  link_control: boolean;
   /** True when this kernel's netem accepts a Gilbert-Elliott loss model,
    *  asked at startup rather than assumed. False disables the burst control
    *  with `loss_burst_note` as the reason: a control that says "bursty" while

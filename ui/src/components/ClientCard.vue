@@ -12,6 +12,9 @@ const props = defineProps<{
   client: Client;
   series?: Series;
   ntopngPort?: number;
+  /** Whether per-client link events (deauth/disassoc) can be driven right now
+   *  -- true only when hostapd serves the AP. Gates the drop/nudge buttons. */
+  linkControl?: boolean;
   collapsed?: boolean;
   /** Chart settings, shared by every card so devices stay comparable. */
   chart: ChartPrefs;
@@ -24,6 +27,8 @@ const emit = defineEmits<{
   label: [string];
   reset: [];
   forget: [];
+  linkDrop: [];
+  linkNudge: [];
   toggle: [];
   addSub: [];
   removeSub: [string];
@@ -435,6 +440,21 @@ function fmtBytes(n: number): string {
           target="_blank" rel="noopener"
           :title="`Live flows for ${client.ip} in ntopng, labelled by application`"
         >flows ↗</a>
+      </template>
+
+      <!-- Group A link events: act on the Wi-Fi association, not the packets.
+           drop = deauth (link down, client reconnects); nudge = disassoc, the
+           softer form. Only when hostapd serves the AP (caps.link_control) and
+           the client is actually associated. -->
+      <template v-if="linkControl && client.present">
+        <button
+          class="ghost" @click="emit('linkDrop')"
+          title="Deauthenticate: take this client's Wi-Fi link down; it reconnects on its own"
+        >drop</button>
+        <button
+          class="ghost" @click="emit('linkNudge')"
+          title="Disassociate: the softer 802.11 disconnect, usually a quicker recovery than drop"
+        >nudge</button>
       </template>
 
       <span v-if="conditioned" class="badge" style="color: var(--warn)">

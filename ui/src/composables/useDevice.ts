@@ -175,7 +175,21 @@ export function useDevice() {
     return send(`/api/devices/${mac}`, 'DELETE', undefined);
   }
 
+  // Group A per-client link events. Unlike shaping these act on the Wi-Fi
+  // association: deauth takes the link down (the client reconnects), disassoc
+  // is the softer form. reason is an optional 802.11 reason code. See #135.
+  function linkDeauth(mac: string, reason?: number) {
+    const q = reason ? `?reason=${reason}` : '';
+    return send(`/api/devices/${mac}/link/deauth${q}`, 'POST', undefined);
+  }
+  function linkDisassoc(mac: string, reason?: number) {
+    const q = reason ? `?reason=${reason}` : '';
+    return send(`/api/devices/${mac}/link/disassoc${q}`, 'POST', undefined);
+  }
+
   return {
+    linkDeauth,
+    linkDisassoc,
     writing,
     conflict,
     patchShape,

@@ -56,6 +56,8 @@ func (a *API) Routes() *http.ServeMux {
 	mux.HandleFunc("PUT /api/devices/{mac}/ladders/{service}", a.putLadder)
 	mux.HandleFunc("DELETE /api/devices/{mac}/ladders/{service}", a.deleteLadder)
 	mux.HandleFunc("POST /api/devices/{mac}/reset", a.resetDevice)
+	mux.HandleFunc("POST /api/devices/{mac}/link/deauth", a.linkDeauth)
+	mux.HandleFunc("POST /api/devices/{mac}/link/disassoc", a.linkDisassoc)
 	mux.HandleFunc("DELETE /api/devices/{mac}", a.forgetDevice)
 	mux.Handle("/", cacheHeaders(http.FileServer(http.FS(a.ui))))
 	return mux
@@ -1254,6 +1256,47 @@ func (a *API) resetDevice(w http.ResponseWriter, r *http.Request) {
 		p.Sub[i].Enabled = false
 	}
 	a.commit(w, p)
+}
+
+func (a *API) linkDeauth(w http.ResponseWriter, r *http.Request)   { a.linkEvent(w, r, "deauth") }
+func (a *API) linkDisassoc(w http.ResponseWriter, r *http.Request) { a.linkEvent(w, r, "disassoc") }
+
+// linkEvent drives a Group A per-client link event (deauth or disassoc) through
+// hostapd. It is a POST with no body; an optional ?reason=<N> supplies an IEEE
+// 802.11 reason code. Unlike shaping, this acts on the client's ASSOCIATION,
+// not its packets -- so it is refused rather than silently ignored when hostapd
+// is not the thing serving the AP. See issue #135.
+func (a *API) linkEvent(w http.ResponseWriter, r *http.Request, action string) {
+	if !a.e.LinkControlAvailable() {
+		writeErr(w, http.StatusServiceUnavailable,
+			"link control unavailable: hostapd is not serving the AP (onboard radio, or ctrl_interface missing)")
+		return
+	}
+	mac := normMAC(r.PathValue("mac"))
+	if !validMAC(mac) {
+		writeErr(w, http.StatusBadRequest, "not a MAC address: "+mac)
+		return
+	}
+	reason := 0
+	if q := strings.TrimSpace(r.URL.Query().Get("reason")); q != "" {
+		n, err := strconv.Atoi(q)
+		if err != nil || n < 1 || n > 65535 {
+			writeErr(w, http.StatusBadRequest, "reason must be an 802.11 reason code, 1-65535")
+			return
+		}
+		reason = n
+	}
+	var err error
+	if action == "disassoc" {
+		err = a.e.LinkDisassoc(mac, reason)
+	} else {
+		err = a.e.LinkDeauth(mac, reason)
+	}
+	if err != nil {
+		writeErr(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"mac": mac, "action": action, "reason": reason})
 }
 
 // forgetDevice removes a device's stored configuration entirely.

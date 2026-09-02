@@ -432,6 +432,12 @@ type Capabilities struct {
 	// It measures the unshaped link only; see the unit file for why.
 	Iperf     bool `json:"iperf"`
 	IperfPort int  `json:"iperf_port"`
+	// LinkControl reports whether per-client link events (deauth/disassoc) can
+	// be driven -- i.e. hostapd is serving the AP and exposing its control
+	// socket. False on the onboard/NetworkManager radio, which offers no such
+	// control, so the UI hides the actions rather than offer a dead button.
+	// See hostapd.go and issue #135.
+	LinkControl bool `json:"link_control"`
 	// NamesLearned is how many address-to-name bindings mDNS has yielded, and
 	// NamesByMAC how many of the MAC-keyed bindings that actually label a
 	// client. Zero means nothing is being heard; a healthy number while a

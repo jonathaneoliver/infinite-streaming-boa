@@ -549,6 +549,11 @@ install -D -m 0600 /dev/stdin "$ROOT/etc/hostapd/boa.conf" <<EOF
 interface=wlan-usb
 bridge=br-lan
 driver=nl80211
+# Control socket for per-client link events (deauth/disassoc); the daemon
+# attaches to it (see daemon/internal/boa/hostapd.go, issue #135). Without this
+# line neither hostapd_cli nor the daemon can drive the AP.
+ctrl_interface=/var/run/hostapd
+ctrl_interface_group=0
 country_code=${AP_COUNTRY}
 ieee80211d=1
 hw_mode=${HW_MODE}
