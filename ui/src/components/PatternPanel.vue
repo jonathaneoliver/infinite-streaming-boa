@@ -39,16 +39,16 @@ import type { Keyframe, Ladder, LinkEvent, Pattern, PatternView, Shape } from '@
 import { EXTRA_IMPAIRMENTS, PATTERN_TEMPLATES, RATE_MAX, posToRate, rateToPos } from '@/types';
 import {
   addStep,
-  decompose,
   decomposeAll,
+  durOf,
   moveStep,
   recompose,
   removeStep,
   setStepValue,
   snap as snapSec,
-  withField,
   type FieldKey,
   type Step,
+  type Timelines,
 } from '@/lib/pattern';
 import { useExtras } from '@/composables/useExtras';
 import PatternLibrary from './PatternLibrary.vue';
@@ -263,15 +263,66 @@ function mutate(fn: (p: Pattern) => void) {
   emit('update', next);
 }
 
-/** Commit a recomposed keyframe list (a per-field edit). */
-function commit(newKeys: Keyframe[]) {
-  if (!props.pattern) return;
-  emit('update', { ...props.pattern, keys: newKeys });
+/*
+ * The editor's own per-field working state.
+ *
+ * The daemon plays a recomposed keyframe list, which prunes any keyframe where
+ * no field changes -- so a marker placed but not yet shaped (its value still
+ * equal to its neighbour) would vanish on the round trip. Holding the step
+ * timelines here keeps it: the marker lives in `working`, and the pruned
+ * keyframes are only what we emit to the daemon.
+ */
+const working = ref<Timelines>(decomposeAll(props.pattern?.keys ?? []));
+
+const SHAPE_JSON_FIELDS = [
+  'rate_mbps', 'delay_ms', 'jitter_ms', 'loss_pct', 'loss_burst', 'reorder_pct', 'corrupt_pct',
+] as const;
+
+function sameKeys(a: Keyframe[], b: Keyframe[]): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    if (a[i].at_sec !== b[i].at_sec) return false;
+    for (const d of ['down', 'up'] as const)
+      for (const f of SHAPE_JSON_FIELDS)
+        if ((a[i][d][f] ?? 0) !== (b[i][d][f] ?? 0)) return false;
+  }
+  return true;
 }
+
+// Re-derive working only on a GENUINE external change (a load, a template): the
+// echo of our own edit round-trips to exactly what working recomposes to, and
+// re-deriving from that would drop the unshaped markers the prune removed.
+watch(
+  () => props.pattern?.keys,
+  () => {
+    const incoming = props.pattern?.keys ?? [];
+    if (!sameKeys(recompose(working.value, durOf(props.pattern)), incoming)) {
+      working.value = decomposeAll(incoming);
+    }
+  },
+  { deep: true },
+);
 
 /** The step timeline for a lane in the direction on screen. */
 function laneSteps(lane: FieldKey): Step[] {
-  return props.pattern ? decompose(keys.value, dir.value, lane) : [];
+  return working.value[dir.value][lane];
+}
+
+/** The latest transition on any lane -- the natural end before any trailing hold. */
+function latestTransition(): number {
+  let latest = 0;
+  for (const d of ['down', 'up'] as const)
+    for (const f of SHAPE_JSON_FIELDS)
+      for (const s of working.value[d][f]) latest = Math.max(latest, s.at_sec);
+  return latest;
+}
+
+/** Recompose the working timelines and emit them as the pattern's keyframes.
+ *  The end holds at the current length unless a transition ran past it. */
+function commitWorking() {
+  if (!props.pattern) return;
+  const end = Math.max(latestTransition(), durOf(props.pattern));
+  emit('update', { ...props.pattern, keys: recompose(working.value, end) });
 }
 
 const stackEl = ref<HTMLElement | null>(null);
@@ -336,20 +387,20 @@ const fieldDrag = ref<{
 const DRAG_SLOP_PX = 3;
 
 function startFieldDrag(lane: FieldKey, i: number, e: PointerEvent) {
-  if (props.run || i === 0) return;
+  // Left button only, and never the pinned first marker: a right-click here is
+  // a delete, and letting it capture the pointer would swallow that.
+  if (props.run || i === 0 || e.button !== 0) return;
   try {
     (e.target as HTMLElement).setPointerCapture(e.pointerId);
   } catch {
     /* no active pointer; the drag still tracks via bubbled events */
   }
-  // Read alt once, at the press: sampling per move would let the gesture change
-  // meaning halfway through, so half a drag would ripple and half would not.
-  fieldDrag.value = { lane, i, span: viewSpan.value, x0: e.clientX, moved: false, penned: e.altKey };
+  fieldDrag.value = { lane, i, span: viewSpan.value, x0: e.clientX, moved: false, penned: false };
 }
 
 function onFieldDrag(e: PointerEvent) {
   const d = fieldDrag.value;
-  if (!d || !props.pattern) return;
+  if (!d) return;
   const steps = laneSteps(d.lane);
   const cur = steps[d.i];
   // The step can go away underneath a drag (a template replacing the pattern);
@@ -358,11 +409,13 @@ function onFieldDrag(e: PointerEvent) {
   if (!d.moved && Math.abs(e.clientX - d.x0) < DRAG_SLOP_PX) return;
   if (!d.moved) emit('select', cur.at_sec);
   d.moved = true;
-  // Only a field's last transition may run past the ruler; the rest are penned
-  // in by their own neighbours.
+  // Only a field's last transition may run past the ruler.
   const at = timeAt(e.clientX, d.span, d.i === steps.length - 1);
   if (at !== cur.at_sec) {
-    commit(withField(props.pattern, dir.value, d.lane, (st) => moveStep(st, d.i, at, d.penned, maxPatternSec)));
+    // Always clamp between this field's own neighbours: a marker never crosses
+    // the one to its left or right.
+    moveStep(steps, d.i, at, true, maxPatternSec);
+    commitWorking();
     scrub.value = at;
   }
 }
@@ -381,23 +434,35 @@ function endFieldDrag(e: PointerEvent) {
 let suppressClick = false;
 
 /**
- * Add a transition to a lane at the clicked time (right-click), holding the
- * value there so adding one changes nothing until it is shaped -- the way the
- * link lanes add on click. Right-click, not left, because left-drag on a value
- * lane already sets the value.
+ * Add a transition to a lane at the clicked time, holding the value there so
+ * adding one changes nothing until it is shaped -- the way the link lanes add
+ * on click. It survives in `working` even though the daemon keyframes prune it.
  */
 function addField(lane: FieldKey, e: MouseEvent) {
-  if (props.run || !props.pattern) return;
+  if (props.run) return;
   const at = timeAt(e.clientX, renderSpan.value);
   if (at <= 0) return; // 0 is the field's starting value, always present
-  commit(withField(props.pattern, dir.value, lane, (st) => addStep(st, at)));
+  addStep(working.value[dir.value][lane], at);
+  commitWorking();
   emit('select', at);
+}
+
+/** A plain click on a lane adds a point there, like the link lanes. A DRAG that
+ * set a value ends in a click too, so it arms suppressClick and this consumes
+ * it -- otherwise every value edit would also drop a marker where it finished. */
+function clickLane(lane: FieldKey, e: MouseEvent) {
+  if (suppressClick) {
+    suppressClick = false;
+    return;
+  }
+  addField(lane, e);
 }
 
 /** Remove a field's transition. Its step at 0 is the starting value and stays. */
 function removeField(lane: FieldKey, i: number) {
-  if (props.run || i === 0 || !props.pattern) return;
-  commit(withField(props.pattern, dir.value, lane, (st) => removeStep(st, i)));
+  if (props.run || i === 0) return;
+  removeStep(working.value[dir.value][lane], i);
+  commitWorking();
   emit('select', null);
 }
 
@@ -491,14 +556,18 @@ function normDelta(dyPx: number, el: HTMLElement): number {
 }
 
 function startVDrag(lane: LaneKey, e: PointerEvent) {
-  if (props.run) return;
+  if (props.run || e.button !== 0) return;
   const at = stepGoverning(lane, e.clientX);
   try {
     (e.target as HTMLElement).setPointerCapture(e.pointerId);
   } catch {
     /* no active pointer; the drag still tracks via bubbled events */
   }
-  const ceil = laneMax(lane) || LANE_START_CEIL[lane];
+  // Twice the current max (or the start ceiling) so there is always headroom to
+  // drag UP -- a lane whose largest value is 1 ms must still reach further than
+  // 1 ms in one gesture. The dragged lane renders against this pinned ceiling
+  // (see norm) so the marker tracks the cursor.
+  const ceil = Math.max(laneMax(lane) * 2, LANE_START_CEIL[lane]);
   const cur = laneSteps(lane).find((s) => Math.abs(s.at_sec - at) < 1e-9);
   vdrag.value = {
     lane, at, ceil,
@@ -571,7 +640,8 @@ function setLaneValue(lane: LaneKey, at: number, n: number, ceil: number) {
   } else {
     value = Math.round(Math.min(n * ceil, 10000));
   }
-  commit(withField(props.pattern, dir.value, lane, (st) => setStepValue(st, at, value)));
+  setStepValue(working.value[dir.value][lane], at, value);
+  commitWorking();
 }
 
 /*
@@ -650,7 +720,7 @@ type LinkDrag = { i: number; mode: 'move' | 'resizeL' | 'resizeR'; grabSec: numb
 const linkDrag = ref<LinkDrag | null>(null);
 
 function startLinkMove(i: number, e: PointerEvent) {
-  if (props.run) return;
+  if (props.run || e.button !== 0) return;
   try {
     (e.target as HTMLElement).setPointerCapture(e.pointerId);
   } catch {
@@ -659,7 +729,7 @@ function startLinkMove(i: number, e: PointerEvent) {
   linkDrag.value = { i, mode: 'move', grabSec: timeAt(e.clientX, renderSpan.value) - links.value[i].at_sec };
 }
 function startLinkResize(i: number, side: 'l' | 'r', e: PointerEvent) {
-  if (props.run) return;
+  if (props.run || e.button !== 0) return;
   try {
     (e.target as HTMLElement).setPointerCapture(e.pointerId);
   } catch {
@@ -672,22 +742,38 @@ function onLinkDrag(e: PointerEvent) {
   if (!d) return;
   const t = timeAt(e.clientX, renderSpan.value, true);
   mutate((p) => {
-    const ev = (p.links ?? [])[d.i];
+    const all = p.links ?? [];
+    const ev = all[d.i];
     if (!ev) return;
     // deadzone must stay >= 1s; drop/nudge may shrink to a pulse (0).
     const min = ev.kind === 'deadzone' ? 1 : 0;
     const snap = (x: number) => Math.round(x * 2) / 2; // 0.5s grid
+    // Neighbours of the same kind bound the block: an edge or a move can never
+    // cross the block before or after it on its own lane.
+    const same = all
+      .map((x, idx) => ({ x, idx }))
+      .filter((o) => o.x.kind === ev.kind)
+      .sort((a, b) => a.x.at_sec - b.x.at_sec);
+    const pos = same.findIndex((o) => o.idx === d.i);
+    const prev = pos > 0 ? same[pos - 1].x : null;
+    const next = pos >= 0 && pos < same.length - 1 ? same[pos + 1].x : null;
+    const lo = prev ? prev.at_sec + evVisSec(prev) : 0;
+    const nextStart = next ? next.at_sec : Infinity;
     if (d.mode === 'move') {
-      ev.at_sec = Math.max(0, t - d.grabSec);
+      const width = evVisSec(ev);
+      const hi = next ? nextStart - width : Infinity;
+      ev.at_sec = Math.max(lo, Math.min(snap(t - d.grabSec), Math.max(lo, hi)));
     } else if (d.mode === 'resizeL') {
-      // The rising edge is a keyframe: move the start, hold the falling edge.
+      // The rising edge moves, holding the falling edge; it stops at the prev block.
       const endT = ev.at_sec + (ev.dur_sec ?? 0);
-      const s = Math.max(0, Math.min(snap(t), endT - min));
+      const s = Math.max(lo, Math.min(snap(t), endT - min));
       ev.at_sec = s;
       ev.dur_sec = Math.max(min, snap(endT - s));
     } else {
-      // The falling edge is a keyframe: move the end, hold the start.
-      ev.dur_sec = Math.max(min, snap(t - ev.at_sec));
+      // The falling edge moves, holding the start; it stops at the next block.
+      const wanted = Math.max(min, snap(t - ev.at_sec));
+      const room = nextStart - ev.at_sec;
+      ev.dur_sec = Math.min(wanted, room);
     }
   });
 }
@@ -790,19 +876,10 @@ function rename(name: string) {
  * asked for a longer end; shortening is refused past the latest transition on
  * any lane, which would otherwise silently drop transitions off the end.
  */
-function latestTransition(): number {
-  const tl = decomposeAll(keys.value);
-  let latest = 0;
-  for (const d of ['down', 'up'] as const)
-    for (const f of Object.keys(tl[d]) as (keyof (typeof tl)['down'])[])
-      for (const s of tl[d][f]) latest = Math.max(latest, s.at_sec);
-  return latest;
-}
-
 function setLength(sec: number) {
   if (!props.pattern || keys.value.length < 2) return;
   const end = Math.max(snapSec(sec), latestTransition());
-  commit(recompose(decomposeAll(keys.value), end));
+  emit('update', { ...props.pattern, keys: recompose(working.value, end) });
 }
 
 /**
@@ -815,14 +892,12 @@ function setLength(sec: number) {
 function closeLoop() {
   if (!props.pattern) return;
   const end = dur.value;
-  const tl = decomposeAll(keys.value);
   for (const d of ['down', 'up'] as const)
-    for (const f of Object.keys(tl[d]) as (keyof (typeof tl)['down'])[]) {
-      const steps = tl[d][f];
-      if (!steps.length) continue;
-      setStepValue(steps, end, steps[0].value);
+    for (const f of SHAPE_JSON_FIELDS) {
+      const steps = working.value[d][f];
+      if (steps.length) setStepValue(steps, end, steps[0].value);
     }
-  commit(recompose(tl, end));
+  commitWorking();
 }
 
 function useTemplate(name: string) {
@@ -948,8 +1023,10 @@ const wifiUnused = computed(() => links.value.length === 0);
  */
 function norm(v: number, lane: LaneKey): number {
   if (lane === 'rate_mbps') return v <= 0 ? 1 : rateToPos(v) / 100;
-  const max = laneMax(lane);
-  return max > 0 ? v / max : 0;
+  // While this lane is being dragged, scale against the pinned headroom ceiling
+  // so the marker tracks the cursor instead of the live max chasing it.
+  const max = vdrag.value?.lane === lane ? vdrag.value.ceil : laneMax(lane);
+  return max > 0 ? Math.min(v / max, 1) : 0;
 }
 
 function yOf(v: number, lane: LaneKey): number {
@@ -1125,12 +1202,12 @@ const status = computed(() => {
         <div
           v-for="l in LANES" :key="l.key" class="lane"
           :class="{ grab: !run, dragging: vdrag?.lane === l.key }"
-          :title="run ? '' : `drag up and down to set ${l.label}; double-click to add a point`"
+          :title="run ? '' : `click to add a ${l.label} point; drag up and down to set it`"
           @pointerdown.stop="startVDrag(l.key, $event)"
           @pointermove="onLaneMove"
           @pointerup="onLaneUp"
           @pointercancel="onLaneUp"
-          @dblclick.prevent.stop="addField(l.key, $event)"
+          @click="clickLane(l.key, $event)"
           @contextmenu.prevent.stop="addField(l.key, $event)"
         >
           <svg :viewBox="`0 0 1000 ${VB}`" preserveAspectRatio="none">
@@ -1273,11 +1350,11 @@ const status = computed(() => {
           Each lane is its own timeline. Drag its marker to move that field's
           transition — nothing on another lane moves, and nothing blocks it;
           hold alt to slide it between its own neighbours instead of rippling
-          the ones after it. Drag a lane up and down to set its value;
-          double-click a lane to add a point, right-click a marker to delete
-          one. Click the timeline to pick a moment, then the sliders above set
-          every field at once. Drag a field's last transition into the shaded
-          space, or set the length below, to make the pattern longer.
+          the ones after it. Click a lane to add a point, then drag it up and
+          down to set its value; right-click a marker to delete one. Or click
+          the timeline and let the sliders above set every field at that moment
+          at once. Drag a field's last transition into the shaded space, or set
+          the length below, to make the pattern longer.
         </span>
       </div>
 
