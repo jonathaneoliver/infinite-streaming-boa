@@ -153,12 +153,20 @@ function fireDeadzone() {
 const sweeping = computed(() => props.client.sweep?.state === 'running');
 const patRun = computed(() => props.client.pattern_run);
 const playing = computed(() => patRun.value?.state === 'running');
-// The link kinds the current pattern actually sets -- so their buttons show as
-// "active" whenever the pattern includes that event, not just while it plays.
-// (An empty pattern, or one with none of a kind, leaves that button plain.)
+// A link button highlights only while the pattern is PLAYING and that kind is
+// firing at the playhead -- a deadzone for the whole of its block, a drop/nudge
+// for a short window around its pulse (wide enough to catch at the snapshot
+// cadence). Not while it is merely present in a stopped pattern, and not from a
+// press (that is the separate transient flash). It returns to plain as the
+// playhead leaves the event.
 const activeLinkKinds = computed(() => {
   const s = new Set<string>();
-  for (const l of pattern.value?.links ?? []) s.add(l.kind);
+  const run = patRun.value;
+  if (run?.state !== 'running') return s;
+  for (const l of props.client.policy.pattern?.links ?? []) {
+    const window = Math.max(l.dur_sec ?? 0, 1);
+    if (run.pos_sec >= l.at_sec && run.pos_sec <= l.at_sec + window) s.add(l.kind);
+  }
   return s;
 });
 const downCap = computed(() => {
