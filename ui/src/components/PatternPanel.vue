@@ -702,6 +702,13 @@ function linkLanePath(kind: string): string {
 function addLink(kind: LinkEvent['kind'], e: MouseEvent) {
   if (props.run) return;
   const at = timeAt(e.clientX, renderSpan.value);
+  const width = kind === 'deadzone' ? DEFAULT_DEADZONE_SEC : PULSE_VIS_SEC;
+  // Refuse to stack a block on an existing one of the same kind: overlapping
+  // blocks pile up into something you can neither read nor click to delete.
+  const clash = (props.pattern?.links ?? []).some(
+    (l) => l.kind === kind && at < l.at_sec + evVisSec(l) && at + width > l.at_sec,
+  );
+  if (clash) return;
   mutate((p) => {
     const ev: LinkEvent = { at_sec: at, kind };
     if (kind === 'deadzone') ev.dur_sec = DEFAULT_DEADZONE_SEC;
@@ -1238,7 +1245,7 @@ const status = computed(() => {
         <div
           v-for="ll in shownLinkLanes" :key="ll.kind"
           class="lane linklane" :class="{ grab: !run }"
-          :title="run ? '' : `click to add a ${ll.label}; drag it to move; drag its right edge to lengthen`"
+          :title="run ? '' : `click to add a ${ll.label}; drag it to move; right-click it to delete`"
           @click="addLink(ll.kind, $event)"
           @pointermove="onLinkDrag"
           @pointerup="endLinkDrag"
@@ -1251,8 +1258,10 @@ const status = computed(() => {
             v-for="{ ev, i } in laneEvents(ll.kind)" :key="i"
             class="linkblock" :class="ll.kind"
             :style="{ left: evLeftPct(ev) + '%', width: evWidthPct(ev) + '%' }"
+            :title="run ? '' : 'drag to move, drag an edge to resize, right-click to delete'"
             @pointerdown.stop="startLinkMove(i, $event)"
             @click.stop
+            @contextmenu.prevent.stop="removeLink(i)"
           >
             <span
               class="kf l" title="drag the rising edge"
@@ -1347,14 +1356,14 @@ const status = computed(() => {
       </div>
       <div v-else class="sel">
         <span class="meta">
-          Each lane is its own timeline. Drag its marker to move that field's
-          transition — nothing on another lane moves, and nothing blocks it;
-          hold alt to slide it between its own neighbours instead of rippling
-          the ones after it. Click a lane to add a point, then drag it up and
-          down to set its value; right-click a marker to delete one. Or click
-          the timeline and let the sliders above set every field at that moment
-          at once. Drag a field's last transition into the shaded space, or set
-          the length below, to make the pattern longer.
+          Each lane is its own timeline. Drag a marker to move that field's
+          transition — nothing on another lane moves, and it stops at its own
+          neighbours rather than crossing them. Click a lane to add a point,
+          then drag it up and down to set its value; right-click a marker (or a
+          drop/nudge/deadzone block) to delete it. Or click the timeline and let
+          the sliders above set every field at that moment at once. Drag a
+          field's last transition into the shaded space, or set the length
+          below, to make the pattern longer.
         </span>
       </div>
 
