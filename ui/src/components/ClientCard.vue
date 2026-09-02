@@ -602,7 +602,9 @@ function fmtBytes(n: number): string {
          and not tied to a direction -- so they get their own section under both
          directions' controls rather than living inside either. Only when
          hostapd serves the AP (caps.link_control) and the client is present. -->
-    <div v-if="linkControl && client.present" class="link-events">
+    <!-- Wi-Fi only: drop/nudge/deadzone act on the 802.11 association, which a
+         wired client on lan0 does not have. -->
+    <div v-if="linkControl && client.present && client.medium === 'wifi'" class="link-events">
       <span class="link-label">Wi-Fi</span>
       <button
         class="ghost" :class="{ flash: linkFlash === 'drop', active: activeLinkKinds.has('drop') }" @click="fireLink('drop')"
@@ -624,7 +626,7 @@ function fmtBytes(n: number): string {
     </div>
     <!-- A long blackout does not rebuffer, it evicts: the device leaves this AP
          and boa can no longer see or shape it until it comes back. -->
-    <p v-if="linkControl && client.present && deadzoneRisky" class="meta dz-warn">
+    <p v-if="linkControl && client.present && client.medium === 'wifi' && deadzoneRisky" class="meta dz-warn">
       A deadzone this long can make the device give up on this Wi-Fi and switch
       to another network (iOS around 3s). It then leaves boa entirely — not just
       shown offline, but gone: no traffic and nothing to condition until it
