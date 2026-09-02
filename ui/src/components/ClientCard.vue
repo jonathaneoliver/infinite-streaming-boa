@@ -584,7 +584,7 @@ function fmtBytes(n: number): string {
          directions' controls rather than living inside either. Only when
          hostapd serves the AP (caps.link_control) and the client is present. -->
     <div v-if="linkControl && client.present" class="link-events">
-      <span class="link-label">Link</span>
+      <span class="link-label">Wi-Fi</span>
       <button
         class="ghost" :class="{ flash: linkFlash === 'drop', active: activeLinkKinds.has('drop') }" @click="fireLink('drop')"
         title="Deauthenticate: take this client's Wi-Fi link down; it reconnects on its own"
