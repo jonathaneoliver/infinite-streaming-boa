@@ -221,6 +221,40 @@ player does *through* a transition is the question this box exists to answer.
   policy: the cap line on the chart follows the timeline, and the controls
   report rather than accept input.
 
+#### Wi-Fi link events
+
+Everything above conditions a client's **packets** — the association stays up
+throughout. boa can also condition the **link itself**, which is a different
+thing a device reacts to: an iPhone's path monitor fires on a link drop, not on
+5% loss, and a player resets its throughput estimate when the connection goes
+down rather than when packets are merely late. netem cannot express this — it
+damages packets, never link state.
+
+- Three per-client events, keyed by **MAC**: **drop** (deauthenticate), the
+  harder disconnect; **nudge** (disassociate), the softer one, usually a quicker
+  recovery; and **deadzone**, a held outage for a chosen duration — long enough
+  to drain a player's buffer and force a rebuffer, which a single drop is not. A
+  deadzone denies the MAC for its length so the client cannot re-associate until
+  it lifts, rather than a repeated deauth it could slip between.
+- They are driven from the device card as **one-shot** buttons, or scheduled on
+  a **pattern lane** beside rate and loss — a deauth at t=120s is exactly
+  reproducible, which no packet impairment is, and is the specific event this
+  exists for.
+- They require the **USB radio running the AP through hostapd**. The onboard
+  radio (NetworkManager) exposes no control interface, so the controls are
+  hidden there rather than failing silently — the one impairment that depends on
+  which radio is serving.
+- **This is the first time boa acts observably *on* a client.** The rest of the
+  box is invisible to the device under test; a deauth is not. §6.1's "nothing is
+  probed, scanned or injected" is scoped to discovery and still holds — link
+  events are a deliberate, named exception, put on the record here so the
+  contrast is not a surprise.
+- **A long deadzone can evict rather than pause.** Past a few seconds of blackout
+  a phone gives up on the AP and switches to another network (iOS around 3s). It
+  is then off boa's Wi-Fi entirely: not shown offline, but gone — no traffic to
+  see and nothing to condition until it rejoins this AP on its own. The interface
+  warns once a deadzone is set long enough to risk it.
+
 ### 6.3 Enforcement
 
 - Both directions are shaped on a **true egress queue**: downlink on the
