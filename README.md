@@ -102,6 +102,7 @@ impairment sits** — and therefore what has to cooperate for it to work.
 | **boa** | a transparent bridge in the path | yes | yes | a Pi 5 |
 | [Network Link Conditioner](https://nshipster.com/network-link-conditioner/) | on the Mac or iOS device under test | no — macOS and iOS only | it *is* the device | free with Xcode's Additional Tools |
 | `tc` / `netem` by hand | a Linux host, or a router you assemble yourself | only via that router | you write the filters | free |
+| [WANem](https://wanem.sourceforge.net/) | a Linux VM/live-CD you route traffic through | yes, as the gateway | via source/destination rules | free |
 | [Toxiproxy](https://github.com/Shopify/toxiproxy) | between an application and its backend | no | per proxy, not per device | free |
 | [Charles](https://www.charlesproxy.com/) / Proxyman throttling | a proxy the device is pointed at | only if it honours a proxy and a custom CA | per proxied device | commercial licence |
 | [pfSense / OPNsense limiters](https://docs.netgate.com/pfsense/en/latest/trafficshaper/limiters.html) | your router | yes | yes, via source/destination-masked limiters | free, plus a box |
@@ -113,8 +114,10 @@ cooperation of some kind. Network Link Conditioner needs to run on the device,
 which rules out anything you cannot install on, and conditions your debugging
 tools along with the app. Toxiproxy needs the application pointed at it. Charles
 needs the device to honour a proxy and trust an installed CA, which streaming
-apps increasingly refuse. pfSense and a hand-rolled `tc` router both work, and
-both make the box a hop with its own subnet and its own DHCP. boa asks for nothing: cable it in, and a device keeps
+apps increasingly refuse. pfSense, a WANem appliance, and a hand-rolled `tc`
+router all work — WANem is the closest kin, the same netem engine behind a web
+interface — and all make the box a hop with its own subnet and its own DHCP,
+which the device under test has to be re-homed behind. boa asks for nothing: cable it in, and a device keeps
 its address, its DHCP lease, its mDNS discovery, and its view of the network.
 That is the whole design, and the rest of this README is the consequences of it.
 
