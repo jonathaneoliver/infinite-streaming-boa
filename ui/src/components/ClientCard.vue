@@ -103,6 +103,29 @@ const signalClass = computed(() => {
   return 'bad';
 });
 
+// How long the station has been continuously associated. It resets to ~0 when
+// the link drops and re-associates, so after a drop/nudge it visibly falls to a
+// few seconds -- which is the ground-truth confirmation the event landed.
+const connectedLabel = computed(() => {
+  const s = props.client.station?.connected_sec ?? 0;
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m ${s % 60}s`;
+  return `${Math.floor(m / 60)}h ${m % 60}m`;
+});
+
+// Transient acknowledgement that a link event was sent. The lasting proof is
+// the connected-time above resetting; this just confirms the click dispatched.
+const linkFlash = ref<'drop' | 'nudge' | null>(null);
+let linkFlashTimer: ReturnType<typeof setTimeout> | undefined;
+function fireLink(kind: 'drop' | 'nudge') {
+  if (kind === 'drop') emit('linkDrop');
+  else emit('linkNudge');
+  linkFlash.value = kind;
+  clearTimeout(linkFlashTimer);
+  linkFlashTimer = setTimeout(() => (linkFlash.value = null), 1400);
+}
+
 /**
  * The downlink cap actually in force, which is NOT always the stored policy.
  *
@@ -421,6 +444,11 @@ function fmtBytes(n: number): string {
       >
         PHY {{ client.station.tx_phy_mbps.toFixed(0) }}
       </span>
+      <span
+        v-if="client.station"
+        class="meta num"
+        title="How long this device has been continuously associated. It resets when the link drops and re-associates, so it falls to a few seconds right after a drop or nudge."
+      >assoc {{ connectedLabel }}</span>
 
       <span class="spacer"></span>
 
@@ -539,14 +567,14 @@ function fmtBytes(n: number): string {
     <div v-if="linkControl && client.present" class="link-events">
       <span class="link-label">Link</span>
       <button
-        class="ghost" @click="emit('linkDrop')"
+        class="ghost" :class="{ flash: linkFlash === 'drop' }" @click="fireLink('drop')"
         title="Deauthenticate: take this client's Wi-Fi link down; it reconnects on its own"
-      >drop</button>
+      >{{ linkFlash === 'drop' ? 'sent' : 'drop' }}</button>
       <button
-        class="ghost" @click="emit('linkNudge')"
+        class="ghost" :class="{ flash: linkFlash === 'nudge' }" @click="fireLink('nudge')"
         title="Disassociate: the softer 802.11 disconnect, usually a quicker recovery than drop"
-      >nudge</button>
-      <span class="link-hint meta">acts on the Wi-Fi association, not the traffic</span>
+      >{{ linkFlash === 'nudge' ? 'sent' : 'nudge' }}</button>
+      <span class="link-hint meta">watch <b>assoc</b> above reset when it lands</span>
     </div>
 
     <!-- The timeline sits directly under the controls that author it. The

@@ -188,6 +188,11 @@ header.top .sub { color: var(--ink-faint); font-size: 13px; }
 }
 .link-events .link-label { font-weight: 600; font-size: 0.85em; }
 .link-events .link-hint { margin-left: auto; }
+.link-events .ghost.flash {
+  color: var(--warn);
+  border-color: var(--warn);
+  font-weight: 600;
+}
 
 .dir { background: var(--panel); padding: 13px 14px; min-width: 0; }
 .dir h3 {
