@@ -719,20 +719,22 @@ function evWidthPct(ev: LinkEvent): number {
 // step path so the whole stack reads as one instrument: low, rise at a block's
 // start, hold high for its width, fall at its end.
 function linkLanePath(kind: string): string {
-  if (renderSpan.value <= 0) return '';
+  if (renderSpan.value <= 0 || dur.value <= 0) return '';
   const hi = 8;
   const lo = VB - 6;
+  const end = xOf(dur.value); // stop at the loop point, like the value lanes
   const evs = laneEvents(kind)
     .map((x) => x.ev)
     .slice()
     .sort((a, b) => a.at_sec - b.at_sec);
   const d = [`M 0,${lo}`];
   for (const ev of evs) {
-    const a = xOf(ev.at_sec).toFixed(1);
-    const b = xOf(ev.at_sec + evVisSec(ev)).toFixed(1);
-    d.push(`L ${a},${lo}`, `L ${a},${hi}`, `L ${b},${hi}`, `L ${b},${lo}`);
+    const a = xOf(ev.at_sec);
+    if (a >= end) continue; // an event past the end never plays
+    const b = Math.min(xOf(ev.at_sec + evVisSec(ev)), end); // clamp to the end
+    d.push(`L ${a.toFixed(1)},${lo}`, `L ${a.toFixed(1)},${hi}`, `L ${b.toFixed(1)},${hi}`, `L ${b.toFixed(1)},${lo}`);
   }
-  d.push(`L 1000,${lo}`);
+  d.push(`L ${end.toFixed(1)},${lo}`);
   return d.join(' ');
 }
 
