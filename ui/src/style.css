@@ -176,6 +176,19 @@ header.top .sub { color: var(--ink-faint); font-size: 13px; }
 /* min-width:0 because a grid item defaults to min-width:auto -- its content
    size -- so a wide child (an SVG with an explicit width) pushes the column
    past its share and overflows the card instead of shrinking. */
+/* Link events (deauth/disassoc): a device-level section, not per-direction. */
+.link-events {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--line);
+  flex-wrap: wrap;
+}
+.link-events .link-label { font-weight: 600; font-size: 0.85em; }
+.link-events .link-hint { margin-left: auto; }
+
 .dir { background: var(--panel); padding: 13px 14px; min-width: 0; }
 .dir h3 {
   margin: 0 0 10px;

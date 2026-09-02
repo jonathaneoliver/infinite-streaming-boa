@@ -65,8 +65,14 @@ func linkCommand(verb, mac string, reason int) string {
 // socket to receive the answer, exactly as hostapd_cli does.
 func hostapdCmd(iface, cmd string) (string, error) {
 	sock := hostapdSocket(iface)
-	local := filepath.Join(os.TempDir(),
-		fmt.Sprintf("boa-hostapd-%d-%d", os.Getpid(), time.Now().UnixNano()))
+	// An ABSTRACT local socket (leading "@"), not a /tmp path. The daemon runs
+	// with systemd PrivateTmp, so a socket it creates under /tmp is invisible to
+	// hostapd -- and hostapd's reply, sent to that path, is silently dropped,
+	// which shows up only as a read timeout (and only on hardware; a host build
+	// has no PrivateTmp). Abstract sockets live in the NETWORK namespace, which
+	// the daemon and hostapd share, so the reply arrives regardless of the
+	// private /tmp. Nothing on disk, so nothing to clean up.
+	local := fmt.Sprintf("@boa-hostapd-%d-%d", os.Getpid(), time.Now().UnixNano())
 	conn, err := net.DialUnix("unixgram",
 		&net.UnixAddr{Name: local, Net: "unixgram"},
 		&net.UnixAddr{Name: sock, Net: "unixgram"})
@@ -74,7 +80,6 @@ func hostapdCmd(iface, cmd string) (string, error) {
 		return "", fmt.Errorf("hostapd control socket %s: %w", sock, err)
 	}
 	defer conn.Close()
-	defer os.Remove(local)
 
 	_ = conn.SetDeadline(time.Now().Add(2 * time.Second))
 	if _, err := conn.Write([]byte(cmd)); err != nil {

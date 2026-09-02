@@ -442,21 +442,6 @@ function fmtBytes(n: number): string {
         >flows ↗</a>
       </template>
 
-      <!-- Group A link events: act on the Wi-Fi association, not the packets.
-           drop = deauth (link down, client reconnects); nudge = disassoc, the
-           softer form. Only when hostapd serves the AP (caps.link_control) and
-           the client is actually associated. -->
-      <template v-if="linkControl && client.present">
-        <button
-          class="ghost" @click="emit('linkDrop')"
-          title="Deauthenticate: take this client's Wi-Fi link down; it reconnects on its own"
-        >drop</button>
-        <button
-          class="ghost" @click="emit('linkNudge')"
-          title="Disassociate: the softer 802.11 disconnect, usually a quicker recovery than drop"
-        >nudge</button>
-      </template>
-
       <span v-if="conditioned" class="badge" style="color: var(--warn)">
         conditioned
       </span>
@@ -545,6 +530,23 @@ function fmtBytes(n: number): string {
           @update="(s) => onShape('up', s)"
         />
       </div>
+    </div>
+
+    <!-- Group A link events: an impairment on the ASSOCIATION, not the packets,
+         and not tied to a direction -- so they get their own section under both
+         directions' controls rather than living inside either. Only when
+         hostapd serves the AP (caps.link_control) and the client is present. -->
+    <div v-if="linkControl && client.present" class="link-events">
+      <span class="link-label">Link</span>
+      <button
+        class="ghost" @click="emit('linkDrop')"
+        title="Deauthenticate: take this client's Wi-Fi link down; it reconnects on its own"
+      >drop</button>
+      <button
+        class="ghost" @click="emit('linkNudge')"
+        title="Disassociate: the softer 802.11 disconnect, usually a quicker recovery than drop"
+      >nudge</button>
+      <span class="link-hint meta">acts on the Wi-Fi association, not the traffic</span>
     </div>
 
     <!-- The timeline sits directly under the controls that author it. The
