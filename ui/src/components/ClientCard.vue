@@ -78,8 +78,12 @@ const chartProps = computed(() => ({
  * Built here instead, from one source, so the cells and the columns cannot
  * disagree.
  */
+// A FIXED name column (not a flexing fraction) so the medium badge and address
+// after it sit at the same x whether the card is folded or unfolded -- the
+// unfolded header pins the name to the same width. The slack the name used to
+// absorb goes to the address column instead.
 const foldedCols = computed(() => [
-  '30px', '14px', 'minmax(96px, 1.3fr)', '58px', 'minmax(104px, 1fr)',
+  '30px', '14px', '170px', '58px', 'minmax(104px, 1fr)',
   ...(props.chart.showDown ? ['76px', '68px'] : []),
   ...(props.chart.showUp ? ['76px', '68px'] : []),
   '38px', '92px', '56px',
@@ -446,10 +450,12 @@ function fmtBytes(n: number): string {
         @change="emit('label', ($event.target as HTMLInputElement).value)"
       />
 
+      <!-- medium, then address, then MAC -- the same order as the folded row
+           (which shows medium + address), so folding/unfolding leaves those in
+           place and only the MAC, at the end, appears or disappears. -->
       <span v-if="client.medium" class="badge" :class="client.medium">
         {{ client.medium }}
       </span>
-      <span class="meta num">{{ client.mac }}</span>
       <span v-if="client.ip" class="meta num">{{ client.ip }}</span>
       <!-- Privacy extensions give a device several v6 addresses at once, so
            the count matters more than any one value; all of them are shaped. -->
@@ -464,6 +470,7 @@ function fmtBytes(n: number): string {
         v-if="!client.ip && !client.ipv6?.length" class="meta"
         title="Associated, but has not taken an address yet"
       >no address yet</span>
+      <span class="meta num mac">{{ client.mac }}</span>
 
       <!-- Only shown when the driver actually reports it. The Pi's Broadcom
            chip gives no per-station RSSI in AP mode, and printing "0 dBm" is
