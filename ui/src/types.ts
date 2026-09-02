@@ -147,10 +147,22 @@ export interface Keyframe {
  * first — visible on the timeline, unlike a flag whose effect only shows up
  * during playback.
  */
+/** A link-lane event: a per-client Wi-Fi impairment on the pattern timeline.
+ *  `kind` is "drop" (deauth), "nudge" (disassoc) or "deadzone" (a held outage).
+ *  `dur_sec` is the block width: 0 = a single pulse (fired on the rising edge),
+ *  >0 = the disturbance holds for that long — a flap for drop/nudge, a clean
+ *  block for deadzone. See #135. */
+export interface LinkEvent {
+  at_sec: number;
+  kind: 'drop' | 'nudge' | 'deadzone';
+  dur_sec?: number;
+}
+
 export interface Pattern {
   name: string;
   keys: Keyframe[];
   loop: boolean;
+  links?: LinkEvent[];
 }
 
 /**
@@ -310,6 +322,11 @@ export interface Capabilities {
   /** True only when the iperf3 server is LISTENING, not merely installed. */
   iperf: boolean;
   iperf_port: number;
+  /** True when per-client link events (deauth/disassoc) can be driven -- i.e.
+   *  hostapd is serving the AP and exposing its control socket. False on the
+   *  onboard/NetworkManager radio, so the link actions are hidden rather than
+   *  offered as dead buttons. */
+  link_control: boolean;
   /** True when this kernel's netem accepts a Gilbert-Elliott loss model,
    *  asked at startup rather than assumed. False disables the burst control
    *  with `loss_burst_note` as the reason: a control that says "bursty" while

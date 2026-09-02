@@ -2,27 +2,26 @@
 /**
  * The timeline editor.
  *
- * A keyframe is the whole policy at one instant -- both directions, all four
- * parameters -- so the controls that author it are the ones already on the
- * card: this panel selects WHICH moment the rate, delay, jitter and loss
- * sliders are editing, and the sliders do the rest. A second set of numeric
- * fields would be a second source of truth about the same values, free to
- * disagree with the first.
+ * # Every field is its own timeline
  *
- * # Why the markers are shared and the lanes are not
+ * Each field -- rate, delay, jitter, loss, reorder, corrupt (and the link
+ * lanes: drop/nudge/deadzone) -- has its OWN transitions, edited on its own
+ * lane. Dragging rate's transition never moves delay's and is never blocked by
+ * it: the lanes are independent automation tracks, the way the link lanes have
+ * always been.
  *
- * Because a keyframe carries every parameter, it belongs to the TIMELINE, not
- * to a lane. One ruler of markers therefore runs along the top, and the lanes
- * below it draw the value each keyframe holds. Per-lane markers would imply
- * four independent automation tracks that could be keyed at different times,
- * which is a different and much worse data model: three lanes can disagree
- * about what second 30 means, and the operator reading a surprising result then
- * has to reconstruct the effective policy in their head.
+ * The daemon, though, still plays a single list of keyframes, each carrying
+ * every field at one instant. So the editor DECOMPOSES the stored keyframes
+ * into per-field step timelines (`lib/pattern`), edits those, and RECOMPOSES
+ * them -- the union of every field's transition times, each keyframe re-built
+ * with all fields -- before handing the pattern back. The daemon is unchanged;
+ * the recompose is lossless for the steps this editor authors.
  *
- * Dragging a lane vertically is not a second set of markers and does not change
- * that. It edits ONE parameter of the keyframe already governing that moment --
- * the same value the card's slider edits, reached where it is being read
- * instead of after a separate selection. Nothing new is keyed by it.
+ * Vertical drag on a lane sets that field's value at that moment; horizontal
+ * drag on a marker moves that field's transition in time. The card's sliders
+ * set a whole moment (every field at the selected time), which is why selection
+ * is a TIME rather than a keyframe index -- a recompose renumbers keyframes,
+ * but a time is stable.
  *
  * # Why every lane is a step
  *
@@ -36,8 +35,21 @@
  * timeline and the card owns it.
  */
 import { computed, ref, watch } from 'vue';
-import type { Keyframe, Ladder, Pattern, PatternView, Shape } from '@/types';
+import type { Keyframe, Ladder, LinkEvent, Pattern, PatternView, Shape } from '@/types';
 import { EXTRA_IMPAIRMENTS, PATTERN_TEMPLATES, RATE_MAX, posToRate, rateToPos } from '@/types';
+import {
+  addStep,
+  decomposeAll,
+  durOf,
+  moveStep,
+  recompose,
+  removeStep,
+  setStepValue,
+  snap as snapSec,
+  type FieldKey,
+  type Step,
+  type Timelines,
+} from '@/lib/pattern';
 import { useExtras } from '@/composables/useExtras';
 import PatternLibrary from './PatternLibrary.vue';
 
@@ -50,8 +62,9 @@ const props = defineProps<{
    *  describes and let the operator pick when there is more than one. */
   ladders: Ladder[];
   run?: PatternView;
-  /** Which keyframe the card's sliders are editing, if any. */
-  selected: number | null;
+  /** Which MOMENT (seconds) the card's sliders are editing, if any. A time
+   *  rather than a keyframe index because a recompose renumbers keyframes. */
+  selectedSec: number | null;
   /** False when the device cannot be conditioned, with why in `blocked`. */
   canPlay: boolean;
   blocked: string;
@@ -63,6 +76,9 @@ const emit = defineEmits<{
   play: [];
   stop: [];
   select: [number | null];
+  /** The library loaded a different pattern -- the card must drop any pending
+   *  optimistic edit-draft, or a stuck draft would mask the new selection. */
+  changed: [];
 }>();
 
 const running = computed(() => props.run?.state === 'running');
@@ -170,7 +186,7 @@ const viewSpan = computed(
  * to show it on until the drag finishes.
  */
 const renderSpan = computed(() =>
-  drag.value ? Math.max(drag.value.span, dur.value) : viewSpan.value,
+  fieldDrag.value ? Math.max(fieldDrag.value.span, dur.value) : viewSpan.value,
 );
 
 /*
@@ -193,47 +209,38 @@ const head = computed(() => (props.run ? props.run.pos_sec : scrub.value));
  */
 function seek(sec: number) {
   scrub.value = sec;
-  // Landing on a keyframe points the sliders at it: the time control chooses
-  // which moment they are editing, which is the whole interaction.
-  emit('select', keyAt(sec));
+  // Landing on a moment that carries a transition points the sliders at it: the
+  // time control chooses which instant they are editing. A time with nothing
+  // keyed on any lane hands the sliders back to the stored policy.
+  emit('select', hasKeyAt(sec) ? sec : null);
 }
 
-/** The keyframe exactly at this position, if the playhead is sitting on one. */
-function keyAt(sec: number): number | null {
-  for (let i = 0; i < keys.value.length; i++) {
-    if (Math.abs(keys.value[i].at_sec - sec) < 1e-6) return i;
-  }
-  return null;
+/** Whether any lane has a transition exactly at this second. */
+function hasKeyAt(sec: number): boolean {
+  return keys.value.some((k) => Math.abs(k.at_sec - sec) < 1e-6);
 }
 
-/** Clicking the selected marker again hands the sliders back to the policy. */
-function toggleKey(i: number) {
+/** Clicking a selected moment again hands the sliders back to the policy. */
+function toggleKeyAt(sec: number) {
   if (suppressClick) {
     suppressClick = false;
     return;
   }
-  scrub.value = keys.value[i]?.at_sec ?? 0;
-  emit('select', props.selected === i ? null : i);
+  scrub.value = sec;
+  emit('select', props.selectedSec === sec ? null : sec);
 }
 
 /*
- * Right-click adds a keyframe where you clicked, and removes the one you
- * clicked on.
+ * Right-click the stack just moves the playhead there.
  *
- * An accelerator, not the mechanism: a right-click affordance is invisible, and
- * on a trackpad it is a modifier chord, so the explicit "+ keyframe here" and
- * "delete" buttons stay. This just removes the trip to them once you know.
+ * A transition is added on the lane it belongs to (right-click a lane) or by
+ * moving a slider at the selected moment, so the stack-level right-click no
+ * longer plants a keyframe -- there is no single "keyframe" to plant when each
+ * field is its own timeline.
  */
 function ctxTimeline(e: MouseEvent) {
   if (props.run || dur.value <= 0) return;
-  const at = timeAt(e.clientX, viewSpan.value);
-  seek(at);
-  if (keyAt(at) == null) snapshot();
-}
-
-function ctxKey(i: number) {
-  if (props.run) return;
-  removeKey(i);
+  seek(timeAt(e.clientX, viewSpan.value));
 }
 
 // A run takes the sliders over, so nothing can be selected for editing while
@@ -246,8 +253,9 @@ watch(
   },
 );
 
-const selKey = computed(() =>
-  props.selected != null ? (keys.value[props.selected] ?? null) : null,
+/** The selected moment, when it still lands on a transition. */
+const selSec = computed(() =>
+  props.selectedSec != null && hasKeyAt(props.selectedSec) ? props.selectedSec : null,
 );
 
 function mutate(fn: (p: Pattern) => void) {
@@ -258,57 +266,67 @@ function mutate(fn: (p: Pattern) => void) {
   emit('update', next);
 }
 
-/**
- * Add a keyframe at the playhead, inheriting the keyframe before it.
+/*
+ * The editor's own per-field working state.
  *
- * Adding a point to a timeline must not change the timeline. Every value is
- * held until the next keyframe, so the pattern already HAS a value at this
- * instant -- the previous keyframe's -- and copying it means the link behaves
- * identically until the operator deliberately moves a slider. Seeding from the
- * sliders instead would silently reshape the pattern at the moment of adding a
- * point to it, which is the behaviour that makes people distrust an editor.
- *
- * The new keyframe is then selected, so the sliders are already pointed at it:
- * add, then shape. The very first keyframes come from the device's current
- * settings instead, because a brand new pattern has nothing to inherit.
+ * The daemon plays a recomposed keyframe list, which prunes any keyframe where
+ * no field changes -- so a marker placed but not yet shaped (its value still
+ * equal to its neighbour) would vanish on the round trip. Holding the step
+ * timelines here keeps it: the marker lives in `working`, and the pruned
+ * keyframes are only what we emit to the daemon.
  */
-function snapshot() {
-  const sec = head.value;
-  if (!props.pattern || keyAt(sec) != null) return;
-  // Where this lands once the list is re-sorted; computed here rather than
-  // waiting for the round trip, so the new keyframe is selected immediately and
-  // the sliders are pointed at it while the operator still means to edit it.
-  const idx = keys.value.filter((k) => k.at_sec < sec).length;
-  const prev = keys.value[Math.max(0, idx - 1)];
-  mutate((p) => {
-    p.keys.push({
-      at_sec: sec,
-      down: { ...prev.down },
-      up: { ...prev.up },
-      ease: 'hold',
-    });
-  });
-  emit('select', idx);
+const working = ref<Timelines>(decomposeAll(props.pattern?.keys ?? []));
+
+const SHAPE_JSON_FIELDS = [
+  'rate_mbps', 'delay_ms', 'jitter_ms', 'loss_pct', 'loss_burst', 'reorder_pct', 'corrupt_pct',
+] as const;
+
+function sameKeys(a: Keyframe[], b: Keyframe[]): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    if (a[i].at_sec !== b[i].at_sec) return false;
+    for (const d of ['down', 'up'] as const)
+      for (const f of SHAPE_JSON_FIELDS)
+        if ((a[i][d][f] ?? 0) !== (b[i][d][f] ?? 0)) return false;
+  }
+  return true;
 }
 
-/*
- * Why the add button is disabled rather than hidden.
- *
- * It used to appear only when the playhead sat between keyframes, which meant
- * the one control that adds a keyframe was invisible exactly when someone had
- * just landed on one and was looking for it -- and at 0s, where the first
- * keyframe always is, it was offered and then did nothing. An action that is
- * present and explains why it cannot run beats one that vanishes, and both beat
- * one that silently no-ops.
- */
-const canSnapshot = computed(() => !props.run && keyAt(head.value) == null);
-const snapshotWhy = computed(() => {
-  if (props.run) return 'Stop playback before editing the timeline';
-  if (keyAt(head.value) != null) {
-    return 'There is already a keyframe here — move the playhead, or edit this one with the sliders above';
-  }
-  return `Add a keyframe at ${head.value.toFixed(1)}s, inheriting the one before it`;
-});
+// Re-derive working only on a GENUINE external change (a load, a template): the
+// echo of our own edit round-trips to exactly what working recomposes to, and
+// re-deriving from that would drop the unshaped markers the prune removed.
+watch(
+  () => props.pattern?.keys,
+  () => {
+    const incoming = props.pattern?.keys ?? [];
+    if (!sameKeys(recompose(working.value, durOf(props.pattern)), incoming)) {
+      working.value = decomposeAll(incoming);
+    }
+  },
+  { deep: true },
+);
+
+/** The step timeline for a lane in the direction on screen. */
+function laneSteps(lane: FieldKey): Step[] {
+  return working.value[dir.value][lane];
+}
+
+/** The latest transition on any lane -- the natural end before any trailing hold. */
+function latestTransition(): number {
+  let latest = 0;
+  for (const d of ['down', 'up'] as const)
+    for (const f of SHAPE_JSON_FIELDS)
+      for (const s of working.value[d][f]) latest = Math.max(latest, s.at_sec);
+  return latest;
+}
+
+/** Recompose the working timelines and emit them as the pattern's keyframes.
+ *  The end holds at the current length unless a transition ran past it. */
+function commitWorking() {
+  if (!props.pattern) return;
+  const end = Math.max(latestTransition(), durOf(props.pattern));
+  emit('update', { ...props.pattern, keys: recompose(working.value, end) });
+}
 
 const stackEl = ref<HTMLElement | null>(null);
 
@@ -342,18 +360,18 @@ function clickTimeline(e: MouseEvent) {
 }
 
 /*
- * Dragging a keyframe along the ruler.
+ * Dragging a field's transition along its own lane.
  *
- * The span is captured when the drag starts and held for its duration. Dragging
- * the LAST keyframe changes the pattern's length, so recomputing x from a
- * duration that the drag itself is changing makes the marker chase the cursor
- * and never settle.
- *
- * moveKey does the clamping: a keyframe cannot cross its neighbours, and the
- * first one cannot move at all -- a timeline with no value at t=0 has no
- * defined starting condition.
+ * Per field: moving rate's transition never moves delay's and is never blocked
+ * by it -- each lane is its own timeline. The span is pinned for the gesture
+ * (see renderSpan) so the marker does not chase the cursor as the pattern
+ * grows. moveStep does the clamping: a field's transition cannot cross its own
+ * neighbours, its first step (the value at 0) is pinned, and dragging its last
+ * transition into the headroom grows the pattern -- default ripples this
+ * field's later transitions, alt slides one within its own gap.
  */
-const drag = ref<{
+const fieldDrag = ref<{
+  lane: FieldKey;
   i: number;
   span: number;
   x0: number;
@@ -366,156 +384,78 @@ const drag = ref<{
  * How far the pointer must travel before a press counts as a drag.
  *
  * Without it every click is a one-pixel drag: the press lands, the mouse
- * twitches, and the keyframe moves to whatever half second that pixel rounds
- * to. Worse, the drag then swallows the click that was meant to select it, so
- * clicking a keyframe would nudge it in time and fail to select it -- both at
- * once, and neither visibly.
+ * twitches, and the transition moves to whatever half second that pixel rounds
+ * to. Worse, the drag then swallows the click that was meant to select it.
  */
 const DRAG_SLOP_PX = 3;
 
-function startDrag(i: number, e: PointerEvent) {
-  if (props.run || i === 0) return;
-  // Capture keeps the pointer's events on the marker once the cursor leaves it,
-  // which is most of any real drag. It is best-effort: a browser that refuses
-  // must not take the drag down with it, because the fallback -- events on
-  // whatever is under the cursor -- still works for the common case.
+function startFieldDrag(lane: FieldKey, i: number, e: PointerEvent) {
+  // Left button only, and never the pinned first marker: a right-click here is
+  // a delete, and letting it capture the pointer would swallow that.
+  if (props.run || i === 0 || e.button !== 0) return;
   try {
     (e.target as HTMLElement).setPointerCapture(e.pointerId);
   } catch {
     /* no active pointer; the drag still tracks via bubbled events */
   }
-  // Selection is NOT claimed here. A press that turns out to be a plain click
-  // must leave it to the click handler, or selecting on the way down and
-  // toggling on the way up cancel each other out and the keyframe can never be
-  // selected at all.
-  // Read once, at the press. Sampling it per move would let the gesture change
-  // meaning halfway through, so half a drag would ripple and half would not.
-  drag.value = {
-    i, span: viewSpan.value, x0: e.clientX, moved: false, penned: e.altKey,
-  };
+  fieldDrag.value = { lane, i, span: viewSpan.value, x0: e.clientX, moved: false, penned: false };
 }
 
-function onDrag(e: PointerEvent) {
-  const d = drag.value;
-  const cur = keys.value[d?.i ?? -1];
-  // The keyframe can go away underneath a drag -- another tab deleting it, a
-  // pattern replaced by a template. Without this the move writes to undefined
-  // and the drag dies with an exception rather than simply stopping.
-  if (!d || !cur) return;
+function onFieldDrag(e: PointerEvent) {
+  const d = fieldDrag.value;
+  if (!d) return;
+  const steps = laneSteps(d.lane);
+  const cur = steps[d.i];
+  // The step can go away underneath a drag (a template replacing the pattern);
+  // stop rather than write to undefined.
+  if (!cur) return;
   if (!d.moved && Math.abs(e.clientX - d.x0) < DRAG_SLOP_PX) return;
-  // Past the threshold this is a drag: it points the sliders at what is being
-  // moved, and its click will be suppressed.
-  if (!d.moved) emit('select', d.i);
+  if (!d.moved) emit('select', cur.at_sec);
   d.moved = true;
-  // Only the last keyframe may run past the ruler; the rest are penned in by
-  // their neighbours anyway.
-  const at = timeAt(e.clientX, d.span, d.i === keys.value.length - 1);
-  if (at !== cur.at_sec) moveKey(d.i, at, d.penned, d.span);
+  // Only a field's last transition may run past the ruler.
+  const at = timeAt(e.clientX, d.span, d.i === steps.length - 1);
+  if (at !== cur.at_sec) {
+    // Always clamp between this field's own neighbours: a marker never crosses
+    // the one to its left or right.
+    moveStep(steps, d.i, at, true, maxPatternSec);
+    commitWorking();
+    scrub.value = at;
+  }
 }
 
-function endDrag(e: PointerEvent) {
-  if (!drag.value) return;
-  // Releasing comes first but must not be able to prevent the cleanup below: if
-  // capture was never granted, releasing throws, and an exception here would
-  // leave the drag live so the keyframe followed the cursor with no button
-  // held.
+function endFieldDrag(e: PointerEvent) {
+  if (!fieldDrag.value) return;
   try {
     (e.target as HTMLElement).releasePointerCapture(e.pointerId);
   } catch {
     /* nothing was captured */
   }
-  // A drag ends in a click on the marker. Without this the click would toggle
-  // the selection straight back off, so moving a keyframe would deselect it and
-  // the sliders would jump back to the stored policy mid-edit.
-  if (drag.value.moved) suppressClick = true;
-  drag.value = null;
+  if (fieldDrag.value.moved) suppressClick = true;
+  fieldDrag.value = null;
 }
 
 let suppressClick = false;
 
-function removeKey(i: number) {
-  // The first keyframe is the pattern's starting condition and a timeline
-  // without one has no defined value at t=0; two is the minimum the daemon
-  // will accept at all.
-  if (keys.value.length <= 2 || i === 0) return;
-  mutate((p) => {
-    p.keys.splice(i, 1);
-  });
-  emit('select', null);
+/**
+ * Add a transition to a lane at the clicked time, holding the value there so
+ * adding one changes nothing until it is shaped -- the way the link lanes add
+ * on click. It survives in `working` even though the daemon keyframes prune it.
+ */
+function addField(lane: FieldKey, e: MouseEvent) {
+  if (props.run) return;
+  const at = timeAt(e.clientX, renderSpan.value);
+  if (at <= 0) return; // 0 is the field's starting value, always present
+  addStep(working.value[dir.value][lane], at);
+  commitWorking();
+  emit('select', at);
 }
 
-/**
- * Move a keyframe, taking everything after it along -- or not, with alt held.
- *
- * # Why ripple is the default
- *
- * The commonest edit to a ladder pattern is "give this rung longer", and that
- * is a statement about ONE segment: the gap before this keyframe grew, and
- * nothing else about the pattern changed. Ripple says exactly that in one
- * gesture.
- *
- * Penned dragging cannot say it at all. On a 24-keyframe pattern, stretching
- * one dwell means dragging that keyframe and then all 22 after it, each clamped
- * by the neighbour not yet moved, and finally the last one again to extend the
- * end. Twenty-three gestures for one intent is not an editing model.
- *
- * The cost is that the total duration and the loop point move. That is real,
- * and it is visible: the end marker travels, the shaded headroom follows it,
- * and the header's duration updates as you drag. Nothing changes quietly.
- *
- * # Why penned is still reachable
- *
- * Sliding a keyframe within its gap -- making one segment shorter and the next
- * longer, with the pattern's length untouched -- is a real and different edit.
- * alt-drag does it, which is the modifier timeline editors already use for
- * "leave the neighbours alone".
- */
-function moveKey(i: number, sec: number, penned = false, limitSec = maxPatternSec) {
-  // Half-second granularity, because throughput is sampled once a second and a
-  // transition finer than that can be configured but never observed.
-  if (i === 0) return;
-  const ks = keys.value;
-  const at = Math.max(0, Math.round(sec * 2) / 2);
-
-  if (penned || i === ks.length - 1) {
-    // The last keyframe has nothing after it to push, so a ripple and a penned
-    // move are the same gesture there -- and it is how the pattern is
-    // lengthened by dragging into the headroom.
-    const lo = ks[i - 1].at_sec + 0.5;
-    const hi = i + 1 < ks.length ? ks[i + 1].at_sec - 0.5 : maxPatternSec;
-    const clamped = Math.min(Math.max(at, lo), hi);
-    mutate((p) => {
-      p.keys[i].at_sec = clamped;
-    });
-    scrub.value = clamped;
-    return;
-  }
-
-  // Ripple. The keyframe may not cross the one before it -- that would reorder
-  // the timeline under the hand -- and the delta is capped so the LAST keyframe
-  // cannot be pushed past what the runtime will play. Clamping the whole shift
-  // rather than each keyframe keeps the gaps after this one exactly as they
-  // were: clamping individually would silently compress the tail against the
-  // ceiling instead of stopping.
-  //
-  // The tail also stops at the RULER, not just at the runtime's ceiling. The
-  // axis is pinned for the length of a gesture -- it has to be, or the scale
-  // would stretch under the marker and the keyframe would chase the cursor --
-  // so a ripple that runs past the pinned span has nowhere left to draw its
-  // tail and stacks every trailing marker on the right edge. Stopping is
-  // legible where piling up is not; release and the ruler regrows around the
-  // longer pattern, so the next drag carries on.
-  const lo = ks[i - 1].at_sec + 0.5;
-  const room = Math.min(limitSec, maxPatternSec) - ks[ks.length - 1].at_sec;
-  const target = Math.min(Math.max(at, lo), ks[i].at_sec + room);
-  const delta = target - ks[i].at_sec;
-  if (delta === 0) return;
-  mutate((p) => {
-    for (let n = i; n < p.keys.length; n++) {
-      p.keys[n].at_sec = Math.round((p.keys[n].at_sec + delta) * 2) / 2;
-    }
-  });
-  scrub.value = target;
+/** Remove a field's transition. Its step at 0 is the starting value and stays. */
+function removeField(lane: FieldKey, i: number) {
+  if (props.run || i === 0) return;
+  removeStep(working.value[dir.value][lane], i);
+  commitWorking();
+  emit('select', null);
 }
 
 /*
@@ -533,7 +473,9 @@ function moveKey(i: number, sec: number, penned = false, limitSec = maxPatternSe
  */
 const vdrag = ref<{
   lane: LaneKey;
-  i: number;
+  /** The governing step's time -- an existing transition, the one whose value
+   *  this segment holds. Editing it changes the segment, not the moment pressed. */
+  at: number;
   ceil: number;
   y0: number;
   /** Where the value sat when the press landed, 0 at the floor and 1 at the top. */
@@ -564,14 +506,14 @@ const LANE_START_CEIL: Record<LaneKey, number> = {
   corrupt_pct: 5,
 };
 
-/** Which keyframe holds the value at this x. */
-function keyGoverning(clientX: number): number {
+/** The time of the step whose value this lane holds at x -- the transition at
+ *  or before it, so a vertical drag edits the segment rather than adding one. */
+function stepGoverning(lane: LaneKey, clientX: number): number {
   const t = timeAt(clientX, renderSpan.value);
-  let i = 0;
-  for (let n = 0; n < keys.value.length; n++) {
-    if (keys.value[n].at_sec <= t) i = n;
-  }
-  return i;
+  const steps = laneSteps(lane);
+  let at = steps.length ? steps[0].at_sec : 0;
+  for (const s of steps) if (s.at_sec <= t) at = s.at_sec;
+  return at;
 }
 
 /**
@@ -606,34 +548,39 @@ function normDelta(dyPx: number, el: HTMLElement): number {
 }
 
 function startVDrag(lane: LaneKey, e: PointerEvent) {
-  if (props.run) return;
-  const i = keyGoverning(e.clientX);
+  if (props.run || e.button !== 0) return;
+  const at = stepGoverning(lane, e.clientX);
   try {
     (e.target as HTMLElement).setPointerCapture(e.pointerId);
   } catch {
     /* no active pointer; the drag still tracks via bubbled events */
   }
-  const ceil = laneMax(lane) || LANE_START_CEIL[lane];
+  // Twice the current max (or the start ceiling) so there is always headroom to
+  // drag UP -- a lane whose largest value is 1 ms must still reach further than
+  // 1 ms in one gesture. The dragged lane renders against this pinned ceiling
+  // (see norm) so the marker tracks the cursor.
+  const ceil = Math.max(laneMax(lane) * 2, LANE_START_CEIL[lane]);
+  const cur = laneSteps(lane).find((s) => Math.abs(s.at_sec - at) < 1e-9);
   vdrag.value = {
-    lane, i, ceil,
+    lane, at, ceil,
     y0: e.clientY,
-    n0: normOf(valueAt(keys.value[i], lane), lane, ceil),
+    n0: normOf(cur?.value ?? 0, lane, ceil),
     moved: false,
   };
 }
 
 function onVDrag(e: PointerEvent) {
   const d = vdrag.value;
-  if (!d || !keys.value[d.i]) return;
+  if (!d) return;
   // The same slop as the horizontal drag, and for the same reason: without it
   // every click on a lane is a one-pixel drag that nudges a value on the way to
   // moving the playhead, and neither action is what was asked for.
   if (!d.moved && Math.abs(e.clientY - d.y0) < DRAG_SLOP_PX) return;
-  if (!d.moved) emit('select', d.i);
+  if (!d.moved) emit('select', d.at);
   d.moved = true;
   // Up is positive: the screen's y grows downward and a value grows upward.
   const n = d.n0 + normDelta(d.y0 - e.clientY, e.currentTarget as HTMLElement);
-  setLaneValue(d.i, d.lane, Math.min(Math.max(n, 0), 1), d.ceil);
+  setLaneValue(d.lane, d.at, Math.min(Math.max(n, 0), 1), d.ceil);
 }
 
 function endVDrag(e: PointerEvent) {
@@ -649,38 +596,188 @@ function endVDrag(e: PointerEvent) {
   vdrag.value = null;
 }
 
+// A value lane carries two gestures -- vertical to set a value, horizontal on a
+// marker to move a transition -- and a captured marker drag bubbles its moves to
+// the lane. One dispatcher runs both handlers; each is a no-op unless its own
+// drag is live, so they never fight.
+function onLaneMove(e: PointerEvent) {
+  onVDrag(e);
+  onFieldDrag(e);
+}
+function onLaneUp(e: PointerEvent) {
+  endVDrag(e);
+  endFieldDrag(e);
+}
+
 /**
- * Writes one parameter of one keyframe from a lane position.
+ * Writes one field's value at one time from a lane position.
  *
  * The clamps are the daemon's own, applied here so a drag cannot compose a
  * policy the box will refuse -- a slider that silently produces rejected writes
- * is worse than one that cannot reach the value.
+ * is worse than one that cannot reach the value. The cross-field rules
+ * (jitter <= delay, reorder needs delay) are enforced by the recompose's
+ * sanitize, since delay and jitter are now independent timelines.
  */
-function setLaneValue(i: number, lane: LaneKey, n: number, ceil: number) {
+function setLaneValue(lane: LaneKey, at: number, n: number, ceil: number) {
+  if (!props.pattern) return;
+  let value: number;
+  if (lane === 'rate_mbps') {
+    // Never 0 from a drag. Zero means unlimited, drawn at the TOP of the lane
+    // while the slider puts it at the bottom, so letting the floor produce it
+    // would send the line leaping to the ceiling. Clearing a cap is the
+    // slider's job.
+    value = posToRate(Math.max(1, Math.round(n * 100)));
+  } else if (lane === 'loss_pct') {
+    value = Math.round(Math.min(n * ceil, 20) * 10) / 10;
+  } else {
+    value = Math.round(Math.min(n * ceil, 10000));
+  }
+  setStepValue(working.value[dir.value][lane], at, value);
+  commitWorking();
+}
+
+/*
+ * Link lanes: drop / nudge / deadzone as on/off blocks.
+ *
+ * Unlike the value lanes there is no vertical axis -- a block is simply present
+ * or not (0/1). The width is the DURATION: 0 (a thin pulse block) fires once on
+ * the rising edge; a wider block holds the disturbance for that long -- a flap
+ * for drop/nudge, a clean outage for deadzone. So every lane edits the same
+ * way: click to add, drag to move, drag the right edge to lengthen. See #135.
+ */
+const LINK_LANES: { kind: LinkEvent['kind']; label: string }[] = [
+  { kind: 'drop', label: 'drop' },
+  { kind: 'nudge', label: 'nudge' },
+  { kind: 'deadzone', label: 'deadzone' },
+];
+const PULSE_VIS_SEC = 0.5; // a zero-duration pulse still needs a grabbable width
+const DEFAULT_DEADZONE_SEC = 10;
+
+const links = computed<LinkEvent[]>(() => props.pattern?.links ?? []);
+
+function laneEvents(kind: string): { ev: LinkEvent; i: number }[] {
+  return links.value.map((ev, i) => ({ ev, i })).filter((x) => x.ev.kind === kind);
+}
+function evVisSec(ev: LinkEvent): number {
+  const d = ev.dur_sec ?? 0;
+  return d > 0 ? d : PULSE_VIS_SEC;
+}
+function evLeftPct(ev: LinkEvent): number {
+  return renderSpan.value > 0 ? (ev.at_sec / renderSpan.value) * 100 : 0;
+}
+function evWidthPct(ev: LinkEvent): number {
+  return renderSpan.value > 0 ? (evVisSec(ev) / renderSpan.value) * 100 : 0;
+}
+// A 0/1 square wave for a link lane, drawn exactly like the value lanes'
+// step path so the whole stack reads as one instrument: low, rise at a block's
+// start, hold high for its width, fall at its end.
+function linkLanePath(kind: string): string {
+  if (renderSpan.value <= 0 || dur.value <= 0) return '';
+  const hi = 8;
+  const lo = VB - 6;
+  const end = xOf(dur.value); // stop at the loop point, like the value lanes
+  const evs = laneEvents(kind)
+    .map((x) => x.ev)
+    .slice()
+    .sort((a, b) => a.at_sec - b.at_sec);
+  const d = [`M 0,${lo}`];
+  for (const ev of evs) {
+    const a = xOf(ev.at_sec);
+    if (a >= end) continue; // an event past the end never plays
+    const b = Math.min(xOf(ev.at_sec + evVisSec(ev)), end); // clamp to the end
+    d.push(`L ${a.toFixed(1)},${lo}`, `L ${a.toFixed(1)},${hi}`, `L ${b.toFixed(1)},${hi}`, `L ${b.toFixed(1)},${lo}`);
+  }
+  d.push(`L ${end.toFixed(1)},${lo}`);
+  return d.join(' ');
+}
+
+function addLink(kind: LinkEvent['kind'], e: MouseEvent) {
+  if (props.run) return;
+  const at = timeAt(e.clientX, renderSpan.value);
+  const width = kind === 'deadzone' ? DEFAULT_DEADZONE_SEC : PULSE_VIS_SEC;
+  // Refuse to stack a block on an existing one of the same kind: overlapping
+  // blocks pile up into something you can neither read nor click to delete.
+  const clash = (props.pattern?.links ?? []).some(
+    (l) => l.kind === kind && at < l.at_sec + evVisSec(l) && at + width > l.at_sec,
+  );
+  if (clash) return;
   mutate((p) => {
-    const shape = p.keys[i][dir.value];
-    if (lane === 'rate_mbps') {
-      // Never 0 from a drag. Zero means unlimited, which is drawn at the TOP of
-      // the lane while the slider puts it at the bottom, so letting the floor
-      // produce it would send the line leaping to the ceiling as the cursor
-      // reached the bottom. Clearing a cap is the slider's job.
-      shape.rate_mbps = posToRate(Math.max(1, Math.round(n * 100)));
-      return;
-    }
-    if (lane === 'loss_pct') {
-      shape.loss_pct = Math.round(Math.min(n * ceil, 20) * 10) / 10;
-      return;
-    }
-    const v = Math.round(Math.min(n * ceil, 10000));
-    if (lane === 'delay_ms') {
-      shape.delay_ms = v;
-      // Jitter is a width around delay; the daemon refuses a width wider than
-      // the thing it is a width of, so it follows delay down.
-      if (shape.jitter_ms > v) shape.jitter_ms = v;
+    const ev: LinkEvent = { at_sec: at, kind };
+    if (kind === 'deadzone') ev.dur_sec = DEFAULT_DEADZONE_SEC;
+    p.links = [...(p.links ?? []), ev];
+  });
+}
+function removeLink(i: number) {
+  mutate((p) => {
+    p.links = (p.links ?? []).filter((_, j) => j !== i);
+  });
+}
+
+// Horizontal drag: move a block, or resize its right edge. Kept in insertion
+// order (mutate sorts keys, never links) so the index stays stable mid-drag.
+type LinkDrag = { i: number; mode: 'move' | 'resizeL' | 'resizeR'; grabSec: number };
+const linkDrag = ref<LinkDrag | null>(null);
+
+function startLinkMove(i: number, e: PointerEvent) {
+  if (props.run || e.button !== 0) return;
+  try {
+    (e.target as HTMLElement).setPointerCapture(e.pointerId);
+  } catch {
+    /* older Safari */
+  }
+  linkDrag.value = { i, mode: 'move', grabSec: timeAt(e.clientX, renderSpan.value) - links.value[i].at_sec };
+}
+function startLinkResize(i: number, side: 'l' | 'r', e: PointerEvent) {
+  if (props.run || e.button !== 0) return;
+  try {
+    (e.target as HTMLElement).setPointerCapture(e.pointerId);
+  } catch {
+    /* older Safari */
+  }
+  linkDrag.value = { i, mode: side === 'l' ? 'resizeL' : 'resizeR', grabSec: 0 };
+}
+function onLinkDrag(e: PointerEvent) {
+  const d = linkDrag.value;
+  if (!d) return;
+  const t = timeAt(e.clientX, renderSpan.value, true);
+  mutate((p) => {
+    const all = p.links ?? [];
+    const ev = all[d.i];
+    if (!ev) return;
+    // deadzone must stay >= 1s; drop/nudge may shrink to a pulse (0).
+    const min = ev.kind === 'deadzone' ? 1 : 0;
+    const snap = (x: number) => Math.round(x * 2) / 2; // 0.5s grid
+    // Neighbours of the same kind bound the block: an edge or a move can never
+    // cross the block before or after it on its own lane.
+    const same = all
+      .map((x, idx) => ({ x, idx }))
+      .filter((o) => o.x.kind === ev.kind)
+      .sort((a, b) => a.x.at_sec - b.x.at_sec);
+    const pos = same.findIndex((o) => o.idx === d.i);
+    const prev = pos > 0 ? same[pos - 1].x : null;
+    const next = pos >= 0 && pos < same.length - 1 ? same[pos + 1].x : null;
+    const lo = prev ? prev.at_sec + evVisSec(prev) : 0;
+    const nextStart = next ? next.at_sec : Infinity;
+    if (d.mode === 'move') {
+      const width = evVisSec(ev);
+      const hi = next ? nextStart - width : Infinity;
+      ev.at_sec = Math.max(lo, Math.min(snap(t - d.grabSec), Math.max(lo, hi)));
+    } else if (d.mode === 'resizeL') {
+      // The rising edge moves, holding the falling edge; it stops at the prev block.
+      const endT = ev.at_sec + (ev.dur_sec ?? 0);
+      const s = Math.max(lo, Math.min(snap(t), endT - min));
+      ev.at_sec = s;
+      ev.dur_sec = Math.max(min, snap(endT - s));
     } else {
-      shape.jitter_ms = Math.min(v, shape.delay_ms);
+      // The falling edge moves, holding the start; it stops at the next block.
+      const wanted = Math.max(min, snap(t - ev.at_sec));
+      const room = nextStart - ev.at_sec;
+      ev.dur_sec = Math.min(wanted, room);
     }
   });
+}
+function endLinkDrag() {
+  linkDrag.value = null;
 }
 
 /*
@@ -771,32 +868,35 @@ function rename(name: string) {
 }
 
 /**
- * Change how long the pattern runs, without adding anything to it.
+ * Change how long the pattern runs, without adding a transition.
  *
- * The length IS the last keyframe: it is the loop point, and the moment a
- * one-shot run ends. So lengthening the timeline moves that keyframe later and
- * the values before it simply hold for longer -- no new keyframe, and nothing
- * else on the timeline shifts. Shortening is refused past the keyframe before
- * it, which would otherwise silently delete keyframes off the end.
+ * The length IS the end of the timeline: the loop point, and where a one-shot
+ * run stops. Every field simply holds its last value for longer. Recompose is
+ * asked for a longer end; shortening is refused past the latest transition on
+ * any lane, which would otherwise silently drop transitions off the end.
  */
 function setLength(sec: number) {
-  if (keys.value.length < 2) return;
-  moveKey(keys.value.length - 1, sec);
+  if (!props.pattern || keys.value.length < 2) return;
+  const end = Math.max(snapSec(sec), latestTransition());
+  emit('update', { ...props.pattern, keys: recompose(working.value, end) });
 }
 
 /**
- * Make the last keyframe match the first.
+ * Make every field end where it began -- a seamless loop.
  *
- * A loop restarts at keyframe 0, so this is what a seamless loop IS -- there is
- * no wrap setting to get wrong, and the result is visible on the timeline
- * rather than hidden in a flag.
+ * A loop restarts at t=0, so matching the last value of each field to its first
+ * is what a seamless loop IS. Adds a transition at the end of each lane holding
+ * a value that differs from its start; nothing else moves.
  */
 function closeLoop() {
-  mutate((p) => {
-    const last = p.keys.length - 1;
-    p.keys[last].down = { ...p.keys[0].down };
-    p.keys[last].up = { ...p.keys[0].up };
-  });
+  if (!props.pattern) return;
+  const end = dur.value;
+  for (const d of ['down', 'up'] as const)
+    for (const f of SHAPE_JSON_FIELDS) {
+      const steps = working.value[d][f];
+      if (steps.length) setStepValue(steps, end, steps[0].value);
+    }
+  commitWorking();
 }
 
 function useTemplate(name: string) {
@@ -876,6 +976,42 @@ const extrasUnused = computed(() =>
   EXTRA_LANES.every((l) => !keys.value.some((k) => k.down[l.key] > 0 || k.up[l.key] > 0)),
 );
 
+/*
+ * The wifi link lanes get their OWN expander, separate from reorder/corrupt --
+ * they are a different kind of impairment (association events, not packet
+ * shaping). Same rule as the extras: local to this panel (there is no wifi
+ * slider elsewhere to keep in step), persisted, and ORed with "the pattern
+ * actually uses it" so a collapsed group can never hide an event in force.
+ */
+const WIFI_KEY = 'boa.wifi';
+const showWifi = ref(
+  (() => {
+    try {
+      return localStorage.getItem(WIFI_KEY) === '1';
+    } catch {
+      return false;
+    }
+  })(),
+);
+watch(showWifi, (v) => {
+  try {
+    localStorage.setItem(WIFI_KEY, v ? '1' : '0');
+  } catch {
+    /* not worth breaking a control over */
+  }
+});
+
+const shownLinkLanes = computed(() =>
+  LINK_LANES.filter((ll) => showWifi.value || links.value.some((l) => l.kind === ll.kind)),
+);
+
+/** Show the wifi toggle whenever a kind is hidden (so its lane can be revealed
+ *  to add events). Unlike the extras, the three kinds are independent -- having
+ *  a drop must not hide the way to reach the nudge and deadzone lanes. */
+const wifiUnused = computed(() =>
+  LINK_LANES.some((ll) => !links.value.some((l) => l.kind === ll.kind)),
+);
+
 /**
  * Where a value sits in its lane, 0 at the floor and 1 at the ceiling.
  *
@@ -890,8 +1026,10 @@ const extrasUnused = computed(() =>
  */
 function norm(v: number, lane: LaneKey): number {
   if (lane === 'rate_mbps') return v <= 0 ? 1 : rateToPos(v) / 100;
-  const max = laneMax(lane);
-  return max > 0 ? v / max : 0;
+  // While this lane is being dragged, scale against the pinned headroom ceiling
+  // so the marker tracks the cursor instead of the live max chasing it.
+  const max = vdrag.value?.lane === lane ? vdrag.value.ceil : laneMax(lane);
+  return max > 0 ? Math.min(v / max, 1) : 0;
 }
 
 function yOf(v: number, lane: LaneKey): number {
@@ -1012,7 +1150,7 @@ const status = computed(() => {
       :ladders="ladders"
       :current="pattern"
       :locked="running"
-      @changed="emit('select', null)"
+      @changed="emit('select', null); emit('changed')"
     />
 
     <!-- Hand-authoring, for a shape the ladder does not describe. Both routes
@@ -1060,43 +1198,81 @@ const status = computed(() => {
         @click="clickTimeline"
         @contextmenu.prevent="ctxTimeline"
       >
-        <!-- One ruler for the whole stack: a keyframe sets every parameter at
-             once, so it is a moment in the timeline rather than a point on a
-             curve. -->
-        <div class="ruler">
-          <button
-            v-for="(k, i) in pattern.keys" :key="i"
-            class="kf" :class="{ on: selected === i, pinned: i === 0 }"
-            :style="{ left: pct(k.at_sec) }"
-            :disabled="!!running"
-            :title="i === 0
-              ? `${k.at_sec}s · ${fmtRate(k.down)} · the starting condition, fixed at 0s`
-              : `${k.at_sec}s · ${fmtRate(k.down)} · drag to move, right-click to delete`"
-            @click.stop="toggleKey(i)"
-            @contextmenu.prevent.stop="ctxKey(i)"
-            @pointerdown.stop="startDrag(i, $event)"
-            @pointermove="onDrag"
-            @pointerup="endDrag"
-            @pointercancel="endDrag"
-          ></button>
-        </div>
-
+        <!-- Each value lane carries its OWN markers now -- its field's
+             transitions, dragged independently of every other lane. Vertical
+             drag on the lane sets the value; a marker drags in time; right-click
+             the lane to add a point, or a marker to delete it. -->
         <div
           v-for="l in LANES" :key="l.key" class="lane"
           :class="{ grab: !run, dragging: vdrag?.lane === l.key }"
-          :title="run ? '' : `drag up and down to set ${l.label} at that moment`"
+          :title="run ? '' : `double-click or right-click to add a ${l.label} point; drag up and down to set it`"
           @pointerdown.stop="startVDrag(l.key, $event)"
-          @pointermove="onVDrag"
-          @pointerup="endVDrag"
-          @pointercancel="endVDrag"
+          @pointermove="onLaneMove"
+          @pointerup="onLaneUp"
+          @pointercancel="onLaneUp"
+          @dblclick.prevent.stop="addField(l.key, $event)"
+          @contextmenu.prevent.stop="addField(l.key, $event)"
         >
           <svg :viewBox="`0 0 1000 ${VB}`" preserveAspectRatio="none">
             <path :d="lanePath(l.key)" class="line" vector-effect="non-scaling-stroke" />
           </svg>
+          <button
+            v-for="(s, i) in laneSteps(l.key)" :key="i"
+            class="kf" :class="{ on: selSec === s.at_sec, pinned: i === 0 }"
+            :style="{ left: pct(s.at_sec) }"
+            :disabled="!!running"
+            :title="i === 0
+              ? `${s.at_sec}s · ${l.label} starts here`
+              : `${s.at_sec}s · ${l.label} · drag to move, double-click or right-click to delete`"
+            @click.stop="toggleKeyAt(s.at_sec)"
+            @dblclick.prevent.stop="removeField(l.key, i)"
+            @contextmenu.prevent.stop="removeField(l.key, i)"
+            @pointerdown.stop="startFieldDrag(l.key, i, $event)"
+          ></button>
           <span class="lane-name">
             {{ l.label }} <b class="num">{{ laneNow(l.key) }}</b>
           </span>
           <span class="lane-top">{{ laneTop(l.key, l.unit) }}</span>
+        </div>
+
+        <!-- Link lanes: drop/nudge/deadzone as on/off blocks, behind their own
+             "wifi" expander. No vertical axis; the block WIDTH is the duration
+             (a thin pulse fires once on the rising edge, a wide block holds the
+             disturbance). See #135. -->
+        <div
+          v-for="ll in shownLinkLanes" :key="ll.kind"
+          class="lane linklane" :class="{ grab: !run }"
+          :title="run ? '' : `double-click or right-click to add a ${ll.label}; drag it to move`"
+          @dblclick.prevent.stop="addLink(ll.kind, $event)"
+          @contextmenu.prevent.stop="addLink(ll.kind, $event)"
+          @pointermove="onLinkDrag"
+          @pointerup="endLinkDrag"
+          @pointercancel="endLinkDrag"
+        >
+          <svg :viewBox="`0 0 1000 ${VB}`" preserveAspectRatio="none">
+            <path :d="linkLanePath(ll.kind)" class="line" vector-effect="non-scaling-stroke" />
+          </svg>
+          <div
+            v-for="{ ev, i } in laneEvents(ll.kind)" :key="i"
+            class="linkblock" :class="ll.kind"
+            :style="{ left: evLeftPct(ev) + '%', width: evWidthPct(ev) + '%' }"
+            :title="run ? '' : 'drag to move, drag an edge to resize, double-click or right-click to delete'"
+            @pointerdown.stop="startLinkMove(i, $event)"
+            @click.stop
+            @dblclick.prevent.stop="removeLink(i)"
+            @contextmenu.prevent.stop="removeLink(i)"
+          >
+            <span
+              class="kf l" title="drag the rising edge"
+              @pointerdown.stop="startLinkResize(i, 'l', $event)"
+            ></span>
+            <span
+              class="kf r" title="drag the falling edge"
+              @pointerdown.stop="startLinkResize(i, 'r', $event)"
+            ></span>
+            <button class="linkx" @click.stop="removeLink(i)" title="remove">×</button>
+          </div>
+          <span class="lane-name">{{ ll.label }}</span>
         </div>
 
         <!-- Everything past the last keyframe is ruler, not pattern. Shaded so
@@ -1106,11 +1282,11 @@ const status = computed(() => {
         <div class="beyond" :style="{ left: pct(dur) }"></div>
         <div class="endline" :style="{ left: pct(dur) }"></div>
 
-        <!-- The selected keyframe is a column, not a dot: selecting it selects
-             all four values at that instant, and the band says so. -->
+        <!-- The selected moment is a column across every lane: the card's
+             sliders set all fields at that instant, and the band says which. -->
         <div
-          v-if="selKey" class="selband"
-          :style="{ left: pct(selKey.at_sec) }"
+          v-if="selSec != null" class="selband"
+          :style="{ left: pct(selSec) }"
         ></div>
         <div class="playhead" :style="{ left: pct(head) }"></div>
 
@@ -1138,29 +1314,26 @@ const status = computed(() => {
         </div>
       </div>
 
-      <!-- The same switch the sliders carry, put where the lanes are so it can
-           be reached from whichever view raised the question. Hidden while the
-           pattern uses these values: the lanes are then not optional, and a
-           control that cannot do anything is worse than no control. -->
-      <button
-        v-if="extrasUnused" class="more"
-        @click="toggleExtras()"
-      >{{ showExtras ? '−' : '+' }}
-        {{ EXTRA_IMPAIRMENTS.map((e) => e.label).join(', ') }}</button>
-
-      <!-- Adding a keyframe is one always-present button rather than something
-           that appears only once the playhead happens to be between keyframes.
-           It is not on the time lane: a button inside the stack would inset the
-           axis it sits on, which is the whole problem being fixed. -->
+      <!-- Two expanders, side by side: the second-tier packet impairments
+           (reorder, corrupt) and the wifi link lanes (drop, nudge, deadzone).
+           Each is hidden while nothing uses it, and each cannot hide a lane
+           that carries data -- a control that cannot do anything is worse than
+           none. -->
       <div class="head-row">
-        <button :disabled="!canSnapshot" :title="snapshotWhy" @click="snapshot">
-          + keyframe here
-        </button>
+        <button
+          v-if="extrasUnused" class="more"
+          @click="toggleExtras()"
+        >{{ showExtras ? '−' : '+' }}
+          {{ EXTRA_IMPAIRMENTS.map((e) => e.label).join(', ') }}</button>
+        <button
+          v-if="wifiUnused" class="more"
+          @click="showWifi = !showWifi"
+        >{{ showWifi ? '−' : '+' }} wifi</button>
       </div>
 
       <!-- What the sliders above are pointed at. Stated rather than implied:
-           the same controls edit three different things depending on this line,
-           and guessing which is not something an operator should have to do. -->
+           the same controls edit different things depending on this line, and
+           guessing which is not something an operator should have to do. -->
       <div v-if="run" class="sel">
         <b>{{ status }}</b>
         <span v-if="paused" class="meta">
@@ -1171,38 +1344,25 @@ const status = computed(() => {
           one and playback pauses.
         </span>
       </div>
-      <div v-else-if="selKey" class="sel">
-        <b>keyframe {{ (selected ?? 0) + 1 }} of {{ pattern.keys.length }}</b>
+      <div v-else-if="selSec != null" class="sel">
+        <b>editing {{ selSec }}s</b>
         <span class="meta">
-          both directions, all four sliders — set them above
+          both directions, every slider — set them above; each field keeps its
+          own value at this moment
         </span>
-        <label class="at">
-          at
-          <input
-            type="number" min="0" step="0.5" :value="selKey.at_sec"
-            :disabled="selected === 0"
-            @change="moveKey(selected!, +($event.target as HTMLInputElement).value)"
-          />
-          s
-        </label>
         <span class="spacer"></span>
-        <button
-          class="ghost" :disabled="selected === 0 || pattern.keys.length <= 2"
-          @click="removeKey(selected!)"
-        >delete</button>
+        <button class="ghost" @click="emit('select', null)">done</button>
       </div>
       <div v-else class="sel">
         <span class="meta">
-          Drag a keyframe to move it and everything after it; hold alt to slide
-          it between its neighbours instead. A ripple stops when its tail
-          reaches the end of the ruler — let go and the ruler grows, then carry
-          on.
-          Click the timeline to move the playhead, then add a keyframe — or
-          right-click the timeline to do both at once. A new keyframe inherits
-          the one before it, so adding one changes nothing until you move a
-          slider. Keyframes drag to move, right-click to delete. Drag the last
-          one into the shaded space, or click out there, to make the pattern
-          longer.
+          Each lane is its own timeline. Drag a marker to move that field's
+          transition — nothing on another lane moves, and it stops at its own
+          neighbours rather than crossing them. Double-click or right-click a
+          lane to add a point, then drag it up and down to set its value; the
+          same on a marker (or a drop/nudge/deadzone block) deletes it. Single-
+          click the timeline to pick a moment and let the sliders above set
+          every field at once. Drag a field's last transition into the shaded
+          space, or set the length below, to make the pattern longer.
         </span>
       </div>
 
@@ -1328,6 +1488,56 @@ const status = computed(() => {
   height: 100%;
   display: block;
 }
+/* Link lanes: on/off blocks, horizontal only. No vertical value, so the lane
+   is a crosshair (click empty to add) rather than ns-resize. */
+.linklane.grab {
+  cursor: crosshair;
+}
+.linklane svg {
+  pointer-events: none;
+}
+/* The square-wave path is the visual; each block is an invisible hit-area over
+   it for move/resize/delete. A faint tint on hover shows what you'd grab. */
+.linkblock {
+  position: absolute;
+  top: 6px;
+  bottom: 6px;
+  min-width: 7px;
+  border-radius: 3px;
+  background: transparent;
+  cursor: grab;
+}
+.linkblock:hover {
+  background: color-mix(in srgb, var(--down) 18%, transparent);
+}
+/* The rising and falling edges are keyframes drawn with the SAME .kf marker the
+   ruler uses -- the hollow diamond, its fill, border, size and rotation all
+   inherited from the base .kf rule. Only what genuinely differs for an edge is
+   set here: it sits on its block's corner (not on the ruler at an inline left),
+   and the cursor says resize rather than grab. */
+.linkblock .kf { cursor: ew-resize; }
+.linkblock .kf.l { left: 0; }
+.linkblock .kf.r { left: 100%; }
+.linkblock:hover .kf { border-color: var(--down); }
+.linkx {
+  position: absolute;
+  top: -7px;
+  right: -6px;
+  width: 14px;
+  height: 14px;
+  padding: 0;
+  line-height: 11px;
+  font-size: 11px;
+  border-radius: 50%;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  color: var(--ink-dim);
+  cursor: pointer;
+  display: none;
+}
+.linkblock:hover .linkx {
+  display: block;
+}
 /* The lanes take the direction's colour, the same one its chart and slider
    already use, so which direction is on screen is never in question. */
 .line {
@@ -1391,6 +1601,15 @@ const status = computed(() => {
 .kf.on {
   background: var(--down);
   border-color: var(--down);
+}
+/* Value-lane markers sit at the top of their own lane (a direct child of the
+   lane), not on a shared ruler above the stack. */
+.lane > .kf {
+  top: -1px;
+}
+.stack.up .lane > .kf.on {
+  background: var(--up);
+  border-color: var(--up);
 }
 /* Headroom: ruler past the end of the pattern, to drag or click into. */
 .beyond {

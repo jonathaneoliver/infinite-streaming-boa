@@ -34,6 +34,15 @@ const (
 	PatternLossClimb    = "loss_climb"
 	PatternReorderClimb = "reorder_climb"
 	PatternCorruptClimb = "corrupt_climb"
+
+	// Group A link-event patterns (#135). Like the overlays, they assert no
+	// rate -- they drive the LINK lane, not the rate lane -- so they layer over
+	// any pattern that owns the rate. drop_1m/nudge_1m fire one pulse a minute;
+	// deadzone_1m runs clear for 50s then holds a 10s outage, the link-level
+	// sibling of blackhole (which does the same shape with netem loss).
+	PatternDropEveryMin     = "drop_1m"
+	PatternNudgeEveryMin    = "nudge_1m"
+	PatternDeadzoneEveryMin = "deadzone_1m"
 )
 
 // BuiltinNames is every generated pattern, in display order.
@@ -44,6 +53,7 @@ var BuiltinNames = []string{
 	PatternBlackhole,
 	PatternDelayClimb, PatternLossClimb,
 	PatternReorderClimb, PatternCorruptClimb,
+	PatternDropEveryMin, PatternNudgeEveryMin, PatternDeadzoneEveryMin,
 }
 
 // The impairment ladders each overlay walks.
@@ -284,6 +294,12 @@ func LadderPattern(name string, l Ladder, dwellSec float64) (Pattern, error) {
 	switch name {
 	case PatternBlackhole:
 		return blackhole(), nil
+	case PatternDropEveryMin:
+		return linkPattern(name, LinkEvent{AtSec: 30, Kind: LinkDrop}), nil
+	case PatternNudgeEveryMin:
+		return linkPattern(name, LinkEvent{AtSec: 30, Kind: LinkNudge}), nil
+	case PatternDeadzoneEveryMin:
+		return linkPattern(name, LinkEvent{AtSec: 50, Kind: LinkDeadzone, DurSec: 10}), nil
 	case PatternDelayClimb:
 		return impairmentClimb(name, delayClimbSteps, dwellSec), nil
 	case PatternLossClimb:
@@ -389,6 +405,23 @@ func blackhole() Pattern {
 			{AtSec: blackholeClearSec + blackholeOutageSec, Down: clear, Ease: EaseHold},
 		},
 		Loop: true,
+	}
+}
+
+// linkPattern is a one-minute loop that conditions the LINK, not the rate: two
+// clean keyframes bracket the minute (so the rate stays unlimited and the
+// pattern can layer over one that drives the rate), and a single link event
+// fires within it. See issue #135.
+func linkPattern(name string, ev LinkEvent) Pattern {
+	clean := Shape{}
+	return Pattern{
+		Name: name,
+		Keys: []Keyframe{
+			{AtSec: 0, Down: clean, Ease: EaseHold},
+			{AtSec: 60, Down: clean, Ease: EaseHold},
+		},
+		Links: []LinkEvent{ev},
+		Loop:  true,
 	}
 }
 

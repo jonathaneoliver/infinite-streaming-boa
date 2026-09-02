@@ -2,6 +2,7 @@
 import { computed, ref, watch } from 'vue';
 import type { Client, Shape, Series, ChartPrefs, Pattern } from '@/types';
 import { CLEAN, DEVELOPER, PRESETS, ntopngUrl, patternFromPolicy } from '@/types';
+import { setShapeAt } from '@/lib/pattern';
 import ShapeSliders from './ShapeSliders.vue';
 import SubClasses from './SubClasses.vue';
 import LadderPanel from './LadderPanel.vue';
@@ -12,6 +13,9 @@ const props = defineProps<{
   client: Client;
   series?: Series;
   ntopngPort?: number;
+  /** Whether per-client link events (deauth/disassoc) can be driven right now
+   *  -- true only when hostapd serves the AP. Gates the drop/nudge buttons. */
+  linkControl?: boolean;
   collapsed?: boolean;
   /** Chart settings, shared by every card so devices stay comparable. */
   chart: ChartPrefs;
@@ -24,6 +28,9 @@ const emit = defineEmits<{
   label: [string];
   reset: [];
   forget: [];
+  linkDrop: [];
+  linkNudge: [];
+  linkDeadzone: [sec: number];
   toggle: [];
   addSub: [];
   removeSub: [string];
@@ -98,6 +105,39 @@ const signalClass = computed(() => {
   return 'bad';
 });
 
+// How long the station has been continuously associated. It resets to ~0 when
+// the link drops and re-associates, so after a drop/nudge it visibly falls to a
+// few seconds -- which is the ground-truth confirmation the event landed.
+const connectedLabel = computed(() => {
+  const s = props.client.station?.connected_sec ?? 0;
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m ${s % 60}s`;
+  return `${Math.floor(m / 60)}h ${m % 60}m`;
+});
+
+// Transient acknowledgement that a link event was sent. The lasting proof is
+// the connected-time above resetting; this just confirms the click dispatched.
+const linkFlash = ref<'drop' | 'nudge' | 'deadzone' | null>(null);
+let linkFlashTimer: ReturnType<typeof setTimeout> | undefined;
+function flashLink(kind: 'drop' | 'nudge' | 'deadzone') {
+  linkFlash.value = kind;
+  clearTimeout(linkFlashTimer);
+  linkFlashTimer = setTimeout(() => (linkFlash.value = null), 1400);
+}
+function fireLink(kind: 'drop' | 'nudge') {
+  if (kind === 'drop') emit('linkDrop');
+  else emit('linkNudge');
+  flashLink(kind);
+}
+// deadzone is a sustained outage, so it carries a duration (default 10s) --
+// long enough to drain a player's buffer, unlike a single drop.
+const deadzoneSec = ref(10);
+function fireDeadzone() {
+  emit('linkDeadzone', deadzoneSec.value);
+  flashLink('deadzone');
+}
+
 /**
  * The downlink cap actually in force, which is NOT always the stored policy.
  *
@@ -113,6 +153,14 @@ const signalClass = computed(() => {
 const sweeping = computed(() => props.client.sweep?.state === 'running');
 const patRun = computed(() => props.client.pattern_run);
 const playing = computed(() => patRun.value?.state === 'running');
+// The link kinds the current pattern actually sets -- so their buttons show as
+// "active" whenever the pattern includes that event, not just while it plays.
+// (An empty pattern, or one with none of a kind, leaves that button plain.)
+const activeLinkKinds = computed(() => {
+  const s = new Set<string>();
+  for (const l of pattern.value?.links ?? []) s.add(l.kind);
+  return s;
+});
 const downCap = computed(() => {
   if (sweeping.value) return props.client.sweep?.cap_mbps ?? 0;
   // A playing pattern drives the cap along its timeline without writing it, on
@@ -146,16 +194,19 @@ watch(
 );
 
 /**
- * Which keyframe the sliders are editing, or null for the stored policy.
+ * Which MOMENT (seconds) the sliders are editing, or null for the stored policy.
+ * A time, not a keyframe index, because the pattern panel now edits each field
+ * on its own timeline and recomposes the keyframes -- a time is stable across
+ * that, an index is not.
  *
  * Never a keyframe while a run is playing: the controls are then reporting what
- * is enforced, and accepting an edit into a keyframe while displaying the
- * enforced value would write one thing where the operator could see another.
+ * is enforced, and accepting an edit while displaying the enforced value would
+ * write one thing where the operator could see another.
  */
 const patSelected = ref<number | null>(null);
 const editKey = computed(() =>
   !playing.value && patSelected.value != null
-    ? (pattern.value?.keys[patSelected.value] ?? null)
+    ? (pattern.value?.keys.find((k) => Math.abs(k.at_sec - patSelected.value!) < 1e-6) ?? null)
     : null,
 );
 
@@ -174,25 +225,25 @@ function removePattern() {
   emit('patternRemove');
 }
 
-/** Route a slider to the selected keyframe, or to the stored policy. */
+/** Route a slider to the selected moment (setting that field at that time), or
+ *  to the stored policy. */
 function onShape(dir: 'down' | 'up', s: Shape) {
   if (editKey.value && pattern.value && patSelected.value != null) {
-    const next = JSON.parse(JSON.stringify(pattern.value)) as Pattern;
-    next.keys[patSelected.value][dir] = s;
-    applyPattern(next);
+    applyPattern({ ...pattern.value, keys: setShapeAt(pattern.value, dir, patSelected.value, s) });
     return;
   }
   emit('shape', dir, s);
 }
 
-// Presets follow the sliders: with a keyframe selected, "3G" means "this
-// moment is 3G", which is the shortest route from a named link to a timeline.
+// Presets follow the sliders: with a moment selected, "3G" means "this moment
+// is 3G", the shortest route from a named link to a timeline. Both directions
+// are set at that time.
 function onPreset(down: Shape, up: Shape) {
   if (editKey.value && pattern.value && patSelected.value != null) {
-    const next = JSON.parse(JSON.stringify(pattern.value)) as Pattern;
-    next.keys[patSelected.value].down = down;
-    next.keys[patSelected.value].up = up;
-    applyPattern(next);
+    const t = patSelected.value;
+    let keys = setShapeAt(pattern.value, 'down', t, down);
+    keys = setShapeAt({ ...pattern.value, keys }, 'up', t, up);
+    applyPattern({ ...pattern.value, keys });
     return;
   }
   emit('preset', down, up);
@@ -416,6 +467,11 @@ function fmtBytes(n: number): string {
       >
         PHY {{ client.station.tx_phy_mbps.toFixed(0) }}
       </span>
+      <span
+        v-if="client.station"
+        class="meta num"
+        title="How long this device has been continuously associated. It resets when the link drops and re-associates, so it falls to a few seconds right after a drop or nudge."
+      >assoc {{ connectedLabel }}</span>
 
       <span class="spacer"></span>
 
@@ -475,7 +531,7 @@ function fmtBytes(n: number): string {
             swept &middot; {{ downCap.toFixed(2) }} Mbps
           </span>
           <span v-if="editKey" class="badge" style="color: var(--down)">
-            keyframe {{ (patSelected ?? 0) + 1 }} &middot; {{ editKey.at_sec }}s
+            at {{ editKey.at_sec }}s
           </span>
           <span class="readout num">
             {{ client.down_counters.throughput_mbps.toFixed(2) }}
@@ -504,7 +560,7 @@ function fmtBytes(n: number): string {
         <h3>
           Uplink <span class="meta">from device</span>
           <span v-if="editKey" class="badge" style="color: var(--up)">
-            keyframe {{ (patSelected ?? 0) + 1 }} &middot; {{ editKey.at_sec }}s
+            at {{ editKey.at_sec }}s
           </span>
           <span class="readout num">
             {{ client.up_counters.throughput_mbps.toFixed(2) }}
@@ -527,6 +583,31 @@ function fmtBytes(n: number): string {
       </div>
     </div>
 
+    <!-- Group A link events: an impairment on the ASSOCIATION, not the packets,
+         and not tied to a direction -- so they get their own section under both
+         directions' controls rather than living inside either. Only when
+         hostapd serves the AP (caps.link_control) and the client is present. -->
+    <div v-if="linkControl && client.present" class="link-events">
+      <span class="link-label">Wi-Fi</span>
+      <button
+        class="ghost" :class="{ flash: linkFlash === 'drop', active: activeLinkKinds.has('drop') }" @click="fireLink('drop')"
+        title="Deauthenticate: take this client's Wi-Fi link down; it reconnects on its own"
+      >{{ linkFlash === 'drop' ? 'sent' : 'drop' }}</button>
+      <button
+        class="ghost" :class="{ flash: linkFlash === 'nudge', active: activeLinkKinds.has('nudge') }" @click="fireLink('nudge')"
+        title="Disassociate: the softer 802.11 disconnect, usually a quicker recovery than drop"
+      >{{ linkFlash === 'nudge' ? 'sent' : 'nudge' }}</button>
+      <button
+        class="ghost" :class="{ flash: linkFlash === 'deadzone', active: activeLinkKinds.has('deadzone') }" @click="fireDeadzone"
+        title="Hold the link down for the duration -- long enough to drain a player's buffer and force a rebuffer, unlike a single drop"
+      >{{ linkFlash === 'deadzone' ? 'sent' : `deadzone ${deadzoneSec}s` }}</button>
+      <input
+        type="number" min="1" max="300" step="1" v-model.number="deadzoneSec"
+        class="dz-dur" title="deadzone length in seconds" aria-label="deadzone seconds"
+      />
+      <span class="link-hint meta">watch <b>assoc</b> above reset when it lands</span>
+    </div>
+
     <!-- The timeline sits directly under the controls that author it. The
          sliders above ARE the keyframe editor, and putting the playhead
          anywhere else would separate the control from the thing it edits. -->
@@ -536,7 +617,7 @@ function fmtBytes(n: number): string {
       :rev="client.policy?.rev ?? 0"
       :ladders="client.policy?.ladders ?? []"
       :run="client.pattern_run"
-      :selected="patSelected"
+      :selected-sec="patSelected"
       :can-play="patBlocked === ''"
       :blocked="patBlocked"
       @update="applyPattern"
@@ -545,6 +626,7 @@ function fmtBytes(n: number): string {
       @play="emit('patternPlay')"
       @stop="emit('patternStop')"
       @select="(i: number | null) => (patSelected = i)"
+      @changed="patDraft = null; patSelected = null"
     />
 
     <!-- Ladders sit above the fold, not behind the counters toggle: a sweep is

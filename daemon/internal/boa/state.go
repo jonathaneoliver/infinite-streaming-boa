@@ -183,6 +183,9 @@ func (e *Engine) Start() {
 	if err := e.sh.Setup(); err != nil {
 		fmt.Printf("infinite-streaming-boa: shaping unavailable: %v\n", err)
 	}
+	// Clear any deadzone ban left in hostapd's deny list by a daemon that died
+	// mid-outage, so a client is never stranded off the AP across a restart.
+	e.clearDenyACL()
 	// Devices announce only occasionally -- on join, on wake, when services
 	// change -- so an in-memory-only name table means every daemon restart
 	// drops every client back to a bare MAC until the next announcement,
@@ -561,7 +564,9 @@ func (e *Engine) tick() {
 	}
 	e.sweep.Advance(now, sweepObserver{hist: e.hist, live: live})
 	e.storeSweepResult()
-	e.player.Advance(now)
+	for _, f := range e.player.Advance(now) {
+		go e.fireLink(f) // network I/O to hostapd; keep it off the tick
+	}
 
 	if ready, _ := e.sh.Ready(); ready {
 		for _, err := range e.sh.Apply(e.desired(clients)) {
@@ -651,7 +656,8 @@ func (e *Engine) tick() {
 			Adapter: Radio(e.cfg.WlanPort),
 			Ntopng:  e.ntopngUp(), NtopngPort: ntopngPort,
 			Iperf: PortListening(iperfPort), IperfPort: iperfPort,
-			LossBurst: burstOK, LossBurstNote: burstNote,
+			LinkControl: hostapdAvailable(e.cfg.WlanPort),
+			LossBurst:   burstOK, LossBurstNote: burstNote,
 			NamesLearned: len(names), NamesByMAC: len(macNames),
 		},
 		Notices: e.notices(ready, reason),
