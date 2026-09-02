@@ -138,6 +138,13 @@ function fireDeadzone() {
   flashLink('deadzone');
 }
 
+// Past a few seconds of blackout a phone stops waiting and leaves the AP for
+// another network -- iOS gives up around 3s. That is a different outcome from a
+// rebuffer: the device is then off boa's Wi-Fi entirely, so it stops appearing
+// as traffic and cannot be conditioned until it rejoins THIS AP on its own.
+const ROAM_AWAY_SEC = 3;
+const deadzoneRisky = computed(() => deadzoneSec.value >= ROAM_AWAY_SEC);
+
 /**
  * The downlink cap actually in force, which is NOT always the stored policy.
  *
@@ -615,6 +622,14 @@ function fmtBytes(n: number): string {
       />
       <span class="link-hint meta">watch <b>assoc</b> above reset when it lands</span>
     </div>
+    <!-- A long blackout does not rebuffer, it evicts: the device leaves this AP
+         and boa can no longer see or shape it until it comes back. -->
+    <p v-if="linkControl && client.present && deadzoneRisky" class="meta dz-warn">
+      A deadzone this long can make the device give up on this Wi-Fi and switch
+      to another network (iOS around 3s). It then leaves boa entirely — not just
+      shown offline, but gone: no traffic and nothing to condition until it
+      rejoins the Pi's Wi-Fi on its own.
+    </p>
 
     <!-- The timeline sits directly under the controls that author it. The
          sliders above ARE the keyframe editor, and putting the playhead
@@ -721,6 +736,10 @@ function fmtBytes(n: number): string {
    editable, but it must still be readable -- the whole point is watching it
    move. Dimmed, not hidden. */
 .swept-note {
+  color: var(--warn);
+  margin: 6px 0 0;
+}
+.dz-warn {
   color: var(--warn);
   margin: 6px 0 0;
 }
