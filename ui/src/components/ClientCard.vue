@@ -153,12 +153,12 @@ function fireDeadzone() {
 const sweeping = computed(() => props.client.sweep?.state === 'running');
 const patRun = computed(() => props.client.pattern_run);
 const playing = computed(() => patRun.value?.state === 'running');
-// While a pattern is playing, the link kinds it drives -- so their buttons can
-// show as "active" (the pattern is firing them, not just available to click).
+// The link kinds the current pattern actually sets -- so their buttons show as
+// "active" whenever the pattern includes that event, not just while it plays.
+// (An empty pattern, or one with none of a kind, leaves that button plain.)
 const activeLinkKinds = computed(() => {
   const s = new Set<string>();
-  if (!playing.value) return s;
-  for (const l of props.client.policy.pattern?.links ?? []) s.add(l.kind);
+  for (const l of pattern.value?.links ?? []) s.add(l.kind);
   return s;
 });
 const downCap = computed(() => {

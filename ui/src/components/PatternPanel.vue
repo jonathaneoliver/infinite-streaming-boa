@@ -1005,8 +1005,12 @@ const shownLinkLanes = computed(() =>
   LINK_LANES.filter((ll) => showWifi.value || links.value.some((l) => l.kind === ll.kind)),
 );
 
-/** True when the switch is the only thing that could raise the link lanes. */
-const wifiUnused = computed(() => links.value.length === 0);
+/** Show the wifi toggle whenever a kind is hidden (so its lane can be revealed
+ *  to add events). Unlike the extras, the three kinds are independent -- having
+ *  a drop must not hide the way to reach the nudge and deadzone lanes. */
+const wifiUnused = computed(() =>
+  LINK_LANES.some((ll) => !links.value.some((l) => l.kind === ll.kind)),
+);
 
 /**
  * Where a value sits in its lane, 0 at the floor and 1 at the ceiling.
