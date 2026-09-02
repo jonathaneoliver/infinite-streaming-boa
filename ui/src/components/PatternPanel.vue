@@ -76,6 +76,9 @@ const emit = defineEmits<{
   play: [];
   stop: [];
   select: [number | null];
+  /** The library loaded a different pattern -- the card must drop any pending
+   *  optimistic edit-draft, or a stuck draft would mask the new selection. */
+  changed: [];
 }>();
 
 const running = computed(() => props.run?.state === 'running');
@@ -1143,7 +1146,7 @@ const status = computed(() => {
       :ladders="ladders"
       :current="pattern"
       :locked="running"
-      @changed="emit('select', null)"
+      @changed="emit('select', null); emit('changed')"
     />
 
     <!-- Hand-authoring, for a shape the ladder does not describe. Both routes

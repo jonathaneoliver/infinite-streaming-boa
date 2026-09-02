@@ -626,6 +626,7 @@ function fmtBytes(n: number): string {
       @play="emit('patternPlay')"
       @stop="emit('patternStop')"
       @select="(i: number | null) => (patSelected = i)"
+      @changed="patDraft = null; patSelected = null"
     />
 
     <!-- Ladders sit above the fold, not behind the counters toggle: a sweep is
