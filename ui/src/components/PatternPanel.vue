@@ -1125,11 +1125,12 @@ const status = computed(() => {
         <div
           v-for="l in LANES" :key="l.key" class="lane"
           :class="{ grab: !run, dragging: vdrag?.lane === l.key }"
-          :title="run ? '' : `drag up and down to set ${l.label}; right-click to add a point`"
+          :title="run ? '' : `drag up and down to set ${l.label}; double-click to add a point`"
           @pointerdown.stop="startVDrag(l.key, $event)"
           @pointermove="onLaneMove"
           @pointerup="onLaneUp"
           @pointercancel="onLaneUp"
+          @dblclick.prevent.stop="addField(l.key, $event)"
           @contextmenu.prevent.stop="addField(l.key, $event)"
         >
           <svg :viewBox="`0 0 1000 ${VB}`" preserveAspectRatio="none">
@@ -1273,10 +1274,10 @@ const status = computed(() => {
           transition — nothing on another lane moves, and nothing blocks it;
           hold alt to slide it between its own neighbours instead of rippling
           the ones after it. Drag a lane up and down to set its value;
-          right-click a lane to add a point, a marker to delete one. Click the
-          timeline to pick a moment, then the sliders above set every field at
-          once. Drag a field's last transition into the shaded space, or set the
-          length below, to make the pattern longer.
+          double-click a lane to add a point, right-click a marker to delete
+          one. Click the timeline to pick a moment, then the sliders above set
+          every field at once. Drag a field's last transition into the shaded
+          space, or set the length below, to make the pattern longer.
         </span>
       </div>
 
