@@ -11,10 +11,10 @@ import { computed, inject, ref, watch } from 'vue';
 import type { ComputedRef } from 'vue';
 import type { Shape } from '@/types';
 import {
-  BURST_MAX, EXTRA_IMPAIRMENTS, hasExtras,
+  BURST_MAX, EXTRA_IMPAIRMENTS,
   lossToPos, posToLoss, posToRate, rateToPos,
 } from '@/types';
-import { useExtras } from '@/composables/useExtras';
+import { useFields } from '@/composables/useFields';
 
 /*
  * Whether this kernel will take a Gilbert-Elliott loss model.
@@ -109,26 +109,35 @@ const jitterVal = computed(() => Math.min(v('jitter_ms'), jitterMax.value));
  */
 const jitterText = computed(() => `± ${jitterVal.value} ms`);
 
-/**
- * The second tier opens itself.
+/*
+ * Show a field only while it is doing something, or when the operator reveals it.
  *
- * Held open by an explicit click, or by anything inside being in force. The
- * second half is the important half: a section that closes over a live
- * impairment would be conditioning the traffic with nothing on screen saying
- * so, which is the whole objection to hiding controls behind a preference.
- *
- * So the collapsed header does not say "3 more" -- it names what is set. Empty
- * is the only state in which this is out of sight.
+ * rate is always shown -- nearly every test sets a cap. The rest collapse to a
+ * "+ field" chip when zero; a revealed-but-still-empty one gets a "- field" to
+ * put it away again. A field in force (non-zero) has no chip: an impairment can
+ * never be hidden while it is conditioning the traffic -- the same guarantee the
+ * old always-open second tier gave. Shared with the pattern lanes via useFields,
+ * so the two show and hide together. jitter rides with delay and burst with
+ * loss (each is a width of the field above it, meaningless on its own).
  */
-const { show: opened, toggle: toggleExtras } = useExtras();
-const extrasActive = computed(() => hasExtras({ ...props.shape, ...local.value } as Shape));
-const extrasOpen = computed(() => opened.value || extrasActive.value);
+const { revealed, reveal, hide } = useFields();
 
-const extrasSummary = computed(() =>
-  EXTRA_IMPAIRMENTS.filter((e) => v(e.key) > 0)
-    .map((e) => `${e.label} ${v(e.key)}${e.unit}`)
-    .join(' · '),
-);
+const COLLAPSIBLE = [
+  { key: 'delay_ms', label: 'delay' },
+  { key: 'loss_pct', label: 'loss' },
+  { key: 'reorder_pct', label: 'reorder' },
+  { key: 'corrupt_pct', label: 'corrupt' },
+] as const;
+
+function active(key: keyof Shape): boolean {
+  return v(key) > 0;
+}
+function shown(key: string): boolean {
+  return active(key as keyof Shape) || revealed.value.has(key);
+}
+const shownExtras = computed(() => EXTRA_IMPAIRMENTS.filter((e) => shown(e.key)));
+const addChips = computed(() => COLLAPSIBLE.filter((f) => !shown(f.key)));
+const dropChips = computed(() => COLLAPSIBLE.filter((f) => shown(f.key) && !active(f.key)));
 
 // netem rejects `reorder` outright when there is no delay to reorder against,
 // and a rejected command installs no qdisc at all -- so this would not merely
@@ -215,7 +224,7 @@ const burstNote = computed(() => {
       <span class="val num">{{ rateText }}</span>
     </div>
 
-    <div class="row">
+    <div v-if="shown('delay_ms')" class="row">
       <label>delay</label>
       <input
         type="range" min="0" max="1000" step="1"
@@ -225,11 +234,9 @@ const burstNote = computed(() => {
       <span class="val num">{{ v('delay_ms') }} ms</span>
     </div>
 
-    <!-- Disabled rather than hidden when there is no delay. Hiding it would
-         make the row appear and vanish as delay crosses zero, moving the loss
-         slider under the cursor, and would remove the explanation exactly when
-         it is needed: the control is temporarily inapplicable, not clutter. -->
-    <div class="row" :class="{ off: jitterOff }">
+    <!-- jitter rides with delay: it is a width of it, so it shows whenever delay
+         does, and is disabled (not hidden) while there is no delay to vary. -->
+    <div v-if="shown('delay_ms')" class="row" :class="{ off: jitterOff }">
       <label>jitter</label>
       <input
         type="range" min="0" :max="Math.max(jitterMax, 1)" step="1"
@@ -242,7 +249,7 @@ const burstNote = computed(() => {
       <span class="val num">{{ jitterText }}</span>
     </div>
 
-    <div class="row">
+    <div v-if="shown('loss_pct')" class="row">
       <label>loss</label>
       <input
         type="range" min="0" max="100" step="1"
@@ -252,60 +259,48 @@ const burstNote = computed(() => {
       <span class="val num" :class="{ black: loss >= 100 }">{{ lossText }}</span>
     </div>
 
-    <!-- Burstiness sits with the loss it modifies rather than in the second
-         tier: it does not add an impairment, it changes what the slider above
-         it means. Disabled rather than hidden when it can do nothing -- a
-         control that vanishes leaves the operator wondering whether the box
-         supports the idea at all. -->
-    <div class="row" :class="{ off: burstOff }">
-      <label>burst</label>
-      <input
-        type="range" min="1" :max="BURST_MAX" step="1"
-        :value="burst" :disabled="disabled || burstOff" :title="burstWhy"
-        @input="set('loss_burst', +($event.target as HTMLInputElement).value)"
-      />
-      <span class="val num">{{ burstText }}</span>
-    </div>
-    <p v-if="burstNote" class="meta burst-note">{{ burstNote }}</p>
-    <p v-else-if="!burstCap.ok" class="meta burst-note warn">{{ burstCap.note }}</p>
-
-    <!-- The long tail. Out of the way until it is doing something, and then it
-         stays put: `extrasOpen` is true whenever anything inside is non-zero,
-         so no impairment can be in force while its control is off screen. -->
-    <button
-      v-if="!extrasOpen" class="more" :disabled="disabled"
-      @click="toggleExtras()"
-    >+ {{ EXTRA_IMPAIRMENTS.map((e) => e.label).join(', ') }}</button>
-
-    <template v-else>
-      <div
-        v-for="e in EXTRA_IMPAIRMENTS" :key="e.key"
-        class="row"
-        :class="{ blocked: e.needsDelay && reorderBlocked }"
-      >
-        <label :title="e.title">{{ e.label }}</label>
+    <!-- Burstiness rides with the loss it modifies: it does not add an
+         impairment, it changes what the loss slider means. Disabled rather than
+         hidden when it can do nothing. -->
+    <template v-if="shown('loss_pct')">
+      <div class="row" :class="{ off: burstOff }">
+        <label>burst</label>
         <input
-          type="range" min="0" :max="e.max" :step="e.step"
-          :value="v(e.key)"
-          :disabled="disabled || (e.needsDelay && reorderBlocked)"
-          :title="e.needsDelay && reorderBlocked
-            ? 'netem reorders by letting packets skip the delay queue. With no delay there is no queue, and it refuses the whole rule.'
-            : e.title"
-          @input="set(e.key, +($event.target as HTMLInputElement).value)"
+          type="range" min="1" :max="BURST_MAX" step="1"
+          :value="burst" :disabled="disabled || burstOff" :title="burstWhy"
+          @input="set('loss_burst', +($event.target as HTMLInputElement).value)"
         />
-        <!-- Always the number, in every state. A row that swaps its readout for
-             a sentence explains a control that is already visibly disabled, and
-             breaks the shape of the column: numbers are scanned down this
-             stack, and one row ending in words costs more than it says. The
-             reason moves to the slider's tooltip, where it takes no space.
-             Same call as the jitter row above. -->
-        <span class="val num">{{ v(e.key) }} {{ e.unit }}</span>
+        <span class="val num">{{ burstText }}</span>
       </div>
-      <button
-        v-if="!extrasActive" class="more" :disabled="disabled"
-        @click="toggleExtras()"
-      >− fewer</button>
+      <p v-if="burstNote" class="meta burst-note">{{ burstNote }}</p>
+      <p v-else-if="!burstCap.ok" class="meta burst-note warn">{{ burstCap.note }}</p>
     </template>
+
+    <div
+      v-for="e in shownExtras" :key="e.key"
+      class="row"
+      :class="{ blocked: e.needsDelay && reorderBlocked }"
+    >
+      <label :title="e.title">{{ e.label }}</label>
+      <input
+        type="range" min="0" :max="e.max" :step="e.step"
+        :value="v(e.key)"
+        :disabled="disabled || (e.needsDelay && reorderBlocked)"
+        :title="e.needsDelay && reorderBlocked
+          ? 'netem reorders by letting packets skip the delay queue. With no delay there is no queue, and it refuses the whole rule.'
+          : e.title"
+        @input="set(e.key, +($event.target as HTMLInputElement).value)"
+      />
+      <span class="val num">{{ v(e.key) }} {{ e.unit }}</span>
+    </div>
+
+    <!-- One chip per collapsed field to add it, and per revealed-but-empty
+         field to put it away. A field in force has no chip: it stays on screen
+         for as long as it is conditioning the traffic. -->
+    <div v-if="(addChips.length || dropChips.length) && !disabled" class="chips">
+      <button v-for="f in addChips" :key="f.key" class="more" @click="reveal(f.key)">+ {{ f.label }}</button>
+      <button v-for="f in dropChips" :key="f.key" class="more" @click="hide(f.key)">− {{ f.label }}</button>
+    </div>
   </div>
 </template>
 
@@ -323,6 +318,13 @@ const burstNote = computed(() => {
 
 /* Quiet: this is an affordance, not a control. It should read as the edge of
    the panel rather than competing with the sliders above it. */
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  margin-top: 2px;
+  grid-column: 1 / -1;
+}
 .more {
   align-self: start;
   padding: 1px 0;
