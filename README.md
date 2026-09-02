@@ -75,6 +75,16 @@ delay, jitter and loss lanes unused in this run.
 
 - **Conditions each client independently** — rate, latency, jitter and loss, per
   device and per direction, live from a web interface. Both IPv4 and IPv6.
+- **Drives the timeline, not just a fixed cap.** A per-client *pattern* walks the
+  conditioning through a scripted sequence — a rate ladder, a loss burst, an
+  outage at a chosen second — so you can watch what a player does *through* a
+  transition, not only at steady state.
+- **Conditions the Wi-Fi link itself, not only the packets** — drop
+  (deauthenticate), nudge (disassociate) and a timed deadzone, per client, as
+  one-shot buttons or as a lane on a pattern. A phone's path monitor and a
+  player's throughput estimator react to the link going *down*, which netem
+  cannot express. Needs the USB radio (hostapd); the onboard radio has no
+  control interface, so the buttons only appear when it can act.
 - **Stays invisible.** Clients keep their existing addresses on your existing
   subnet; the Pi is not a hop and does not appear in `traceroute`.
 - **Names devices from mDNS**, so the list reads as devices rather than MACs.
