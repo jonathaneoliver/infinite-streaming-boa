@@ -447,17 +447,6 @@ function addField(lane: FieldKey, e: MouseEvent) {
   emit('select', at);
 }
 
-/** A plain click on a lane adds a point there, like the link lanes. A DRAG that
- * set a value ends in a click too, so it arms suppressClick and this consumes
- * it -- otherwise every value edit would also drop a marker where it finished. */
-function clickLane(lane: FieldKey, e: MouseEvent) {
-  if (suppressClick) {
-    suppressClick = false;
-    return;
-  }
-  addField(lane, e);
-}
-
 /** Remove a field's transition. Its step at 0 is the starting value and stays. */
 function removeField(lane: FieldKey, i: number) {
   if (props.run || i === 0) return;
@@ -1209,12 +1198,12 @@ const status = computed(() => {
         <div
           v-for="l in LANES" :key="l.key" class="lane"
           :class="{ grab: !run, dragging: vdrag?.lane === l.key }"
-          :title="run ? '' : `click to add a ${l.label} point; drag up and down to set it`"
+          :title="run ? '' : `double-click or right-click to add a ${l.label} point; drag up and down to set it`"
           @pointerdown.stop="startVDrag(l.key, $event)"
           @pointermove="onLaneMove"
           @pointerup="onLaneUp"
           @pointercancel="onLaneUp"
-          @click="clickLane(l.key, $event)"
+          @dblclick.prevent.stop="addField(l.key, $event)"
           @contextmenu.prevent.stop="addField(l.key, $event)"
         >
           <svg :viewBox="`0 0 1000 ${VB}`" preserveAspectRatio="none">
@@ -1227,8 +1216,9 @@ const status = computed(() => {
             :disabled="!!running"
             :title="i === 0
               ? `${s.at_sec}s · ${l.label} starts here`
-              : `${s.at_sec}s · ${l.label} · drag to move, right-click to delete`"
+              : `${s.at_sec}s · ${l.label} · drag to move, double-click or right-click to delete`"
             @click.stop="toggleKeyAt(s.at_sec)"
+            @dblclick.prevent.stop="removeField(l.key, i)"
             @contextmenu.prevent.stop="removeField(l.key, i)"
             @pointerdown.stop="startFieldDrag(l.key, i, $event)"
           ></button>
@@ -1245,8 +1235,9 @@ const status = computed(() => {
         <div
           v-for="ll in shownLinkLanes" :key="ll.kind"
           class="lane linklane" :class="{ grab: !run }"
-          :title="run ? '' : `click to add a ${ll.label}; drag it to move; right-click it to delete`"
-          @click="addLink(ll.kind, $event)"
+          :title="run ? '' : `double-click or right-click to add a ${ll.label}; drag it to move`"
+          @dblclick.prevent.stop="addLink(ll.kind, $event)"
+          @contextmenu.prevent.stop="addLink(ll.kind, $event)"
           @pointermove="onLinkDrag"
           @pointerup="endLinkDrag"
           @pointercancel="endLinkDrag"
@@ -1258,9 +1249,10 @@ const status = computed(() => {
             v-for="{ ev, i } in laneEvents(ll.kind)" :key="i"
             class="linkblock" :class="ll.kind"
             :style="{ left: evLeftPct(ev) + '%', width: evWidthPct(ev) + '%' }"
-            :title="run ? '' : 'drag to move, drag an edge to resize, right-click to delete'"
+            :title="run ? '' : 'drag to move, drag an edge to resize, double-click or right-click to delete'"
             @pointerdown.stop="startLinkMove(i, $event)"
             @click.stop
+            @dblclick.prevent.stop="removeLink(i)"
             @contextmenu.prevent.stop="removeLink(i)"
           >
             <span
@@ -1358,12 +1350,12 @@ const status = computed(() => {
         <span class="meta">
           Each lane is its own timeline. Drag a marker to move that field's
           transition — nothing on another lane moves, and it stops at its own
-          neighbours rather than crossing them. Click a lane to add a point,
-          then drag it up and down to set its value; right-click a marker (or a
-          drop/nudge/deadzone block) to delete it. Or click the timeline and let
-          the sliders above set every field at that moment at once. Drag a
-          field's last transition into the shaded space, or set the length
-          below, to make the pattern longer.
+          neighbours rather than crossing them. Double-click or right-click a
+          lane to add a point, then drag it up and down to set its value; the
+          same on a marker (or a drop/nudge/deadzone block) deletes it. Single-
+          click the timeline to pick a moment and let the sliders above set
+          every field at once. Drag a field's last transition into the shaded
+          space, or set the length below, to make the pattern longer.
         </span>
       </div>
 
