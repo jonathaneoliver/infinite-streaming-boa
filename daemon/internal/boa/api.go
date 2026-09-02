@@ -58,6 +58,7 @@ func (a *API) Routes() *http.ServeMux {
 	mux.HandleFunc("POST /api/devices/{mac}/reset", a.resetDevice)
 	mux.HandleFunc("POST /api/devices/{mac}/link/deauth", a.linkDeauth)
 	mux.HandleFunc("POST /api/devices/{mac}/link/disassoc", a.linkDisassoc)
+	mux.HandleFunc("POST /api/devices/{mac}/link/deadzone", a.linkDeadzone)
 	mux.HandleFunc("DELETE /api/devices/{mac}", a.forgetDevice)
 	mux.Handle("/", cacheHeaders(http.FileServer(http.FS(a.ui))))
 	return mux
@@ -1260,6 +1261,36 @@ func (a *API) resetDevice(w http.ResponseWriter, r *http.Request) {
 
 func (a *API) linkDeauth(w http.ResponseWriter, r *http.Request)   { a.linkEvent(w, r, "deauth") }
 func (a *API) linkDisassoc(w http.ResponseWriter, r *http.Request) { a.linkEvent(w, r, "disassoc") }
+
+// linkDeadzone holds a client off the AP for ?dur=<seconds> (default 10) --
+// a sustained outage, long enough to actually stall a stream, unlike a single
+// deauth. See issue #135.
+func (a *API) linkDeadzone(w http.ResponseWriter, r *http.Request) {
+	if !a.e.LinkControlAvailable() {
+		writeErr(w, http.StatusServiceUnavailable,
+			"link control unavailable: hostapd is not serving the AP (onboard radio, or ctrl_interface missing)")
+		return
+	}
+	mac := normMAC(r.PathValue("mac"))
+	if !validMAC(mac) {
+		writeErr(w, http.StatusBadRequest, "not a MAC address: "+mac)
+		return
+	}
+	dur := 10.0
+	if q := strings.TrimSpace(r.URL.Query().Get("dur")); q != "" {
+		f, err := strconv.ParseFloat(q, 64)
+		if err != nil || f < 1 || f > 300 {
+			writeErr(w, http.StatusBadRequest, "dur must be 1-300 seconds")
+			return
+		}
+		dur = f
+	}
+	if err := a.e.LinkDeadzone(mac, dur); err != nil {
+		writeErr(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"mac": mac, "action": "deadzone", "dur_sec": dur})
+}
 
 // linkEvent drives a Group A per-client link event (deauth or disassoc) through
 // hostapd. It is a POST with no body; an optional ?reason=<N> supplies an IEEE

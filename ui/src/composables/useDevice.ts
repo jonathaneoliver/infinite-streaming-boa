@@ -186,10 +186,15 @@ export function useDevice() {
     const q = reason ? `?reason=${reason}` : '';
     return send(`/api/devices/${mac}/link/disassoc${q}`, 'POST', undefined);
   }
+  // deadzone: a sustained outage held for `sec` seconds (repeated deauth).
+  function linkDeadzone(mac: string, sec: number) {
+    return send(`/api/devices/${mac}/link/deadzone?dur=${sec}`, 'POST', undefined);
+  }
 
   return {
     linkDeauth,
     linkDisassoc,
+    linkDeadzone,
     writing,
     conflict,
     patchShape,

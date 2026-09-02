@@ -561,7 +561,9 @@ func (e *Engine) tick() {
 	}
 	e.sweep.Advance(now, sweepObserver{hist: e.hist, live: live})
 	e.storeSweepResult()
-	e.player.Advance(now)
+	for _, f := range e.player.Advance(now) {
+		go e.fireLink(f) // network I/O to hostapd; keep it off the tick
+	}
 
 	if ready, _ := e.sh.Ready(); ready {
 		for _, err := range e.sh.Apply(e.desired(clients)) {

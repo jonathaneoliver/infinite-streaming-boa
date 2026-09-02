@@ -428,6 +428,7 @@ the file are replaced, devices not mentioned are left alone.">
       @forget="dev.forget(c.mac)"
       @link-drop="dev.linkDeauth(c.mac)"
       @link-nudge="dev.linkDisassoc(c.mac)"
+      @link-deadzone="(sec: number) => dev.linkDeadzone(c.mac, sec)"
       @add-sub="dev.addSub(c.mac, rev(c), 'new rule', {})"
       @remove-sub="(id: string) => dev.deleteSub(c.mac, id)"
       @patch-sub="(id: string, p: Record<string, unknown>) => dev.patchSub(c.mac, id, rev(c), p)"

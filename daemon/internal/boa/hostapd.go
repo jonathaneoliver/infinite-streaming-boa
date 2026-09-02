@@ -2,6 +2,7 @@ package boa
 
 import (
 	"fmt"
+	"log"
 	"net"
 	"os"
 	"path/filepath"
@@ -109,6 +110,54 @@ func (e *Engine) LinkDeauth(mac string, reason int) error {
 
 func (e *Engine) LinkDisassoc(mac string, reason int) error {
 	return e.linkAction(disassocCommand(normMAC(mac), reason))
+}
+
+// fireLink executes one LinkFire the Player scheduled (drop/nudge, or a
+// deadzone tick which is a repeated deauth). Best-effort: a failure is logged
+// once rather than silently swallowed, but a pattern keeps running.
+func (e *Engine) fireLink(f LinkFire) {
+	if !e.LinkControlAvailable() {
+		return
+	}
+	var err error
+	if f.Kind == LinkNudge {
+		err = e.LinkDisassoc(f.MAC, 0)
+	} else {
+		err = e.LinkDeauth(f.MAC, 0) // drop and deadzone both deauth
+	}
+	if err != nil {
+		log.Printf("link %s %s: %v", f.Kind, f.MAC, err)
+	}
+}
+
+// LinkDeadzone holds a client off the AP for durSec by deauthenticating it
+// every second -- the single-radio implementation of a sustained outage, which
+// (unlike a single drop) lasts long enough to drain a player's buffer. It runs
+// in the background; the call returns as soon as the outage has started.
+func (e *Engine) LinkDeadzone(mac string, durSec float64) error {
+	if !e.LinkControlAvailable() {
+		return fmt.Errorf("link control unavailable: hostapd is not serving the AP")
+	}
+	mac = normMAC(mac)
+	if !validMAC(mac) {
+		return fmt.Errorf("not a MAC address: %s", mac)
+	}
+	if durSec < 1 || durSec > 300 {
+		return fmt.Errorf("deadzone duration must be 1-300 seconds")
+	}
+	if e.cfg.Demo {
+		return nil
+	}
+	go func() {
+		deadline := time.Now().Add(time.Duration(durSec * float64(time.Second)))
+		for time.Now().Before(deadline) {
+			if err := e.LinkDeauth(mac, 0); err != nil {
+				log.Printf("deadzone %s: %v", mac, err)
+			}
+			time.Sleep(time.Second)
+		}
+	}()
+	return nil
 }
 
 func (e *Engine) linkAction(cmd string) error {

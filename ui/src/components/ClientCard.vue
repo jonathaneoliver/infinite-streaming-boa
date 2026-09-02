@@ -29,6 +29,7 @@ const emit = defineEmits<{
   forget: [];
   linkDrop: [];
   linkNudge: [];
+  linkDeadzone: [sec: number];
   toggle: [];
   addSub: [];
   removeSub: [string];
@@ -116,14 +117,24 @@ const connectedLabel = computed(() => {
 
 // Transient acknowledgement that a link event was sent. The lasting proof is
 // the connected-time above resetting; this just confirms the click dispatched.
-const linkFlash = ref<'drop' | 'nudge' | null>(null);
+const linkFlash = ref<'drop' | 'nudge' | 'deadzone' | null>(null);
 let linkFlashTimer: ReturnType<typeof setTimeout> | undefined;
-function fireLink(kind: 'drop' | 'nudge') {
-  if (kind === 'drop') emit('linkDrop');
-  else emit('linkNudge');
+function flashLink(kind: 'drop' | 'nudge' | 'deadzone') {
   linkFlash.value = kind;
   clearTimeout(linkFlashTimer);
   linkFlashTimer = setTimeout(() => (linkFlash.value = null), 1400);
+}
+function fireLink(kind: 'drop' | 'nudge') {
+  if (kind === 'drop') emit('linkDrop');
+  else emit('linkNudge');
+  flashLink(kind);
+}
+// deadzone is a sustained outage, so it carries a duration (default 10s) --
+// long enough to drain a player's buffer, unlike a single drop.
+const deadzoneSec = ref(10);
+function fireDeadzone() {
+  emit('linkDeadzone', deadzoneSec.value);
+  flashLink('deadzone');
 }
 
 /**
@@ -574,6 +585,14 @@ function fmtBytes(n: number): string {
         class="ghost" :class="{ flash: linkFlash === 'nudge' }" @click="fireLink('nudge')"
         title="Disassociate: the softer 802.11 disconnect, usually a quicker recovery than drop"
       >{{ linkFlash === 'nudge' ? 'sent' : 'nudge' }}</button>
+      <button
+        class="ghost" :class="{ flash: linkFlash === 'deadzone' }" @click="fireDeadzone"
+        title="Hold the link down for the duration -- long enough to drain a player's buffer and force a rebuffer, unlike a single drop"
+      >{{ linkFlash === 'deadzone' ? 'sent' : `deadzone ${deadzoneSec}s` }}</button>
+      <input
+        type="number" min="1" max="300" step="1" v-model.number="deadzoneSec"
+        class="dz-dur" title="deadzone length in seconds" aria-label="deadzone seconds"
+      />
       <span class="link-hint meta">watch <b>assoc</b> above reset when it lands</span>
     </div>
 

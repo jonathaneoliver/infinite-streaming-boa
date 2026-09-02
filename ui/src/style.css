@@ -193,6 +193,11 @@ header.top .sub { color: var(--ink-faint); font-size: 13px; }
   border-color: var(--warn);
   font-weight: 600;
 }
+.link-events .dz-dur {
+  width: 3.4em;
+  padding: 2px 4px;
+  font-size: 0.85em;
+}
 
 .dir { background: var(--panel); padding: 13px 14px; min-width: 0; }
 .dir h3 {

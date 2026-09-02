@@ -58,6 +58,31 @@ type Keyframe struct {
 	Ease string `json:"ease,omitempty"`
 }
 
+// Link event kinds. drop and nudge are instant pulses; deadzone is a held
+// outage with a duration. See issue #135.
+const (
+	LinkDrop     = "drop"     // deauthenticate: hard link-down pulse
+	LinkNudge    = "nudge"    // disassociate: softer link-down pulse
+	LinkDeadzone = "deadzone" // deauth held for DurSec: the client cannot stay on
+)
+
+// LinkEvent is one entry on a pattern's link lane. A pulse (drop/nudge) fires
+// once as the playhead crosses AtSec; a deadzone re-fires for DurSec, holding
+// the client off long enough to drain a player's buffer.
+type LinkEvent struct {
+	AtSec  float64 `json:"at_sec"`
+	Kind   string  `json:"kind"`
+	DurSec float64 `json:"dur_sec,omitempty"` // deadzone only
+}
+
+// LinkFire is a link action the Player determined should happen this tick,
+// handed back to the Engine to execute against hostapd (outside the Player
+// lock, since it does network I/O).
+type LinkFire struct {
+	MAC  string
+	Kind string
+}
+
 // Pattern is an ordered list of keyframes plus how to leave the end of it.
 //
 // There is deliberately no "wrap" mode. A loop restarts at the first keyframe,
@@ -69,6 +94,12 @@ type Pattern struct {
 	Name string     `json:"name"`
 	Keys []Keyframe `json:"keys"`
 	Loop bool       `json:"loop"`
+
+	// Links are Group A per-client link events on the same clock as the
+	// keyframes: association-level impairments (drop/nudge) and held outages
+	// (deadzone), as distinct from the rate/loss keyframes which condition
+	// packets. They fire as the playhead crosses them. See issue #135.
+	Links []LinkEvent `json:"links,omitempty"`
 
 	// Recipe records how a merged pattern was made, when it was made that way.
 	// Absent on anything hand-built, which stays entirely legal. See
@@ -245,6 +276,23 @@ func validPattern(p Pattern) error {
 			return fmt.Errorf("keyframe %d up: %w", i, err)
 		}
 	}
+	for i, ev := range p.Links {
+		switch ev.Kind {
+		case LinkDrop, LinkNudge:
+			if ev.DurSec != 0 {
+				return fmt.Errorf("link event %d: %s is instant and takes no duration", i, ev.Kind)
+			}
+		case LinkDeadzone:
+			if ev.DurSec <= 0 || ev.DurSec > maxPatternSec {
+				return fmt.Errorf("link event %d: deadzone needs a duration of 1-%ds", i, maxPatternSec)
+			}
+		default:
+			return fmt.Errorf("link event %d: unknown kind %q (want drop, nudge or deadzone)", i, ev.Kind)
+		}
+		if ev.AtSec < 0 || ev.AtSec > maxPatternSec {
+			return fmt.Errorf("link event %d: at %gs is out of range", i, ev.AtSec)
+		}
+	}
 	return nil
 }
 
@@ -381,10 +429,11 @@ func (p *Player) Override(mac string) (down, up Shape, ok bool) {
 //
 // Called from the engine tick before reconciliation, so a keyframe boundary
 // reaches the kernel on the tick it was crossed rather than a second later.
-func (p *Player) Advance(now time.Time) {
+func (p *Player) Advance(now time.Time) []LinkFire {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	for _, r := range p.runs {
+	var fires []LinkFire
+	for mac, r := range p.runs {
 		if r.state != PatternRunning {
 			continue
 		}
@@ -394,19 +443,55 @@ func (p *Player) Advance(now time.Time) {
 			continue
 		}
 		dur := r.pat.DurSec()
+		prev := r.pos
+		looped := false
 		r.pos += dt
 		if dur > 0 && r.pos >= dur {
 			if r.pat.Loop {
 				r.laps += int(r.pos / dur)
 				r.pos = math.Mod(r.pos, dur)
+				looped = true
 			} else {
 				r.pos = dur
 				r.state = PatternDone
 				r.reason = "the pattern reached its end; the device is back on its stored policy"
 			}
 		}
+		fires = append(fires, r.pat.linkFires(mac, prev, r.pos, looped, dur)...)
 		r.down, r.up, r.idx = r.pat.At(r.pos)
 	}
+	return fires
+}
+
+// linkFires reports the link actions the playhead triggers moving from prev to
+// pos this tick. A pulse (drop/nudge) fires once when its time is crossed; a
+// deadzone fires (a deauth) on every tick the playhead is inside its span, so
+// the client keeps being kicked for the whole window.
+func (p Pattern) linkFires(mac string, prev, pos float64, looped bool, dur float64) []LinkFire {
+	var out []LinkFire
+	for _, ev := range p.Links {
+		switch ev.Kind {
+		case LinkDeadzone:
+			if pos >= ev.AtSec && pos < ev.AtSec+ev.DurSec {
+				out = append(out, LinkFire{MAC: mac, Kind: LinkDrop}) // deadzone = repeated deauth
+			}
+		default: // drop, nudge: a pulse when AtSec is crossed
+			if crossed(prev, pos, looped, dur, ev.AtSec) {
+				out = append(out, LinkFire{MAC: mac, Kind: ev.Kind})
+			}
+		}
+	}
+	return out
+}
+
+// crossed reports whether time `at` fell in the interval the playhead covered
+// this tick -- (prev, pos] normally, or (prev, dur] plus [0, pos] when the tick
+// wrapped the loop.
+func crossed(prev, pos float64, looped bool, dur, at float64) bool {
+	if !looped {
+		return at > prev && at <= pos
+	}
+	return (at > prev && at <= dur) || (at >= 0 && at <= pos)
 }
 
 // PatternView is a run's progress, carried in every snapshot so the UI can draw
