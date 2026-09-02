@@ -715,6 +715,26 @@ function evLeftPct(ev: LinkEvent): number {
 function evWidthPct(ev: LinkEvent): number {
   return renderSpan.value > 0 ? (evVisSec(ev) / renderSpan.value) * 100 : 0;
 }
+// A 0/1 square wave for a link lane, drawn exactly like the value lanes'
+// step path so the whole stack reads as one instrument: low, rise at a block's
+// start, hold high for its width, fall at its end.
+function linkLanePath(kind: string): string {
+  if (renderSpan.value <= 0) return '';
+  const hi = 8;
+  const lo = VB - 6;
+  const evs = laneEvents(kind)
+    .map((x) => x.ev)
+    .slice()
+    .sort((a, b) => a.at_sec - b.at_sec);
+  const d = [`M 0,${lo}`];
+  for (const ev of evs) {
+    const a = xOf(ev.at_sec).toFixed(1);
+    const b = xOf(ev.at_sec + evVisSec(ev)).toFixed(1);
+    d.push(`L ${a},${lo}`, `L ${a},${hi}`, `L ${b},${hi}`, `L ${b},${lo}`);
+  }
+  d.push(`L 1000,${lo}`);
+  return d.join(' ');
+}
 
 function addLink(kind: LinkEvent['kind'], e: MouseEvent) {
   if (props.run) return;
@@ -1201,6 +1221,9 @@ const status = computed(() => {
           @pointerup="endLinkDrag"
           @pointercancel="endLinkDrag"
         >
+          <svg :viewBox="`0 0 1000 ${VB}`" preserveAspectRatio="none">
+            <path :d="linkLanePath(ll.kind)" class="line" vector-effect="non-scaling-stroke" />
+          </svg>
           <div
             v-for="{ ev, i } in laneEvents(ll.kind)" :key="i"
             class="linkblock" :class="ll.kind"
@@ -1448,23 +1471,22 @@ const status = computed(() => {
 .linklane.grab {
   cursor: crosshair;
 }
+.linklane svg {
+  pointer-events: none;
+}
+/* The square-wave path is the visual; each block is an invisible hit-area over
+   it for move/resize/delete. A faint tint on hover shows what you'd grab. */
 .linkblock {
   position: absolute;
-  top: 8px;
-  bottom: 8px;
-  min-width: 5px;
+  top: 6px;
+  bottom: 6px;
+  min-width: 7px;
   border-radius: 3px;
-  opacity: 0.85;
+  background: transparent;
   cursor: grab;
 }
-.linkblock.drop {
-  background: var(--warn);
-}
-.linkblock.nudge {
-  background: var(--up);
-}
-.linkblock.deadzone {
-  background: var(--bad);
+.linkblock:hover {
+  background: color-mix(in srgb, var(--down) 18%, transparent);
 }
 .linkgrip {
   position: absolute;

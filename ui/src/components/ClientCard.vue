@@ -152,6 +152,14 @@ function fireDeadzone() {
 const sweeping = computed(() => props.client.sweep?.state === 'running');
 const patRun = computed(() => props.client.pattern_run);
 const playing = computed(() => patRun.value?.state === 'running');
+// While a pattern is playing, the link kinds it drives -- so their buttons can
+// show as "active" (the pattern is firing them, not just available to click).
+const activeLinkKinds = computed(() => {
+  const s = new Set<string>();
+  if (!playing.value) return s;
+  for (const l of props.client.policy.pattern?.links ?? []) s.add(l.kind);
+  return s;
+});
 const downCap = computed(() => {
   if (sweeping.value) return props.client.sweep?.cap_mbps ?? 0;
   // A playing pattern drives the cap along its timeline without writing it, on
@@ -578,15 +586,15 @@ function fmtBytes(n: number): string {
     <div v-if="linkControl && client.present" class="link-events">
       <span class="link-label">Link</span>
       <button
-        class="ghost" :class="{ flash: linkFlash === 'drop' }" @click="fireLink('drop')"
+        class="ghost" :class="{ flash: linkFlash === 'drop', active: activeLinkKinds.has('drop') }" @click="fireLink('drop')"
         title="Deauthenticate: take this client's Wi-Fi link down; it reconnects on its own"
       >{{ linkFlash === 'drop' ? 'sent' : 'drop' }}</button>
       <button
-        class="ghost" :class="{ flash: linkFlash === 'nudge' }" @click="fireLink('nudge')"
+        class="ghost" :class="{ flash: linkFlash === 'nudge', active: activeLinkKinds.has('nudge') }" @click="fireLink('nudge')"
         title="Disassociate: the softer 802.11 disconnect, usually a quicker recovery than drop"
       >{{ linkFlash === 'nudge' ? 'sent' : 'nudge' }}</button>
       <button
-        class="ghost" :class="{ flash: linkFlash === 'deadzone' }" @click="fireDeadzone"
+        class="ghost" :class="{ flash: linkFlash === 'deadzone', active: activeLinkKinds.has('deadzone') }" @click="fireDeadzone"
         title="Hold the link down for the duration -- long enough to drain a player's buffer and force a rebuffer, unlike a single drop"
       >{{ linkFlash === 'deadzone' ? 'sent' : `deadzone ${deadzoneSec}s` }}</button>
       <input
