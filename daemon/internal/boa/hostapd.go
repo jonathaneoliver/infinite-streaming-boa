@@ -120,20 +120,51 @@ func (e *Engine) fireLink(f LinkFire) {
 		return
 	}
 	var err error
-	if f.Kind == LinkNudge {
+	switch f.Kind {
+	case LinkNudge:
 		err = e.LinkDisassoc(f.MAC, 0)
-	} else {
-		err = e.LinkDeauth(f.MAC, 0) // drop and deadzone both deauth
+	case LinkDeadzone:
+		err = e.LinkDeadzone(f.MAC, f.DurSec)
+	default:
+		err = e.LinkDeauth(f.MAC, 0)
 	}
 	if err != nil {
 		log.Printf("link %s %s: %v", f.Kind, f.MAC, err)
 	}
 }
 
-// LinkDeadzone holds a client off the AP for durSec by deauthenticating it
-// every second -- the single-radio implementation of a sustained outage, which
-// (unlike a single drop) lasts long enough to drain a player's buffer. It runs
-// in the background; the call returns as soon as the outage has started.
+// denyACL adds or removes a MAC from hostapd's runtime deny list. With the
+// default macaddr_acl=0 (accept unless denied), a denied MAC cannot associate.
+// op is "ADD" or "DEL".
+func (e *Engine) denyACL(op, mac string) error {
+	reply, err := hostapdCmd(e.cfg.WlanPort, "DENY_ACL "+op+"_MAC "+mac)
+	if err != nil {
+		return err
+	}
+	if !strings.HasPrefix(reply, "OK") {
+		return fmt.Errorf("DENY_ACL %s %s: %s", op, mac, strings.TrimSpace(reply))
+	}
+	return nil
+}
+
+// clearDenyACL empties the runtime deny list at startup, so a deadzone that was
+// in force when the daemon last died does not strand a client off the AP
+// forever. Best-effort: no radio, nothing to clear.
+func (e *Engine) clearDenyACL() {
+	if e.cfg.Demo || !hostapdAvailable(e.cfg.WlanPort) {
+		return
+	}
+	if _, err := hostapdCmd(e.cfg.WlanPort, "DENY_ACL CLEAR"); err != nil {
+		log.Printf("clear deny ACL: %v", err)
+	}
+}
+
+// LinkDeadzone holds a client off the AP for durSec: it is added to the deny
+// ACL (so it CANNOT re-associate for the window) and deauthenticated once to
+// kick it off now. This is a true sustained outage -- unlike a repeated deauth,
+// no traffic leaks through the reconnect gaps -- long enough to drain a player's
+// buffer. The ban is lifted in the background; the call returns once it is in
+// force. See issue #135.
 func (e *Engine) LinkDeadzone(mac string, durSec float64) error {
 	if !e.LinkControlAvailable() {
 		return fmt.Errorf("link control unavailable: hostapd is not serving the AP")
@@ -148,13 +179,14 @@ func (e *Engine) LinkDeadzone(mac string, durSec float64) error {
 	if e.cfg.Demo {
 		return nil
 	}
+	if err := e.denyACL("ADD", mac); err != nil {
+		return err
+	}
+	_ = e.LinkDeauth(mac, 0) // kick it off now; the ACL keeps it off
 	go func() {
-		deadline := time.Now().Add(time.Duration(durSec * float64(time.Second)))
-		for time.Now().Before(deadline) {
-			if err := e.LinkDeauth(mac, 0); err != nil {
-				log.Printf("deadzone %s: %v", mac, err)
-			}
-			time.Sleep(time.Second)
+		time.Sleep(time.Duration(durSec * float64(time.Second)))
+		if err := e.denyACL("DEL", mac); err != nil {
+			log.Printf("deadzone lift %s: %v", mac, err)
 		}
 	}()
 	return nil

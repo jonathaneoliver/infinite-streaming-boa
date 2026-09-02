@@ -22,18 +22,20 @@ func TestCrossedPulse(t *testing.T) {
 	}
 }
 
-func TestLinkFiresDeadzoneSpan(t *testing.T) {
+func TestLinkFiresDeadzoneOnceOnCrossing(t *testing.T) {
 	p := Pattern{Links: []LinkEvent{{AtSec: 50, Kind: LinkDeadzone, DurSec: 10}}}
-	// inside the span -> a deauth (mapped to drop) fires
-	if got := p.linkFires("aa", 50, 51, false, 60); len(got) != 1 || got[0].Kind != LinkDrop {
-		t.Errorf("inside deadzone: got %+v, want one drop", got)
+	// fires ONCE when the playhead crosses AtSec, carrying its duration
+	got := p.linkFires("aa", 49, 51, false, 60)
+	if len(got) != 1 || got[0].Kind != LinkDeadzone || got[0].DurSec != 10 {
+		t.Errorf("crossing deadzone start: got %+v, want one deadzone dur=10", got)
 	}
-	// before and after the span -> nothing
+	// inside the span but past the start -> nothing (the ban is already held)
+	if got := p.linkFires("aa", 51, 52, false, 60); len(got) != 0 {
+		t.Errorf("mid-deadzone: got %+v, want none (no re-fire)", got)
+	}
+	// before the start -> nothing
 	if got := p.linkFires("aa", 40, 41, false, 60); len(got) != 0 {
 		t.Errorf("before deadzone: got %+v, want none", got)
-	}
-	if got := p.linkFires("aa", 60, 61, false, 60); len(got) != 0 {
-		t.Errorf("after deadzone: got %+v, want none", got)
 	}
 }
 

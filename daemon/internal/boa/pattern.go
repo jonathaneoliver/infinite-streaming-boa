@@ -79,8 +79,9 @@ type LinkEvent struct {
 // handed back to the Engine to execute against hostapd (outside the Player
 // lock, since it does network I/O).
 type LinkFire struct {
-	MAC  string
-	Kind string
+	MAC    string
+	Kind   string
+	DurSec float64 // deadzone only
 }
 
 // Pattern is an ordered list of keyframes plus how to leave the end of it.
@@ -470,15 +471,10 @@ func (p *Player) Advance(now time.Time) []LinkFire {
 func (p Pattern) linkFires(mac string, prev, pos float64, looped bool, dur float64) []LinkFire {
 	var out []LinkFire
 	for _, ev := range p.Links {
-		switch ev.Kind {
-		case LinkDeadzone:
-			if pos >= ev.AtSec && pos < ev.AtSec+ev.DurSec {
-				out = append(out, LinkFire{MAC: mac, Kind: LinkDrop}) // deadzone = repeated deauth
-			}
-		default: // drop, nudge: a pulse when AtSec is crossed
-			if crossed(prev, pos, looped, dur, ev.AtSec) {
-				out = append(out, LinkFire{MAC: mac, Kind: ev.Kind})
-			}
+		if crossed(prev, pos, looped, dur, ev.AtSec) {
+			// deadzone carries its duration; the Engine holds the client off
+			// with a deny-ACL ban rather than re-firing each tick.
+			out = append(out, LinkFire{MAC: mac, Kind: ev.Kind, DurSec: ev.DurSec})
 		}
 	}
 	return out

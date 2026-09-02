@@ -183,6 +183,9 @@ func (e *Engine) Start() {
 	if err := e.sh.Setup(); err != nil {
 		fmt.Printf("infinite-streaming-boa: shaping unavailable: %v\n", err)
 	}
+	// Clear any deadzone ban left in hostapd's deny list by a daemon that died
+	// mid-outage, so a client is never stranded off the AP across a restart.
+	e.clearDenyACL()
 	// Devices announce only occasionally -- on join, on wake, when services
 	// change -- so an in-memory-only name table means every daemon restart
 	// drops every client back to a bare MAC until the next announcement,
