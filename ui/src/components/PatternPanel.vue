@@ -1506,22 +1506,15 @@ const status = computed(() => {
 .linkblock:hover {
   background: color-mix(in srgb, var(--down) 18%, transparent);
 }
-/* The rising and falling edges are keyframes: a dot on each edge you can grab
-   to move that edge, the way the endpoints of a value keyframe move. */
-.linkblock .kf {
-  position: absolute;
-  top: 50%;
-  width: 9px;
-  height: 9px;
-  margin-top: -4.5px;
-  border-radius: 50%;
-  background: var(--down);
-  border: 1px solid var(--panel-2);
-  box-sizing: border-box;
-  cursor: ew-resize;
-}
-.linkblock .kf.l { left: -4.5px; }
-.linkblock .kf.r { right: -4.5px; }
+/* The rising and falling edges are keyframes drawn with the SAME .kf marker the
+   ruler uses -- the hollow diamond, its fill, border, size and rotation all
+   inherited from the base .kf rule. Only what genuinely differs for an edge is
+   set here: it sits on its block's corner (not on the ruler at an inline left),
+   and the cursor says resize rather than grab. */
+.linkblock .kf { cursor: ew-resize; }
+.linkblock .kf.l { left: 0; }
+.linkblock .kf.r { left: 100%; }
+.linkblock:hover .kf { border-color: var(--down); }
 .linkx {
   position: absolute;
   top: -7px;
