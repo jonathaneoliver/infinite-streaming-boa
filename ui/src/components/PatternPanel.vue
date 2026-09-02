@@ -755,7 +755,7 @@ function removeLink(i: number) {
 
 // Horizontal drag: move a block, or resize its right edge. Kept in insertion
 // order (mutate sorts keys, never links) so the index stays stable mid-drag.
-type LinkDrag = { i: number; mode: 'move' | 'resize'; grabSec: number };
+type LinkDrag = { i: number; mode: 'move' | 'resizeL' | 'resizeR'; grabSec: number };
 const linkDrag = ref<LinkDrag | null>(null);
 
 function startLinkMove(i: number, e: PointerEvent) {
@@ -767,14 +767,14 @@ function startLinkMove(i: number, e: PointerEvent) {
   }
   linkDrag.value = { i, mode: 'move', grabSec: timeAt(e.clientX, renderSpan.value) - links.value[i].at_sec };
 }
-function startLinkResize(i: number, e: PointerEvent) {
+function startLinkResize(i: number, side: 'l' | 'r', e: PointerEvent) {
   if (props.run) return;
   try {
     (e.target as HTMLElement).setPointerCapture(e.pointerId);
   } catch {
     /* older Safari */
   }
-  linkDrag.value = { i, mode: 'resize', grabSec: 0 };
+  linkDrag.value = { i, mode: side === 'l' ? 'resizeL' : 'resizeR', grabSec: 0 };
 }
 function onLinkDrag(e: PointerEvent) {
   const d = linkDrag.value;
@@ -783,11 +783,20 @@ function onLinkDrag(e: PointerEvent) {
   mutate((p) => {
     const ev = (p.links ?? [])[d.i];
     if (!ev) return;
+    // deadzone must stay >= 1s; drop/nudge may shrink to a pulse (0).
+    const min = ev.kind === 'deadzone' ? 1 : 0;
+    const snap = (x: number) => Math.round(x * 2) / 2; // 0.5s grid
     if (d.mode === 'move') {
       ev.at_sec = Math.max(0, t - d.grabSec);
+    } else if (d.mode === 'resizeL') {
+      // The rising edge is a keyframe: move the start, hold the falling edge.
+      const endT = ev.at_sec + (ev.dur_sec ?? 0);
+      const s = Math.max(0, Math.min(snap(t), endT - min));
+      ev.at_sec = s;
+      ev.dur_sec = Math.max(min, snap(endT - s));
     } else {
-      // deadzone must stay >= 1s; drop/nudge may shrink to a pulse (0).
-      ev.dur_sec = Math.max(ev.kind === 'deadzone' ? 1 : 0, Math.round((t - ev.at_sec) * 2) / 2);
+      // The falling edge is a keyframe: move the end, hold the start.
+      ev.dur_sec = Math.max(min, snap(t - ev.at_sec));
     }
   });
 }
@@ -1233,7 +1242,14 @@ const status = computed(() => {
             @pointerdown.stop="startLinkMove(i, $event)"
             @click.stop
           >
-            <span class="linkgrip" @pointerdown.stop="startLinkResize(i, $event)"></span>
+            <span
+              class="kf l" title="drag the rising edge"
+              @pointerdown.stop="startLinkResize(i, 'l', $event)"
+            ></span>
+            <span
+              class="kf r" title="drag the falling edge"
+              @pointerdown.stop="startLinkResize(i, 'r', $event)"
+            ></span>
             <button class="linkx" @click.stop="removeLink(i)" title="remove">×</button>
           </div>
           <span class="lane-name">{{ ll.label }}</span>
@@ -1490,14 +1506,22 @@ const status = computed(() => {
 .linkblock:hover {
   background: color-mix(in srgb, var(--down) 18%, transparent);
 }
-.linkgrip {
+/* The rising and falling edges are keyframes: a dot on each edge you can grab
+   to move that edge, the way the endpoints of a value keyframe move. */
+.linkblock .kf {
   position: absolute;
-  right: 0;
-  top: 0;
-  bottom: 0;
-  width: 6px;
+  top: 50%;
+  width: 9px;
+  height: 9px;
+  margin-top: -4.5px;
+  border-radius: 50%;
+  background: var(--down);
+  border: 1px solid var(--panel-2);
+  box-sizing: border-box;
   cursor: ew-resize;
 }
+.linkblock .kf.l { left: -4.5px; }
+.linkblock .kf.r { right: -4.5px; }
 .linkx {
   position: absolute;
   top: -7px;
