@@ -58,9 +58,9 @@ func TestBuiltinLinkPatternsValidate(t *testing.T) {
 func TestValidPatternRejectsBadLink(t *testing.T) {
 	base := []Keyframe{{AtSec: 0}, {AtSec: 60}}
 	bad := []LinkEvent{
-		{AtSec: 10, Kind: "boom"},              // unknown kind
-		{AtSec: 10, Kind: LinkDrop, DurSec: 5}, // pulse with a duration
-		{AtSec: 10, Kind: LinkDeadzone},        // deadzone with no duration
+		{AtSec: 10, Kind: "boom"},               // unknown kind
+		{AtSec: 10, Kind: LinkDeadzone},         // deadzone with no duration
+		{AtSec: 10, Kind: LinkDrop, DurSec: -1}, // negative duration
 	}
 	for _, ev := range bad {
 		if err := validPattern(Pattern{Keys: base, Links: []LinkEvent{ev}}); err == nil {

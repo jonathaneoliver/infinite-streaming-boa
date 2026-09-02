@@ -280,8 +280,9 @@ func validPattern(p Pattern) error {
 	for i, ev := range p.Links {
 		switch ev.Kind {
 		case LinkDrop, LinkNudge:
-			if ev.DurSec != 0 {
-				return fmt.Errorf("link event %d: %s is instant and takes no duration", i, ev.Kind)
+			// 0 = a single pulse; >0 = flap (repeat) for that many seconds.
+			if ev.DurSec < 0 || ev.DurSec > maxPatternSec {
+				return fmt.Errorf("link event %d: %s duration must be 0 (a pulse) to %ds", i, ev.Kind, maxPatternSec)
 			}
 		case LinkDeadzone:
 			if ev.DurSec <= 0 || ev.DurSec > maxPatternSec {

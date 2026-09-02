@@ -121,16 +121,53 @@ func (e *Engine) fireLink(f LinkFire) {
 	}
 	var err error
 	switch f.Kind {
-	case LinkNudge:
-		err = e.LinkDisassoc(f.MAC, 0)
 	case LinkDeadzone:
-		err = e.LinkDeadzone(f.MAC, f.DurSec)
-	default:
-		err = e.LinkDeauth(f.MAC, 0)
+		err = e.LinkDeadzone(f.MAC, f.DurSec) // clean deny-ACL block
+	case LinkNudge:
+		if f.DurSec > 0 {
+			e.LinkFlap(f.MAC, LinkNudge, f.DurSec)
+		} else {
+			err = e.LinkDisassoc(f.MAC, 0)
+		}
+	default: // drop
+		if f.DurSec > 0 {
+			e.LinkFlap(f.MAC, LinkDrop, f.DurSec)
+		} else {
+			err = e.LinkDeauth(f.MAC, 0)
+		}
 	}
 	if err != nil {
 		log.Printf("link %s %s: %v", f.Kind, f.MAC, err)
 	}
+}
+
+// LinkFlap repeatedly kicks a client for durSec -- deauth for drop, disassoc for
+// nudge -- so the link keeps dropping and reconnecting, LEAKING traffic in the
+// gaps. That is the point: a flapping/unstable link, the complement of a
+// deadzone's clean deny-ACL block. Runs in the background. See issue #135.
+func (e *Engine) LinkFlap(mac, kind string, durSec float64) {
+	if e.cfg.Demo || !e.LinkControlAvailable() {
+		return
+	}
+	mac = normMAC(mac)
+	if !validMAC(mac) || durSec <= 0 {
+		return
+	}
+	go func() {
+		deadline := time.Now().Add(time.Duration(durSec * float64(time.Second)))
+		for time.Now().Before(deadline) {
+			var err error
+			if kind == LinkNudge {
+				err = e.LinkDisassoc(mac, 0)
+			} else {
+				err = e.LinkDeauth(mac, 0)
+			}
+			if err != nil {
+				log.Printf("flap %s %s: %v", kind, mac, err)
+			}
+			time.Sleep(time.Second)
+		}
+	}()
 }
 
 // denyACL adds or removes a MAC from hostapd's runtime deny list. With the

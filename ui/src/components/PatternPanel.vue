@@ -36,7 +36,7 @@
  * timeline and the card owns it.
  */
 import { computed, ref, watch } from 'vue';
-import type { Keyframe, Ladder, Pattern, PatternView, Shape } from '@/types';
+import type { Keyframe, Ladder, LinkEvent, Pattern, PatternView, Shape } from '@/types';
 import { EXTRA_IMPAIRMENTS, PATTERN_TEMPLATES, RATE_MAX, posToRate, rateToPos } from '@/types';
 import { useExtras } from '@/composables/useExtras';
 import PatternLibrary from './PatternLibrary.vue';
@@ -684,6 +684,96 @@ function setLaneValue(i: number, lane: LaneKey, n: number, ceil: number) {
 }
 
 /*
+ * Link lanes: drop / nudge / deadzone as on/off blocks.
+ *
+ * Unlike the value lanes there is no vertical axis -- a block is simply present
+ * or not (0/1). The width is the DURATION: 0 (a thin pulse block) fires once on
+ * the rising edge; a wider block holds the disturbance for that long -- a flap
+ * for drop/nudge, a clean outage for deadzone. So every lane edits the same
+ * way: click to add, drag to move, drag the right edge to lengthen. See #135.
+ */
+const LINK_LANES: { kind: LinkEvent['kind']; label: string }[] = [
+  { kind: 'drop', label: 'drop' },
+  { kind: 'nudge', label: 'nudge' },
+  { kind: 'deadzone', label: 'deadzone' },
+];
+const PULSE_VIS_SEC = 0.5; // a zero-duration pulse still needs a grabbable width
+const DEFAULT_DEADZONE_SEC = 10;
+
+const links = computed<LinkEvent[]>(() => props.pattern?.links ?? []);
+
+function laneEvents(kind: string): { ev: LinkEvent; i: number }[] {
+  return links.value.map((ev, i) => ({ ev, i })).filter((x) => x.ev.kind === kind);
+}
+function evVisSec(ev: LinkEvent): number {
+  const d = ev.dur_sec ?? 0;
+  return d > 0 ? d : PULSE_VIS_SEC;
+}
+function evLeftPct(ev: LinkEvent): number {
+  return renderSpan.value > 0 ? (ev.at_sec / renderSpan.value) * 100 : 0;
+}
+function evWidthPct(ev: LinkEvent): number {
+  return renderSpan.value > 0 ? (evVisSec(ev) / renderSpan.value) * 100 : 0;
+}
+
+function addLink(kind: LinkEvent['kind'], e: MouseEvent) {
+  if (props.run) return;
+  const at = timeAt(e.clientX, renderSpan.value);
+  mutate((p) => {
+    const ev: LinkEvent = { at_sec: at, kind };
+    if (kind === 'deadzone') ev.dur_sec = DEFAULT_DEADZONE_SEC;
+    p.links = [...(p.links ?? []), ev];
+  });
+}
+function removeLink(i: number) {
+  mutate((p) => {
+    p.links = (p.links ?? []).filter((_, j) => j !== i);
+  });
+}
+
+// Horizontal drag: move a block, or resize its right edge. Kept in insertion
+// order (mutate sorts keys, never links) so the index stays stable mid-drag.
+type LinkDrag = { i: number; mode: 'move' | 'resize'; grabSec: number };
+const linkDrag = ref<LinkDrag | null>(null);
+
+function startLinkMove(i: number, e: PointerEvent) {
+  if (props.run) return;
+  try {
+    (e.target as HTMLElement).setPointerCapture(e.pointerId);
+  } catch {
+    /* older Safari */
+  }
+  linkDrag.value = { i, mode: 'move', grabSec: timeAt(e.clientX, renderSpan.value) - links.value[i].at_sec };
+}
+function startLinkResize(i: number, e: PointerEvent) {
+  if (props.run) return;
+  try {
+    (e.target as HTMLElement).setPointerCapture(e.pointerId);
+  } catch {
+    /* older Safari */
+  }
+  linkDrag.value = { i, mode: 'resize', grabSec: 0 };
+}
+function onLinkDrag(e: PointerEvent) {
+  const d = linkDrag.value;
+  if (!d) return;
+  const t = timeAt(e.clientX, renderSpan.value, true);
+  mutate((p) => {
+    const ev = (p.links ?? [])[d.i];
+    if (!ev) return;
+    if (d.mode === 'move') {
+      ev.at_sec = Math.max(0, t - d.grabSec);
+    } else {
+      // deadzone must stay >= 1s; drop/nudge may shrink to a pulse (0).
+      ev.dur_sec = Math.max(ev.kind === 'deadzone' ? 1 : 0, Math.round((t - ev.at_sec) * 2) / 2);
+    }
+  });
+}
+function endLinkDrag() {
+  linkDrag.value = null;
+}
+
+/*
  * Scrubbing by dragging the time lane.
  *
  * The playhead used to be positioned by a range input sitting in a flex row
@@ -1099,6 +1189,31 @@ const status = computed(() => {
           <span class="lane-top">{{ laneTop(l.key, l.unit) }}</span>
         </div>
 
+        <!-- Link lanes: drop/nudge/deadzone as on/off blocks. No vertical axis;
+             the block WIDTH is the duration (a thin pulse fires once on the
+             rising edge, a wide block holds the disturbance). See #135. -->
+        <div
+          v-for="ll in LINK_LANES" :key="ll.kind"
+          class="lane linklane" :class="{ grab: !run }"
+          :title="run ? '' : `click to add a ${ll.label}; drag it to move; drag its right edge to lengthen`"
+          @click="addLink(ll.kind, $event)"
+          @pointermove="onLinkDrag"
+          @pointerup="endLinkDrag"
+          @pointercancel="endLinkDrag"
+        >
+          <div
+            v-for="{ ev, i } in laneEvents(ll.kind)" :key="i"
+            class="linkblock" :class="ll.kind"
+            :style="{ left: evLeftPct(ev) + '%', width: evWidthPct(ev) + '%' }"
+            @pointerdown.stop="startLinkMove(i, $event)"
+            @click.stop
+          >
+            <span class="linkgrip" @pointerdown.stop="startLinkResize(i, $event)"></span>
+            <button class="linkx" @click.stop="removeLink(i)" title="remove">×</button>
+          </div>
+          <span class="lane-name">{{ ll.label }}</span>
+        </div>
+
         <!-- Everything past the last keyframe is ruler, not pattern. Shaded so
              the two are never confused: a loop restarts at the end marker, and
              the empty space after it is somewhere to drag into, not silence
@@ -1326,6 +1441,56 @@ const status = computed(() => {
 .lane svg {
   width: 100%;
   height: 100%;
+  display: block;
+}
+/* Link lanes: on/off blocks, horizontal only. No vertical value, so the lane
+   is a crosshair (click empty to add) rather than ns-resize. */
+.linklane.grab {
+  cursor: crosshair;
+}
+.linkblock {
+  position: absolute;
+  top: 8px;
+  bottom: 8px;
+  min-width: 5px;
+  border-radius: 3px;
+  opacity: 0.85;
+  cursor: grab;
+}
+.linkblock.drop {
+  background: var(--warn);
+}
+.linkblock.nudge {
+  background: var(--up);
+}
+.linkblock.deadzone {
+  background: var(--bad);
+}
+.linkgrip {
+  position: absolute;
+  right: 0;
+  top: 0;
+  bottom: 0;
+  width: 6px;
+  cursor: ew-resize;
+}
+.linkx {
+  position: absolute;
+  top: -7px;
+  right: -6px;
+  width: 14px;
+  height: 14px;
+  padding: 0;
+  line-height: 11px;
+  font-size: 11px;
+  border-radius: 50%;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  color: var(--ink-dim);
+  cursor: pointer;
+  display: none;
+}
+.linkblock:hover .linkx {
   display: block;
 }
 /* The lanes take the direction's colour, the same one its chart and slider
