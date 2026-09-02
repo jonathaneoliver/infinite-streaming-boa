@@ -2,6 +2,7 @@
 import { computed, ref, watch } from 'vue';
 import type { Client, Shape, Series, ChartPrefs, Pattern } from '@/types';
 import { CLEAN, DEVELOPER, PRESETS, ntopngUrl, patternFromPolicy } from '@/types';
+import { setShapeAt } from '@/lib/pattern';
 import ShapeSliders from './ShapeSliders.vue';
 import SubClasses from './SubClasses.vue';
 import LadderPanel from './LadderPanel.vue';
@@ -193,16 +194,19 @@ watch(
 );
 
 /**
- * Which keyframe the sliders are editing, or null for the stored policy.
+ * Which MOMENT (seconds) the sliders are editing, or null for the stored policy.
+ * A time, not a keyframe index, because the pattern panel now edits each field
+ * on its own timeline and recomposes the keyframes -- a time is stable across
+ * that, an index is not.
  *
  * Never a keyframe while a run is playing: the controls are then reporting what
- * is enforced, and accepting an edit into a keyframe while displaying the
- * enforced value would write one thing where the operator could see another.
+ * is enforced, and accepting an edit while displaying the enforced value would
+ * write one thing where the operator could see another.
  */
 const patSelected = ref<number | null>(null);
 const editKey = computed(() =>
   !playing.value && patSelected.value != null
-    ? (pattern.value?.keys[patSelected.value] ?? null)
+    ? (pattern.value?.keys.find((k) => Math.abs(k.at_sec - patSelected.value!) < 1e-6) ?? null)
     : null,
 );
 
@@ -221,25 +225,25 @@ function removePattern() {
   emit('patternRemove');
 }
 
-/** Route a slider to the selected keyframe, or to the stored policy. */
+/** Route a slider to the selected moment (setting that field at that time), or
+ *  to the stored policy. */
 function onShape(dir: 'down' | 'up', s: Shape) {
   if (editKey.value && pattern.value && patSelected.value != null) {
-    const next = JSON.parse(JSON.stringify(pattern.value)) as Pattern;
-    next.keys[patSelected.value][dir] = s;
-    applyPattern(next);
+    applyPattern({ ...pattern.value, keys: setShapeAt(pattern.value, dir, patSelected.value, s) });
     return;
   }
   emit('shape', dir, s);
 }
 
-// Presets follow the sliders: with a keyframe selected, "3G" means "this
-// moment is 3G", which is the shortest route from a named link to a timeline.
+// Presets follow the sliders: with a moment selected, "3G" means "this moment
+// is 3G", the shortest route from a named link to a timeline. Both directions
+// are set at that time.
 function onPreset(down: Shape, up: Shape) {
   if (editKey.value && pattern.value && patSelected.value != null) {
-    const next = JSON.parse(JSON.stringify(pattern.value)) as Pattern;
-    next.keys[patSelected.value].down = down;
-    next.keys[patSelected.value].up = up;
-    applyPattern(next);
+    const t = patSelected.value;
+    let keys = setShapeAt(pattern.value, 'down', t, down);
+    keys = setShapeAt({ ...pattern.value, keys }, 'up', t, up);
+    applyPattern({ ...pattern.value, keys });
     return;
   }
   emit('preset', down, up);
@@ -527,7 +531,7 @@ function fmtBytes(n: number): string {
             swept &middot; {{ downCap.toFixed(2) }} Mbps
           </span>
           <span v-if="editKey" class="badge" style="color: var(--down)">
-            keyframe {{ (patSelected ?? 0) + 1 }} &middot; {{ editKey.at_sec }}s
+            at {{ editKey.at_sec }}s
           </span>
           <span class="readout num">
             {{ client.down_counters.throughput_mbps.toFixed(2) }}
@@ -556,7 +560,7 @@ function fmtBytes(n: number): string {
         <h3>
           Uplink <span class="meta">from device</span>
           <span v-if="editKey" class="badge" style="color: var(--up)">
-            keyframe {{ (patSelected ?? 0) + 1 }} &middot; {{ editKey.at_sec }}s
+            at {{ editKey.at_sec }}s
           </span>
           <span class="readout num">
             {{ client.up_counters.throughput_mbps.toFixed(2) }}
@@ -613,7 +617,7 @@ function fmtBytes(n: number): string {
       :rev="client.policy?.rev ?? 0"
       :ladders="client.policy?.ladders ?? []"
       :run="client.pattern_run"
-      :selected="patSelected"
+      :selected-sec="patSelected"
       :can-play="patBlocked === ''"
       :blocked="patBlocked"
       @update="applyPattern"
