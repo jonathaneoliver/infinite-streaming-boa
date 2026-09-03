@@ -196,13 +196,32 @@ docker run --rm --privileged \
 BAND_LABEL="2.4GHz"
 [ "$AP_BAND" = "a" ] && BAND_LABEL="5GHz"
 
+# What the radios will actually do, which depends on what is plugged in at boot
+# rather than on anything decided here -- so the summary describes both cases
+# instead of asserting one. It used to name a single "wlan0", which was true
+# before the box could serve two radios and quietly wrong afterwards.
+#
+# The USB adapter's SSID may differ (AP_SSID_USB), and that is worth saying:
+# two SSIDs is two networks, so a client will not roam between them.
+if [ -n "$AP_SSID_USB" ] && [ "$AP_SSID_USB" != "$AP_SSID" ]; then
+  USB_SSID_NOTE="  (SSID '${AP_SSID_USB}' — a separate network; no roaming)"
+else
+  USB_SSID_NOTE=""
+fi
+
 cat <<EOF
 
   Image:    dist/${OUT_NAME}
-  SSID:     ${AP_SSID}  (${BAND_LABEL} ch ${AP_CHANNEL}, country ${AP_COUNTRY})
+  SSID:     ${AP_SSID}   (country ${AP_COUNTRY})
+  Radios:   both serve when both are present, dual-band like a router:
+              USB adapter  ${BAND_LABEL} ch ${AP_CHANNEL}  (80MHz, 802.11ax)${USB_SSID_NOTE}
+              onboard      2.4GHz ch ${AP_CHANNEL_24}  (20MHz, 802.11n)
+            Either alone serves alone; on its own the onboard radio takes
+            ${BAND_LABEL} ch ${AP_CHANNEL} instead.
   Login:    ssh ${BOA_USER}@${BOA_HOSTNAME}.local
-  Mode:     transparent bridge (${BOA_WAN_PORT} + wlan0 + lan0 -> br-lan)
+  Mode:     transparent bridge (${BOA_WAN_PORT} + wlan-usb + wlan0 + lan0 -> br-lan)
             clients keep their existing LAN addresses; the Pi is not a hop
+            clients on EITHER radio are conditioned
   Web UI:   http://${BOA_HOSTNAME}.local/   or  http://${BOA_RESCUE_IP}/ (rescue)
 
   Burn it:  ./flash.sh dist/${OUT_NAME}
