@@ -198,10 +198,22 @@ function otherRadio(r: IfaceInfo): string {
         <!-- Box-wide controls. The blast radius is stated on the control, not
              in a tooltip: every one of these acts on the whole radio. -->
         <div v-if="r.ap" class="actions">
-          <h4>Radio controls</h4>
-          <p class="warn-line">
-            These act on <strong>every client on {{ r.name }}</strong> at once —
-            {{ r.ap.stations }} associated right now.
+          <p class="warn-line scope-note">
+            Everything below acts on <strong>every client on {{ r.name }}</strong>
+            at once — {{ r.ap.stations }} associated right now.
+          </p>
+
+          <!-- THREE groups, and the line between the first two is the one that
+               matters: does the client stay associated?
+               
+               Conditioning makes the link worse while the client stays on it.
+               Connection control changes whether, or where, it is attached at
+               all. They were interleaved before, which made a power cut look
+               like a sibling of an RTS threshold when they answer completely
+               different questions. -->
+          <h4>Who is connected</h4>
+          <p class="meta group-note">
+            The association itself. Nothing is degraded — it exists or it does not.
           </p>
 
           <!-- The announced events, in the same words the device cards use.
@@ -225,21 +237,14 @@ function otherRadio(r: IfaceInfo): string {
               :title="`Ask every client to move to ${otherRadio(r)} (802.11v). They may refuse.`"
               @click="bridge.steerAll(r.name)"
             >steer all to {{ otherRadio(r) }}</button>
-            <button :disabled="bridge.busy.value" @click="bridge.loadSurvey(r.name)">
-              read airtime
-            </button>
           </div>
 
-          <!-- The silent one. Kept visually apart from the announced actions
-               above, because the difference between them is the whole reason
-               it exists. -->
-          <h4>Power</h4>
+          <!-- Still connection control, but the SILENT member of it: every
+               action above announces itself, this one does not. That difference
+               is the whole reason it exists, so it keeps its own paragraph. -->
           <p class="warn-line">
-            Nothing is announced. Unlike a deauthentication, clients are told
-            <strong>nothing at all</strong> — they go on believing they are
-            connected until their own beacon-miss timeout expires, which is tens
-            of seconds of a network that looks up and carries nothing. This is
-            what a tripped breaker or walking round a corner does.
+            <strong>Silent.</strong> Clients are told nothing and must time out —
+            a tripped breaker, not a disconnection.
           </p>
           <!-- A latching toggle, not a timed pulse. The radio stays off until
                it is switched back on, the way a power switch behaves -- which
@@ -283,128 +288,18 @@ function otherRadio(r: IfaceInfo): string {
             >cut and restore automatically</button>
           </div>
 
-          <!-- Scan. Disruptive by construction and says so, with the cost
-               reported afterwards as the measured out-of-service time. -->
-          <h4>Channel scan</h4>
-          <p class="warn-line">
-            Takes {{ r.name }} <strong>out of service</strong> for a few seconds —
-            a radio that is beaconing cannot survey other channels.
-            <template v-if="radios.length > 1">
-              Its {{ r.ap.stations }} client(s) will land on the other radio and
-              come back.
-            </template>
-            <template v-else>
-              With only one radio serving, this is a real outage.
-            </template>
-          </p>
-          <div class="action-row">
-            <button :disabled="bridge.busy.value" @click="bridge.scanBand(r.name, false)">
-              scan {{ r.ap.channel && r.ap.channel < 15 ? '2.4GHz' : '5GHz' }}
-            </button>
-            <button
-              class="accent" :disabled="bridge.busy.value"
-              @click="bridge.scanBand(r.name, true)"
-            >scan and move to the quietest</button>
-          </div>
-          <p class="meta">
-            Moving happens while the radio is down, so it works on this adapter
-            even though it refuses a channel-switch announcement (#154). Clients
-            are not told — the access point simply reappears on another channel
-            and they rediscover it, which is how most consumer routers change
-            channel anyway.
-          </p>
-
-          <!-- Steering only exists when there is somewhere to steer TO. On a
-               one-radio box the button would be permanently dead, so it is
-               absent rather than disabled. -->
-
-          <h4>Radio profile</h4>
-          <p class="warn-line">
-            Each of these restarts the access point, dropping all
-            {{ r.ap.stations }} client(s) on {{ r.name }}. The parameters live in
-            the beacon and are negotiated at association, so a connected station
-            cannot be told about them — that is why they are here and not on a
-            device card.
-          </p>
-          <div class="action-row">
-            <button
-              v-for="p in PROFILES" :key="p.name"
-              :class="{ accent: p.name === 'clean' }"
-              :disabled="bridge.busy.value"
-              :title="p.desc"
-              @click="bridge.applyProfile(r.name, p.name)"
-            >{{ p.label }}</button>
-          </div>
-          <p class="meta">
-            <span v-for="p in PROFILES" :key="p.name" class="profile-note">
-              <strong>{{ p.label }}</strong> — {{ p.desc }}
-            </span>
-          </p>
-
-          <h4>Thresholds</h4>
-          <p class="meta">
-            The only radio impairment here that costs nothing: live on the next
-            frame, no restart, nobody dropped.
-          </p>
-          <div class="action-row">
-            <label class="k">RTS/CTS</label>
-            <button
-              :disabled="bridge.busy.value"
-              title="RTS/CTS before every frame — roughly halves throughput and adds two control frames of latency per data frame. What a real AP does in a dense environment."
-              @click="bridge.setThreshold(r.name, 'rts', 0)"
-            >every frame</button>
-            <button :disabled="bridge.busy.value" @click="bridge.setThreshold(r.name, 'rts', 'off')">off</button>
-            <label class="k">fragment</label>
-            <button
-              :disabled="bridge.busy.value"
-              title="Fragment every frame at 256 bytes. With any error rate the retry cost explodes superlinearly, because losing one fragment costs the whole frame."
-              @click="bridge.setThreshold(r.name, 'frag', 256)"
-            >at 256</button>
-            <button :disabled="bridge.busy.value" @click="bridge.setThreshold(r.name, 'frag', 'off')">off</button>
-          </div>
-
-          <div v-if="bridge.scan.value?.iface === r.name" class="survey">
-            <table class="counters">
-              <thead>
-                <tr><th>channel</th><th>neighbours</th><th>strongest</th><th></th></tr>
-              </thead>
-              <tbody>
-                <tr v-for="c in bridge.scan.value.channels" :key="c.channel">
-                  <td class="num">{{ c.channel }}</td>
-                  <td class="num">{{ c.aps }}</td>
-                  <td class="num">{{ c.strongest_dbm ? `${c.strongest_dbm} dBm` : '—' }}</td>
-                  <td>
-                    <span v-if="c.recommended" class="badge" style="color: var(--ok)">
-                      quietest
-                    </span>
-                  </td>
-                </tr>
-              </tbody>
-            </table>
-            <p class="meta">{{ bridge.scan.value.note }}</p>
-            <p class="meta">
-              Only non-overlapping channels are recommended. An empty 2.4GHz
-              channel 3 is a worse choice than a busy channel 1: it overlaps both
-              1 and 6, taking interference from each and giving it back.
-            </p>
-          </div>
           <!-- Measured, not theorised: a deauthenticated iPhone came back under
                a new MAC within nine seconds. Policy is keyed by MAC, so the
                device returns as a stranger with no conditioning. Issue #45. -->
           <p class="meta">
-            A client using a private (randomised) Wi-Fi address may reassociate
-            under a <strong>different MAC</strong> and arrive as a new device with
-            no policy — observed here on a reconnect nine seconds after a
-            deauthentication. Its old conditioning stays behind on the old
-            address.
+            A client with a randomised MAC may return as a <strong>new
+            device</strong>, leaving its policy behind on the old address (#45).
           </p>
 
-          <h4>Move to another channel</h4>
+          <h5>Move to another channel</h5>
           <p class="warn-line">
-            Takes {{ r.name }} down and brings it back up on the new channel.
-            All {{ r.ap.stations }} client(s) are dropped and
-            <strong>not told</strong> — they have to notice and rediscover it,
-            which is what most consumer routers do when their channel changes.
+            Down and back up on the new channel. All {{ r.ap.stations }} client(s)
+            dropped, and not told.
           </p>
           <div class="action-row">
             <div class="seg" role="group" aria-label="channel">
@@ -454,16 +349,84 @@ function otherRadio(r: IfaceInfo): string {
             >announce channel switch</button>
           </div>
           <p v-if="DEVELOPER" class="meta">
-            An 802.11h channel switch announcement: the access point counts down
-            in its beacons and clients <em>follow</em>, staying associated the
-            whole time — no drop, no rediscovery. That is strictly nicer than the
-            control above, and
-            <strong>measured 2026-09-03 both drivers on this box refuse it</strong>
-            — mt7921u and brcmfmac alike return FAIL and the AP does not move.
-            Kept here because the path is correct and a radio that supports CSA
-            would move seamlessly; the refusal is reported rather than swallowed.
+            Clients would follow without dropping — but
+            <strong>both drivers here refuse it</strong> (#154).
           </p>
 
+          <h4>Conditioning the link</h4>
+          <p class="meta group-note">Clients stay associated; the link they are on gets worse.</p>
+          <h5>Radio profile</h5>
+          <p class="warn-line">
+            Restarts the access point, dropping all {{ r.ap.stations }} client(s).
+          </p>
+          <div class="action-row">
+            <button
+              v-for="p in PROFILES" :key="p.name"
+              :class="{ accent: p.name === 'clean' }"
+              :disabled="bridge.busy.value"
+              :title="p.desc"
+              @click="bridge.applyProfile(r.name, p.name)"
+            >{{ p.label }}</button>
+          </div>
+
+
+          <h5>Thresholds</h5>
+          <p class="meta">Live on the next frame. Nobody dropped.</p>
+          <div class="action-row">
+            <label class="k">RTS/CTS</label>
+            <button
+              :disabled="bridge.busy.value"
+              title="RTS/CTS before every frame — roughly halves throughput and adds two control frames of latency per data frame. What a real AP does in a dense environment."
+              @click="bridge.setThreshold(r.name, 'rts', 0)"
+            >every frame</button>
+            <button :disabled="bridge.busy.value" @click="bridge.setThreshold(r.name, 'rts', 'off')">off</button>
+            <label class="k">fragment</label>
+            <button
+              :disabled="bridge.busy.value"
+              title="Fragment every frame at 256 bytes. With any error rate the retry cost explodes superlinearly, because losing one fragment costs the whole frame."
+              @click="bridge.setThreshold(r.name, 'frag', 256)"
+            >at 256</button>
+            <button :disabled="bridge.busy.value" @click="bridge.setThreshold(r.name, 'frag', 'off')">off</button>
+          </div>
+
+          <h4>Measurement</h4>
+          <p class="meta group-note">Changes nothing. A scan costs a few beacon gaps, or an outage on a radio that will not scan while serving.</p>
+          <!-- Scan. Disruptive by construction and says so, with the cost
+               reported afterwards as the measured out-of-service time. -->
+          <h5>Channel scan</h5>
+
+          <div class="action-row">
+            <button :disabled="bridge.busy.value" @click="bridge.scanBand(r.name, false)">
+              scan {{ r.ap.channel && r.ap.channel < 15 ? '2.4GHz' : '5GHz' }}
+            </button>
+            <button
+              class="accent" :disabled="bridge.busy.value"
+              @click="bridge.scanBand(r.name, true)"
+            >scan and move to the quietest</button>
+          </div>
+
+
+          <div v-if="bridge.scan.value?.iface === r.name" class="survey">
+            <table class="counters">
+              <thead>
+                <tr><th>channel</th><th>neighbours</th><th>strongest</th><th></th></tr>
+              </thead>
+              <tbody>
+                <tr v-for="c in bridge.scan.value.channels" :key="c.channel">
+                  <td class="num">{{ c.channel }}</td>
+                  <td class="num">{{ c.aps }}</td>
+                  <td class="num">{{ c.strongest_dbm ? `${c.strongest_dbm} dBm` : '—' }}</td>
+                  <td>
+                    <span v-if="c.recommended" class="badge" style="color: var(--ok)">
+                      quietest
+                    </span>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+            <p class="meta">{{ bridge.scan.value.note }}</p>
+            <p class="meta">Only non-overlapping channels are recommended.</p>
+          </div>
           <div v-if="bridge.survey.value?.iface === r.name" class="survey">
             <template v-for="c in bridge.survey.value.channels" :key="c.reported_freq_mhz">
               <div class="facts">
@@ -481,12 +444,14 @@ function otherRadio(r: IfaceInfo): string {
             </template>
             <p class="meta">{{ bridge.survey.value.note }}</p>
             <p class="meta">
-              Transmit and receive are not parts of busy — they overlap it and can
-              add up to more, so airtime used by other devices cannot be got by
-              subtracting them.
+              Transmit and receive overlap busy rather than dividing it.
             </p>
           </div>
         </div>
+          <!-- Steering only exists when there is somewhere to steer TO. On a
+               one-radio box the button would be permanently dead, so it is
+               absent rather than disabled. -->
+
         <p v-else class="meta disabled-note">
           <template v-if="!r.up">
             {{ r.name }} is switched off — on this image the onboard radio is
@@ -574,19 +539,38 @@ function otherRadio(r: IfaceInfo): string {
 .v { color: var(--ink); }
 .addrs div { white-space: nowrap; }
 
-.actions { padding: 4px 14px 0; border-top: 1px solid var(--line-soft); }
+.actions { padding: 2px 14px 8px; border-top: 1px solid var(--line-soft); }
+/* The three group headings carry the structure, so they are the loud ones. */
+/* Denser than the rest of the page on purpose: this is a control panel, not
+   prose. Every explanation not needed AT THE MOMENT OF PRESSING moved into a
+   button title. */
 .actions h4 {
-  margin: 12px 0 4px;
+  margin: 14px 0 2px;
+  padding-top: 9px;
+  border-top: 1px solid var(--line-soft);
   font-size: 11px; font-weight: 600;
   text-transform: uppercase; letter-spacing: 0.09em;
   color: var(--ink-dim);
 }
 /* The blast radius, stated where the buttons are rather than in a tooltip. */
-.warn-line { color: var(--warn); font-size: 12px; margin: 0 0 10px; }
-.action-row {
-  display: flex; align-items: center; gap: 8px;
-  flex-wrap: wrap; margin-bottom: 8px;
+.warn-line { color: var(--warn); font-size: 12px; margin: 0 0 6px; }
+/* What the group IS, in plain words, under its heading. Quieter than a warning:
+   it is orientation, not something to act on. */
+.group-note { margin: 0 0 6px; max-width: 84ch; }
+.scope-note { margin-bottom: 4px; }
+/* Sub-headings inside a group. Deliberately much quieter than the h4 above
+   them, so the three groups read as the structure and these as its contents. */
+.actions h5 {
+  margin: 9px 0 3px;
+  font-size: 11px; font-weight: 600;
+  text-transform: uppercase; letter-spacing: 0.06em;
+  color: var(--ink-faint);
 }
+.action-row {
+  display: flex; align-items: center; gap: 6px;
+  flex-wrap: wrap; margin-bottom: 5px;
+}
+.actions .warn-line, .actions .meta { line-height: 1.35; }
 .action-row .k { min-width: auto; }
 
 .survey { border-top: 1px solid var(--line-soft); margin-top: 10px; }
