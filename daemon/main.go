@@ -39,7 +39,12 @@ func main() {
 	flag.StringVar(&cfg.Bridge, "bridge", "br-lan", "bridge interface")
 	flag.StringVar(&cfg.WANPort, "wan", "eth0",
 		"bridge port cabled to the existing network; uplink is shaped here")
-	flag.StringVar(&cfg.WlanPort, "wlan", "wlan0", "wireless AP interface")
+	// A LIST, because the box can serve two radios at once -- onboard on
+	// 2.4GHz and a USB adapter on 5GHz. Comma or space separated, so a single
+	// name still works and the systemd unit can pass either.
+	var wlan string
+	flag.StringVar(&wlan, "wlan", "wlan0",
+		"wireless AP interface(s), comma- or space-separated")
 	flag.StringVar(&cfg.LanPort, "lan", "lan0", "downstream wired port (USB adapter)")
 	flag.StringVar(&cfg.StatePath, "state", "/var/lib/infinite-streaming-boa/policies.json",
 		"where operator policy is persisted")
@@ -55,6 +60,7 @@ func main() {
 	}
 
 	cfg.Tick = time.Duration(tickMs) * time.Millisecond
+	cfg.WlanPorts = boa.SplitPorts(wlan)
 
 	// Shaping and packet capture both require privilege. Failing loudly here is
 	// far kinder than starting up and conditioning nothing.

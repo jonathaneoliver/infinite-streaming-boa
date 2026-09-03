@@ -414,6 +414,10 @@ type Capabilities struct {
 	Radio     bool   `json:"radio"`
 	Leases    bool   `json:"leases"`
 	WlanIface string `json:"wlan_iface"`
+	// WlanIfaces is EVERY radio the daemon watches. WlanIface stays as the
+	// first of them so older readers keep working; a box serving two radios
+	// reports both here, and a client on any of them is conditioned.
+	WlanIfaces []string `json:"wlan_ifaces,omitempty"`
 	// Adapter names the radio actually serving the AP and, when it is a USB
 	// one, the speed it NEGOTIATED. Both matter to an operator: which radio is
 	// live is otherwise a guess when two are plugged in, and a USB 3 adapter

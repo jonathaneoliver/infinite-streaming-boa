@@ -314,6 +314,24 @@ func (e *Engine) Survey(iface string) (SurveyResult, error) {
 		}
 	}
 
+	// No blocks at all is a DRIVER limitation, not a quiet channel, and the two
+	// would look identical on screen. Measured on brcmfmac 2026-09-03:
+	// `iw dev wlan0 survey dump` prints nothing whatsoever -- no blocks, no
+	// error, exit 0. That is the same driver whose lack of survey makes ACS
+	// impossible, so it is a property of the radio rather than of the moment.
+	if len(chans) == 0 {
+		return SurveyResult{
+			Iface:            iface,
+			OperatingFreqMHz: opFreq,
+			Channels:         []SurveyChannel{},
+			Note: "This radio reports no survey data at all -- not an idle " +
+				"channel, no measurement. The onboard brcmfmac chip has no " +
+				"survey support, which is also why it cannot do automatic " +
+				"channel selection. Airtime can only be read from a radio " +
+				"whose driver provides it.",
+		}, nil
+	}
+
 	note := "Airtime for the operating channel only. `iw survey dump` lists " +
 		"every channel the adapter knows, but a radio that is beaconing never " +
 		"visits the others, so their counters read zero and are omitted here. " +

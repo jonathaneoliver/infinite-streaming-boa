@@ -97,19 +97,55 @@ func hostapdCmd(iface, cmd string) (string, error) {
 // LinkControlAvailable reports whether per-client link events can be driven now
 // -- hostapd is serving the AP and exposing its control socket. Demo mode
 // returns true so the interface can be developed against.
-func (e *Engine) LinkControlAvailable() bool {
-	return e.cfg.Demo || hostapdAvailable(e.cfg.WlanPort)
+func (e *Engine) LinkControlAvailable() bool { return e.cfg.Demo || e.anyLinkControl() }
+
+// anyLinkControl reports whether ANY watched radio exposes a control socket.
+// With two radios serving, one may be hostapd-driven and the other not, and
+// hiding the controls because the first one checked cannot drive them would
+// withdraw a capability the box actually has.
+func (e *Engine) anyLinkControl() bool {
+	for _, w := range e.cfg.WlanPorts {
+		if hostapdAvailable(w) {
+			return true
+		}
+	}
+	return false
+}
+
+// radioFor names the radio a client is associated to, which is the one whose
+// control socket can act on it.
+//
+// The tick's map first, then a live probe of each radio: a link action can
+// arrive for a station that associated since the last tick, and failing on a
+// one-second-old cache would be an intermittent failure of exactly the kind
+// that gets blamed on the radio. Falls back to the primary so a single-radio
+// box behaves as it always did.
+func (e *Engine) radioFor(mac string) string {
+	e.mu.RLock()
+	w, ok := e.stationRadio[mac]
+	e.mu.RUnlock()
+	if ok && w != "" {
+		return w
+	}
+	for _, w := range e.cfg.WlanPorts {
+		if _, found := StationDump(w)[mac]; found {
+			return w
+		}
+	}
+	return e.cfg.PrimaryWlan()
 }
 
 // LinkDeauth deauthenticates a client, taking its link down; it reassociates on
 // its own. LinkDisassoc is the softer 802.11 disassociation. reason is an
 // optional IEEE 802.11 reason code (0 to omit).
 func (e *Engine) LinkDeauth(mac string, reason int) error {
-	return e.linkAction(deauthCommand(normMAC(mac), reason))
+	m := normMAC(mac)
+	return e.linkAction(m, deauthCommand(m, reason))
 }
 
 func (e *Engine) LinkDisassoc(mac string, reason int) error {
-	return e.linkAction(disassocCommand(normMAC(mac), reason))
+	m := normMAC(mac)
+	return e.linkAction(m, disassocCommand(m, reason))
 }
 
 // fireLink executes one LinkFire the Player scheduled (drop/nudge, or a
@@ -174,7 +210,7 @@ func (e *Engine) LinkFlap(mac, kind string, durSec float64) {
 // default macaddr_acl=0 (accept unless denied), a denied MAC cannot associate.
 // op is "ADD" or "DEL".
 func (e *Engine) denyACL(op, mac string) error {
-	reply, err := hostapdCmd(e.cfg.WlanPort, "DENY_ACL "+op+"_MAC "+mac)
+	reply, err := hostapdCmd(e.radioFor(mac), "DENY_ACL "+op+"_MAC "+mac)
 	if err != nil {
 		return err
 	}
@@ -188,11 +224,19 @@ func (e *Engine) denyACL(op, mac string) error {
 // in force when the daemon last died does not strand a client off the AP
 // forever. Best-effort: no radio, nothing to clear.
 func (e *Engine) clearDenyACL() {
-	if e.cfg.Demo || !hostapdAvailable(e.cfg.WlanPort) {
+	if e.cfg.Demo {
 		return
 	}
-	if _, err := hostapdCmd(e.cfg.WlanPort, "DENY_ACL CLEAR"); err != nil {
-		log.Printf("clear deny ACL: %v", err)
+	// Every radio: a deadzone in force when the daemon died could have been
+	// applied through either socket, and clearing only one strands the client
+	// off that AP for good.
+	for _, w := range e.cfg.WlanPorts {
+		if !hostapdAvailable(w) {
+			continue
+		}
+		if _, err := hostapdCmd(w, "DENY_ACL CLEAR"); err != nil {
+			log.Printf("clear deny ACL on %s: %v", w, err)
+		}
 	}
 }
 
@@ -229,11 +273,14 @@ func (e *Engine) LinkDeadzone(mac string, durSec float64) error {
 	return nil
 }
 
-func (e *Engine) linkAction(cmd string) error {
+// linkAction sends one control command on behalf of a specific client. The MAC
+// is passed separately from the command so the right radio's socket is chosen;
+// with two radios serving, the command text alone does not say where to send it.
+func (e *Engine) linkAction(mac, cmd string) error {
 	if e.cfg.Demo {
 		return nil // no radio here; demo exists to develop the interface
 	}
-	reply, err := hostapdCmd(e.cfg.WlanPort, cmd)
+	reply, err := hostapdCmd(e.radioFor(mac), cmd)
 	if err != nil {
 		return err
 	}

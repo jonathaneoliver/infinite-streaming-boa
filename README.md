@@ -52,11 +52,11 @@ manipulate what travels over it there.
                        │     boa     │
                        └──────────────┘
                          br-lan  (one layer-2 segment)
-                          ╱          ╲
-                      wlan0          lan0
-                    Wi-Fi AP     USB ethernet
-                        │              │
-                  wireless clients   wired client
+                    ╱          │          ╲
+              wlan-usb       wlan0        lan0
+             Wi-Fi 5GHz   Wi-Fi 2.4GHz  USB ethernet
+                    ╲          │          ╱
+                  wireless clients    wired client
                          ╲            ╱
                     conditioned identically
 ```
@@ -426,19 +426,27 @@ transparent bridge of the introduction seen from the radio, and it is what lets
 conditioning treat a Wi-Fi client exactly like a wired one. Which *radio*
 provides that AP depends on what is plugged in.
 
-If a USB Wi-Fi adapter is plugged in, it serves the AP and **the onboard radio
-is switched off at the rfkill level**. Unplug it and the onboard radio comes
-back. Exactly one runs, because the daemon watches a single interface — a
-client associated to a second AP would be invisible to conditioning.
+**With both radios present, both serve** — the box is a dual-band router. The
+USB adapter takes 5 GHz, where its 80 MHz and 802.11ax are the reason to fit
+one; the onboard chip takes 2.4 GHz (`AP_CHANNEL_24`), where its 20 MHz /
+802.11n ceiling costs nothing it could have delivered anyway, and where the
+range is. Both publish `AP_SSID` onto the same bridged segment, so a client
+sees one network and keeps its address moving between them.
 
-Plug in a second radio anyway and **the Bridge tab will show it**, named
-whatever the kernel called it, marked *not conditioned*, with a standing notice
-saying its clients pass traffic without appearing in the Clients tab. The
-interface discovers the hardware rather than reading the configuration
-precisely so that this limitation is stated rather than found out from a device
-list that is quietly short. Note also that the udev rule renames the *first*
-USB wlan device to `wlan-usb`; a second one keeps its kernel name, so hostapd —
-which is configured by interface name — does not serve it at all.
+Either radio on its own still serves alone: unplug the adapter and the onboard
+chip carries the AP on `AP_BAND`/`AP_CHANNEL`.
+
+**Clients on both radios are conditioned.** The daemon follows a list of
+interfaces (`BOA_WLAN_PORT` holds one or more, space separated, written by
+`select-radio`), reads a station dump per radio, and sends a per-client link
+event to the control socket of the radio that client is actually associated to.
+
+A radio the daemon is *not* watching still appears in the Bridge tab, named
+whatever the kernel called it and marked *not conditioned*, with a standing
+notice saying its clients pass traffic without appearing in the Clients tab.
+That is the case to know about if you fit a **second USB adapter**: the udev
+rule renames only the first USB wlan device to `wlan-usb`, so a second one
+keeps its kernel name and no hostapd instance is configured for it.
 
 **Both radios are driven by hostapd** — the onboard one the same way as the USB
 adapter. For the USB `mt7921u` hostapd is not optional: NetworkManager's AP mode

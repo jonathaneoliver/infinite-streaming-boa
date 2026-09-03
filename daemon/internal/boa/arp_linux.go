@@ -123,12 +123,12 @@ const (
 
 func htons(v uint16) uint16 { return v<<8 | v>>8 }
 
-func NewLearner(bridge, wlanPort, lanPort string) *Learner {
+func NewLearner(bridge string, downstreamPorts ...string) *Learner {
 	// The same test the client list uses: a device is a client of this box only
 	// if its traffic arrives on a downstream port. An absent port -- lan0 with
 	// no USB adapter fitted -- is not a port anything can arrive on.
 	down := map[string]bool{}
-	for _, p := range []string{wlanPort, lanPort} {
+	for _, p := range downstreamPorts {
 		if p != "" {
 			down[p] = true
 		}
