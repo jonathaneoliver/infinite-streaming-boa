@@ -418,6 +418,13 @@ Everything lives in `.env`; see `.env.example` for the full annotated list.
 
 ### Which radio serves the access point
 
+boa's Wi-Fi runs in **Bridged AP mode**: the access point is bridged straight
+onto your existing LAN, so associated clients keep their real addresses on your
+real subnet — no separate Wi-Fi network, no DHCP server, no NAT. It is the
+transparent bridge of the introduction seen from the radio, and it is what lets
+conditioning treat a Wi-Fi client exactly like a wired one. Which *radio*
+provides that AP depends on what is plugged in.
+
 If a USB Wi-Fi adapter is plugged in, it serves the AP and **the onboard radio
 is switched off at the rfkill level**. Unplug it and the onboard radio comes
 back. Exactly one runs, because the daemon watches a single interface — a
@@ -498,9 +505,10 @@ would put that password on the box in a second, weaker form.
 ### The Wi-Fi passphrase is the whole perimeter
 
 `AP_PASSWORD` is not just Wi-Fi security — it is the *only* thing standing between
-a stranger in radio range and your network. The AP is a **transparent bridge onto
-your existing LAN**, not an isolated guest network with its own subnet, so a
-device that associates lands on the real segment beside everything else. And the
+a stranger in radio range and your network. The AP runs in **Bridged AP mode**
+— a transparent bridge onto your existing LAN, not an isolated guest network
+with its own subnet, so a device that associates lands on the real segment
+beside everything else. And the
 interface on `:80` and ntopng on `:3000` have **no login** ([PRD §5](PRD.md)), so
 whoever associates can also re-shape or **black-hole any device on the network** —
 a one-line denial of service — and read ntopng's per-device traffic breakdown.
