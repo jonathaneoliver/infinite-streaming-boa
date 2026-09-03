@@ -431,12 +431,17 @@ is switched off at the rfkill level**. Unplug it and the onboard radio comes
 back. Exactly one runs, because the daemon watches a single interface — a
 client associated to a second AP would be invisible to conditioning.
 
-The two are driven differently, and not by choice. NetworkManager runs AP mode
-through wpa_supplicant, which does not work with an mt7921u: activation ends in
-`Hotspot network creation took too long`, with wpa_supplicant noting `nl80211
-driver interface is not designed to be used with ap_scan=2`. hostapd drives the
-same radio without complaint. So: hostapd for a USB adapter, NetworkManager for
-the onboard radio.
+**Both radios are driven by hostapd** — the onboard one the same way as the USB
+adapter. For the USB `mt7921u` hostapd is not optional: NetworkManager's AP mode
+goes through wpa_supplicant, which fails on it (`Hotspot network creation took
+too long`; `nl80211 driver interface is not designed to be used with
+ap_scan=2`). hostapd drives that radio without complaint — and the onboard
+Broadcom radio too, so there is one codepath, not two. Unifying matters because
+only hostapd exposes the control socket the daemon uses for per-client link
+events (deauth/disassoc/deadzone): under NetworkManager the onboard radio had
+none, so those worked only on a USB adapter. The onboard radio stays 20 MHz /
+802.11n and, lacking survey support, uses a fixed channel rather than
+auto-selecting — but it now gains the same link-event conditioning.
 
 It is worth the trouble because the AP's ceiling bounds the top of a measured
 ladder. On a Pi 5 the onboard radio runs the AP at 20 MHz. Measured here with a

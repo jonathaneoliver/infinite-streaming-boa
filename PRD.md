@@ -242,10 +242,10 @@ damages packets, never link state.
   a **pattern lane** beside rate and loss — a deauth at t=120s is exactly
   reproducible, which no packet impairment is, and is the specific event this
   exists for.
-- They require the **USB radio running the AP through hostapd**. The onboard
-  radio (NetworkManager) exposes no control interface, so the controls are
-  hidden there rather than failing silently — the one impairment that depends on
-  which radio is serving.
+- They require the **AP running through hostapd**, which is how both radios are
+  now driven — the onboard one as well as a USB adapter — so the controls work
+  whichever radio is serving. (They were USB-only while the onboard radio ran
+  through NetworkManager, which exposes no control interface.)
 - **This is the first time boa acts observably *on* a client.** The rest of the
   box is invisible to the device under test; a deauth is not. §6.1's "nothing is
   probed, scanned or injected" is scoped to discovery and still holds — link
