@@ -35,6 +35,10 @@ func (a *API) Routes() *http.ServeMux {
 	mux.HandleFunc("GET /api/state/stream", a.stream)
 	mux.HandleFunc("GET /api/health", a.health)
 	mux.HandleFunc("GET /api/history", a.getHistory)
+	mux.HandleFunc("GET /api/bridge", a.getBridge)
+	mux.HandleFunc("GET /api/bridge/radios/{iface}/survey", a.getSurvey)
+	mux.HandleFunc("POST /api/bridge/radios/{iface}/channel", a.postChannel)
+	mux.HandleFunc("POST /api/bridge/radios/{iface}/deauth-all", a.postDeauthAll)
 	mux.HandleFunc("PATCH /api/devices/{mac}/policy", a.patchPolicy)
 	mux.HandleFunc("POST /api/devices/{mac}/sub", a.postSub)
 	mux.HandleFunc("PATCH /api/devices/{mac}/sub/{id}", a.patchSub)
@@ -82,6 +86,96 @@ func (a *API) health(w http.ResponseWriter, r *http.Request) {
 	s := a.e.Snapshot()
 	writeJSON(w, http.StatusOK, map[string]any{
 		"ok": s.Caps.Shaping, "caps": s.Caps, "revision": s.Revision,
+	})
+}
+
+// getBridge serves the box's own interface inventory: every port, its MAC and
+// addresses, and what each radio's access point is doing.
+//
+// A separate endpoint rather than part of the snapshot, for the same reason
+// getHistory is one: the snapshot goes out once a second to every connected
+// browser, and this changes on the timescale of somebody plugging a cable in.
+// It also costs two hostapd round-trips and a station dump per radio, which has
+// no business running at 1 Hz whether or not anyone is looking at it.
+func (a *API) getBridge(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, a.e.BridgeState())
+}
+
+// getSurvey reads a radio's airtime counters.
+//
+// A GET even though it costs a subprocess, because it changes nothing. Note the
+// contract on the way out: this is the OPERATING channel's airtime, never a
+// survey of the band, and SurveyResult.Note carries that in the payload so a
+// caller cannot lose it. See Source L.
+func (a *API) getSurvey(w http.ResponseWriter, r *http.Request) {
+	res, err := a.e.Survey(r.PathValue("iface"))
+	if err != nil {
+		writeErr(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, res)
+}
+
+// postChannel moves a radio, and every client associated to it, to another
+// channel via an 802.11h channel switch announcement.
+//
+// AP-WIDE, unlike every /api/devices action: there is no MAC here because the
+// blast radius is the whole radio. The interface says so before the button is
+// pressed; this refuses loudly if hostapd will not do it, because a channel
+// switch that silently did nothing would look identical to one a client simply
+// followed. See issue #122.
+func (a *API) postChannel(w http.ResponseWriter, r *http.Request) {
+	iface := r.PathValue("iface")
+	if err := a.e.radioReady(iface); err != nil {
+		writeErr(w, http.StatusServiceUnavailable, err.Error())
+		return
+	}
+	ch, err := strconv.Atoi(strings.TrimSpace(r.URL.Query().Get("channel")))
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, "channel must be a number")
+		return
+	}
+	// Width defaults to 20: the width every permitted channel supports, so an
+	// omitted parameter cannot produce a command hostapd rejects wholesale.
+	width := 20
+	if q := strings.TrimSpace(r.URL.Query().Get("width")); q != "" {
+		n, err := strconv.Atoi(q)
+		if err != nil {
+			writeErr(w, http.StatusBadRequest, "width must be a number")
+			return
+		}
+		width = n
+	}
+	if err := a.e.ChanSwitch(iface, ch, width); err != nil {
+		// 400 for an argument this box will never accept, 502 for hostapd
+		// declining one it might have.
+		code := http.StatusBadGateway
+		if _, ok := apChannels[ch]; !ok || width != 20 && width != 40 && width != 80 {
+			code = http.StatusBadRequest
+		}
+		writeErr(w, code, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"iface": iface, "action": "chan_switch", "channel": ch, "width_mhz": width,
+	})
+}
+
+// postDeauthAll drops every station on a radio. AP-wide, same reasoning as
+// postChannel; the count returned is how many were there to drop.
+func (a *API) postDeauthAll(w http.ResponseWriter, r *http.Request) {
+	iface := r.PathValue("iface")
+	if err := a.e.radioReady(iface); err != nil {
+		writeErr(w, http.StatusServiceUnavailable, err.Error())
+		return
+	}
+	n, err := a.e.DeauthAll(iface)
+	if err != nil {
+		writeErr(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"iface": iface, "action": "deauth_all", "stations": n,
 	})
 }
 

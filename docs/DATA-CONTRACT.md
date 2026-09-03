@@ -659,3 +659,188 @@ not from `lsusb`, which a minimal image does not have.
 - `device` is a **symlink**, and the USB device is its parent. Resolve it
   before taking `..`: a lexical join yields `/sys/class/net/<iface>` instead,
   every read returns empty, and a USB adapter reports as onboard.
+
+## Source J — sysfs + `ip -j addr` · the box's own interfaces
+
+**VERIFIED** on hardware on 2026-09-03. Source I answers "which radio is
+serving"; this answers "what interfaces does this box have at all", which is
+what the bridge view draws. Read per interface from `/sys/class/net/<iface>/`,
+with addresses from `ip -j addr show`.
+
+| Path | Meaning |
+|---|---|
+| `address` | The interface's MAC |
+| `operstate` | `up`, `down`, or `unknown` (`lo` is always `unknown`) |
+| `carrier` | 1 = link present. **EINVAL on a down interface** — see below |
+| `speed` | Negotiated Mbit/s for a **wired** port. EINVAL when down; absent for wireless |
+| `master` (symlink) | The bridge this interface is a port of, e.g. `br-lan`. Absent when it is not bridged |
+| `phy80211` (symlink) | Present **iff** the interface is wireless. This is the test for "is this a radio" |
+
+**Semantics that bite**
+
+- **`carrier` and `speed` on a down interface fail with `EINVAL`**, they do not
+  read empty and they do not read `-1`. Measured: `cat
+  /sys/class/net/wlan0/carrier` prints "Invalid argument" and exits 1 while
+  `wlan0` is rfkilled. `readSysfs` returns `""` on any error, so the value
+  degrades safely — but *unknown* and *no carrier* are different facts and
+  collapsing the read error into `false` reports a working interface as dead.
+- **A bridge reports a `speed` and a radio does not.** `br-lan` reads `1000`;
+  `wlan-usb` has no `speed` file at all. Speed is meaningful only for a wired
+  port, and showing "1000 Mbit/s" against a bridge spanning an 80 MHz radio
+  invents a number that describes nothing.
+- **`master` is a symlink, so bridge membership needs no `bridge link show`.**
+  One fewer subprocess, and unlike the command it still answers for an
+  interface that is down.
+- **Two interfaces sharing a MAC is normal, and which two depends on the
+  image.** Measured on this box: `br-lan` and `wlan-usb` both read
+  `9c:ef:d5:f6:3f:f2`, because a bridge with no explicitly-set address takes
+  the **lowest** MAC among its members and `9c:ef…` sorts below `eth0`'s
+  `d8:3a…`. After commit 9d0d5a3 the bridge MAC is instead pinned to the WAN
+  port's, so `br-lan` and `eth0` share it. Either way a MAC appears twice and
+  neither case is a fault; rendering it as a duplicate-address warning would
+  make correct behaviour look broken.
+- `lo` reads an all-zero MAC and `operstate=unknown`. It is not a bridge port
+  and is not worth drawing.
+- **`br-lan` carries several addresses at once** — the DHCP lease from upstream,
+  the fixed rescue address, and an IPv6 link-local — which is why the interface
+  cannot pick "the" address of the box. See the note in `App.vue`'s `iperfCmd`:
+  whichever address the page was reached on is the one demonstrably reachable.
+
+## Source K — hostapd `STATUS` / `GET_CONFIG` · the live AP settings
+
+**VERIFIED** on hardware on 2026-09-03 against `wlan-usb` (mt7921u), hostapd
+v2.10, over the control socket described in `daemon/internal/boa/hostapd.go`.
+This is the **only** runtime source for these: SSID, channel, band and width are
+baked into `/etc/hostapd/boa.conf` at *image build* time from `.env`, so nothing
+in the daemon knows them otherwise.
+
+| Command | Field | Meaning |
+|---|---|---|
+| `STATUS` | `state` | `ENABLED` when the AP is actually beaconing |
+| `STATUS` | `freq`, `channel` | Operating frequency in MHz and its channel number |
+| `STATUS` | `secondary_channel` | `0` = none, `-1` = below the primary, `1` = above |
+| `STATUS` | `vht_oper_chwidth`, `he_oper_chwidth` | `0` = 20/40 MHz, `1` = 80 MHz |
+| `STATUS` | `ieee80211n`, `ieee80211ac`, `ieee80211ax` | Which generations are enabled |
+| `STATUS` | `beacon_int`, `dtim_period` | Power-save timing, in beacon intervals |
+| `GET_CONFIG` | `ssid[0]`, `bssid[0]` | The BSS's network name and its MAC |
+| `GET_CONFIG` | `wpa`, `key_mgmt`, `group_cipher` | Security, e.g. `2` / `WPA-PSK` / `CCMP` |
+
+**Semantics that bite**
+
+- **Neither command reports the country code.** There is no `country_code` field
+  in either output, despite `country_code=` being set in `boa.conf`. The
+  regulatory domain must come from `iw reg get`, which is **global rather than
+  per-interface** — measured here as `country US: DFS-FCC`. Attributing it to a
+  radio is a display choice, not a fact the radio reports.
+- **There is no channel-width field.** Width is *derived*, and the derivation is
+  the whole reason this entry exists:
+  `he_oper_chwidth`/`vht_oper_chwidth` of `1` → **80 MHz**; chwidth `0` with a
+  non-zero `secondary_channel` → **40 MHz**; both zero → **20 MHz**. The string
+  "80" appears nowhere in the output. Measured on this box: `freq=5200`,
+  `channel=40`, `secondary_channel=-1`, `he_oper_chwidth=1`, which `iw dev
+  wlan-usb info` independently confirms as "channel 40 (5200 MHz), width: 80
+  MHz".
+- **`ssid` and `bssid` are indexed** — `ssid[0]`, `bssid[0]` — because hostapd
+  can serve several BSSes on one interface. Match the prefix, not a bare key, or
+  the parse silently finds nothing.
+- `he_oper_centr_freq_seg0_idx=42` is the **centre** of the 80 MHz block, not a
+  channel the AP is on. Reading it as the operating channel yields a plausible
+  number that is wrong by up to two channels.
+- Available **only for a radio hostapd is serving**, gated by
+  `hostapdAvailable(iface)`. Before #147 the onboard radio ran under
+  NetworkManager and exposed no socket at all; after it, whichever radio wins
+  is a hostapd radio — but still only one at a time.
+
+## Source L — `iw dev <if> survey dump` · airtime, on the operating channel only
+
+**VERIFIED** on hardware on 2026-09-03, mt7921u serving on channel 40.
+
+| Field | Meaning |
+|---|---|
+| `frequency` | The channel this block describes, MHz |
+| `channel active time` | Total ms the radio has spent on this channel |
+| `channel busy time` | Of that, ms the medium was sensed busy |
+| `channel receive time` / `channel transmit time` | Of that, ms actually spent receiving / transmitting |
+
+**Semantics that bite**
+
+- **This is not a band survey, however much it looks like one.** The command
+  prints a block for *every* channel the phy knows — 98 of them on this
+  tri-band adapter, from 2412 MHz to the 6 GHz range — but measured on this box
+  **exactly one** block has a non-zero `channel active time`. A beaconing radio
+  never visits the others, so there is nothing for it to have measured.
+- **The frequency label on that one block is WRONG, and this is the trap.**
+  Measured 2026-09-03: the AP was on **5200 MHz** (channel 40 — `iw dev
+  wlan-usb info` and hostapd `STATUS` agree), yet the only populated survey
+  block was labelled **5955 MHz**, a 6 GHz channel the radio has never been on.
+  `iw` maps the driver's survey *index* onto its own channel enumeration, and
+  on `mt7921u` those do not line up.
+
+  The numbers themselves are sound — they are the operating channel's airtime.
+  Proof: `channel active time` read 5 540 872 ms while the hostapd unit had
+  been up 5 562 s, a 21-second match, and the derived figures (4.9% busy, 4.0%
+  transmit, 1.4% receive) are plausible for a lightly-loaded AP with two
+  stations.
+
+  So: **take the airtime from the single populated block, and take the
+  frequency from hostapd `STATUS` or `iw dev <if> info` — never from the survey
+  block's own label.** Believing the label reports the box measuring a 6 GHz
+  channel it has never tuned to, which is both wrong and completely plausible
+  on a tri-band adapter.
+- Therefore: **filter to blocks with a non-zero `channel active time`.** A
+  "least busy channel" ranked over the raw output sorts a table of zeroes to
+  the top and recommends whichever channel the radio has never looked at —
+  confidently, and always wrong.
+- The counters are **monotonic since the interface came up**, so only
+  *differences between two reads* mean anything. A single sample gives a busy
+  fraction averaged over the whole uptime of the AP, which is not the question
+  anyone is asking.
+- **`receive` and `transmit` are not a decomposition of `busy`.** They overlap
+  it and can exceed it. Measured on the same sample: busy 271 397 ms against
+  receive 79 009 + transmit 219 107 = 298 116 ms.
+
+  So **airtime consumed by other devices cannot be derived as
+  `busy - receive - transmit`.** That subtraction is the obvious way to build a
+  "how much of this channel is somebody else" readout, and on real hardware it
+  produces a negative number. There is no honest contention figure available
+  from these four counters alone; `busy` is the whole of what can be said.
+- A genuine cross-channel survey needs a radio that is **not** beaconing —
+  a second adapter, or the onboard one while the dongle serves. That is why
+  scanning for a best channel is not implemented against the serving radio.
+
+## Source M — hostapd control actions · what the radio will actually do
+
+**VERIFIED** on hardware on 2026-09-03: `mt7921u`, hostapd v2.10, AP on channel
+40 with two associated stations. These are *actions* rather than readings, but
+they belong here for the same reason the rest does — two of the three behave
+differently from how they read.
+
+| Command | Result on this hardware |
+|---|---|
+| `DEAUTHENTICATE ff:ff:ff:ff:ff:ff` | **Works.** Both stations dropped and reassociated within 12 s (connected time 6438 s → 9 s) |
+| `CHAN_SWITCH …` | **Refused.** Every form returns `FAIL`; the AP does not move |
+| `STATUS` / `GET_CONFIG` | Work — see Source K |
+
+**Semantics that bite**
+
+- **`CHAN_SWITCH` fails on this driver, and everything short of running it says
+  otherwise.** `iw phy phy1 info` lists `channel_switch` among its supported
+  commands, and hostapd parses the request and logs it
+  (`wlan-usb: IEEE 802.11 CHAN_SWITCH HE config 0x1 VHT config 0x1`) before
+  returning `FAIL`. Tried at 20/40/80 MHz, with and without `ht`/`vht`/`he`, and
+  as a bare `CHAN_SWITCH 5 5180` — all refused, AP unmoved.
+
+  **Advertised capability is not evidence of support.** The only test that
+  answers this question is issuing the command and reading the reply, which is
+  why the refusal is surfaced as a `502` carrying hostapd's own text rather than
+  being reported as success.
+
+- **A broadcast deauthentication can strand a device's policy.** Observed on the
+  same run: of two stations kicked, one reassociated under a **different MAC**
+  (`fc:9c:a7:93:7f:ed` → `92:d2:2b:bd:91:b2`) nine seconds later. That is
+  iOS/Android private-address randomisation rotating on reassociation.
+
+  Policy is keyed by MAC, so the returning device is a *new* client with no
+  conditioning, and the old policy stays behind on an address that will never be
+  seen again. This is issue #45, and this action makes that path hot rather than
+  incidental — so the interface says so where the button is, not in a document.

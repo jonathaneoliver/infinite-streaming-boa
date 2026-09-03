@@ -622,22 +622,8 @@ only route for a built-in, which is generated and cannot be saved back to"
 .line { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .spacer { flex: 1; }
 
-/* Matches the chart toolbar: exclusive choices sharing one border. */
-.seg { display: flex; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }
-.seg-btn {
-  padding: 3px 10px;
-  font: inherit; font-size: 12px;
-  color: var(--ink-dim);
-  background: var(--panel-2);
-  border: 0; border-left: 1px solid var(--line);
-  cursor: pointer;
-}
-.seg-btn:first-child { border-left: 0; }
-.seg-btn:hover:not(:disabled) { color: var(--ink); background: var(--line); }
-.seg-btn.on { color: var(--ink); background: var(--line); font-weight: 600; }
-.seg-btn:disabled { opacity: 0.45; cursor: default; }
-.seg-btn:focus-visible { outline: 2px solid var(--down); outline-offset: -2px; }
-/* Saved patterns are the operator's own, so they read differently from the two
+/* .seg / .seg-btn are global (style.css).
+   Saved patterns are the operator's own, so they read differently from the two
    the box generates. */
 .seg-btn.saved { font-style: italic; }
 

@@ -305,6 +305,88 @@ export interface RadioInfo {
   usb_version?: string;
 }
 
+/**
+ * The box's own interfaces, from GET /api/bridge. Mirrors BridgeInfo in
+ * daemon/internal/boa/bridgeinfo.go; see Sources J and K in the data contract.
+ *
+ * A separate fetch from the snapshot rather than part of it: this changes when
+ * somebody plugs a cable in, and putting it on the 1 Hz stream would re-send an
+ * unchanging inventory to every open browser once a second.
+ */
+export type IfaceRole = 'wan' | 'bridge' | 'ap' | 'radio' | 'lan' | 'other';
+
+/** What a hostapd-served radio is doing right now. */
+export interface APStatus {
+  ssid?: string;
+  bssid?: string;
+  /** Global regulatory domain from `iw reg get` — hostapd reports none. */
+  country?: string;
+  channel?: number;
+  freq_mhz?: number;
+  /** DERIVED: hostapd has no width field. See apWidth in radioctl.go. */
+  width_mhz?: number;
+  mode?: string;
+  /** True only when hostapd says state=ENABLED, i.e. actually beaconing. */
+  enabled: boolean;
+  stations: number;
+  beacon_int_ms?: number;
+  dtim_period?: number;
+}
+
+export interface IfaceInfo {
+  name: string;
+  role: IfaceRole;
+  mac?: string;
+  ipv4?: string[];
+  ipv6?: string[];
+  up: boolean;
+  /** `carrier_known` is false when the interface is down: sysfs returns EINVAL
+   *  rather than a value, and "no carrier" is a different fact from "could not
+   *  ask". Rendering the two the same reports a healthy interface as a dead
+   *  cable. */
+  carrier: boolean;
+  carrier_known: boolean;
+  /** Wired ports only. A bridge reports a speed too, describing nothing. */
+  speed_mbps?: number;
+  master?: string;
+  wireless: boolean;
+  radio?: RadioInfo;
+  ap?: APStatus;
+  /** The one radio the daemon watches. Clients on any other are NOT
+   *  conditioned and never appear in the Clients tab. */
+  serving: boolean;
+}
+
+export interface BridgeInfo {
+  bridge: string;
+  ifaces: IfaceInfo[];
+  notes?: Notice[];
+}
+
+export interface SurveyChannel {
+  /** The OPERATING frequency, from `iw dev info` — not from the survey block,
+   *  whose own label is wrong on mt7921u. */
+  freq_mhz: number;
+  /** What the driver labelled this block, kept so the disagreement is visible. */
+  reported_freq_mhz?: number;
+  active_ms: number;
+  busy_ms: number;
+  receive_ms: number;
+  transmit_ms: number;
+  /** From the delta between two reads; absent on the first call. */
+  busy_pct?: number;
+  delta_active_ms?: number;
+}
+
+export interface SurveyResult {
+  iface: string;
+  operating_freq_mhz?: number;
+  channels: SurveyChannel[];
+  /** The driver attributed airtime to a frequency the radio is not on. */
+  mislabelled?: boolean;
+  note: string;
+}
+
 export interface Capabilities {
   shaping: boolean;
   uplink: boolean;

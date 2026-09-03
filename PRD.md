@@ -315,6 +315,17 @@ damages packets, never link state.
 
 ### 6.5 Interface
 
+- The interface has **two tabs**. **Clients** is the device list and everything
+  that conditions one device; **Bridge** is the box itself. They are separate
+  because the controls differ in kind, not merely in subject: everything on a
+  device card acts on one device, and everything on the Bridge tab acts on a
+  whole radio at once. Clients is the default — the devices are what the box is
+  for, and the bridge is what you go and look at.
+- The page header is shared by both and reports the same things throughout:
+  transport, the WAN port, and which radio is serving with its negotiated bus
+  speed. A USB adapter that quietly enumerated at High-Speed is invisible from
+  every other angle, so it must not become invisible from whichever tab is open.
+
 - State arrives as **complete snapshots** over server-sent events, with polling
   as an equivalent fallback. A dropped frame cannot cause drift.
 - Charts hold up to one hour at 1 Hz, seeded from the server on load so a
@@ -352,7 +363,41 @@ damages packets, never link state.
   conditioning is additive on top of it; that `overlimits` is not an error; that
   PHY rate is not throughput.
 
-### 6.5 Measuring
+### 6.6 The bridge
+
+- The Bridge tab shows **every interface the box has**, discovered from the
+  kernel rather than read from configuration: the WAN port, the bridge, each
+  radio and the wired downstream port, with MAC, addresses, link state and — for
+  a radio — its adapter, driver, negotiated bus speed, and the SSID, channel,
+  width, mode and country its access point is actually running. A diagram draws
+  the same thing as a topology.
+- **A radio the daemon is not watching is named as such, prominently.** The
+  daemon follows one interface, so a second adapter's clients associate, take
+  addresses and pass traffic while being conditioned by nothing and appearing
+  nowhere in the Clients tab. Discovering the hardware rather than the
+  configuration is what lets the interface say this instead of leaving it to be
+  inferred from a device list that is quietly short.
+- The tab offers **box-wide radio controls**: a broadcast deauthentication and
+  an airtime readout. Each states on screen that it affects **every client on
+  that radio**, and how many that currently is. It also warns that a client
+  using a private Wi-Fi address may reassociate under a different MAC and so
+  return as a new device with no policy.
+  This is a deliberate exception to the per-device independence of §6.2, taken
+  because the box is a single-operator instrument and because these impairments
+  are unreachable any other way — not a general licence for AP-wide controls to
+  appear beside per-device ones.
+- Where a radio exposes no hostapd control socket, its controls are **shown
+  disabled with the reason**, never offered and silently ignored. Where a radio
+  refuses an action its driver claims to support — an 802.11h channel switch on
+  the `mt7921u` is the measured case — the refusal is reported with the
+  driver's own words rather than reported as success.
+- The airtime readout is labelled as the **operating channel only**. It is not a
+  survey of the band: a beaconing radio never visits other channels, so their
+  counters are zero, and one driver measured here mislabels the frequency
+  outright. Choosing a quieter channel needs a radio that is not serving, and
+  that is left unbuilt rather than approximated.
+
+### 6.7 Measuring
 
 - An **iperf3 server** runs on the box, so a device can be measured without a
   second host and without installing anything but a client. The interface shows

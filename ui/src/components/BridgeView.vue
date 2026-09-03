@@ -1,0 +1,399 @@
+<script setup lang="ts">
+import { computed, ref, type Ref } from 'vue';
+import { DEVELOPER } from '@/types';
+import type { IfaceInfo } from '@/types';
+import { useBridge } from '@/composables/useBridge';
+import InterfaceDiagram from '@/components/InterfaceDiagram.vue';
+
+/*
+ * The box itself: every interface it has, what each radio is doing, and the
+ * controls that act on a whole radio at once.
+ *
+ * Separate from the Clients tab on purpose. Everything on a device card
+ * conditions ONE device; everything here hits every client on a radio
+ * simultaneously -- that is issue #122's "collision", and the resolution it
+ * asks for is exactly this: a per-client link event over there, a box-wide
+ * radio control over here, saying on screen that it affects everyone.
+ */
+
+const props = defineProps<{ active: boolean }>();
+const activeRef = computed(() => props.active) as Ref<boolean>;
+const bridge = useBridge(activeRef);
+
+const radios = computed(
+  () => bridge.info.value?.ifaces.filter((i) => i.wireless) ?? [],
+);
+const wired = computed(
+  () => bridge.info.value?.ifaces.filter((i) => !i.wireless) ?? [],
+);
+
+/** Channels the box will accept, mirroring apChannels in radioctl.go. DFS is
+ *  excluded because the Pi cannot serve an access point on one. */
+const CHANNELS_24 = [1, 6, 11];
+const CHANNELS_5 = [36, 40, 44, 48];
+
+const target = ref<Record<string, { channel: number; width: number }>>({});
+function pick(i: IfaceInfo) {
+  if (!target.value[i.name]) {
+    target.value = {
+      ...target.value,
+      [i.name]: { channel: i.ap?.channel ?? 36, width: i.ap?.width_mhz ?? 80 },
+    };
+  }
+  return target.value[i.name];
+}
+/** 2.4GHz is 20MHz only: 80 does not exist there and 40 is antisocial. The
+ *  daemon refuses the combination too; this keeps it from being offered. */
+const widthsFor = (ch: number) => (ch < 15 ? [20] : [20, 40, 80]);
+
+function setChannel(name: string, ch: number) {
+  const cur = target.value[name];
+  const widths = widthsFor(ch);
+  target.value = {
+    ...target.value,
+    [name]: { channel: ch, width: widths.includes(cur.width) ? cur.width : widths[0] },
+  };
+}
+
+function addrs(i: IfaceInfo) {
+  return [...(i.ipv4 ?? []), ...(i.ipv6 ?? [])];
+}
+
+/** Carrier is three-state: sysfs returns EINVAL on a down interface, so
+ *  "no carrier" and "could not ask" are different facts. */
+function linkText(i: IfaceInfo): string {
+  if (!i.up) return 'down';
+  if (!i.carrier_known) return 'up';
+  return i.carrier ? 'up, carrier' : 'up, NO carrier';
+}
+
+const busName = (i: IfaceInfo) => {
+  const r = i.radio;
+  if (!r) return '';
+  if (r.bus !== 'usb') return 'onboard';
+  return !r.link_mbps ? 'USB' : r.link_mbps >= 5000 ? 'USB 3' : 'USB 2';
+};
+// The failure that is invisible from every other angle: a USB 3 adapter that
+// enumerated at High-Speed looks identical -- same channel, same 802.11ax, same
+// PHY rate -- while delivering about a sixth of the throughput.
+const degraded = (i: IfaceInfo) =>
+  i.radio?.bus === 'usb' && !!i.radio.link_mbps && i.radio.link_mbps < 5000;
+
+/*
+ * Not-yet-built controls.
+ *
+ * Shown only behind ?developer=1, the same gate LadderPanel uses. A button that
+ * does nothing is exactly the silent no-op this codebase keeps getting bitten
+ * by; a button behind a flag someone deliberately typed is a preview of
+ * unfinished work, and reloading without it gives back the plain interface.
+ */
+const SOON = [
+  {
+    label: 'Scan for best channel',
+    what: 'Off-channel survey on a radio that is not beaconing, ranked by busy time.',
+    why: 'A serving radio never visits other channels, so its survey reports zeroes for all of them. This needs the second adapter.',
+    issue: '#122 Group D',
+  },
+  {
+    label: 'Move clients to the other radio',
+    what: '802.11v BSS transition request, steering associated clients to another BSS.',
+    why: 'Needs two access points running at once. One adapter reports #{ AP } <= 1, so this waits on the second radio.',
+    issue: '#122 Group A',
+  },
+  {
+    label: 'Radio profile: 20 MHz / legacy rates / RTS',
+    what: 'Force the AP down to 802.11n, 20 MHz, or RTS/CTS before every frame.',
+    why: 'Real airtime contention and MAC retries, which netem cannot imitate. Needs a hostapd restart, which drops every client.',
+    issue: '#122 Group B',
+  },
+  {
+    label: 'Power-save profile: DTIM / beacon / U-APSD',
+    what: 'Lengthen the wake cycle a dozing phone waits through between segment fetches.',
+    why: 'Produces a comb of periodic spikes no netem delay distribution can. Needs a hostapd restart.',
+    issue: '#122 Group C',
+  },
+  {
+    label: 'Monitor-mode capture on the idle radio',
+    what: 'Per-frame retries, actual MCS and per-frame RSSI, without disturbing the AP.',
+    why: 'Answers what `iw station dump` cannot. The USB adapter supports monitor mode; the onboard one does not.',
+    issue: '#122 Group D',
+  },
+];
+const pending = ref('');
+</script>
+
+<template>
+  <div class="bridge-view">
+    <div v-if="bridge.error.value" class="notice bad">{{ bridge.error.value }}</div>
+    <div v-if="bridge.actionMsg.value" class="notice">{{ bridge.actionMsg.value }}</div>
+
+    <!-- Standing facts about what is and is not being conditioned. An
+         unwatched radio is an error-level notice: its clients pass traffic
+         while appearing nowhere, which is the worst kind of quiet. -->
+    <div v-for="n in bridge.info.value?.notes ?? []" :key="n.text"
+         class="notice" :class="{ bad: n.level === 'error' }">
+      {{ n.text }}
+    </div>
+
+    <template v-if="bridge.info.value">
+      <InterfaceDiagram :info="bridge.info.value" />
+
+      <section v-for="r in radios" :key="r.name" class="card radio-card">
+        <div class="card-head">
+          <span class="name">{{ r.name }}</span>
+          <!-- Three states, not two. A radio that is simply switched off is not
+               the same as one carrying clients nobody is conditioning, and
+               labelling the quiet case with the alarming one is how a warning
+               stops being read. -->
+          <span v-if="r.serving" class="badge wifi">serving the AP</span>
+          <span v-else-if="!r.up" class="badge">off</span>
+          <span v-else class="badge warn-badge">not conditioned</span>
+          <span v-if="busName(r)" class="badge" :class="{ 'warn-badge': degraded(r) }">
+            {{ busName(r) }}
+          </span>
+          <span class="spacer"></span>
+          <span class="meta num">{{ r.mac }}</span>
+        </div>
+
+        <div class="facts">
+          <div><span class="k">adapter</span>
+            <span class="v">{{ [r.radio?.vendor, r.radio?.product].filter(Boolean).join(' ') || '—' }}</span></div>
+          <div><span class="k">driver</span><span class="v num">{{ r.radio?.driver || '—' }}</span></div>
+          <div><span class="k">link</span><span class="v">{{ linkText(r) }}</span></div>
+          <div><span class="k">bridge port</span><span class="v num">{{ r.master || 'not bridged' }}</span></div>
+          <template v-if="r.ap">
+            <div><span class="k">SSID</span><span class="v">{{ r.ap.ssid || '—' }}</span></div>
+            <div><span class="k">BSSID</span><span class="v num">{{ r.ap.bssid || '—' }}</span></div>
+            <div><span class="k">channel</span>
+              <span class="v num">{{ r.ap.channel }}<span v-if="r.ap.freq_mhz"> ({{ r.ap.freq_mhz }} MHz)</span></span></div>
+            <div><span class="k">width</span><span class="v num">{{ r.ap.width_mhz ? `${r.ap.width_mhz} MHz` : '—' }}</span></div>
+            <div><span class="k">mode</span><span class="v num">{{ r.ap.mode || '—' }}</span></div>
+            <div><span class="k">country</span><span class="v num">{{ r.ap.country || '—' }}</span></div>
+            <div><span class="k">stations</span><span class="v num">{{ r.ap.stations }}</span></div>
+            <div><span class="k">beacon / DTIM</span>
+              <span class="v num">{{ r.ap.beacon_int_ms }} ms / {{ r.ap.dtim_period }}</span></div>
+          </template>
+        </div>
+
+        <!-- Careful not to assert this radio's mode or width here: the facts
+             table above says what they actually are, and a warning that
+             contradicts the row above it teaches people to ignore warnings. -->
+        <p v-if="degraded(r)" class="notice bad inline">
+          This adapter negotiated USB 2 speed ({{ r.radio?.link_mbps }} Mb/s)
+          <template v-if="r.radio?.usb_version">
+            while declaring USB {{ r.radio.usb_version }}</template>.
+          An adapter that enumerates at High-Speed still reports its full channel
+          width and PHY rate while delivering roughly a sixth of the throughput,
+          so nothing else here will look wrong — reseat it in a SuperSpeed port.
+        </p>
+
+        <!-- Box-wide controls. The blast radius is stated on the control, not
+             in a tooltip: every one of these acts on the whole radio. -->
+        <div v-if="r.ap" class="actions">
+          <h4>Radio controls</h4>
+          <p class="warn-line">
+            These act on <strong>every client on {{ r.name }}</strong> at once —
+            {{ r.ap.stations }} associated right now.
+          </p>
+
+          <div class="action-row">
+            <button :disabled="bridge.busy.value" @click="bridge.deauthAll(r.name)">
+              deauthenticate all {{ r.ap.stations }}
+            </button>
+            <button :disabled="bridge.busy.value" @click="bridge.loadSurvey(r.name)">
+              read airtime
+            </button>
+          </div>
+          <!-- Measured, not theorised: a deauthenticated iPhone came back under
+               a new MAC within nine seconds. Policy is keyed by MAC, so the
+               device returns as a stranger with no conditioning. Issue #45. -->
+          <p class="meta">
+            A client using a private (randomised) Wi-Fi address may reassociate
+            under a <strong>different MAC</strong> and arrive as a new device with
+            no policy — observed here on a reconnect nine seconds after a
+            deauthentication. Its old conditioning stays behind on the old
+            address.
+          </p>
+
+          <!-- Channel switch is implemented end to end but this adapter's
+               driver refuses it, so it sits behind the developer flag rather
+               than standing in the way as a control that always errors. -->
+          <div v-if="DEVELOPER" class="action-row">
+            <label class="k">move to channel</label>
+            <div class="seg" role="group" aria-label="channel">
+              <button
+                v-for="c in [...CHANNELS_24, ...CHANNELS_5]" :key="c"
+                class="seg-btn" :class="{ on: pick(r).channel === c }"
+                @click="setChannel(r.name, c)"
+              >{{ c }}</button>
+            </div>
+            <div class="seg" role="group" aria-label="width">
+              <button
+                v-for="wd in widthsFor(pick(r).channel)" :key="wd"
+                class="seg-btn" :class="{ on: pick(r).width === wd }"
+                @click="target = { ...target, [r.name]: { ...pick(r), width: wd } }"
+              >{{ wd }}&#8239;MHz</button>
+            </div>
+            <button
+              class="accent" :disabled="bridge.busy.value"
+              @click="bridge.chanSwitch(r.name, pick(r).channel, pick(r).width)"
+            >announce channel switch</button>
+          </div>
+          <p v-if="DEVELOPER" class="meta">
+            An 802.11h channel switch announcement: clients are told to move and
+            should follow without reassociating.
+            <strong>Measured 2026-09-03: the mt7921u driver refuses this.</strong>
+            The phy advertises <code>channel_switch</code> and hostapd accepts and
+            logs the request, then every form of the command returns FAIL — the
+            AP does not move. The control is kept behind the developer flag
+            because the path is correct and a radio that supports it would work;
+            the refusal is reported rather than swallowed.
+          </p>
+
+          <div v-if="bridge.survey.value?.iface === r.name" class="survey">
+            <template v-for="c in bridge.survey.value.channels" :key="c.reported_freq_mhz">
+              <div class="facts">
+                <div><span class="k">channel busy</span>
+                  <span class="v num">
+                    {{ c.busy_pct !== undefined
+                      ? `${c.busy_pct.toFixed(1)}% over the last ${(c.delta_active_ms! / 1000).toFixed(0)}s`
+                      : `${((c.busy_ms / c.active_ms) * 100).toFixed(1)}% since the AP started` }}
+                  </span></div>
+                <div><span class="k">transmit</span>
+                  <span class="v num">{{ ((c.transmit_ms / c.active_ms) * 100).toFixed(1) }}%</span></div>
+                <div><span class="k">receive</span>
+                  <span class="v num">{{ ((c.receive_ms / c.active_ms) * 100).toFixed(1) }}%</span></div>
+              </div>
+            </template>
+            <p class="meta">{{ bridge.survey.value.note }}</p>
+            <p class="meta">
+              Transmit and receive are not parts of busy — they overlap it and can
+              add up to more, so airtime used by other devices cannot be got by
+              subtracting them.
+            </p>
+          </div>
+        </div>
+        <p v-else class="meta disabled-note">
+          <template v-if="!r.up">
+            {{ r.name }} is switched off — on this image the onboard radio is
+            rfkilled whenever a USB adapter is serving, so exactly one runs.
+            Nothing to drive here.
+          </template>
+          <template v-else>
+            No hostapd control socket on {{ r.name }}, so there is nothing to
+            drive here. The radio is idle, or is being run by something other
+            than hostapd.
+          </template>
+        </p>
+      </section>
+
+      <section class="card">
+        <div class="card-head"><span class="name">Wired and bridge</span></div>
+        <table class="counters">
+          <thead>
+            <tr><th>interface</th><th>role</th><th>MAC</th><th>link</th><th>speed</th><th>addresses</th></tr>
+          </thead>
+          <tbody>
+            <tr v-for="i in wired" :key="i.name">
+              <td class="num">{{ i.name }}</td>
+              <td>{{ i.role }}</td>
+              <td class="num">{{ i.mac }}</td>
+              <td>{{ linkText(i) }}</td>
+              <td class="num">{{ i.speed_mbps ? `${i.speed_mbps} Mb/s` : '—' }}</td>
+              <td class="num addrs">
+                <div v-for="a in addrs(i)" :key="a">{{ a }}</div>
+                <span v-if="!addrs(i).length">—</span>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+        <p class="meta">
+          Two interfaces sharing a MAC is normal: a bridge with no address set
+          takes the lowest among its ports, and newer images pin it to the WAN
+          port's instead. Speed is a wired-port fact — a bridge reports one, and
+          it describes nothing.
+        </p>
+      </section>
+
+      <!-- Unfinished work, behind ?developer=1. Never in the default view. -->
+      <section v-if="DEVELOPER" class="card soon">
+        <div class="card-head">
+          <span class="name">Not yet built</span>
+          <span class="badge warn-badge">developer</span>
+        </div>
+        <p class="meta">
+          These are the remaining router behaviours from issue #122. The buttons
+          are here so the shape of the panel is reviewable; none of them is wired
+          to anything yet.
+        </p>
+        <div v-for="s in SOON" :key="s.label" class="soon-row">
+          <button @click="pending = s.label">{{ s.label }}</button>
+          <div class="soon-text">
+            <div>{{ s.what }}</div>
+            <div class="meta">{{ s.why }} <em>{{ s.issue }}</em></div>
+            <div v-if="pending === s.label" class="notice inline">
+              Coming soon — not implemented yet. Tracked in {{ s.issue }}.
+            </div>
+          </div>
+        </div>
+      </section>
+    </template>
+
+    <div v-else-if="!bridge.error.value" class="empty">
+      <p>Reading the bridge…</p>
+    </div>
+  </div>
+</template>
+
+<style scoped>
+.radio-card { margin-bottom: 16px; }
+.card { padding-bottom: 14px; margin-bottom: 16px; }
+
+.facts {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 2px 18px;
+  padding: 12px 14px;
+}
+.facts > div { display: flex; gap: 10px; font-size: 12px; }
+.k { color: var(--ink-dim); min-width: 96px; }
+.v { color: var(--ink); }
+.addrs div { white-space: nowrap; }
+
+.actions { padding: 4px 14px 0; border-top: 1px solid var(--line-soft); }
+.actions h4 {
+  margin: 12px 0 4px;
+  font-size: 11px; font-weight: 600;
+  text-transform: uppercase; letter-spacing: 0.09em;
+  color: var(--ink-dim);
+}
+/* The blast radius, stated where the buttons are rather than in a tooltip. */
+.warn-line { color: var(--warn); font-size: 12px; margin: 0 0 10px; }
+.action-row {
+  display: flex; align-items: center; gap: 8px;
+  flex-wrap: wrap; margin-bottom: 8px;
+}
+.action-row .k { min-width: auto; }
+
+.survey { border-top: 1px solid var(--line-soft); margin-top: 10px; }
+.survey .facts { padding-left: 0; padding-right: 0; }
+
+.badge.warn-badge {
+  color: var(--warn);
+  border-color: color-mix(in srgb, var(--warn) 45%, var(--line));
+}
+
+.notice.inline { margin: 8px 0 0; }
+.disabled-note { padding: 0 14px 12px; }
+
+.soon { opacity: 0.9; }
+.soon-row {
+  display: flex; gap: 12px; align-items: flex-start;
+  padding: 8px 14px; border-top: 1px solid var(--line-soft);
+}
+.soon-row > button { flex: 0 0 auto; min-width: 250px; text-align: left; }
+.soon-text { font-size: 12px; color: var(--ink-dim); }
+.soon-text em { font-style: normal; color: var(--ink-faint); }
+
+.counters { width: 100%; }
+</style>
