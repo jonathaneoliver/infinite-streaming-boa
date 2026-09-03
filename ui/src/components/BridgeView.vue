@@ -33,6 +33,10 @@ const CHANNELS_24 = [1, 6, 11];
 const CHANNELS_5 = [36, 40, 44, 48];
 
 const target = ref<Record<string, { channel: number; width: number }>>({});
+/** Chosen outage length per radio; 10s is long enough to drain a player's
+ *  buffer without being long enough for a phone to give up and leave for
+ *  another network. */
+const outage = ref<Record<string, number>>({});
 function pick(i: IfaceInfo) {
   if (!target.value[i.name]) {
     target.value = {
@@ -89,12 +93,6 @@ const degraded = (i: IfaceInfo) =>
  */
 const SOON = [
   {
-    label: 'Scan for best channel',
-    what: 'Off-channel survey on a radio that is not beaconing, ranked by busy time.',
-    why: 'A serving radio never visits other channels, so its survey reports zeroes for all of them. This needs the second adapter.',
-    issue: '#122 Group D',
-  },
-  {
     label: 'Move clients to the other radio',
     what: '802.11v BSS transition request, steering associated clients to another BSS.',
     why: 'Needs two access points running at once. One adapter reports #{ AP } <= 1, so this waits on the second radio.',
@@ -111,12 +109,6 @@ const SOON = [
     what: 'Lengthen the wake cycle a dozing phone waits through between segment fetches.',
     why: 'Produces a comb of periodic spikes no netem delay distribution can. Needs a hostapd restart.',
     issue: '#122 Group C',
-  },
-  {
-    label: 'Monitor-mode capture on the idle radio',
-    what: 'Per-frame retries, actual MCS and per-frame RSSI, without disturbing the AP.',
-    why: 'Answers what `iw station dump` cannot. The USB adapter supports monitor mode; the onboard one does not.',
-    issue: '#122 Group D',
   },
 ];
 const pending = ref('');
@@ -203,6 +195,97 @@ const pending = ref('');
             <button :disabled="bridge.busy.value" @click="bridge.loadSurvey(r.name)">
               read airtime
             </button>
+          </div>
+
+          <!-- The silent one. Kept visually apart from the announced actions
+               above, because the difference between them is the whole reason
+               it exists. -->
+          <h4>Power</h4>
+          <p class="warn-line">
+            Nothing is announced. Unlike a deauthentication, clients are told
+            <strong>nothing at all</strong> — they go on believing they are
+            connected until their own beacon-miss timeout expires, which is tens
+            of seconds of a network that looks up and carries nothing. This is
+            what a tripped breaker or walking round a corner does.
+          </p>
+          <div class="action-row">
+            <label class="k">cut power for</label>
+            <div class="seg" role="group" aria-label="outage length">
+              <button
+                v-for="s in [5, 10, 30, 60]" :key="s"
+                class="seg-btn" :class="{ on: outage[r.name] === s }"
+                @click="outage = { ...outage, [r.name]: s }"
+              >{{ s }}s</button>
+            </div>
+            <button
+              :disabled="bridge.busy.value || !r.powered"
+              @click="bridge.powerOutage(r.name, outage[r.name] ?? 10)"
+            >cut power</button>
+            <button
+              v-if="r.power_known && !r.powered"
+              class="accent" :disabled="bridge.busy.value"
+              @click="bridge.setPower(r.name, true)"
+            >power back on</button>
+            <span v-if="r.power_known && !r.powered" class="meta warn-line">
+              radio is OFF — silent, not disconnected
+            </span>
+          </div>
+
+          <!-- Scan. Disruptive by construction and says so, with the cost
+               reported afterwards as the measured out-of-service time. -->
+          <h4>Channel scan</h4>
+          <p class="warn-line">
+            Takes {{ r.name }} <strong>out of service</strong> for a few seconds —
+            a radio that is beaconing cannot survey other channels.
+            <template v-if="radios.length > 1">
+              Its {{ r.ap.stations }} client(s) will land on the other radio and
+              come back.
+            </template>
+            <template v-else>
+              With only one radio serving, this is a real outage.
+            </template>
+          </p>
+          <div class="action-row">
+            <button :disabled="bridge.busy.value" @click="bridge.scanBand(r.name, false)">
+              scan {{ r.ap.channel && r.ap.channel < 15 ? '2.4GHz' : '5GHz' }}
+            </button>
+            <button
+              class="accent" :disabled="bridge.busy.value"
+              @click="bridge.scanBand(r.name, true)"
+            >scan and move to the quietest</button>
+          </div>
+          <p class="meta">
+            Moving happens while the radio is down, so it works on this adapter
+            even though it refuses a channel-switch announcement (#154). Clients
+            are not told — the access point simply reappears on another channel
+            and they rediscover it, which is how most consumer routers change
+            channel anyway.
+          </p>
+
+          <div v-if="bridge.scan.value?.iface === r.name" class="survey">
+            <table class="counters">
+              <thead>
+                <tr><th>channel</th><th>neighbours</th><th>strongest</th><th></th></tr>
+              </thead>
+              <tbody>
+                <tr v-for="c in bridge.scan.value.channels" :key="c.channel">
+                  <td class="num">{{ c.channel }}</td>
+                  <td class="num">{{ c.aps }}</td>
+                  <td class="num">{{ c.strongest_dbm ? `${c.strongest_dbm} dBm` : '—' }}</td>
+                  <td>
+                    <span v-if="c.recommended" class="badge" style="color: var(--ok)">
+                      quietest
+                    </span>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+            <p class="meta">{{ bridge.scan.value.note }}</p>
+            <p class="meta">
+              Only non-overlapping channels are recommended. An empty 2.4GHz
+              channel 3 is a worse choice than a busy channel 1: it overlaps both
+              1 and 6, taking interference from each and giving it back.
+            </p>
           </div>
           <!-- Measured, not theorised: a deauthenticated iPhone came back under
                a new MAC within nine seconds. Policy is keyed by MAC, so the

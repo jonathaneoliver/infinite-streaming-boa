@@ -39,6 +39,8 @@ func (a *API) Routes() *http.ServeMux {
 	mux.HandleFunc("GET /api/bridge/radios/{iface}/survey", a.getSurvey)
 	mux.HandleFunc("POST /api/bridge/radios/{iface}/channel", a.postChannel)
 	mux.HandleFunc("POST /api/bridge/radios/{iface}/deauth-all", a.postDeauthAll)
+	mux.HandleFunc("POST /api/bridge/radios/{iface}/power", a.postRadioPower)
+	mux.HandleFunc("POST /api/bridge/radios/{iface}/scan", a.postScan)
 	mux.HandleFunc("PATCH /api/devices/{mac}/policy", a.patchPolicy)
 	mux.HandleFunc("POST /api/devices/{mac}/sub", a.postSub)
 	mux.HandleFunc("PATCH /api/devices/{mac}/sub/{id}", a.patchSub)
@@ -177,6 +179,81 @@ func (a *API) postDeauthAll(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"iface": iface, "action": "deauth_all", "stations": n,
 	})
+}
+
+// postRadioPower cuts or restores a radio's power, telling its clients nothing.
+//
+// The one impairment here that is SILENT. Every other action announces itself:
+// a deauthenticated client knows it was thrown off and reconnects in a second
+// or two. A client whose access point loses power is told nothing at all and
+// has to notice the beacons stopped, which takes it tens of seconds of
+// believing it is still connected. That is the case a real power cut, a
+// tripped breaker or walking round a corner produces, and nothing else in this
+// codebase can imitate it.
+//
+// `?on=0|1` sets it and leaves it. `?dur=N` cuts power for N seconds and
+// restores it -- the more useful form, since what matters is what a player does
+// DURING an outage and how it recovers, and a manual off/on pair makes the
+// duration whatever the operator's reflexes were.
+func (a *API) postRadioPower(w http.ResponseWriter, r *http.Request) {
+	iface := r.PathValue("iface")
+	if err := a.e.radioExists(iface); err != nil {
+		writeErr(w, http.StatusServiceUnavailable, err.Error())
+		return
+	}
+	q := r.URL.Query()
+	// A timed outage is a different verb from a plain toggle, so it is decided
+	// before `on` is read: ?dur= always means "off, then back".
+	if s := strings.TrimSpace(q.Get("dur")); s != "" {
+		dur, err := strconv.ParseFloat(s, 64)
+		if err != nil {
+			writeErr(w, http.StatusBadRequest, "dur must be a number of seconds")
+			return
+		}
+		if err := a.e.RadioOutage(iface, dur); err != nil {
+			writeErr(w, http.StatusBadGateway, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusAccepted, map[string]any{
+			"iface": iface, "action": "power_outage", "dur_sec": dur,
+		})
+		return
+	}
+	on := q.Get("on") != "0" && !strings.EqualFold(q.Get("on"), "false")
+	if err := a.e.SetRadioPower(iface, on); err != nil {
+		writeErr(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"iface": iface, "action": "power", "on": on,
+	})
+}
+
+// postScan takes a radio out of service, scans its band, and puts it back --
+// optionally on the quietest channel it found (`?apply=1`).
+//
+// A beaconing radio cannot survey other channels, so this is genuinely
+// disruptive: the BSS is torn down for a few seconds and its clients are
+// dropped. On a box serving two radios they land on the other band and come
+// back, which is what makes it affordable; on a single-radio box it is an
+// outage. Either way the cost is reported in the result as outage_sec.
+//
+// Applying happens while the radio is still down, which is why it works on
+// hardware that refuses CHAN_SWITCH (issue #154): nothing is announced, the
+// access point simply reappears elsewhere.
+func (a *API) postScan(w http.ResponseWriter, r *http.Request) {
+	iface := r.PathValue("iface")
+	if err := a.e.radioReady(iface); err != nil {
+		writeErr(w, http.StatusServiceUnavailable, err.Error())
+		return
+	}
+	apply := r.URL.Query().Get("apply") == "1"
+	res, err := a.e.ScanBand(iface, apply)
+	if err != nil {
+		writeErr(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, res)
 }
 
 // getHistory serves the per-client throughput series.

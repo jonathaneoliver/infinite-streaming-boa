@@ -352,9 +352,50 @@ export interface IfaceInfo {
   wireless: boolean;
   radio?: RadioInfo;
   ap?: APStatus;
-  /** The one radio the daemon watches. Clients on any other are NOT
-   *  conditioned and never appear in the Clients tab. */
+  /** A radio the daemon watches. Clients on any other are NOT conditioned and
+   *  never appear in the Clients tab. */
   serving: boolean;
+  /** rfkill state. false means the transmitter is off and the AP is silent
+   *  WITHOUT having told any client — they must time out and discover it.
+   *  `power_known` is false when the switch could not be read; unknown must
+   *  not render as "off", which would show a healthy radio as dead. */
+  powered: boolean;
+  power_known: boolean;
+}
+
+export interface ScanAP {
+  bssid: string;
+  ssid?: string;
+  freq_mhz: number;
+  channel: number;
+  signal_dbm: number;
+  /** Served by this box — excluded from the competition count. */
+  ours?: boolean;
+}
+
+export interface ScanChannel {
+  channel: number;
+  freq_mhz: number;
+  /** Neighbouring APs, excluding our own. */
+  aps: number;
+  strongest_dbm?: number;
+  recommended?: boolean;
+}
+
+export interface ScanResult {
+  iface: string;
+  band: string;
+  channels: ScanChannel[];
+  aps: ScanAP[];
+  best_channel?: number;
+  was_channel?: number;
+  now_channel?: number;
+  /** The radio came back up on best_channel rather than where it started. */
+  applied?: boolean;
+  /** How long the radio was actually out of service, so the cost of the
+   *  answer is reported next to it. */
+  outage_sec: number;
+  note: string;
 }
 
 export interface BridgeInfo {

@@ -91,9 +91,15 @@ type IfaceInfo struct {
 	Wireless bool       `json:"wireless"`
 	Radio    *RadioInfo `json:"radio,omitempty"`
 	AP       *APStatus  `json:"ap,omitempty"`
-	// Serving marks the one radio the daemon watches. Clients on any other
-	// radio are not conditioned and do not appear in the device list.
+	// Serving marks a radio the daemon watches. Clients on any other radio are
+	// not conditioned and do not appear in the device list.
 	Serving bool `json:"serving"`
+	// Powered is the rfkill state: false means the transmitter is switched off
+	// and the access point is silent without having told anyone. PowerKnown is
+	// false when the switch could not be read at all -- an unknown state must
+	// not render as "off", which would show a healthy radio as dead.
+	Powered    bool `json:"powered"`
+	PowerKnown bool `json:"power_known"`
 }
 
 // BridgeInfo is the whole answer for the bridge view.
@@ -134,6 +140,7 @@ func (e *Engine) BridgeState() BridgeInfo {
 		if in.Wireless {
 			r := Radio(name)
 			in.Radio = &r
+			in.Powered, in.PowerKnown = radioPowered(name)
 			in.Serving = e.cfg.IsWlan(name)
 			if hostapdAvailable(name) {
 				if ap := apStatus(name, country); ap != nil {
