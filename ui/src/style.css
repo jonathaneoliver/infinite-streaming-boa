@@ -149,7 +149,9 @@ header.top .sub { color: var(--ink-faint); font-size: 13px; }
   color: var(--ink);
   padding: 2px 6px;
   border-radius: 5px;
-  min-width: 120px;
+  /* Fixed, not min: matches the folded row's name column so the medium badge
+     and address after it hold their x whether the card is folded or open. */
+  width: 170px;
   font-family: inherit;
 }
 .card-head .name:hover { border-color: var(--line); }
