@@ -294,6 +294,78 @@ method=auto
 may-fail=true
 EOF
 
+# --- Bridge MAC: stable and per-board-unique -------------------------------
+# A Linux bridge with no MAC set adopts the LOWEST MAC among its ports. With
+# only the onboard NIC and onboard radio, that is eth0 (both are d8:3a:dd:...,
+# eth0 numerically lower), so the bridge is already stable at eth0's MAC and
+# nothing here is strictly needed. The instability is introduced by EXTERNAL
+# USB adapters: a USB Wi-Fi or ethernet dongle usually has a lower OUI (e.g.
+# 9c:ef:d5:...), so the bridge adopts the DONGLE's MAC and then CHANGES it every
+# time a dongle hotplugs or browns out -- stranding remote ARP caches and making
+# the box's DHCP address intermittently unreachable while IPv6 kept working.
+#
+# Fix: pin br-lan to the WAN port's burned-in MAC (the onboard NIC), which is
+# globally unique per board so two boxes on one LAN never collide. That MAC is
+# not knowable at build time, so unless BOA_BRIDGE_MAC is given we set it at
+# first boot, BEFORE NetworkManager starts (the oneshot below).
+#
+# Why before NetworkManager and not after: NM's FIRST activation of br-lan then
+# already reads the pinned MAC, so there is no reactivation and no bridge bounce
+# -- avoiding by construction the concurrent-with-NM race that the rescue-IP
+# service hit (see the [ipv4] note above). The unit is ordered strictly before
+# NetworkManager.service and after the WAN device exists; it is idempotent, so
+# running it every boot is safe.
+BR_PROFILE="$CONN_DIR/infinite-streaming-boa-br.nmconnection"
+if [ -n "${BOA_BRIDGE_MAC:-}" ]; then
+  sed -i "/^\[bridge\]/a mac-address=${BOA_BRIDGE_MAC}" "$BR_PROFILE"
+  log "Bridge MAC pinned to ${BOA_BRIDGE_MAC} (from BOA_BRIDGE_MAC)"
+else
+  install -D -m 0755 /dev/stdin "$ROOT/usr/local/sbin/infinite-streaming-boa-bridge-mac" <<'SCRIPT'
+#!/bin/sh
+# Pin br-lan's MAC to the WAN port's burned-in, per-board-unique MAC. Runs once
+# before NetworkManager each boot; idempotent (the value never changes).
+set -u
+DEFAULTS=/etc/default/infinite-streaming-boa
+WAN=$(sed -n 's/^BOA_WAN_PORT=//p' "$DEFAULTS" 2>/dev/null)
+WAN=${WAN:-eth0}
+PROFILE=/etc/NetworkManager/system-connections/infinite-streaming-boa-br.nmconnection
+MAC=$(cat "/sys/class/net/$WAN/address" 2>/dev/null || true)
+case "$MAC" in
+  ??:??:??:??:??:??) : ;;
+  *) echo "boa-bridge-mac: no usable MAC on $WAN; leaving br-lan at its default" >&2; exit 0 ;;
+esac
+[ -f "$PROFILE" ] || { echo "boa-bridge-mac: $PROFILE missing" >&2; exit 0; }
+if grep -q '^mac-address=' "$PROFILE"; then
+  sed -i "s/^mac-address=.*/mac-address=$MAC/" "$PROFILE"
+else
+  sed -i '/^\[bridge\]/a mac-address='"$MAC" "$PROFILE"
+fi
+chmod 0600 "$PROFILE"
+echo "boa-bridge-mac: br-lan pinned to $WAN MAC $MAC" >&2
+SCRIPT
+
+  install -D -m 0644 /dev/stdin "$ROOT/etc/systemd/system/infinite-streaming-boa-bridge-mac.service" <<UNIT
+[Unit]
+Description=Pin br-lan MAC to the ${BOA_WAN_PORT} (WAN) MAC
+Wants=sys-subsystem-net-devices-${BOA_WAN_PORT}.device
+After=sys-subsystem-net-devices-${BOA_WAN_PORT}.device
+Before=NetworkManager.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/infinite-streaming-boa-bridge-mac
+
+[Install]
+WantedBy=NetworkManager.service
+UNIT
+
+  install -d -m 0755 "$ROOT/etc/systemd/system/NetworkManager.service.wants"
+  ln -sf /etc/systemd/system/infinite-streaming-boa-bridge-mac.service \
+    "$ROOT/etc/systemd/system/NetworkManager.service.wants/infinite-streaming-boa-bridge-mac.service"
+  log "Bridge MAC will be pinned to ${BOA_WAN_PORT}'s MAC before NetworkManager starts"
+fi
+
 # WAN port: the link to the existing network. Enslaved to the bridge, so it
 # carries no address of its own.
 write_conn infinite-streaming-boa-wan <<EOF
