@@ -25,6 +25,14 @@ import (
 // properties set through `iw`, and take effect on the next frame with nothing
 // restarted and nobody dropped.
 
+// The IEEE "threshold disabled" encodings. Named because the numbers are
+// meaningless otherwise, and because the word "off" is not portable across
+// these two drivers -- see SetPhyThreshold.
+const (
+	fragDisabled = 2346 // largest MSDU
+	rtsDisabled  = 2347 // largest frame
+)
+
 // phyName returns the phy behind an interface, e.g. "phy1". `iw phy <name> set`
 // wants the phy, not the interface, and the two are not interchangeable.
 func phyName(iface string) (string, error) {
@@ -65,10 +73,24 @@ func (e *Engine) SetPhyThreshold(iface, kind string, val int) error {
 	if err != nil {
 		return err
 	}
-	arg := strconv.Itoa(val)
+	// Disabling is NUMERIC, not the word "off".
+	//
+	// Measured on both radios 2026-09-03: `iw phy phy0 set frag off` fails on
+	// brcmfmac with "command failed: Invalid exchange (-52)" and the threshold
+	// stays where it was, while the identical command succeeds on mt7921u. So
+	// on the onboard radio fragmentation could be turned ON and never off --
+	// an impairment with no way back, which is the worst kind to ship.
+	//
+	// The IEEE "disabled" encodings are accepted by both: 2346 is the largest
+	// MSDU and 2347 the largest frame, so a threshold there can never be
+	// reached and the feature is off. Verified by reading the value back.
 	if val < 0 {
-		arg = "off"
+		val = rtsDisabled
+		if kind == "frag" {
+			val = fragDisabled
+		}
 	}
+	arg := strconv.Itoa(val)
 	out, err := exec.Command("iw", "phy", phy, "set", kind, arg).CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("iw phy %s set %s %s: %v: %s",

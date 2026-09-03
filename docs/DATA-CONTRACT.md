@@ -845,6 +845,48 @@ differently from how they read.
   why the refusal is surfaced as a `502` carrying hostapd's own text rather than
   being reported as success.
 
+- **The two radios have OPPOSITE scanning capabilities**, so neither order of
+  operations suits both. Measured 2026-09-03 with both serving:
+
+  | | `iw dev <if> scan` while beaconing | with the BSS `DISABLE`d |
+  |---|---|---|
+  | `brcmfmac` (onboard) | **works**, 4 s, 23 APs | fails, `Network is down (-100)` |
+  | `mt7921u` (USB) | fails, `Operation not supported (-95)` | **works**, 3 s |
+
+  `DISABLE` takes the interface down, which is why the onboard radio then
+  cannot scan; the adapter needs `ip link set <if> up` after the disable before
+  it will. The daemon therefore tries the free path first and falls back, so a
+  scan costs nothing on one radio and an outage on the other — and says which.
+
+- **`iw scan` prints the frequency as a FLOAT.** `freq: 2417.0`, where
+  `survey dump` prints `frequency: 2412 MHz` as an integer. Parsing it with a
+  plain integer conversion yields **0**, and since 0 is below 3 GHz every access
+  point then looks like a 2.4 GHz one — so a band filter silently passes
+  everything. It stayed invisible because the channel arrives separately on the
+  `DS Parameter set` line.
+
+- **`SET secondary_channel` is refused by hostapd**; it is derived state,
+  reported in `STATUS` and not settable. Of the parameters used to move a
+  channel it is the only one rejected. The 40 MHz offset is set through
+  `ht_capab` (`[HT40+]` / `[HT40-]`) instead, and **it must agree with the
+  channel**: setting `[HT40-]` and then channel 36, whose secondary sits above
+  it, is accepted one command at a time and then fails the whole `ENABLE`,
+  leaving the access point down.
+
+- **A refused `SET` mid-sequence does not undo the ones before it.** Measured:
+  a channel move reported "came back on 6" while the radio was demonstrably on
+  11 — `SET channel` had landed before a later command was refused. The channel
+  is now read back from `STATUS` after `ENABLE` rather than inferred from
+  whether every command succeeded.
+
+- **`iw phy set frag off` is not portable.** It fails on `brcmfmac` with
+  `Invalid exchange (-52)` and leaves the threshold where it was, while
+  succeeding on `mt7921u`. The numeric IEEE disabled values — 2346 for
+  fragmentation, 2347 for RTS — are accepted by both. Without that, an
+  impairment could be switched on and never off. `iw phy info` reports the
+  fragmentation threshold but **never** the RTS threshold, so RTS cannot be
+  verified by readback on either driver.
+
 - **A broadcast deauthentication can strand a device's policy.** Observed on the
   same run: of two stations kicked, one reassociated under a **different MAC**
   (`fc:9c:a7:93:7f:ed` → `92:d2:2b:bd:91:b2`) nine seconds later. That is

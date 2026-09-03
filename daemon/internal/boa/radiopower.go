@@ -220,9 +220,14 @@ type ScanResult struct {
 	Now int `json:"now_channel,omitempty"`
 	// Applied says the radio came back up on Best rather than where it started.
 	Applied bool `json:"applied,omitempty"`
-	// OutageSec is how long the radio was actually off serving clients, so the
-	// cost of the answer is reported alongside it.
-	OutageSec float64 `json:"outage_sec"`
+	// ScanSec is how long the scan took. NOT an outage: the radio keeps serving
+	// throughout, so this is a cost in beacon gaps rather than in downtime.
+	ScanSec float64 `json:"scan_sec"`
+	// OutageSec is how long the BSS was actually down, which is nonzero ONLY
+	// when a channel move was applied -- that is the part that needs the radio
+	// taken out of service. Reporting the scan's duration here would have
+	// claimed a cost that was not paid.
+	OutageSec float64 `json:"outage_sec,omitempty"`
 	Note      string  `json:"note"`
 }
 
@@ -267,39 +272,109 @@ func (e *Engine) ScanBand(iface string, apply bool) (ScanResult, error) {
 	}
 	ourBSSIDs := e.ownBSSIDs()
 
-	if wasEnabled {
-		if reply, err := hostapdCmd(iface, "DISABLE"); err != nil {
-			return ScanResult{}, fmt.Errorf("could not take %s out of service to scan: %w", iface, err)
-		} else if !strings.HasPrefix(reply, "OK") {
-			return ScanResult{}, fmt.Errorf("hostapd refused to disable %s: %s",
-				iface, strings.TrimSpace(reply))
-		}
-	}
-	// The AP goes back up whatever happens below, including a scan that fails or
-	// panics. Leaving a radio disabled because a scan errored would turn a
-	// diagnostic into an outage nobody asked for.
-	defer func() {
-		if wasEnabled {
-			e.reenableAP(iface)
-		}
-	}()
-
+	// Scan with the access point STILL UP.
+	//
+	// This was written the other way round -- take the BSS down, scan, put it
+	// back -- on the reasoning that a beaconing radio cannot survey other
+	// channels. That is true of `survey dump` and false of `scan`, and the
+	// difference is the whole design. Measured 2026-09-03 on brcmfmac:
+	//
+	//	AP beaconing   -- scan succeeds, 4s, 12 access points found
+	//	BSS DISABLEd   -- scan fails instantly, "Network is down (-100)"
+	//
+	// DISABLE takes the interface down, and a down interface cannot scan. So
+	// the teardown built to make scanning possible was the thing preventing
+	// it. Both drivers here do off-channel scanning while in AP mode, which is
+	// how enterprise access points evaluate channels continuously.
+	//
+	// The cost is a few beacon gaps rather than a disconnection: clients stay
+	// associated throughout and nobody is dropped.
 	raw, err := exec.Command("iw", "dev", iface, "scan").Output()
+	disrupted := false
 	if err != nil {
-		return ScanResult{}, fmt.Errorf("scan on %s failed: %w", iface, err)
+		// This driver will not scan while it is serving. Take the BSS down,
+		// bring the interface back up, scan, and put it back.
+		//
+		// The two radios are exact opposites, measured 2026-09-03:
+		//
+		//	brcmfmac  scan while beaconing WORKS (4s); with the BSS disabled it
+		//	          fails, "Network is down (-100)"
+		//	mt7921u   scan while beaconing fails, "Operation not supported
+		//	          (-95)", passive too; with the BSS disabled it WORKS (3s)
+		//
+		// So neither order suits both, and trying the free one first is what
+		// makes the onboard radio's scan cost nothing while still letting the
+		// adapter scan at all. The `ip link set up` matters: DISABLE takes the
+		// interface down, and a down interface cannot scan.
+		disrupted = true
+		if wasEnabled {
+			if _, derr := hostapdCmd(iface, "DISABLE"); derr != nil {
+				return ScanResult{}, fmt.Errorf(
+					"%s will not scan while serving (%v) and could not be taken down: %w",
+					iface, err, derr)
+			}
+			// Back up whatever happens below, including a scan that still fails.
+			defer e.reenableAP(iface)
+		}
+		_ = exec.Command("ip", "link", "set", iface, "up").Run()
+		raw, err = exec.Command("iw", "dev", iface, "scan").Output()
+		if err != nil {
+			return ScanResult{}, fmt.Errorf(
+				"scan on %s failed even with the access point stopped: %w", iface, err)
+		}
 	}
 
 	aps := parseScan(string(raw))
 	for i := range aps {
 		aps[i].Ours = ourBSSIDs[strings.ToLower(aps[i].BSSID)]
 	}
-	res := summariseScan(iface, aps)
+	// The band comes from the channel the radio is actually on.
+	band := ""
+	if wasChannel > 0 {
+		band = "2.4GHz"
+		if wasChannel > 14 {
+			band = "5GHz"
+		}
+	}
+	res := summariseScan(iface, band, aps)
+	res.ScanSec = time.Since(started).Seconds()
+	if disrupted {
+		// This driver needed the access point stopped, so the scan DID cost an
+		// outage and says so. On the other radio the same button costs nothing,
+		// and claiming otherwise either way would be a lie about what happened.
+		res.OutageSec = res.ScanSec
+		res.Note += " This radio will not scan while it is serving, so the " +
+			"access point was stopped for the duration and its clients were dropped."
+	} else {
+		res.Note += " This radio scans off-channel while still serving, so " +
+			"nobody was dropped -- the cost was a few beacon gaps."
+	}
 	res.Was, res.Now = wasChannel, wasChannel
 
-	// Move it while it is still down. Once ENABLE has run the only way to
-	// change channel is CHAN_SWITCH, which this driver refuses.
+	// MOVING is the part that costs an outage, and only that part.
+	//
+	// The channel can only be changed while the BSS is down -- once it is
+	// enabled the only route is CHAN_SWITCH, which this adapter refuses (#154).
+	// So the teardown happens here, after the scan, and only when the caller
+	// actually asked to move. A scan on its own now drops nobody.
 	if apply && res.Best != 0 && res.Best != wasChannel {
 		if ch, ok := apChannels[res.Best]; ok {
+			if wasEnabled {
+				if _, err := hostapdCmd(iface, "DISABLE"); err != nil {
+					res.Note += fmt.Sprintf(
+						" Could not take %s down to move it: %v.", iface, err)
+					return res, nil
+				}
+			}
+			// The AP comes back whatever happens below. Leaving a radio down
+			// because a SET was refused would turn a diagnostic into an outage
+			// nobody asked for.
+			defer func() {
+				if wasEnabled {
+					e.reenableAP(iface)
+				}
+			}()
+
 			moved := true
 			for _, cmd := range setChannelCommands(ch, wasWidth) {
 				reply, err := hostapdCmd(iface, cmd)
@@ -313,13 +388,32 @@ func (e *Engine) ScanBand(iface string, apply bool) (ScanResult, error) {
 					break
 				}
 			}
-			if moved {
+			// ASK, do not assume. The first attempt at this reported "came
+			// back on 6" while the radio was demonstrably on 11: one SET in the
+			// middle was refused, the code broke out of the loop and claimed
+			// the old channel, but the SET that mattered had already landed. A
+			// confidently wrong readout is worse than the failure it hides.
+			//
+			// reenableAP runs in the deferred call AFTER this, so the BSS is
+			// brought up first and then asked where it actually is.
+			if wasEnabled {
+				e.reenableAP(iface)
+				wasEnabled = false // the deferred re-enable is now redundant
+			}
+			if st, serr := hostapdCmd(iface, "STATUS"); serr == nil {
+				if now := atoiSafe(parseHostapdKV(st)["channel"]); now > 0 {
+					res.Now = now
+					res.Applied = now == res.Best && now != res.Was
+				}
+			} else if moved {
 				res.Applied, res.Now = true, res.Best
 			}
+			// Only now is there an outage to report: the BSS was down from the
+			// DISABLE above until reenableAP runs in the deferred call.
+			res.OutageSec = time.Since(started).Seconds() - res.ScanSec
 		}
 	}
 
-	res.OutageSec = time.Since(started).Seconds()
 	return res, nil
 }
 
@@ -369,7 +463,17 @@ func parseScan(raw string) []ScanAP {
 			cur = &ScanAP{BSSID: strings.ToLower(mac)}
 		case cur == nil:
 		case strings.HasPrefix(t, "freq:"):
-			cur.FreqMHz = atoiSafe(surveyValue(t))
+			// A FLOAT here, unlike everywhere else. Measured: `iw dev wlan0
+			// scan` prints "freq: 2417.0" while `survey dump` prints
+			// "frequency: 2412 MHz" as an integer -- the two commands disagree,
+			// and atoiSafe on "2417.0" returns 0.
+			//
+			// Zero was the worst possible failure: bandOf(0) is "2.4GHz", so
+			// every access point looked like a 2.4GHz one, the band filter
+			// excluded nothing, and 5GHz neighbours were listed in a 2.4GHz
+			// table. It only stayed invisible because the channel happened to
+			// arrive separately from the DS Parameter set line.
+			cur.FreqMHz = atoiLoose(surveyValue(t))
 			cur.Channel = channelForFreq(cur.FreqMHz)
 		case strings.HasPrefix(t, "signal:"):
 			cur.SignalDBm = atofSafe(surveyValue(t))
@@ -390,6 +494,15 @@ func parseScan(raw string) []ScanAP {
 	return out
 }
 
+// atoiLoose parses an integer that may arrive with a decimal part, truncating
+// it. iw is not consistent about this between subcommands.
+func atoiLoose(s string) int {
+	if i := strings.IndexByte(s, '.'); i >= 0 {
+		s = s[:i]
+	}
+	return atoiSafe(s)
+}
+
 // channelForFreq converts a frequency to a channel number for the two bands
 // this box can serve. Arithmetic rather than a table because the scan sees the
 // whole band, including channels the AP itself may not use.
@@ -407,15 +520,20 @@ func channelForFreq(mhz int) int {
 
 // summariseScan turns a list of access points into per-channel competition and
 // picks the quietest channel worth moving to.
-func summariseScan(iface string, aps []ScanAP) ScanResult {
+// summariseScan is given the band the RADIO is on rather than inferring it.
+//
+// Both chips here are dual-band and scan BOTH: a scan from the 2.4GHz radio
+// returned 5GHz neighbours too. Taking the band from the first access point
+// parsed made it whatever happened to sort first, and mixed 5GHz rows into a
+// 2.4GHz table where they mean nothing -- the radio cannot move there.
+func summariseScan(iface, band string, aps []ScanAP) ScanResult {
 	byChan := map[int]*ScanChannel{}
-	band := ""
 	for _, a := range aps {
-		if a.Ours || a.Channel == 0 {
+		// Our own access points would make the channel we are already on look
+		// permanently busiest. Other bands cannot be moved to, so counting them
+		// would put rows in the table that no recommendation can ever use.
+		if a.Ours || a.Channel == 0 || (band != "" && bandOf(a.FreqMHz) != band) {
 			continue
-		}
-		if band == "" {
-			band = bandOf(a.FreqMHz)
 		}
 		c := byChan[a.Channel]
 		if c == nil {
@@ -441,10 +559,13 @@ func summariseScan(iface string, aps []ScanAP) ScanResult {
 			out.Channels[i].Recommended = true
 		}
 	}
-	out.Note = "A real scan: this is what other people's access points are doing, " +
-		"which is the thing a channel choice actually depends on and the thing " +
-		"the airtime counters cannot see. The radio was taken out of service to " +
-		"take it."
+	// Deliberately says nothing about the cost: whether this scan dropped
+	// anyone depends on the driver and is appended by the caller, which is the
+	// only place that knows. A fixed claim here was self-contradictory the
+	// moment the adaptive path took the disruptive branch.
+	out.Note = "A real scan: what other people's access points are doing, which " +
+		"is what a channel choice actually depends on and what the airtime " +
+		"counters cannot see."
 	return out
 }
 
@@ -524,15 +645,28 @@ func pickBestChannel(chans []ScanChannel, band string) int {
 func setChannelCommands(ch apChannel, widthMHz int) []string {
 	cmds := []string{"SET channel " + strconv.Itoa(ch.Channel)}
 	if ch.is24() || widthMHz < 40 {
-		// 20MHz: no secondary, no centre. Clear them, or a radio moving down
-		// from 80MHz keeps a centre frequency that no longer contains it.
+		// 20MHz: no secondary, no centre.
 		return append(cmds,
 			"SET vht_oper_chwidth 0",
 			"SET he_oper_chwidth 0",
-			"SET secondary_channel 0",
 		)
 	}
-	cmds = append(cmds, "SET secondary_channel "+strconv.Itoa(ch.SecOffset))
+	// The secondary offset is set through ht_capab, NOT through
+	// secondary_channel. Measured 2026-09-03: `SET secondary_channel 0` is the
+	// one parameter of all of these that hostapd refuses -- it is derived
+	// state, reported in STATUS and not settable. Every other SET here is
+	// accepted.
+	//
+	// And it MUST agree with the channel. Setting [HT40-] and then channel 36,
+	// whose secondary sits above it, is accepted one command at a time and
+	// then fails the whole ENABLE -- measured, and it left the access point
+	// down until the offset was corrected. The side comes from the channel
+	// table so the two cannot disagree.
+	side := "[HT40+]"
+	if ch.SecOffset < 0 {
+		side = "[HT40-]"
+	}
+	cmds = append(cmds, "SET ht_capab "+side)
 	if widthMHz >= 80 {
 		centre := strconv.Itoa(channelForFreq(ch.Center80))
 		cmds = append(cmds,

@@ -10,27 +10,27 @@ import (
 // the interface glued on, a hidden SSID, and neighbours spread across
 // overlapping 2.4GHz channels.
 const scanFixture = `BSS aa:bb:cc:00:00:01(on wlan0)
-	freq: 2412
+	freq: 2412.0
 	signal: -42.00 dBm
 	SSID: NeighbourOne
 	DS Parameter set: channel 1
 BSS aa:bb:cc:00:00:02(on wlan0)
-	freq: 2437
+	freq: 2437.0
 	signal: -71.00 dBm
 	SSID: NeighbourTwo
 	DS Parameter set: channel 6
 BSS aa:bb:cc:00:00:03(on wlan0)
-	freq: 2437
+	freq: 2437.0
 	signal: -80.00 dBm
 	SSID:
 	DS Parameter set: channel 6
 BSS aa:bb:cc:00:00:04(on wlan0)
-	freq: 2462
+	freq: 2462.0
 	signal: -55.00 dBm
 	SSID: NeighbourFour
 	DS Parameter set: channel 11
 BSS 9c:ef:d5:f6:3f:f2(on wlan0)
-	freq: 2437
+	freq: 2437.0
 	signal: -20.00 dBm
 	SSID: infinite-streaming-boa
 	DS Parameter set: channel 6
@@ -46,6 +46,10 @@ func TestParseScanReadsEveryAccessPoint(t *testing.T) {
 	if aps[0].BSSID != "aa:bb:cc:00:00:01" {
 		t.Errorf("interface suffix not stripped: %q", aps[0].BSSID)
 	}
+	// `iw scan` prints the frequency as a FLOAT -- "freq: 2412.0" -- while
+	// `survey dump` prints it as an integer. Parsing it with a plain Atoi
+	// yielded 0 for every access point, and bandOf(0) is "2.4GHz", so the
+	// band filter silently excluded nothing.
 	if aps[0].Channel != 1 || aps[0].FreqMHz != 2412 {
 		t.Errorf("wrong channel/freq: %+v", aps[0])
 	}
@@ -67,11 +71,31 @@ func TestOurOwnAPIsNotCountedAsCompetition(t *testing.T) {
 	for i := range aps {
 		aps[i].Ours = aps[i].BSSID == "9c:ef:d5:f6:3f:f2"
 	}
-	res := summariseScan("wlan0", aps)
+	res := summariseScan("wlan0", "2.4GHz", aps)
 	for _, c := range res.Channels {
 		if c.Channel == 6 && c.APs != 2 {
 			t.Errorf("channel 6 has 2 neighbours plus our own; got %d", c.APs)
 		}
+	}
+}
+
+func TestScanSummaryDropsOtherBands(t *testing.T) {
+	// Both chips are dual-band and scan BOTH, so a 2.4GHz radio's scan returns
+	// 5GHz neighbours -- measured on hardware, a scan from wlan0 listed a
+	// channel 40 access point. Those rows mean nothing in a 2.4GHz table: the
+	// radio cannot move there, and a recommendation can never use them.
+	aps := []ScanAP{
+		{BSSID: "aa:00:00:00:00:01", FreqMHz: 2412, Channel: 1, SignalDBm: -40},
+		{BSSID: "aa:00:00:00:00:02", FreqMHz: 5200, Channel: 40, SignalDBm: -71},
+	}
+	res := summariseScan("wlan0", "2.4GHz", aps)
+	for _, c := range res.Channels {
+		if c.Channel > 14 {
+			t.Errorf("5GHz channel %d listed in a 2.4GHz scan", c.Channel)
+		}
+	}
+	if len(res.Channels) != 1 {
+		t.Errorf("want only the 2.4GHz channel, got %+v", res.Channels)
 	}
 }
 
@@ -141,7 +165,7 @@ func TestSetChannelCommandsAgreeWithThemselves(t *testing.T) {
 	got := strings.Join(setChannelCommands(apChannels[36], 80), " | ")
 	for _, want := range []string{
 		"SET channel 36",
-		"SET secondary_channel 1", // 36 sits below its partner
+		"SET ht_capab [HT40+]", // 36 sits below its partner
 		"SET vht_oper_chwidth 1",
 		"SET vht_oper_centr_freq_seg0_idx 42", // 5210MHz == channel 42
 		"SET he_oper_centr_freq_seg0_idx 42",
@@ -154,8 +178,18 @@ func TestSetChannelCommandsAgreeWithThemselves(t *testing.T) {
 	// 40 sits ABOVE its partner, so the secondary is below it. Naming the wrong
 	// side is the same failure as naming none.
 	if !strings.Contains(strings.Join(setChannelCommands(apChannels[40], 80), " "),
-		"SET secondary_channel -1") {
+		"SET ht_capab [HT40-]") {
 		t.Error("channel 40's secondary must be below the primary")
+	}
+	// secondary_channel is DERIVED state, reported in STATUS and refused by
+	// SET. Measured: it is the single parameter of these that hostapd rejects,
+	// and sending it aborted the rest of a channel move half way.
+	for _, ch := range []int{6, 36, 40} {
+		for _, c := range setChannelCommands(apChannels[ch], 80) {
+			if strings.Contains(c, "secondary_channel") {
+				t.Errorf("ch %d: hostapd refuses SET secondary_channel: %q", ch, c)
+			}
+		}
 	}
 }
 
@@ -168,7 +202,6 @@ func TestMovingDownTo20MHzClearsTheWideSettings(t *testing.T) {
 		"SET channel 6",
 		"SET vht_oper_chwidth 0",
 		"SET he_oper_chwidth 0",
-		"SET secondary_channel 0",
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("missing %q in: %s", want, got)
