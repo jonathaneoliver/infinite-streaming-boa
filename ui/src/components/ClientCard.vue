@@ -103,7 +103,10 @@ const IDENTITY_COLS = [
   'minmax(0, 132px)',     // MAC -- 17 monospace characters
   'minmax(0, 96px)',      // signal, or the longer tx-fail fallback
   'minmax(0, 76px)',      // PHY rate
-  'minmax(0, 92px)',      // assoc age -- only filled when open
+  // 104px, not 92: "assoc 42m 35s" is the longest common form and 92 clipped
+  // it to "assoc 42m 3...". A column narrower than the value it always holds is
+  // not a graceful degradation, it is a bug that only shows on real data.
+  'minmax(0, 104px)',     // assoc age
 ];
 
 // Every identity track is minmax(0, ...) so the group squeezes -- and, past a
@@ -125,7 +128,9 @@ const headCols = computed(() => [
     : ['auto']),
   // Shared from here on, so none of it moves as the card opens.
   'minmax(0, 124px)', // ntopng deep links
-  '92px',             // conditioned badge
+  // 106px: the badge is uppercase 11px with letter-spacing and padding, and at
+  // 92px it read "CONDITION..." -- a truncated warning is a worse warning.
+  '106px',            // conditioned badge
   '56px',             // actions
 ].join(' '));
 
