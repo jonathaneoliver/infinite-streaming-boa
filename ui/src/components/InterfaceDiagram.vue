@@ -17,9 +17,11 @@ import type { BridgeInfo, IfaceInfo } from '@/types';
 
 const props = defineProps<{ info: BridgeInfo }>();
 const emit = defineEmits<{
+  // `arg` carries the channel for kind 'channel', and is unused otherwise. One
+  // event rather than two keeps the parent's handler a single switch.
   (e: 'action',
-   kind: 'power-off' | 'power-on' | 'scan' | 'drop' | 'nudge' | 'steer',
-   iface: string): void;
+   kind: 'power-off' | 'power-on' | 'scan' | 'drop' | 'nudge' | 'steer' | 'channel',
+   iface: string, arg?: number): void;
 }>();
 
 const byRole = (r: string) => props.info.ifaces.filter((i) => i.role === r);
@@ -93,7 +95,7 @@ const BR_Y = 132;
 // constant: it grows with the number of addresses on the bridge.
 const DOWN_Y = computed(() => BR_Y + brH.value + 50);
 // Room under the downstream row for two rows of per-radio action buttons.
-const H = computed(() => DOWN_Y.value + NODE_H + 100);
+const H = computed(() => DOWN_Y.value + NODE_H + 128);
 
 /**
  * The band a channel is in. Derived from the channel number rather than read,
@@ -126,6 +128,23 @@ function subtitle(i: IfaceInfo): string {
 /** A radio the daemon does not watch gets marked, because its clients are
  *  conditioned by nothing and appear nowhere in the Clients tab. */
 const unwatched = (i: IfaceInfo) => i.wireless && !i.serving;
+
+/**
+ * The channels this radio can be moved to: its own band's, and only those.
+ *
+ * The daemon's allowlist, mirrored -- 2.4GHz 1/6/11 and 5GHz 36/40/44/48, with
+ * DFS excluded because the Pi cannot serve an access point on one. Filtered to
+ * the band the radio is already on: a move is a down-and-up on the same phy,
+ * not a band change, and offering 5GHz channels on a 2.4GHz radio would be
+ * offering something the daemon then refuses.
+ */
+const CHANNELS_24 = [1, 6, 11];
+const CHANNELS_5 = [36, 40, 44, 48];
+function channelsFor(i: IfaceInfo): number[] {
+  const ch = i.ap?.channel ?? 0;
+  if (!ch) return [];
+  return ch > 14 ? CHANNELS_5 : CHANNELS_24;
+}
 
 /** The radio a client could be steered to: another one actually serving. */
 function otherRadio(i: IfaceInfo): string {
@@ -184,7 +203,7 @@ function otherRadio(i: IfaceInfo): string {
              keyboard-reachable, and styled like every other button here. -->
         <foreignObject
           v-if="i.wireless && i.ap"
-          :x="nodeX(n) - 20" :y="DOWN_Y + NODE_H + 6" :width="NODE_W + 40" height="62"
+          :x="nodeX(n) - 20" :y="DOWN_Y + NODE_H + 6" :width="NODE_W + 40" height="90"
         >
           <!-- Two rows, grouped as the panel below is: what changes WHO IS
                CONNECTED on top, the rest under it. The picture is where you are
@@ -222,6 +241,21 @@ function otherRadio(i: IfaceInfo): string {
               :title="`Scan ${i.name}'s band. A few beacon gaps, or an outage if this radio will not scan while serving.`"
               @click="emit('action', 'scan', i.name)"
             >scan</button>
+          </div>
+          <!-- One press per channel, rather than the panel's pick-then-press:
+               on the picture you are already pointing at the radio, so the only
+               thing left to say is where it should go. Width is kept at
+               whatever the radio is running. -->
+          <div v-if="channelsFor(i).length" class="node-actions chans">
+            <span class="lbl">go to</span>
+            <button
+              v-for="c in channelsFor(i)" :key="c"
+              class="ghost" :disabled="c === i.ap.channel"
+              :title="c === i.ap.channel
+                ? `${i.name} is already on channel ${c}.`
+                : `Take ${i.name} down and bring it back on channel ${c}. All ${i.ap.stations} client(s) dropped, and NOT told.`"
+              @click="emit('action', 'channel', i.name, c)"
+            >{{ c }}</button>
           </div>
         </foreignObject>
       </g>
@@ -283,6 +317,11 @@ svg { width: 100%; height: auto; display: block; }
 }
 .node-actions button { font-size: 11px; padding: 2px 7px; }
 .node-actions button:disabled { opacity: 0.4; cursor: default; }
+/* The channel row is tighter than the others: seven small numbers reading as a
+   dial, rather than seven buttons competing with the verbs above them. */
+.node-actions.chans { gap: 3px; }
+.node-actions.chans button { padding: 2px 5px; }
+.node-actions .lbl { font-size: 10px; color: var(--ink-faint); }
 .node.unwatched .name { fill: var(--warn); }
 
 figcaption {

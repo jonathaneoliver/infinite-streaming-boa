@@ -115,11 +115,19 @@ const PROFILES = [
  *  go through the same composable the panel below uses rather than a second
  *  path that could drift out of step. */
 function onDiagramAction(
-  kind: 'power-off' | 'power-on' | 'scan' | 'drop' | 'nudge' | 'steer',
+  kind: 'power-off' | 'power-on' | 'scan' | 'drop' | 'nudge' | 'steer' | 'channel',
   iface: string,
+  arg?: number,
 ) {
   if (kind === 'drop' || kind === 'nudge') return void bridge.linkAll(iface, kind);
   if (kind === 'steer') return void bridge.steerAll(iface);
+  if (kind === 'channel' && arg) {
+    // The width the radio is ALREADY running, not the panel's selection: the
+    // diagram asks one question -- which channel -- and inheriting a width
+    // someone left set in the card below would answer a second one silently.
+    const r = bridge.info.value?.ifaces.find((i) => i.name === iface);
+    return void bridge.moveChannel(iface, arg, r?.ap?.width_mhz || 20);
+  }
   // A latch, matching the panel below: the diagram switch turns the radio off
   // and leaves it off. A button on a picture of a radio should behave like the
   // switch it is drawn as, not fire a timed pulse.
