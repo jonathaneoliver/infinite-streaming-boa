@@ -70,8 +70,9 @@ export function useBridge(active: Ref<boolean>) {
 
   /**
    * Move a radio to a chosen channel by taking it down and bringing it back up
-   * there. The working counterpart to chanSwitch, which announces the move and
-   * is refused by both drivers on this box.
+   * there. The ONLY way to change channel here: 802.11h CSA would move clients
+   * without dropping them and is refused by both radios on this box (#154), so
+   * POST /channel has no caller in the interface and is reachable only by hand.
    */
   const moveChannel = (iface: string, channel: number, width: number) =>
     act(
@@ -82,16 +83,6 @@ export function useBridge(active: Ref<boolean>) {
         (b.stations_dropped
           ? `, ${b.stations_dropped} client(s) dropped — they were not told, so they have to rediscover it.`
           : '.'),
-    );
-
-  const chanSwitch = (iface: string, channel: number, width: number) =>
-    act(
-      `/api/bridge/radios/${encodeURIComponent(iface)}/channel` +
-        `?channel=${channel}&width=${width}`,
-      (b) =>
-        `${b.iface}: channel switch announced to ${b.channel} at ${b.width_mhz} MHz. ` +
-        `Whether a client followed the announcement or dropped and rescanned ` +
-        `shows in its connected time.`,
     );
 
   /**
@@ -231,7 +222,7 @@ export function useBridge(active: Ref<boolean>) {
 
   return {
     info, survey, scan, error, actionMsg, busy,
-    load, loadSurvey, chanSwitch, deauthAll, setPower, powerOutage, scanBand,
+    load, loadSurvey, deauthAll, setPower, powerOutage, scanBand,
     applyProfile, setThreshold, steerAll, linkAll, moveChannel,
   };
 }

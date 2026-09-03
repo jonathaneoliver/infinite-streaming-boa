@@ -17,7 +17,9 @@ import type { BridgeInfo, IfaceInfo } from '@/types';
 
 const props = defineProps<{ info: BridgeInfo }>();
 const emit = defineEmits<{
-  (e: 'action', kind: 'power-off' | 'power-on' | 'scan', iface: string): void;
+  (e: 'action',
+   kind: 'power-off' | 'power-on' | 'scan' | 'drop' | 'nudge' | 'steer',
+   iface: string): void;
 }>();
 
 const byRole = (r: string) => props.info.ifaces.filter((i) => i.role === r);
@@ -46,8 +48,8 @@ const CX = W / 2;
 const WAN_Y = 8;
 const BR_Y = 132;
 const DOWN_Y = 256;
-// Room under the downstream row for the per-radio action buttons.
-const H = DOWN_Y + NODE_H + 74;
+// Room under the downstream row for two rows of per-radio action buttons.
+const H = DOWN_Y + NODE_H + 100;
 
 /** First address, preferring IPv4 — the one a person will recognise. */
 function addr(i: IfaceInfo): string {
@@ -72,6 +74,13 @@ function subtitle(i: IfaceInfo): string {
 /** A radio the daemon does not watch gets marked, because its clients are
  *  conditioned by nothing and appear nowhere in the Clients tab. */
 const unwatched = (i: IfaceInfo) => i.wireless && !i.serving;
+
+/** The radio a client could be steered to: another one actually serving. */
+function otherRadio(i: IfaceInfo): string {
+  return props.info.ifaces.find(
+    (o) => o.wireless && o.name !== i.name && o.ap?.enabled,
+  )?.name ?? '';
+}
 </script>
 
 <template>
@@ -120,8 +129,12 @@ const unwatched = (i: IfaceInfo) => i.wireless && !i.serving;
              keyboard-reachable, and styled like every other button here. -->
         <foreignObject
           v-if="i.wireless && i.ap"
-          :x="nodeX(n)" :y="DOWN_Y + NODE_H + 6" :width="NODE_W" height="30"
+          :x="nodeX(n) - 20" :y="DOWN_Y + NODE_H + 6" :width="NODE_W + 40" height="62"
         >
+          <!-- Two rows, grouped as the panel below is: what changes WHO IS
+               CONNECTED on top, the rest under it. The picture is where you are
+               already pointing at a radio, so the actions on that radio belong
+               on it. -->
           <div class="node-actions">
             <button
               class="ghost"
@@ -132,8 +145,26 @@ const unwatched = (i: IfaceInfo) => i.wireless && !i.serving;
               @click="emit('action', i.powered ? 'power-off' : 'power-on', i.name)"
             >{{ i.powered ? 'switch off' : 'switch on' }}</button>
             <button
+              class="ghost" :disabled="!i.ap.stations"
+              :title="`Deauthenticate all ${i.ap.stations} client(s) on ${i.name}. They are told, so they reconnect quickly.`"
+              @click="emit('action', 'drop', i.name)"
+            >drop {{ i.ap.stations }}</button>
+          </div>
+          <div class="node-actions">
+            <button
+              class="ghost" :disabled="!i.ap.stations"
+              :title="`Disassociate all ${i.ap.stations} client(s) — the softer transition.`"
+              @click="emit('action', 'nudge', i.name)"
+            >nudge</button>
+            <button
+              v-if="otherRadio(i)"
+              class="ghost" :disabled="!i.ap.stations"
+              :title="`Ask all ${i.ap.stations} client(s) to move to ${otherRadio(i)} (802.11v). They may refuse.`"
+              @click="emit('action', 'steer', i.name)"
+            >steer</button>
+            <button
               class="ghost"
-              :title="`Take ${i.name} out of service, scan its band, and bring it back.`"
+              :title="`Scan ${i.name}'s band. A few beacon gaps, or an outage if this radio will not scan while serving.`"
               @click="emit('action', 'scan', i.name)"
             >scan</button>
           </div>
@@ -191,10 +222,12 @@ svg { width: 100%; height: auto; display: block; }
 .node.off rect { stroke: var(--ink-faint); stroke-dasharray: 2 4; }
 .node.off .name, .node.off .sub { fill: var(--ink-faint); }
 .node-actions {
-  display: flex; gap: 6px; justify-content: center;
+  display: flex; gap: 5px; justify-content: center;
   font-family: var(--sans);
+  margin-bottom: 4px;
 }
-.node-actions button { font-size: 11px; padding: 2px 8px; }
+.node-actions button { font-size: 11px; padding: 2px 7px; }
+.node-actions button:disabled { opacity: 0.4; cursor: default; }
 .node.unwatched .name { fill: var(--warn); }
 
 figcaption {

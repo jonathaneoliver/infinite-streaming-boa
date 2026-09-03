@@ -114,7 +114,12 @@ const PROFILES = [
  *  press them -- the radio being cut is the box you are pointing at -- so they
  *  go through the same composable the panel below uses rather than a second
  *  path that could drift out of step. */
-function onDiagramAction(kind: 'power-off' | 'power-on' | 'scan', iface: string) {
+function onDiagramAction(
+  kind: 'power-off' | 'power-on' | 'scan' | 'drop' | 'nudge' | 'steer',
+  iface: string,
+) {
+  if (kind === 'drop' || kind === 'nudge') return void bridge.linkAll(iface, kind);
+  if (kind === 'steer') return void bridge.steerAll(iface);
   // A latch, matching the panel below: the diagram switch turns the radio off
   // and leaves it off. A button on a picture of a radio should behave like the
   // switch it is drawn as, not fire a timed pulse.
@@ -323,34 +328,17 @@ function otherRadio(r: IfaceInfo): string {
             >move to {{ pick(r).channel }}</button>
           </div>
 
-          <!-- The announced alternative. Kept behind the developer flag because
-               both drivers on this box refuse it, so it can only ever report a
-               refusal -- but the path is correct and a radio that supports CSA
-               would move without dropping anyone. -->
-          <div v-if="DEVELOPER" class="action-row">
-            <label class="k">move to channel</label>
-            <div class="seg" role="group" aria-label="channel">
-              <button
-                v-for="c in [...CHANNELS_24, ...CHANNELS_5]" :key="c"
-                class="seg-btn" :class="{ on: pick(r).channel === c }"
-                @click="setChannel(r.name, c)"
-              >{{ c }}</button>
-            </div>
-            <div class="seg" role="group" aria-label="width">
-              <button
-                v-for="wd in widthsFor(pick(r).channel)" :key="wd"
-                class="seg-btn" :class="{ on: pick(r).width === wd }"
-                @click="target = { ...target, [r.name]: { ...pick(r), width: wd } }"
-              >{{ wd }}&#8239;MHz</button>
-            </div>
-            <button
-              class="accent" :disabled="bridge.busy.value"
-              @click="bridge.chanSwitch(r.name, pick(r).channel, pick(r).width)"
-            >announce channel switch</button>
-          </div>
-          <p v-if="DEVELOPER" class="meta">
-            Clients would follow without dropping — but
-            <strong>both drivers here refuse it</strong> (#154).
+          <!-- The other way to change channel, and why it is not a button.
+               802.11h CSA counts the switch down in the beacons and clients
+               follow WITHOUT dropping -- which is strictly better, and which
+               both chips on this box refuse (measured on brcmfmac and mt7921u,
+               #154). A control that can only ever report a refusal is worse
+               than a sentence saying so, so this is the sentence. POST
+               .../channel still exists and still works the day a driver gains
+               support. -->
+          <p class="meta">
+            802.11h would move them without dropping anyone, but
+            <strong>both radios here refuse it</strong> (#154).
           </p>
 
           <h4>Conditioning the link</h4>
