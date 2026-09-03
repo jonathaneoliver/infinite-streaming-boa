@@ -49,15 +49,45 @@ func TestOperatingClassEncodesBandAndWidth(t *testing.T) {
 	}
 }
 
+func TestCleanCarriesNoHardcodedSets(t *testing.T) {
+	// clean is built per radio by cleanSetsFor, because "as the image
+	// configured it" differs between them: the image gives the onboard chip
+	// ieee80211ac=0/ax=0 and the adapter 1/1. A single hardcoded set applied
+	// ax=1 to both, leaving the interface claiming a 20MHz 802.11n radio was
+	// 802.11ax -- the interface asserting something the hardware cannot do.
+	if len(radioProfiles["clean"].Sets) != 0 {
+		t.Errorf("clean must be built per radio, not hardcoded: %v",
+			radioProfiles["clean"].Sets)
+	}
+}
+
+func TestCleanAlwaysRestoresTheTimingParameters(t *testing.T) {
+	// Even with no config to read -- not on a Pi, or hostapd not running --
+	// clean must still undo a power-save profile rather than doing nothing.
+	got := strings.Join(cleanSetsFor("definitely-not-an-interface"), " | ")
+	for _, want := range []string{"beacon_int", "dtim_period", "uapsd_advertisement_enabled"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("clean must restore %s even with no config: %s", want, got)
+		}
+	}
+}
+
 func TestEveryProfileIsReversibleByClean(t *testing.T) {
 	// Each profile must be undoable, or the only way back from "dozy" is a
 	// reflash. Every parameter any profile sets has to appear in clean.
+	// cleanSetsFor with no readable config still names every parameter clean is
+	// responsible for putting back, which is what this checks against.
 	cleanSets := map[string]bool{}
-	for _, s := range radioProfiles["clean"].Sets {
+	for _, s := range cleanSetsFor("no-such-iface") {
 		f := strings.Fields(s)
 		if len(f) >= 2 {
 			cleanSets[f[1]] = true
 		}
+	}
+	// Restored from the config file when there is one to read.
+	for _, k := range []string{"ieee80211n", "ieee80211ac", "ieee80211ax",
+		"vht_oper_chwidth", "he_oper_chwidth"} {
+		cleanSets[k] = true
 	}
 	for name, p := range radioProfiles {
 		if name == "clean" {
@@ -100,7 +130,10 @@ func TestEveryProfileSaysWhatItDoes(t *testing.T) {
 		if strings.TrimSpace(p.Desc) == "" {
 			t.Errorf("profile %q has no description", name)
 		}
-		if len(p.Sets) == 0 {
+		// clean is the exception: its sets are built per radio by cleanSetsFor,
+		// because what "as the image configured it" means differs between the
+		// two radios.
+		if name != "clean" && len(p.Sets) == 0 {
 			t.Errorf("profile %q sets nothing", name)
 		}
 	}

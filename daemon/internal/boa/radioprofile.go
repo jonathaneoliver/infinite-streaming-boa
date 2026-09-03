@@ -2,7 +2,9 @@ package boa
 
 import (
 	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -116,18 +118,105 @@ type radioProfile struct {
 	Restart bool
 }
 
+// runningConfigFor finds the hostapd config file actually in force for an
+// interface, and returns its key/value pairs.
+//
+// Through the RUNNING processes rather than by guessing at a filename: two
+// config files can name the same interface -- boa-onboard.conf and
+// boa-onboard24.conf both say "interface=wlan0", for the solo and dual-band
+// cases -- so picking by name would restore whichever happened to sort first
+// and could put a radio on the wrong band.
+func runningConfigFor(iface string) map[string]string {
+	paths, _ := filepath.Glob("/proc/[0-9]*/cmdline")
+	for _, p := range paths {
+		raw, err := os.ReadFile(p)
+		if err != nil {
+			continue
+		}
+		args := strings.Split(strings.TrimRight(string(raw), "\x00"), "\x00")
+		if len(args) == 0 || !strings.HasSuffix(args[0], "hostapd") {
+			continue
+		}
+		for _, a := range args[1:] {
+			if !strings.HasSuffix(a, ".conf") {
+				continue
+			}
+			b, err := os.ReadFile(a)
+			if err != nil {
+				continue
+			}
+			kv := map[string]string{}
+			for _, line := range strings.Split(string(b), "\n") {
+				line = strings.TrimSpace(line)
+				if line == "" || strings.HasPrefix(line, "#") {
+					continue
+				}
+				if k, v, ok := strings.Cut(line, "="); ok {
+					kv[strings.TrimSpace(k)] = strings.TrimSpace(v)
+				}
+			}
+			if kv["interface"] == iface {
+				return kv
+			}
+		}
+	}
+	return nil
+}
+
+// cleanSetsFor builds the "clean" profile for a SPECIFIC radio, from the config
+// the image actually gave it.
+//
+// One hardcoded set was wrong, and visibly so: it applied ieee80211ax=1 to both
+// radios, but the image configures the onboard chip as 802.11n only (ac=0,
+// ax=0) because that is all brcmfmac can do at 20MHz. Restoring "clean" there
+// therefore left the card claiming a 20MHz 802.11n radio was 802.11ax -- the
+// interface asserting something the hardware cannot do, which is exactly the
+// confident wrongness this codebase exists to avoid.
+//
+// Falls back to the timing parameters alone when the config cannot be read, so
+// clean still undoes a power-save profile rather than doing nothing.
+func cleanSetsFor(iface string) []string {
+	sets := []string{
+		"SET beacon_int 100", "SET dtim_period 2",
+		"SET uapsd_advertisement_enabled 1",
+	}
+	kv := runningConfigFor(iface)
+	if kv == nil {
+		return sets
+	}
+	for _, k := range []string{"ieee80211n", "ieee80211ac", "ieee80211ax"} {
+		if v, ok := kv[k]; ok {
+			sets = append(sets, "SET "+k+" "+v)
+		}
+	}
+	// Width too: "narrow" clears these, and only the config knows whether this
+	// radio was ever wide.
+	for _, k := range []string{"vht_oper_chwidth", "he_oper_chwidth"} {
+		v := kv[k]
+		if v == "" {
+			v = "0"
+		}
+		sets = append(sets, "SET "+k+" "+v)
+	}
+	if bi := kv["beacon_int"]; bi != "" {
+		sets[0] = "SET beacon_int " + bi
+	}
+	if dp := kv["dtim_period"]; dp != "" {
+		sets[1] = "SET dtim_period " + dp
+	}
+	return sets
+}
+
 // radioProfiles is the closed set. Every one of them is reversible by applying
 // "clean", which is why that exists as a profile rather than as a reset button
 // somewhere else.
+//
+// clean carries no Sets: they are built per radio by cleanSetsFor, because what
+// "as the image configured it" means differs between the two radios.
 var radioProfiles = map[string]radioProfile{
 	"clean": {
 		Name: "clean", Restart: true,
-		Desc: "Everything back to how the image configured it.",
-		Sets: []string{
-			"SET ieee80211ax 1", "SET ieee80211ac 1", "SET ieee80211n 1",
-			"SET beacon_int 100", "SET dtim_period 2",
-			"SET uapsd_advertisement_enabled 1",
-		},
+		Desc: "Everything back to how the image configured THIS radio.",
 	},
 	"legacy": {
 		Name: "legacy", Restart: true,
@@ -208,8 +297,12 @@ func (e *Engine) ApplyRadioProfile(iface, name string) (int, error) {
 		}
 	}()
 
+	sets := p.Sets
+	if name == "clean" {
+		sets = cleanSetsFor(iface)
+	}
 	var refused []string
-	for _, cmd := range p.Sets {
+	for _, cmd := range sets {
 		reply, err := hostapdCmd(iface, cmd)
 		if err != nil {
 			return 0, fmt.Errorf("%s: %w", cmd, err)
@@ -225,7 +318,7 @@ func (e *Engine) ApplyRadioProfile(iface, name string) (int, error) {
 	if len(refused) > 0 {
 		return dropped, fmt.Errorf(
 			"applied, but this radio refused %d of %d settings: %s",
-			len(refused), len(p.Sets), strings.Join(refused, "; "))
+			len(refused), len(sets), strings.Join(refused, "; "))
 	}
 	return dropped, nil
 }
