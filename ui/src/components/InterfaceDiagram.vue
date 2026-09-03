@@ -58,9 +58,24 @@ function addr(i: IfaceInfo): string {
   return '';
 }
 
+/**
+ * The band a channel is in. Derived from the channel number rather than read,
+ * because a channel number IS a frequency: 1-14 are 2.4GHz and everything above
+ * is 5GHz, with no overlap to be ambiguous about.
+ *
+ * Shown FIRST on the node, ahead of the channel, because it is the fact that
+ * predicts how a client will behave -- range, throughput, and whether the
+ * microwave matters. "ch 36" says the same thing to someone who has memorised
+ * the table, and nothing to anyone else.
+ */
+function bandOf(channel: number | undefined): string {
+  if (!channel) return '';
+  return channel > 14 ? '5GHz' : '2.4GHz';
+}
+
 function subtitle(i: IfaceInfo): string {
   if (i.role === 'ap' && i.ap) {
-    const bits = [`ch ${i.ap.channel}`];
+    const bits = [bandOf(i.ap.channel), `ch ${i.ap.channel}`].filter(Boolean);
     if (i.ap.width_mhz) bits.push(`${i.ap.width_mhz} MHz`);
     if (i.ap.mode) bits.push(i.ap.mode);
     return bits.join(' · ');
