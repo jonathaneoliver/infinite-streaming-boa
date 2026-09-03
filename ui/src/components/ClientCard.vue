@@ -69,24 +69,64 @@ const chartProps = computed(() => ({
  * summarise, and a tall summary is a chart.
  */
 /**
- * The folded row's columns, which have to follow the directions being shown.
+ * The card head's columns -- ONE grid, used folded and open alike.
  *
- * A fixed template with the cells v-if'd out would not do: the columns are
- * positional, so dropping the two uplink cells slides the unit, the conditioned
- * badge and the actions two columns to the left and every row stops lining up
- * -- which is the exact failure the fixed template was introduced to fix.
- * Built here instead, from one source, so the cells and the columns cannot
- * disagree.
+ * The head used to be two separate blocks: a positional grid when folded and a
+ * flex row when open. Everything therefore shifted as the card was toggled, and
+ * worse, the two had to be kept in step by hand and had already drifted -- the
+ * MAC was on one and not the other. One element with one template removes both
+ * problems by construction.
+ *
+ * The shape is: an identity group whose tracks are IDENTICAL in both states, a
+ * flexible slack track, then a state-specific middle, then two shared trailing
+ * tracks. Because the slack is a fraction it absorbs the whole difference
+ * between the two middles, so the identity group is pinned at the left and the
+ * conditioned badge and actions are pinned at the right, in both states.
+ *
+ * Two rules that are easy to break here:
+ *
+ *  - A cell may never be v-if'd out, only left EMPTY. The tracks are
+ *    positional, so a missing cell slides every later one and the row stops
+ *    lining up with its neighbours.
+ *  - No track may be max-content. Every row is its own grid, so a
+ *    content-sized track is measured per row and the list stops lining up.
  */
-// A FIXED name column (not a flexing fraction) so the medium badge and address
-// after it sit at the same x whether the card is folded or unfolded -- the
-// unfolded header pins the name to the same width. The slack the name used to
-// absorb goes to the address column instead.
-const foldedCols = computed(() => [
-  '30px', '14px', '170px', '58px', 'minmax(104px, 1fr)',
-  ...(props.chart.showDown ? ['76px', '68px'] : []),
-  ...(props.chart.showUp ? ['76px', '68px'] : []),
-  '38px', '92px', '56px',
+const IDENTITY_COLS = [
+  '30px',                 // fold toggle -- first, so it never moves
+  '14px',                 // presence dot
+  '170px',                // name -- fixed, so what follows holds its x
+  '58px',                 // medium badge
+  // 268px fits a full IPv4 with room to spare and most of an IPv6; longer
+  // addresses ellipsise and carry the full value in a tooltip.
+  'minmax(96px, 268px)',  // address
+  'minmax(0, 62px)',      // +N IPv6
+  'minmax(0, 132px)',     // MAC -- 17 monospace characters
+  'minmax(0, 96px)',      // signal, or the longer tx-fail fallback
+  'minmax(0, 76px)',      // PHY rate
+  'minmax(0, 92px)',      // assoc age -- only filled when open
+];
+
+// Every identity track is minmax(0, ...) so the group squeezes -- and, past a
+// point, disappears -- before the sparklines and throughput figures give up any
+// width. Everything in it is recoverable by expanding the card; a clipped rate
+// figure is not, and it is what the row exists to show.
+const headCols = computed(() => [
+  ...IDENTITY_COLS,
+  'minmax(0, 1fr)', // slack: absorbs the difference between the two middles
+  ...(props.collapsed
+    // Folded: sparkline and figure per direction, then the unit.
+    ? [
+        ...(props.chart.showDown ? ['76px', '68px'] : []),
+        ...(props.chart.showUp ? ['76px', '68px'] : []),
+        '38px',
+      ]
+    // Open: one cell holding the reset action, laid out as a flex row inside so
+    // its contents cannot push a track around.
+    : ['auto']),
+  // Shared from here on, so none of it moves as the card opens.
+  'minmax(0, 124px)', // ntopng deep links
+  '92px',             // conditioned badge
+  '56px',             // actions
 ].join(' '));
 
 /** Two directions side by side, or one taking the full width. */
@@ -360,14 +400,15 @@ function fmtBytes(n: number): string {
          out and shift everything after them. Each slot is always rendered here
          and simply left empty when it does not apply. -->
     <div
-      v-if="collapsed" class="card-head folded"
-      :style="{ gridTemplateColumns: foldedCols }"
+      class="card-head" :class="{ folded: collapsed }"
+      :style="{ gridTemplateColumns: headCols }"
       @click="onHeadClick"
     >
       <button
         class="fold-toggle ghost" @click="emit('toggle')"
-        title="Expand this device" :aria-expanded="false"
-      >&#9656;</button>
+        :title="collapsed ? 'Expand this device' : 'Fold this device away'"
+        :aria-expanded="!collapsed"
+      >{{ collapsed ? '▸' : '▾' }}</button>
 
       <span
         class="dot" :class="client.present ? 'live' : 'off'"
@@ -385,10 +426,68 @@ function fmtBytes(n: number): string {
         </span>
       </span>
 
-      <span class="cell meta num addr">
+      <span
+        class="cell meta num addr"
+        :title="client.ip || (client.ipv6?.length ? client.ipv6[0] : '')"
+      >
         {{ client.ip || (client.ipv6?.length ? client.ipv6[0] : 'no address yet') }}
       </span>
 
+      <!-- Privacy extensions give a device several v6 addresses at once, so
+           the count matters more than any one value; all of them are shaped. -->
+      <span
+        class="cell meta num"
+        :title="client.ipv6?.length ? 'IPv6, all conditioned:\n' + client.ipv6.join('\n') : ''"
+      >{{ client.ipv6?.length ? `+${client.ipv6.length} IPv6` : '' }}</span>
+
+      <!-- The MAC, on the folded row as well as the expanded card.
+           It is the identity everything is keyed by -- policy, ladders and
+           patterns all hang off it, not off the address -- and a device that
+           rotates its private Wi-Fi address comes back as a different client
+           with no conditioning. Spotting that from a folded list is the point;
+           having to expand every card to compare MACs is not. -->
+      <span class="cell meta num mac" :title="client.mac">{{ client.mac }}</span>
+
+      <!-- Signal, and the same fallback the expanded head uses. Only shown when
+           the driver actually reports it: the Pi's Broadcom chip gives no
+           per-station RSSI in AP mode, and printing "0 dBm" is a
+           confident-looking lie. Wired clients have no station at all, so the
+           cell stays empty rather than being dropped -- the columns are
+           positional, and a missing cell slides every later one left. -->
+      <span class="cell meta num" :class="client.station?.signal_dbm ? signalClass : ''">
+        <template v-if="client.station?.signal_dbm">
+          {{ client.station.signal_dbm }} dBm
+        </template>
+        <template v-else-if="client.station">
+          <span title="This radio reports no per-station signal level in AP mode; transmit failures stand in as the link-quality indicator"
+          >tx-fail {{ client.station.tx_failed.toLocaleString() }}</span>
+        </template>
+      </span>
+
+      <!-- PHY rate, labelled. It routinely reads 400+ Mbps on a link moving
+           2 Mbps, so it is never allowed to appear as a bare number next to the
+           throughput figures further along this same row. -->
+      <span
+        class="cell meta num"
+        :title="client.station ? 'Negotiated radio modulation rate, NOT achieved throughput' : ''"
+      >{{ client.station ? `PHY ${client.station.tx_phy_mbps.toFixed(0)}` : '' }}</span>
+
+      <!-- Association age, folded and open alike. It resets to a few seconds
+           when a link event lands, which is the ground-truth confirmation that
+           a drop or nudge actually happened -- worth being able to watch down a
+           list of devices rather than only on the one card that is open. -->
+      <span
+        class="cell meta num"
+        :title="client.station ? 'How long this device has been continuously associated. It resets when the link drops and re-associates, so it falls to a few seconds right after a drop or nudge.' : ''"
+      >{{ client.station ? `assoc ${connectedLabel}` : '' }}</span>
+
+      <!-- The slack. Everything before it is the identity group and sits at the
+           same x in both states; everything after it is right-aligned by the
+           grid. Putting the flexible track here is what lets the two states
+           carry different middles without moving either end. -->
+      <span class="cell"></span>
+
+      <template v-if="collapsed">
       <template v-if="chart.showDown">
         <span class="cell spark">
           <TrafficChart
@@ -418,6 +517,42 @@ function fmtBytes(n: number): string {
       </template>
 
       <span class="cell meta unit">Mbps</span>
+      </template>
+
+      <!-- The open card's middle: just the reset action now that the deep links
+           are shared. One cell, laid out as a flex row inside, so whatever it
+           holds cannot push a grid track around. -->
+      <template v-else>
+        <span class="cell tail">
+          <button v-if="conditioned" @click="emit('reset')">reset</button>
+        </span>
+      </template>
+
+      <!-- The last three tracks are shared by both states and carry the same
+           widths, and because the slack above is a fraction they end at the
+           same x -- so none of them moves as the card opens. -->
+
+      <!-- Deep links into ntopng for THIS device. Shown only when ntopng is
+           answering and the client has an address, since both are required for
+           the filtered view to resolve to anything. Folded too: jumping to a
+           device's flows is a thing you want from the list, not something worth
+           opening a card for first. -->
+      <span class="cell tail">
+        <template v-if="ntopngPort && client.ip">
+          <a
+            class="ntop-link"
+            :href="ntopngUrl(ntopngPort, '/lua/host_details.lua', { host: client.ip })"
+            target="_blank" rel="noopener"
+            :title="`Traffic breakdown for ${client.ip} in ntopng`"
+          >traffic ↗</a>
+          <a
+            class="ntop-link"
+            :href="ntopngUrl(ntopngPort, '/lua/flows_stats.lua', { host: client.ip })"
+            target="_blank" rel="noopener"
+            :title="`Live flows for ${client.ip} in ntopng, labelled by application`"
+          >flows ↗</a>
+        </template>
+      </span>
 
       <span class="cell">
         <span v-if="conditioned" class="badge" style="color: var(--warn)">
@@ -426,104 +561,13 @@ function fmtBytes(n: number): string {
       </span>
 
       <span class="cell">
+        <!-- Only offered for a device that is not here: forgetting one that is
+             present just makes it reappear unconfigured a second later. -->
         <button v-if="!client.present" class="ghost" @click="emit('forget')">
           forget
         </button>
       </span>
 
-    </div>
-
-    <div v-else class="card-head" @click="onHeadClick">
-      <button
-        class="fold-toggle ghost" @click="emit('toggle')"
-        title="Fold this device away" :aria-expanded="true"
-      >&#9662;</button>
-
-      <span
-        class="dot"
-        :class="client.present ? 'live' : 'off'"
-        :title="client.present ? 'Connected now' : 'Not currently connected'"
-      ></span>
-
-      <input
-        class="name" :value="client.label"
-        @change="emit('label', ($event.target as HTMLInputElement).value)"
-      />
-
-      <!-- medium, then address, then MAC -- the same order as the folded row
-           (which shows medium + address), so folding/unfolding leaves those in
-           place and only the MAC, at the end, appears or disappears. -->
-      <span v-if="client.medium" class="badge" :class="client.medium">
-        {{ client.medium }}
-      </span>
-      <span v-if="client.ip" class="meta num">{{ client.ip }}</span>
-      <!-- Privacy extensions give a device several v6 addresses at once, so
-           the count matters more than any one value; all of them are shaped. -->
-      <span
-        v-if="client.ipv6?.length" class="meta num"
-        :title="'IPv6, all conditioned:\n' + client.ipv6.join('\n')"
-      >+{{ client.ipv6.length }} IPv6</span>
-      <!-- An explicit condition, not a v-else. Inserting the IPv6 badge above
-           re-paired the v-else with the IPv6 test, so a client with an IPv4
-           address but no v6 rendered "192.168.0.214  no address yet". -->
-      <span
-        v-if="!client.ip && !client.ipv6?.length" class="meta"
-        title="Associated, but has not taken an address yet"
-      >no address yet</span>
-      <span class="meta num mac">{{ client.mac }}</span>
-
-      <!-- Only shown when the driver actually reports it. The Pi's Broadcom
-           chip gives no per-station RSSI in AP mode, and printing "0 dBm" is
-           a confident-looking lie. -->
-      <span v-if="client.station?.signal_dbm" class="meta num" :class="signalClass">
-        {{ client.station.signal_dbm }} dBm
-      </span>
-      <span
-        v-else-if="client.station" class="meta num"
-        title="This radio reports no per-station signal level in AP mode; transmit failures stand in as the link-quality indicator"
-      >tx-fail {{ client.station.tx_failed.toLocaleString() }}</span>
-      <span
-        v-if="client.station"
-        class="meta num"
-        title="Negotiated radio modulation rate, NOT achieved throughput"
-      >
-        PHY {{ client.station.tx_phy_mbps.toFixed(0) }}
-      </span>
-      <span
-        v-if="client.station"
-        class="meta num"
-        title="How long this device has been continuously associated. It resets when the link drops and re-associates, so it falls to a few seconds right after a drop or nudge."
-      >assoc {{ connectedLabel }}</span>
-
-      <span class="spacer"></span>
-
-      <!-- Deep links into ntopng for THIS device. Shown only when ntopng is
-           answering and the client has an address, since both are required
-           for the filtered view to resolve to anything. -->
-      <template v-if="ntopngPort && client.ip">
-        <a
-          class="ntop-link"
-          :href="ntopngUrl(ntopngPort, '/lua/host_details.lua', { host: client.ip })"
-          target="_blank" rel="noopener"
-          :title="`Traffic breakdown for ${client.ip} in ntopng`"
-        >traffic ↗</a>
-        <a
-          class="ntop-link"
-          :href="ntopngUrl(ntopngPort, '/lua/flows_stats.lua', { host: client.ip })"
-          target="_blank" rel="noopener"
-          :title="`Live flows for ${client.ip} in ntopng, labelled by application`"
-        >flows ↗</a>
-      </template>
-
-      <span v-if="conditioned" class="badge" style="color: var(--warn)">
-        conditioned
-      </span>
-      <button v-if="conditioned" @click="emit('reset')">reset</button>
-      <!-- Only offered for a device that is not here: forgetting one that is
-           present just makes it reappear unconfigured a second later. -->
-      <button v-if="!client.present" class="ghost" @click="emit('forget')">
-        forget
-      </button>
     </div>
 
     <!-- Folding is presentation only: the card keeps receiving live updates,
@@ -768,36 +812,43 @@ function fmtBytes(n: number): string {
 /* The name stays a text field, so it must not inherit the row's pointer. */
 .card-head .name { cursor: text; }
 
-/* Fixed columns so every folded row lines up. Flex sized each row to its own
-   content, which made a list of devices impossible to scan down. */
-.card-head.folded {
+/* A grid in BOTH states, folded and open, so the identity fields hold their x
+   as a card is toggled and nothing slides sideways under the pointer.
+   Overrides the global flex `.card-head`.
+
+   The tracks themselves are NOT restated here. They depend on which directions
+   are shown and on whether the card is open, so they are built in headCols and
+   applied inline -- and an inline style always wins, which meant the copy that
+   used to live here was dead the moment it disagreed with the script. It had
+   already drifted. One source only. */
+.card-head {
   display: grid;
-  grid-template-columns:
-    30px                  /* fold toggle -- first, so it is in the same place
-                             on every row and does not shift with content */
-    14px                  /* presence */
-    minmax(96px, 1.3fr)   /* name */
-    58px                  /* medium */
-    minmax(104px, 1fr)    /* address */
-    76px 68px             /* downlink: shape, then figure -- 68px fits a
-                             three-digit rate such as 103.66 without touching
-                             the next column */
-    76px 68px             /* uplink */
-    38px                  /* unit */
-    92px                  /* conditioned */
-    56px;                 /* actions */
   align-items: center;
   gap: 8px;
   overflow: hidden;
 }
 .card-head.folded:hover { background: var(--panel); }
-.card-head.folded .cell { min-width: 0; overflow: hidden; }
-.card-head.folded .addr,
-.card-head.folded .name { text-overflow: ellipsis; white-space: nowrap; }
+/* The open card's middle: deep links and reset, in a row inside one track. */
+.card-head .tail { display: flex; align-items: center; gap: 10px; }
+/* nowrap on every cell, not just the ones that looked like they needed it.
+   A squeezed column wraps to a second line by default, which makes the row
+   taller than its neighbours and breaks the even rhythm the folded list exists
+   for -- "+1 IPv6" and "-61 dBm" both did exactly that at 1180px. Truncating is
+   the right failure here: everything on this row is recoverable by expanding
+   the card. */
+.card-head .cell {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.card-head .name { text-overflow: ellipsis; white-space: nowrap; }
+/* Dimmer than the address: the MAC is the identity, but the address is what
+   someone is usually reading down the list for. */
+.card-head .mac { color: var(--ink-faint); }
 .card-head.folded .val { text-align: right; font-size: 12px; font-weight: 600; }
 .card-head.folded .unit { font-size: 11px; }
 .card-head.folded .spark { display: block; }
-.card-head.folded .name { flex: 0 1 auto; min-width: 90px; }
 .fold-spark { width: 84px; display: block; }
 .fold-val { font-size: 12px; font-weight: 600; }
 .fold-toggle { font-size: 13px; line-height: 1; padding: 3px 8px; }
