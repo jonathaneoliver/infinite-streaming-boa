@@ -15,7 +15,18 @@ import type { BridgeInfo, IfaceInfo } from '@/types';
  * this replaces was a code fence.
  */
 
-const props = defineProps<{ info: BridgeInfo }>();
+const props = defineProps<{
+  info: BridgeInfo;
+  /**
+   * An action is in flight. Every node button disables while it is.
+   *
+   * Not cosmetic. Switching a radio back on measures 4.5s on the mt7921u --
+   * the rfkill unblock is instant, the wait is hostapd rebuilding the BSS at
+   * 80MHz -- and a button that stays live through it reads as a button that
+   * did nothing, which is how you get someone pressing it three more times.
+   */
+  busy?: boolean;
+}>();
 const emit = defineEmits<{
   // `arg` carries the channel for kind 'channel', and is unused otherwise. One
   // event rather than two keeps the parent's handler a single switch.
@@ -209,35 +220,36 @@ function otherRadio(i: IfaceInfo): string {
                CONNECTED on top, the rest under it. The picture is where you are
                already pointing at a radio, so the actions on that radio belong
                on it. -->
-          <div class="node-actions">
+          <div class="node-actions" :class="{ working: busy }">
             <button
               class="ghost"
               :class="{ accent: i.power_known && !i.powered }"
+              :disabled="busy"
               :title="i.powered
                 ? `Switch ${i.name} off and leave it off. Clients are told NOTHING and must time out.`
                 : `${i.name} is switched off. Switch it back on.`"
               @click="emit('action', i.powered ? 'power-off' : 'power-on', i.name)"
             >{{ i.powered ? 'switch off' : 'switch on' }}</button>
             <button
-              class="ghost" :disabled="!i.ap.stations"
+              class="ghost" :disabled="busy || !i.ap.stations"
               :title="`Deauthenticate all ${i.ap.stations} client(s) on ${i.name}. They are told, so they reconnect quickly.`"
               @click="emit('action', 'drop', i.name)"
             >drop {{ i.ap.stations }}</button>
           </div>
-          <div class="node-actions">
+          <div class="node-actions" :class="{ working: busy }">
             <button
-              class="ghost" :disabled="!i.ap.stations"
+              class="ghost" :disabled="busy || !i.ap.stations"
               :title="`Disassociate all ${i.ap.stations} client(s) — the softer transition.`"
               @click="emit('action', 'nudge', i.name)"
             >nudge</button>
             <button
               v-if="otherRadio(i)"
-              class="ghost" :disabled="!i.ap.stations"
+              class="ghost" :disabled="busy || !i.ap.stations"
               :title="`Ask all ${i.ap.stations} client(s) to move to ${otherRadio(i)} (802.11v). They may refuse.`"
               @click="emit('action', 'steer', i.name)"
             >steer</button>
             <button
-              class="ghost"
+              class="ghost" :disabled="busy"
               :title="`Scan ${i.name}'s band. A few beacon gaps, or an outage if this radio will not scan while serving.`"
               @click="emit('action', 'scan', i.name)"
             >scan</button>
@@ -246,11 +258,12 @@ function otherRadio(i: IfaceInfo): string {
                on the picture you are already pointing at the radio, so the only
                thing left to say is where it should go. Width is kept at
                whatever the radio is running. -->
-          <div v-if="channelsFor(i).length" class="node-actions chans">
+          <div v-if="channelsFor(i).length" class="node-actions chans"
+               :class="{ working: busy }">
             <span class="lbl">go to</span>
             <button
               v-for="c in channelsFor(i)" :key="c"
-              class="ghost" :disabled="c === i.ap.channel"
+              class="ghost" :disabled="busy || c === i.ap.channel"
               :title="c === i.ap.channel
                 ? `${i.name} is already on channel ${c}.`
                 : `Take ${i.name} down and bring it back on channel ${c}. All ${i.ap.stations} client(s) dropped, and NOT told.`"
@@ -317,6 +330,10 @@ svg { width: 100%; height: auto; display: block; }
 }
 .node-actions button { font-size: 11px; padding: 2px 7px; }
 .node-actions button:disabled { opacity: 0.4; cursor: default; }
+/* While something is in flight the whole cluster says so, not just the button
+   that was pressed: a power-on takes seconds and any other press would queue
+   behind it. */
+.node-actions.working button { cursor: progress; }
 /* The channel row is tighter than the others: seven small numbers reading as a
    dial, rather than seven buttons competing with the verbs above them. */
 .node-actions.chans { gap: 3px; }

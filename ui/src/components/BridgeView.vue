@@ -157,7 +157,10 @@ function otherRadio(r: IfaceInfo): string {
     </div>
 
     <template v-if="bridge.info.value">
-      <InterfaceDiagram :info="bridge.info.value" @action="onDiagramAction" />
+      <InterfaceDiagram
+        :info="bridge.info.value" :busy="bridge.busy.value"
+        @action="onDiagramAction"
+      />
 
       <section v-for="r in radios" :key="r.name" class="card radio-card">
         <div class="card-head">

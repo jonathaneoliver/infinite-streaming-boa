@@ -938,3 +938,42 @@ above** rather than read from anywhere new.
   the fetch error inside the log rather than beside it, because "nothing has
   happened" and "I stopped being able to ask" are the two readings this panel
   must never confuse.
+
+## Source M addendum — what a radio power cycle actually costs
+
+**MEASURED on hardware 2026-09-03**, several cycles per radio, because the first
+three attempts to make the switch-on "fast" were all fixes to the wrong thing.
+
+| | rfkill block | back on the air |
+|---|---|---|
+| `wlan0` (brcmfmac, 2.4GHz 20MHz) | ~0.9 s | **~0 s** |
+| `wlan-usb` (mt7921u, 5GHz 80MHz) | ~0.03 s | **~25 s** |
+
+**Semantics that bite**
+
+- **hostapd handles rfkill itself.** Its own log shows the unblock and the
+  recovery in the same second — `rfkill: WLAN unblocked` then
+  `wlan0: INTERFACE-ENABLED`. Nothing needs to send `ENABLE` after a power-on.
+
+- **Sending `ENABLE` anyway makes it worse.** Aimed at a BSS hostapd had already
+  restored, it took an mt7921u switch-on from about a second to 25, apparently
+  tearing the interface down to rebuild it.
+
+- **`ENABLE` acknowledges only when the BSS is up**, which on mt7921u at 80MHz
+  outlasts the control socket's 2 s deadline. A perfectly healthy recovery
+  therefore reports `i/o timeout`. Treating that as failure and retrying turned
+  a 4.5 s operation into a 27.8 s one — six attempts each paying the same
+  deadline for a reply that was never going to arrive in time.
+
+- **The control socket itself goes unresponsive for 10–25 s** after an mt7921u
+  unblock, while the driver re-initialises. One `STATUS` took 14 seconds to
+  answer. So a client-side wait is waiting on the socket, not on the radio, and
+  no amount of polling makes it faster. During it the whole box is loaded enough
+  that SSH banner exchange can time out.
+
+- **Therefore the power endpoint returns as soon as power is restored**, which
+  is what a mains switch controls, and a background watch confirms the access
+  point re-formed. The duration is recorded as an event
+  (`wlan-usb access point back after 25s`), because it is the number that
+  answers "why did my client take so long to come back" and it differs by an
+  order of magnitude between the two radios on this box.

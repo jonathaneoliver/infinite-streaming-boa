@@ -93,9 +93,24 @@ export function useBridge(active: Ref<boolean>) {
    * to notice the beacons stopped, which takes tens of seconds of believing it
    * is still connected.
    */
+  /**
+   * Switch a radio's transmitter on or off, and say what that does and does not
+   * mean.
+   *
+   * Powering ON returns as soon as power is restored, which is what the switch
+   * controls. The access point re-forming is a separate thing that takes its
+   * own time -- about a second on the onboard radio and up to half a minute on
+   * the USB adapter, whose control socket goes unresponsive while the driver
+   * re-initialises -- so the message promises power, not service, and the
+   * activity log records when service actually came back.
+   */
   const setPower = (iface: string, on: boolean) =>
     act(`/api/bridge/radios/${encodeURIComponent(iface)}/power?on=${on ? 1 : 0}`, (b) =>
-      `${b.iface}: radio ${b.on ? 'powered back on' : 'powered OFF — no client was told'}.`,
+      b.on
+        ? `${b.iface}: power restored. The access point takes a few seconds to ` +
+          `come back — up to about 25 on the USB adapter — and the activity log ` +
+          `says when it did.`
+        : `${b.iface}: powered OFF — no client was told.`,
     );
 
   const powerOutage = (iface: string, sec: number) =>
