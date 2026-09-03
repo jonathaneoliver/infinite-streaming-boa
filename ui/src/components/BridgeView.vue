@@ -93,25 +93,38 @@ const degraded = (i: IfaceInfo) =>
  */
 const SOON = [
   {
-    label: 'Move clients to the other radio',
-    what: '802.11v BSS transition request, steering associated clients to another BSS.',
-    why: 'Needs two access points running at once. One adapter reports #{ AP } <= 1, so this waits on the second radio.',
-    issue: '#122 Group A',
-  },
-  {
-    label: 'Radio profile: 20 MHz / legacy rates / RTS',
-    what: 'Force the AP down to 802.11n, 20 MHz, or RTS/CTS before every frame.',
-    why: 'Real airtime contention and MAC retries, which netem cannot imitate. Needs a hostapd restart, which drops every client.',
-    issue: '#122 Group B',
-  },
-  {
-    label: 'Power-save profile: DTIM / beacon / U-APSD',
-    what: 'Lengthen the wake cycle a dozing phone waits through between segment fetches.',
-    why: 'Produces a comb of periodic spikes no netem delay distribution can. Needs a hostapd restart.',
-    issue: '#122 Group C',
+    label: 'Monitor-mode capture on the idle radio',
+    what: 'Per-frame retries, actual MCS and per-frame RSSI, without disturbing the AP.',
+    why: 'Blocked three ways: tcpdump is not on the image, brcmfmac has no monitor mode at all, and the one radio that does (mt7921u) is now busy serving 5GHz. Needs a free radio and an image change.',
+    issue: '#122 Group D',
   },
 ];
 const pending = ref('');
+
+/** Mirrors radioProfiles in radioprofile.go. "clean" first, because it is the
+ *  way back from every other one. */
+const PROFILES = [
+  { name: 'clean', label: 'clean', desc: 'everything back to how the image configured it.' },
+  { name: 'legacy', label: '802.11n only', desc: 'no ac, no ax \u2014 the ceiling an older device sees, with real MAC-layer cost rather than a rate limit.' },
+  { name: 'narrow', label: '20 MHz', desc: 'a quarter of the spectrum, so airtime contention is real and shared rather than imposed per client.' },
+  { name: 'dozy', label: 'power-save torture', desc: 'DTIM 10 at a 300 ms beacon, U-APSD off \u2014 a dozing phone waits up to three seconds for buffered downlink, drawing a comb of spikes no netem delay can.' },
+];
+
+/** Quick actions fired from the diagram. The picture is the natural place to
+ *  press them -- the radio being cut is the box you are pointing at -- so they
+ *  go through the same composable the panel below uses rather than a second
+ *  path that could drift out of step. */
+function onDiagramAction(kind: 'power-off' | 'power-on' | 'scan', iface: string) {
+  if (kind === 'power-off') bridge.powerOutage(iface, outage.value[iface] ?? 10);
+  else if (kind === 'power-on') bridge.setPower(iface, true);
+  else bridge.scanBand(iface, false);
+}
+
+/** The radio a client could be steered to: another one that is serving. Empty
+ *  on a single-radio box, where the control is absent rather than dead. */
+function otherRadio(r: IfaceInfo): string {
+  return radios.value.find((o) => o.name !== r.name && o.ap?.enabled)?.name ?? '';
+}
 </script>
 
 <template>
@@ -128,7 +141,7 @@ const pending = ref('');
     </div>
 
     <template v-if="bridge.info.value">
-      <InterfaceDiagram :info="bridge.info.value" />
+      <InterfaceDiagram :info="bridge.info.value" @action="onDiagramAction" />
 
       <section v-for="r in radios" :key="r.name" class="card radio-card">
         <div class="card-head">
@@ -261,6 +274,69 @@ const pending = ref('');
             and they rediscover it, which is how most consumer routers change
             channel anyway.
           </p>
+
+          <!-- Steering only exists when there is somewhere to steer TO. On a
+               one-radio box the button would be permanently dead, so it is
+               absent rather than disabled. -->
+          <template v-if="otherRadio(r)">
+            <h4>Steer to the other radio</h4>
+            <p class="warn-line">
+              Asks all {{ r.ap.stations }} client(s) on {{ r.name }} to move to
+              <strong>{{ otherRadio(r) }}</strong>. A <em>request</em> — 802.11v
+              leaves the choice with the client, and whether a given phone
+              honours it is the thing worth finding out.
+            </p>
+            <div class="action-row">
+              <button :disabled="bridge.busy.value" @click="bridge.steerAll(r.name)">
+                ask all {{ r.ap.stations }} to move to {{ otherRadio(r) }}
+              </button>
+            </div>
+          </template>
+
+          <h4>Radio profile</h4>
+          <p class="warn-line">
+            Each of these restarts the access point, dropping all
+            {{ r.ap.stations }} client(s) on {{ r.name }}. The parameters live in
+            the beacon and are negotiated at association, so a connected station
+            cannot be told about them — that is why they are here and not on a
+            device card.
+          </p>
+          <div class="action-row">
+            <button
+              v-for="p in PROFILES" :key="p.name"
+              :class="{ accent: p.name === 'clean' }"
+              :disabled="bridge.busy.value"
+              :title="p.desc"
+              @click="bridge.applyProfile(r.name, p.name)"
+            >{{ p.label }}</button>
+          </div>
+          <p class="meta">
+            <span v-for="p in PROFILES" :key="p.name" class="profile-note">
+              <strong>{{ p.label }}</strong> — {{ p.desc }}
+            </span>
+          </p>
+
+          <h4>Thresholds</h4>
+          <p class="meta">
+            The only radio impairment here that costs nothing: live on the next
+            frame, no restart, nobody dropped.
+          </p>
+          <div class="action-row">
+            <label class="k">RTS/CTS</label>
+            <button
+              :disabled="bridge.busy.value"
+              title="RTS/CTS before every frame — roughly halves throughput and adds two control frames of latency per data frame. What a real AP does in a dense environment."
+              @click="bridge.setThreshold(r.name, 'rts', 0)"
+            >every frame</button>
+            <button :disabled="bridge.busy.value" @click="bridge.setThreshold(r.name, 'rts', 'off')">off</button>
+            <label class="k">fragment</label>
+            <button
+              :disabled="bridge.busy.value"
+              title="Fragment every frame at 256 bytes. With any error rate the retry cost explodes superlinearly, because losing one fragment costs the whole frame."
+              @click="bridge.setThreshold(r.name, 'frag', 256)"
+            >at 256</button>
+            <button :disabled="bridge.busy.value" @click="bridge.setThreshold(r.name, 'frag', 'off')">off</button>
+          </div>
 
           <div v-if="bridge.scan.value?.iface === r.name" class="survey">
             <table class="counters">

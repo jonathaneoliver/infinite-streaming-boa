@@ -16,6 +16,9 @@ import type { BridgeInfo, IfaceInfo } from '@/types';
  */
 
 const props = defineProps<{ info: BridgeInfo }>();
+const emit = defineEmits<{
+  (e: 'action', kind: 'power-off' | 'power-on' | 'scan', iface: string): void;
+}>();
 
 const byRole = (r: string) => props.info.ifaces.filter((i) => i.role === r);
 const wan = computed(() => byRole('wan')[0]);
@@ -43,7 +46,8 @@ const CX = W / 2;
 const WAN_Y = 8;
 const BR_Y = 132;
 const DOWN_Y = 256;
-const H = DOWN_Y + NODE_H + 34;
+// Room under the downstream row for the per-radio action buttons.
+const H = DOWN_Y + NODE_H + 74;
 
 /** First address, preferring IPv4 — the one a person will recognise. */
 function addr(i: IfaceInfo): string {
@@ -103,11 +107,36 @@ const unwatched = (i: IfaceInfo) => i.wireless && !i.serving;
       </g>
 
       <g v-for="(i, n) in downstream" :key="i.name"
-         class="node" :class="[i.role, { unwatched: unwatched(i) }]">
+         class="node" :class="[i.role, { unwatched: unwatched(i), off: i.power_known && !i.powered }]">
         <rect :x="nodeX(n)" :y="DOWN_Y" :width="NODE_W" :height="NODE_H" rx="8" />
         <text :x="nodeX(n) + NODE_W / 2" :y="DOWN_Y + 22" class="name">{{ i.name }}</text>
         <text :x="nodeX(n) + NODE_W / 2" :y="DOWN_Y + 39" class="sub">{{ subtitle(i) }}</text>
         <text :x="nodeX(n) + NODE_W / 2" :y="DOWN_Y + 56" class="mono">{{ i.mac }}</text>
+
+        <!-- Actions on the component they act on. A radio in this picture is
+             the thing being cut or scanned, so the control belongs on it
+             rather than in a list further down the page that has to name it
+             again. foreignObject because these are real buttons: focusable,
+             keyboard-reachable, and styled like every other button here. -->
+        <foreignObject
+          v-if="i.wireless && i.ap"
+          :x="nodeX(n)" :y="DOWN_Y + NODE_H + 6" :width="NODE_W" height="30"
+        >
+          <div class="node-actions">
+            <button
+              class="ghost"
+              :title="i.powered
+                ? `Cut power to ${i.name} for 10s. Clients are told NOTHING and must time out.`
+                : `${i.name} is powered off. Turn it back on.`"
+              @click="emit('action', i.powered ? 'power-off' : 'power-on', i.name)"
+            >{{ i.powered ? 'cut power' : 'power on' }}</button>
+            <button
+              class="ghost"
+              :title="`Take ${i.name} out of service, scan its band, and bring it back.`"
+              @click="emit('action', 'scan', i.name)"
+            >scan</button>
+          </div>
+        </foreignObject>
       </g>
     </svg>
 
@@ -156,6 +185,15 @@ svg { width: 100%; height: auto; display: block; }
 .node.ap .name { fill: var(--down); }
 .node.lan rect { stroke: color-mix(in srgb, var(--ok) 40%, var(--line)); }
 .node.unwatched rect { stroke: var(--warn); stroke-dasharray: 4 4; }
+/* Powered off: the AP is silent and no client has been told. Dimmed
+   rather than coloured as a fault, because it is a deliberate state. */
+.node.off rect { stroke: var(--ink-faint); stroke-dasharray: 2 4; }
+.node.off .name, .node.off .sub { fill: var(--ink-faint); }
+.node-actions {
+  display: flex; gap: 6px; justify-content: center;
+  font-family: var(--sans);
+}
+.node-actions button { font-size: 11px; padding: 2px 8px; }
 .node.unwatched .name { fill: var(--warn); }
 
 figcaption {

@@ -41,6 +41,9 @@ func (a *API) Routes() *http.ServeMux {
 	mux.HandleFunc("POST /api/bridge/radios/{iface}/deauth-all", a.postDeauthAll)
 	mux.HandleFunc("POST /api/bridge/radios/{iface}/power", a.postRadioPower)
 	mux.HandleFunc("POST /api/bridge/radios/{iface}/scan", a.postScan)
+	mux.HandleFunc("POST /api/bridge/radios/{iface}/profile", a.postRadioProfile)
+	mux.HandleFunc("POST /api/bridge/radios/{iface}/threshold", a.postThreshold)
+	mux.HandleFunc("POST /api/bridge/radios/{iface}/steer", a.postSteer)
 	mux.HandleFunc("PATCH /api/devices/{mac}/policy", a.patchPolicy)
 	mux.HandleFunc("POST /api/devices/{mac}/sub", a.postSub)
 	mux.HandleFunc("PATCH /api/devices/{mac}/sub/{id}", a.patchSub)
@@ -254,6 +257,110 @@ func (a *API) postScan(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, res)
+}
+
+// postRadioProfile applies a named PHY or power-save profile, restarting the
+// BSS. Every client on the radio is dropped: these parameters are advertised in
+// the beacon and negotiated at association, so an associated station cannot be
+// told about them.
+func (a *API) postRadioProfile(w http.ResponseWriter, r *http.Request) {
+	iface := r.PathValue("iface")
+	if err := a.e.radioReady(iface); err != nil {
+		writeErr(w, http.StatusServiceUnavailable, err.Error())
+		return
+	}
+	name := strings.TrimSpace(r.URL.Query().Get("name"))
+	dropped, err := a.e.ApplyRadioProfile(iface, name)
+	if err != nil {
+		// A refused SETTING is a partial success worth reporting as one: the
+		// radio is back up, some of the profile took, and the caller is told
+		// exactly which parts did not.
+		if dropped > 0 {
+			writeJSON(w, http.StatusOK, map[string]any{
+				"iface": iface, "action": "profile", "profile": name,
+				"stations_dropped": dropped, "warning": err.Error(),
+			})
+			return
+		}
+		writeErr(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"iface": iface, "action": "profile", "profile": name,
+		"stations_dropped": dropped,
+	})
+}
+
+// postThreshold sets the RTS or fragmentation threshold. The only radio
+// impairment here that costs nothing: live on the next frame, nobody dropped.
+func (a *API) postThreshold(w http.ResponseWriter, r *http.Request) {
+	iface := r.PathValue("iface")
+	if err := a.e.radioExists(iface); err != nil {
+		writeErr(w, http.StatusServiceUnavailable, err.Error())
+		return
+	}
+	q := r.URL.Query()
+	kind := strings.TrimSpace(q.Get("kind"))
+	// -1 is "off", and is the default so a request with no value turns the
+	// impairment off rather than silently setting it to zero -- which for rts
+	// means "every frame" and is the strongest setting there is.
+	val := -1
+	if s := strings.TrimSpace(q.Get("value")); s != "" && s != "off" {
+		n, err := strconv.Atoi(s)
+		if err != nil {
+			writeErr(w, http.StatusBadRequest, "value must be a number, or 'off'")
+			return
+		}
+		val = n
+	}
+	if err := a.e.SetPhyThreshold(iface, kind, val); err != nil {
+		writeErr(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"iface": iface, "action": "threshold", "kind": kind, "value": val,
+	})
+}
+
+// postSteer asks clients to move to the other radio via 802.11v.
+//
+// A REQUEST, not an instruction: the decision stays with the client, and
+// whether a given phone honours it is exactly the behaviour worth testing.
+// `?mac=` steers one; omitted, it asks everyone on the radio.
+func (a *API) postSteer(w http.ResponseWriter, r *http.Request) {
+	from := r.PathValue("iface")
+	if err := a.e.radioReady(from); err != nil {
+		writeErr(w, http.StatusServiceUnavailable, err.Error())
+		return
+	}
+	to := strings.TrimSpace(r.URL.Query().Get("to"))
+	if to == "" {
+		to = a.e.OtherRadio(from)
+	}
+	if to == "" {
+		writeErr(w, http.StatusServiceUnavailable,
+			"nowhere to steer to: this box is serving only one radio, and a "+
+				"transition request needs another access point to name")
+		return
+	}
+	if mac := strings.TrimSpace(r.URL.Query().Get("mac")); mac != "" {
+		if err := a.e.SteerClient(mac, from, to); err != nil {
+			writeErr(w, http.StatusBadGateway, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"iface": from, "action": "steer", "to": to, "asked": 1, "mac": normMAC(mac),
+		})
+		return
+	}
+	n, err := a.e.SteerAll(from, to)
+	if err != nil {
+		writeErr(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"iface": from, "action": "steer", "to": to, "asked": n,
+	})
 }
 
 // getHistory serves the per-client throughput series.

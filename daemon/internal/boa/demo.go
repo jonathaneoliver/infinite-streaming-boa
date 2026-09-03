@@ -415,6 +415,7 @@ func demoBridgeState(cfg Config) BridgeInfo {
 			Name: cfg.PrimaryWlan(), Role: RoleAP, MAC: apMAC,
 			Up: true, Carrier: true, CarrierKnown: true,
 			Master: cfg.Bridge, Wireless: true, Serving: true,
+			Powered: true, PowerKnown: true,
 			Radio: &RadioInfo{
 				Iface: cfg.PrimaryWlan(), Driver: "mt7921u", Bus: "usb",
 				Vendor: "Panda Wireless", Product: "PAU0F AXE3000",
@@ -431,6 +432,7 @@ func demoBridgeState(cfg Config) BridgeInfo {
 			Name: "wlan1", Role: RoleAP, MAC: "9c:ef:d5:aa:11:07",
 			Up: true, Carrier: true, CarrierKnown: true,
 			Master: cfg.Bridge, Wireless: true, Serving: false,
+			Powered: true, PowerKnown: true,
 			Radio: &RadioInfo{
 				Iface: "wlan1", Driver: "mt7921u", Bus: "usb",
 				Vendor: "Panda Wireless", Product: "PAU0F AXE3000",

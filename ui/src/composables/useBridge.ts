@@ -141,6 +141,39 @@ export function useBridge(active: Ref<boolean>) {
     }
   }
 
+  /** A named PHY or power-save profile. Drops every client on the radio: these
+   *  parameters live in the beacon and are negotiated at association, so an
+   *  associated station cannot be told about them. */
+  const applyProfile = (iface: string, name: string) =>
+    act(`/api/bridge/radios/${encodeURIComponent(iface)}/profile?name=${name}`, (b) =>
+      `${b.iface}: profile "${b.profile}" applied` +
+      (b.stations_dropped ? `, ${b.stations_dropped} client(s) dropped` : '') +
+      (b.warning ? ` — ${b.warning}` : '.'),
+    );
+
+  /** RTS or fragmentation threshold. The one radio impairment that costs
+   *  nothing: live on the next frame, nobody dropped. */
+  const setThreshold = (iface: string, kind: 'rts' | 'frag', value: number | 'off') =>
+    act(
+      `/api/bridge/radios/${encodeURIComponent(iface)}/threshold` +
+        `?kind=${kind}&value=${value}`,
+      (b) =>
+        b.value < 0
+          ? `${b.iface}: ${b.kind} threshold off.`
+          : `${b.iface}: ${b.kind} threshold ${b.value}` +
+            (b.kind === 'rts' && b.value === 0
+              ? ' — RTS/CTS before every frame.'
+              : '.'),
+    );
+
+  /** 802.11v transition request. A REQUEST: the decision stays with the client,
+   *  and whether a given phone honours it is the behaviour worth testing. */
+  const steerAll = (iface: string) =>
+    act(`/api/bridge/radios/${encodeURIComponent(iface)}/steer`, (b) =>
+      `${b.iface}: asked ${b.asked} client(s) to move to ${b.to}. They may ` +
+      `refuse — 802.11v is a suggestion. Watch the stations counts to see who went.`,
+    );
+
   const deauthAll = (iface: string) =>
     act(`/api/bridge/radios/${encodeURIComponent(iface)}/deauth-all`, (b) =>
       `${b.iface}: ${b.stations} station(s) deauthenticated. They reconnect on their own.`,
@@ -173,5 +206,6 @@ export function useBridge(active: Ref<boolean>) {
   return {
     info, survey, scan, error, actionMsg, busy,
     load, loadSurvey, chanSwitch, deauthAll, setPower, powerOutage, scanBand,
+    applyProfile, setThreshold, steerAll,
   };
 }
