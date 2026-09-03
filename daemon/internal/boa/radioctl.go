@@ -135,6 +135,10 @@ func (e *Engine) ChanSwitch(iface string, channel, widthMHz int) error {
 	if !strings.HasPrefix(reply, "OK") {
 		return fmt.Errorf("hostapd rejected %q: %s", cmd, strings.TrimSpace(reply))
 	}
+	e.logEvent(EventRadio, iface, "",
+		"%s announced a channel switch to %d (802.11h); clients were asked to follow",
+		iface, channel)
+	e.syncRadioState(iface)
 	return nil
 }
 
@@ -167,6 +171,7 @@ func (e *Engine) LinkAll(iface, kind string) (int, error) {
 	}
 	n := len(StationDump(iface))
 	if e.cfg.Demo {
+		e.noteLinkAll(iface, kind, n)
 		return n, nil
 	}
 	// The broadcast address, which hostapd accepts for both verbs -- verified
@@ -180,6 +185,7 @@ func (e *Engine) LinkAll(iface, kind string) (int, error) {
 		return 0, fmt.Errorf("hostapd rejected the broadcast %s: %s",
 			strings.ToLower(verb), strings.TrimSpace(reply))
 	}
+	e.noteLinkAll(iface, kind, n)
 	return n, nil
 }
 

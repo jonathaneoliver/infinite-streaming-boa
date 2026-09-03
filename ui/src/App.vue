@@ -6,6 +6,7 @@ import { ntopngUrl } from '@/types';
 import { exportConfig, importConfig } from '@/composables/useConfig';
 import ClientsView from '@/components/ClientsView.vue';
 import BridgeView from '@/components/BridgeView.vue';
+import EventLog from '@/components/EventLog.vue';
 
 const { snap, connected, transport, series, bucketMs, setRange } = useSnapshot();
 const dev = useDevice();
@@ -243,6 +244,12 @@ the file are replaced, devices not mentioned are left alone.">
         >Bridge</button>
       </div>
     </div>
+
+    <!-- Under the tabs and above everything else, because it belongs to the
+         box rather than to either view: a client roaming between radios is a
+         Clients-tab fact and a Bridge-tab fact at the same time. One line high
+         until it is opened. -->
+    <EventLog />
 
     <div v-if="cfgErr" class="notice bad">{{ cfgErr }}</div>
     <div v-if="cfgMsg" class="notice">{{ cfgMsg }}</div>

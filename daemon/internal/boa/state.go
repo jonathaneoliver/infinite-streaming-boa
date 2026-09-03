@@ -105,6 +105,14 @@ type Engine struct {
 	// with a station it has never heard of.
 	stationRadio map[string]string
 
+	// events is the in-memory log of what CHANGED -- joins, roams, radio
+	// moves, actions. Everything else here is state; see events.go for why
+	// that is not enough. prevRadio is the previous tick's associations, which
+	// is the only way to notice a client moved between radios.
+	events         eventLog
+	prevRadio      map[string]string
+	prevRadioState map[string]string
+
 	// radioOn caches each radio's channel/width/mode for the device list,
 	// refreshed on a slow timer: it changes only when something deliberately
 	// changes it, and asking hostapd per tick is a round-trip per radio for a
@@ -618,6 +626,15 @@ func (e *Engine) tick() {
 		}
 		clients = append(clients, c)
 	}
+	// What CHANGED since the last tick, raised now that both the associations
+	// and the labels for them are in hand.
+	labels := make(map[string]string, len(clients))
+	for _, c := range clients {
+		labels[c.MAC] = c.Label
+	}
+	e.noteClientChanges(stationRadio, labels)
+	e.noteRadioChanges()
+
 	sort.Slice(clients, func(i, j int) bool {
 		// Present devices first, then by label, so the list does not reshuffle
 		// as telemetry changes.

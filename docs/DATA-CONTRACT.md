@@ -896,3 +896,45 @@ differently from how they read.
   conditioning, and the old policy stays behind on an address that will never be
   seen again. This is issue #45, and this action makes that path hot rather than
   incidental — so the interface says so where the button is, not in a document.
+
+## Source N — the activity log · what changed, as opposed to what is
+
+Not a measurement. Every other source here answers "what is true now"; this one
+answers "what just happened", and it is **derived entirely from the sources
+above** rather than read from anywhere new.
+
+| Field | Where it comes from |
+|---|---|
+| `join` / `leave` / `roam` | The per-radio `iw dev <if> station dump` of Source A, diffed against the previous tick |
+| `radio` | `hostapd STATUS` (Source K) — channel, width and mode, diffed; plus every action this daemon takes to a radio |
+| `action` | Raised at the point the action succeeds, never before |
+| `warning` | A refusal that left the radio somewhere other than where it was asked to be |
+
+**Semantics that bite**
+
+- **A roam is invisible in state.** A client that moved from 5GHz to 2.4GHz is
+  simply *on* 2.4GHz; nothing anywhere records that it moved. The diff is the
+  only place that fact exists, which is why the log is derived at the tick and
+  not reconstructed by a reader.
+
+- **A radio change is detected at the cache's resolution, not the tick's.**
+  `RadioOn` is cached for 15 s (asking hostapd per tick is a round-trip per
+  radio for a value that almost never changes), so a channel change made
+  *outside* this daemon is noticed within 15 s, not within 1 s. Anything done
+  through the interface records itself immediately and re-syncs the cache, so it
+  is never reported twice.
+
+- **`join` on a fresh start is not a join.** The first tick has no previous
+  association map, so every client currently associated is recorded as having
+  joined at that moment. That is a restart artefact, not an event — the daemon's
+  own start time is the giveaway.
+
+- **In memory, and deliberately lossy.** A ring of 500, cleared by a restart or
+  a deploy. Persisting an association event per client per roam is the kind of
+  steady write that wears an SD card out, and the box is a bench instrument that
+  is watched while it runs.
+
+- **A silent poll failure looks exactly like a quiet box.** The interface shows
+  the fetch error inside the log rather than beside it, because "nothing has
+  happened" and "I stopped being able to ask" are the two readings this panel
+  must never confuse.

@@ -367,6 +367,18 @@ damages packets, never link state.
   conditioning is additive on top of it; that `overlimits` is not an error; that
   PHY rate is not throughput.
 
+- An **activity log** sits under the tabs on both views, one line high until it
+  is opened. It records what CHANGED rather than what is: a client joining,
+  leaving, or moving between radios; a radio's channel, width or mode changing,
+  whether this box did it or not; and every box-wide action taken here. State
+  answers "what is true now" and is silent about "what just happened", which on
+  a two-radio box is the more interesting question -- a device that moved to the
+  other band is simply on the other band, with nothing saying it moved.
+- The log is **in memory and lossy by design**: a few hundred events, cleared by
+  a restart or a deploy. An association event per client per roam, persisted, is
+  exactly the steady write that wears an SD card out, and every event still
+  worth having rebuilds itself within seconds.
+
 ### 6.6 The bridge
 
 - The Bridge tab shows **every interface the box has**, discovered from the

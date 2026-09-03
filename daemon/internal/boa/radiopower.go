@@ -77,6 +77,7 @@ func (e *Engine) SetRadioPower(iface string, on bool) error {
 		return err
 	}
 	if e.cfg.Demo {
+		e.notePower(iface, on)
 		return nil
 	}
 	p, err := rfkillSoftPath(iface)
@@ -98,7 +99,21 @@ func (e *Engine) SetRadioPower(iface string, on bool) error {
 		// hostapd to bring the BSS up again; harmless if it already has.
 		e.reenableAP(iface)
 	}
+	e.notePower(iface, on)
 	return nil
+}
+
+// notePower records a power change in the event log. Worth a line of its own
+// because it is the one action clients are told NOTHING about: the log is the
+// only place the cut and the client's eventual reaction to it appear together.
+func (e *Engine) notePower(iface string, on bool) {
+	defer e.syncRadioState(iface)
+	if on {
+		e.logEvent(EventRadio, iface, "", "%s switched back on", iface)
+		return
+	}
+	e.logEvent(EventRadio, iface, "",
+		"%s switched OFF — clients are told nothing and must notice", iface)
 }
 
 // reenableAP nudges hostapd to serve again after its radio comes back.
@@ -134,6 +149,7 @@ func (e *Engine) RadioOutage(iface string, durSec float64) error {
 	if err := e.SetRadioPower(iface, false); err != nil {
 		return err
 	}
+	e.logEvent(EventAction, iface, "", "timed outage on %s: %.0fs", iface, durSec)
 	go func() {
 		time.Sleep(time.Duration(durSec * float64(time.Second)))
 		if err := e.SetRadioPower(iface, true); err != nil {
@@ -265,6 +281,7 @@ func (e *Engine) MoveChannel(iface string, channel, widthMHz int) (int, error) {
 		return 0, err
 	}
 	if e.cfg.Demo {
+		e.noteMoveChannel(iface, channel)
 		return channel, nil
 	}
 
@@ -295,9 +312,14 @@ func (e *Engine) MoveChannel(iface string, channel, widthMHz int) (int, error) {
 		now = atoiSafe(parseHostapdKV(st)["channel"])
 	}
 	if refused != "" && now != channel {
+		e.logEvent(EventWarning, iface, "",
+			"%s was asked for channel %d but came back on %d (%q refused)",
+			iface, channel, now, refused)
 		return now, fmt.Errorf(
 			"%q was refused, so %s came back on channel %d", refused, iface, now)
 	}
+	e.noteMoveChannel(iface, now)
+	e.syncRadioState(iface)
 	return now, nil
 }
 
@@ -380,6 +402,7 @@ func (e *Engine) ScanBand(iface string, apply bool) (ScanResult, error) {
 	}
 	started := time.Now()
 	if e.cfg.Demo {
+		e.logEvent(EventAction, iface, "", "%s scan requested (demo: no radio to scan)", iface)
 		return ScanResult{Iface: iface, Note: "demo mode: no radio to scan"}, nil
 	}
 
@@ -539,6 +562,21 @@ func (e *Engine) ScanBand(iface string, apply bool) (ScanResult, error) {
 		}
 	}
 
+	// One line, saying what it cost as well as what it found: a scan that
+	// dropped every client and one that cost a few beacon gaps look identical
+	// in the result otherwise.
+	switch {
+	case res.Applied:
+		e.logEvent(EventRadio, iface, "", "%s scanned %s (%d APs) and moved %d → %d",
+			iface, band, len(aps), res.Was, res.Now)
+	case res.OutageSec > 0:
+		e.logEvent(EventAction, iface, "", "%s scanned %s (%d APs, %.0fs off the air), stayed on %d",
+			iface, band, len(aps), res.OutageSec, res.Now)
+	default:
+		e.logEvent(EventAction, iface, "", "%s scanned %s (%d APs) while serving, stayed on %d",
+			iface, band, len(aps), res.Now)
+	}
+	e.syncRadioState(iface)
 	return res, nil
 }
 

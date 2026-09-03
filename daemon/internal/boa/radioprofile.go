@@ -98,6 +98,11 @@ func (e *Engine) SetPhyThreshold(iface, kind string, val int) error {
 		return fmt.Errorf("iw phy %s set %s %s: %v: %s",
 			phy, kind, arg, err, strings.TrimSpace(string(out)))
 	}
+	if val >= fragDisabled {
+		e.logEvent(EventRadio, iface, "", "%s %s threshold off", iface, kind)
+	} else {
+		e.logEvent(EventRadio, iface, "", "%s conditioned: %s threshold %d bytes", iface, kind, val)
+	}
 	return nil
 }
 
@@ -276,6 +281,7 @@ func (e *Engine) ApplyRadioProfile(iface, name string) (int, error) {
 	}
 	dropped := len(StationDump(iface))
 	if e.cfg.Demo {
+		e.noteProfile(iface, name, dropped)
 		return dropped, nil
 	}
 
@@ -316,10 +322,15 @@ func (e *Engine) ApplyRadioProfile(iface, name string) (int, error) {
 	}
 	e.forgetRadioOn() // width and mode may have changed
 	if len(refused) > 0 {
+		e.logEvent(EventWarning, iface, "",
+			"%s applied profile %q but refused %d of %d settings",
+			iface, name, len(refused), len(sets))
 		return dropped, fmt.Errorf(
 			"applied, but this radio refused %d of %d settings: %s",
 			len(refused), len(sets), strings.Join(refused, "; "))
 	}
+	e.noteProfile(iface, name, dropped)
+	e.syncRadioState(iface)
 	return dropped, nil
 }
 
@@ -396,6 +407,7 @@ func (e *Engine) SteerClient(mac, fromIface, toIface string) error {
 		return fmt.Errorf("cannot steer %s to the radio it is already on", m)
 	}
 	if e.cfg.Demo {
+		e.noteSteer(m, fromIface, toIface)
 		return nil
 	}
 
@@ -423,6 +435,7 @@ func (e *Engine) SteerClient(mac, fromIface, toIface string) error {
 				"802.11v support, or the client may not have advertised it",
 			strings.TrimSpace(reply))
 	}
+	e.noteSteer(m, fromIface, toIface)
 	return nil
 }
 

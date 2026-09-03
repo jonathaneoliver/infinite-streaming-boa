@@ -36,6 +36,7 @@ func (a *API) Routes() *http.ServeMux {
 	mux.HandleFunc("GET /api/health", a.health)
 	mux.HandleFunc("GET /api/history", a.getHistory)
 	mux.HandleFunc("GET /api/bridge", a.getBridge)
+	mux.HandleFunc("GET /api/events", a.getEvents)
 	mux.HandleFunc("GET /api/bridge/radios/{iface}/survey", a.getSurvey)
 	mux.HandleFunc("POST /api/bridge/radios/{iface}/channel", a.postChannel)
 	mux.HandleFunc("POST /api/bridge/radios/{iface}/move-channel", a.postMoveChannel)
@@ -106,6 +107,47 @@ func (a *API) health(w http.ResponseWriter, r *http.Request) {
 // no business running at 1 Hz whether or not anyone is looking at it.
 func (a *API) getBridge(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, a.e.BridgeState())
+}
+
+// getEvents returns what has HAPPENED, newest events last.
+//
+// Polled with ?since=<seq> so a caller asks only for what it has not seen: the
+// ring holds a few hundred events and re-sending all of them at the tab's poll
+// rate would be most of the payload, every time, to say nothing new. since=0
+// asks for everything the ring still holds, which is what a freshly-opened tab
+// wants.
+//
+// Deliberately not part of the SSE frame. Events are bursty and rare -- nothing
+// for ten minutes, then six in a second when a radio is switched off -- and
+// attaching them to a 1Hz snapshot would mean carrying an empty array 99% of
+// the time.
+func (a *API) getEvents(w http.ResponseWriter, r *http.Request) {
+	since := uint64(0)
+	if q := strings.TrimSpace(r.URL.Query().Get("since")); q != "" {
+		n, err := strconv.ParseUint(q, 10, 64)
+		if err != nil {
+			writeErr(w, http.StatusBadRequest, "since must be an event sequence number")
+			return
+		}
+		since = n
+	}
+	limit := 200
+	if q := strings.TrimSpace(r.URL.Query().Get("limit")); q != "" {
+		n, err := strconv.Atoi(q)
+		if err != nil || n < 1 || n > eventRing {
+			writeErr(w, http.StatusBadRequest,
+				fmt.Sprintf("limit must be 1-%d", eventRing))
+			return
+		}
+		limit = n
+	}
+	// events is never null in the payload: a caller that has seen everything
+	// gets [], not a value it has to guard before iterating.
+	evs := a.e.Events(since, limit)
+	if evs == nil {
+		evs = []Event{}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"events": evs})
 }
 
 // getSurvey reads a radio's airtime counters.
@@ -1680,6 +1722,16 @@ func (a *API) linkEvent(w http.ResponseWriter, r *http.Request, action string) {
 		writeErr(w, http.StatusBadGateway, err.Error())
 		return
 	}
+	// Logged HERE rather than in LinkDeauth, so the log records what an
+	// OPERATOR did. The same two calls are made at up to 1Hz by a running
+	// pattern, and a deadzone would fill the ring with its own repeats inside a
+	// minute; what a pattern does to a client already shows up as the join and
+	// leave it causes.
+	verb := "dropped"
+	if action == "disassoc" {
+		verb = "nudged"
+	}
+	a.e.logEvent(EventAction, "", mac, "%s %s", verb, a.e.labelFor(mac))
 	writeJSON(w, http.StatusOK, map[string]any{"mac": mac, "action": action, "reason": reason})
 }
 

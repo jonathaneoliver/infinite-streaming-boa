@@ -295,6 +295,19 @@ func (e *Engine) demoTick() {
 			Cap:  clients[i].DownCounters.CapMbps,
 		})
 	}
+	// The event log gets the same treatment as everything else here: fed from
+	// the demo fleet through the SAME function production uses, so the panel
+	// can be designed against real joins and leaves rather than a fixture.
+	assoc := map[string]string{}
+	labels := map[string]string{}
+	for _, c := range clients {
+		labels[c.MAC] = c.Label
+		if c.Present && c.Medium == "wifi" && c.Port != "" {
+			assoc[c.MAC] = c.Port
+		}
+	}
+	e.noteClientChanges(assoc, labels)
+
 	live := make(map[string]bool, len(clients))
 	for _, c := range clients {
 		live[c.MAC] = c.Present && c.Shapeable
