@@ -49,7 +49,9 @@ Intended for:
 - **The best radio available serves the AP.** A USB Wi-Fi adapter takes over the
   access point when present and the onboard radio is switched off; unplugging it
   restores the onboard AP. Exactly one radio serves at a time, because
-  conditioning follows a single interface.
+  conditioning follows a single interface. The AP runs in **Bridged AP mode**:
+  bridged onto the upstream LAN with no separate subnet, DHCP, or NAT, so a
+  Wi-Fi client is conditioned exactly like a wired one.
 - **One credential, and it is the SSH key.** When a public key is configured the
   image disables SSH password authentication, keeping the account password for
   the console and for recovery, and grants the login account passwordless sudo.

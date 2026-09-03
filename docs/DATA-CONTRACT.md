@@ -15,7 +15,8 @@ they mean** (the semantics that bite), edge cases, and a confidence level.
 
 ## Source A — DHCP leases · NOT USED IN BRIDGE MODE
 
-Retained for reference only. As a transparent bridge boa runs no DHCP server,
+Retained for reference only. In Bridged AP mode — a transparent bridge — boa
+runs no DHCP server,
 so there is no lease file to read: addresses come from the upstream router and
 are learned by ARP (Source F) instead.
 
