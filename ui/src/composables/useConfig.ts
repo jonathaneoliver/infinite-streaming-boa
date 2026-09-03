@@ -21,7 +21,12 @@
 
 /** Every preference key the interface keeps. Adding one here is the whole cost
  *  of including it in a saved configuration. */
-const UI_KEYS = ['boa.sort', 'boa.folded', 'boa.chart', 'boa.extras', 'boa.offline'] as const;
+const UI_KEYS = [
+  'boa.sort', 'boa.folded', 'boa.chart', 'boa.extras', 'boa.offline',
+  // Which of the two tabs was showing. A view preference like the rest, so it
+  // travels with them rather than being the one setting a restored setup forgets.
+  'boa.tab',
+] as const;
 
 export interface ConfigDoc {
   version?: number;

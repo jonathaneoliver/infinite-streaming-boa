@@ -314,6 +314,42 @@ select, input[type='text'], input[type='number'] {
   padding: 3px 7px;
 }
 
+/* --- segmented control -------------------------------------------------- */
+/* A segmented control, not N loose buttons: these are exclusive choices and the
+   shared border says so.
+
+   Global rather than scoped because there are now three users -- the chart
+   toolbar, the pattern library and the tab bar -- and it had already been
+   copy-pasted once. Component-specific variants (.lone, .saved) stay in the
+   component that means them. */
+.seg { display: flex; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }
+.seg-btn {
+  padding: 3px 10px;
+  font: inherit; font-size: 12px;
+  color: var(--ink-dim);
+  background: var(--panel-2);
+  border: 0; border-left: 1px solid var(--line);
+  cursor: pointer;
+}
+.seg-btn:first-child { border-left: 0; }
+.seg-btn:hover:not(:disabled) { color: var(--ink); background: var(--line); }
+.seg-btn.on { color: var(--ink); background: var(--line); font-weight: 600; }
+.seg-btn:disabled { opacity: 0.45; cursor: default; }
+.seg-btn:focus-visible { outline: 2px solid var(--down); outline-offset: -2px; }
+
+/* --- tabs ---------------------------------------------------------------- */
+/* The same segmented visual, but genuinely tabs: role="tablist" and
+   aria-selected rather than the toolbar's role="group" and aria-pressed. They
+   sit under the header, which stays visible on both -- a USB adapter that
+   quietly negotiated High-Speed must not become invisible because you happened
+   to be looking at the client list. */
+.tabs { display: flex; gap: 10px; align-items: center; margin: 0 0 18px; }
+.tabs .seg-btn { padding: 6px 16px; font-size: 13px; }
+.tabs .seg-btn.on { color: var(--ink); }
+/* A count beside the tab name, so the client list says how many without being
+   the visible tab. */
+.tabs .tab-count { color: var(--ink-faint); font-weight: 400; margin-left: 6px; }
+
 .presets { display: flex; gap: 6px; flex-wrap: wrap; }
 /* A pill that is reporting something wrong but not broken -- the USB radio
    running at High-Speed is the case this exists for. Uses the same amber as a

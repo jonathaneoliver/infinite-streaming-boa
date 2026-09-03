@@ -218,26 +218,11 @@ function onManual(e: Event) {
 }
 .lbl + .seg { margin-right: 6px; }
 
-/* A segmented control, not four loose buttons: these are exclusive choices and
-   the shared border says so. */
-.seg { display: flex; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }
-/* A toggle, not one of an exclusive set, so it carries its own border rather
+/* .seg / .seg-btn are global (style.css): three components use them now.
+   A toggle, not one of an exclusive set, so it carries its own border rather
    than sharing the segmented control's. */
 .lone { border: 1px solid var(--line); border-radius: 6px; }
 .lbl + .lone { margin-right: 6px; }
-.seg-btn {
-  padding: 3px 10px;
-  font: inherit; font-size: 12px;
-  color: var(--ink-dim);
-  background: var(--panel-2);
-  border: 0;
-  border-left: 1px solid var(--line);
-  cursor: pointer;
-}
-.seg-btn:first-child { border-left: 0; }
-.seg-btn:hover { color: var(--ink); background: var(--line); }
-.seg-btn.on { color: var(--ink); background: var(--line); font-weight: 600; }
-.seg-btn:focus-visible { outline: 2px solid var(--down); outline-offset: -2px; }
 
 .manual { display: flex; align-items: center; gap: 5px; font-size: 12px; color: var(--ink-dim); }
 .manual input {

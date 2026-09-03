@@ -319,6 +319,15 @@ func (e *Engine) demoTick() {
 		Caps: Capabilities{
 			Shaping: true, Uplink: true, Radio: true,
 			WlanIface: "wlan0", UplinkIf: "eth0",
+			// A USB adapter that got SuperSpeed, so the header's radio pill
+			// renders here at all. Left zero it reported nothing, and the one
+			// readout whose whole job is catching a silently-degraded adapter
+			// could not be developed against.
+			Adapter: RadioInfo{
+				Iface: "wlan0", Driver: "mt7921u", Bus: "usb",
+				Vendor: "Panda Wireless", Product: "PAU0F AXE3000",
+				LinkMbps: 5000, USBVersion: "3.20",
+			},
 			// On so the deep links and the measurement note are visible
 			// during UI development; neither is actually running here.
 			Ntopng: true, NtopngPort: ntopngPort,
@@ -373,4 +382,74 @@ func (e *Engine) demoCounters(key string, mbps float64, sh Shape, now time.Time)
 		c.Drops = uint64(float64(c.Packets) * sh.LossPct / 100)
 	}
 	return c
+}
+
+// demoBridgeState synthesises the interface inventory.
+//
+// It deliberately includes a SECOND radio that is up and not being watched,
+// because that is the case the bridge view exists for and the one that cannot
+// be produced on a laptop: a client can associate to it, get an address and
+// pass traffic while appearing nowhere in the device list. Building the layout
+// and its warning against a synthetic wlan1 is what lets the real one be
+// recognised the day an adapter is plugged in.
+//
+// The addresses mirror a real box: br-lan carries the upstream DHCP lease, the
+// fixed rescue address and a link-local, and shares a MAC with another port --
+// normal, and not a duplicate-address fault. See Source J.
+func demoBridgeState(cfg Config) BridgeInfo {
+	const apMAC = "9c:ef:d5:f6:3f:f2"
+	bi := BridgeInfo{Bridge: cfg.Bridge}
+	bi.Ifaces = []IfaceInfo{
+		{
+			Name: cfg.WANPort, Role: RoleWAN, MAC: "d8:3a:dd:ad:00:86",
+			Up: true, Carrier: true, CarrierKnown: true, SpeedMbps: 1000,
+			Master: cfg.Bridge,
+		},
+		{
+			Name: cfg.Bridge, Role: RoleBridge, MAC: apMAC,
+			Up: true, Carrier: true, CarrierKnown: true,
+			IPv4: []string{"192.168.1.42/24", "192.168.99.1/24"},
+			IPv6: []string{"fe80::9eef:d5ff:fef6:3ff2/64"},
+		},
+		{
+			Name: cfg.WlanPort, Role: RoleAP, MAC: apMAC,
+			Up: true, Carrier: true, CarrierKnown: true,
+			Master: cfg.Bridge, Wireless: true, Serving: true,
+			Radio: &RadioInfo{
+				Iface: cfg.WlanPort, Driver: "mt7921u", Bus: "usb",
+				Vendor: "Panda Wireless", Product: "PAU0F AXE3000",
+				LinkMbps: 5000, USBVersion: "3.20",
+			},
+			AP: &APStatus{
+				SSID: "infinite-streaming-boa", BSSID: apMAC, Country: "US",
+				Channel: 36, FreqMHz: 5180, WidthMHz: 80, Mode: "802.11ax",
+				Enabled: true, Stations: 4, BeaconIntMs: 100, DTIMPeriod: 2,
+			},
+		},
+		{
+			// The point of the demo fleet: a radio the daemon does not watch.
+			Name: "wlan1", Role: RoleAP, MAC: "9c:ef:d5:aa:11:07",
+			Up: true, Carrier: true, CarrierKnown: true,
+			Master: cfg.Bridge, Wireless: true, Serving: false,
+			Radio: &RadioInfo{
+				Iface: "wlan1", Driver: "mt7921u", Bus: "usb",
+				Vendor: "Panda Wireless", Product: "PAU0F AXE3000",
+				// High-Speed, so the degraded-adapter readout is exercised too.
+				LinkMbps: 480, USBVersion: "2.10",
+			},
+			AP: &APStatus{
+				SSID: "infinite-streaming-boa", BSSID: "9c:ef:d5:aa:11:07",
+				Country: "US", Channel: 6, FreqMHz: 2437, WidthMHz: 20,
+				Mode: "802.11n", Enabled: true, Stations: 1,
+				BeaconIntMs: 100, DTIMPeriod: 2,
+			},
+		},
+		{
+			Name: cfg.LanPort, Role: RoleLAN, MAC: "00:e0:4c:68:03:1b",
+			Up: true, Carrier: true, CarrierKnown: true, SpeedMbps: 1000,
+			Master: cfg.Bridge,
+		},
+	}
+	bi.Notes = bridgeNotes(bi, cfg)
+	return bi
 }

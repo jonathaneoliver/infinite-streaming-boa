@@ -431,6 +431,15 @@ is switched off at the rfkill level**. Unplug it and the onboard radio comes
 back. Exactly one runs, because the daemon watches a single interface — a
 client associated to a second AP would be invisible to conditioning.
 
+Plug in a second radio anyway and **the Bridge tab will show it**, named
+whatever the kernel called it, marked *not conditioned*, with a standing notice
+saying its clients pass traffic without appearing in the Clients tab. The
+interface discovers the hardware rather than reading the configuration
+precisely so that this limitation is stated rather than found out from a device
+list that is quietly short. Note also that the udev rule renames the *first*
+USB wlan device to `wlan-usb`; a second one keeps its kernel name, so hostapd —
+which is configured by interface name — does not serve it at all.
+
 **Both radios are driven by hostapd** — the onboard one the same way as the USB
 adapter. For the USB `mt7921u` hostapd is not optional: NetworkManager's AP mode
 goes through wpa_supplicant, which fails on it (`Hotspot network creation took
