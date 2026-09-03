@@ -1,4 +1,4 @@
-import { ref, watch, onUnmounted, type Ref } from 'vue';
+import { computed, ref, watch, onUnmounted, type Ref } from 'vue';
 import type { BridgeInfo, ScanResult, SurveyResult } from '@/types';
 
 /**
@@ -120,7 +120,31 @@ export function useBridge(active: Ref<boolean>) {
       `deauthentication and is the point.`,
     );
 
-  const scan = ref<ScanResult | null>(null);
+  /**
+   * The last scan taken, PER RADIO.
+   *
+   * Keyed by interface rather than a single slot, because the channel buttons
+   * are colour-coded from it and a scan of the 5GHz radio says nothing about
+   * which 2.4GHz channel is quiet. One slot meant the second radio's buttons
+   * would have been coloured with the first radio's band.
+   *
+   * Never fetched automatically. A scan is not free -- a few beacon gaps at
+   * best, an outage on a radio that will not scan while serving -- so it
+   * happens when someone asks, and the colours appear then and not before.
+   */
+  const scans = ref<Record<string, ScanResult>>({});
+  /**
+   * The scans the DAEMON remembers, which is what the channel plan is coloured
+   * from. Served in the inventory, so the colours survive a page reload and two
+   * people looking at the same box see the same thing -- a measurement that
+   * evaporates when you press F5 is one nobody comes to trust.
+   */
+  const scanSummaries = computed(() => info.value?.scans ?? {});
+  /** Which radio was scanned most recently, for the panel's single readout. */
+  const lastScanned = ref('');
+  const scan = computed<ScanResult | null>(() =>
+    lastScanned.value ? (scans.value[lastScanned.value] ?? null) : null,
+  );
 
   /**
    * Scan the band, optionally arriving on the quietest channel found.
@@ -143,8 +167,9 @@ export function useBridge(active: Ref<boolean>) {
         error.value = body.error ?? `HTTP ${r.status}`;
         return false;
       }
-      scan.value = body as ScanResult;
-      const s = scan.value;
+      const s = body as ScanResult;
+      scans.value = { ...scans.value, [iface]: s };
+      lastScanned.value = iface;
       actionMsg.value = s.applied
         ? `${s.iface}: moved from channel ${s.was_channel} to ${s.now_channel}. ` +
           `Out of service ${s.outage_sec.toFixed(1)}s.`
@@ -237,6 +262,7 @@ export function useBridge(active: Ref<boolean>) {
 
   return {
     info, survey, scan, error, actionMsg, busy,
+    scans, scanSummaries,
     load, loadSurvey, deauthAll, setPower, powerOutage, scanBand,
     applyProfile, setThreshold, steerAll, linkAll, moveChannel,
   };

@@ -1,6 +1,11 @@
 <script setup lang="ts">
 import { computed } from 'vue';
-import type { BridgeInfo, IfaceInfo } from '@/types';
+import type { BridgeInfo, IfaceInfo, ScanSummary } from '@/types';
+import {
+  describeChannel,
+  rateFor,
+  type Quality,
+} from '@/composables/channelQuality';
 
 /*
  * The bridge, drawn from live data.
@@ -26,13 +31,20 @@ const props = defineProps<{
    * did nothing, which is how you get someone pressing it three more times.
    */
   busy?: boolean;
+  /**
+   * The last scan per radio, for colouring the channel buttons. Absent until
+   * someone presses scan, and the buttons stay uncoloured until then rather
+   * than guessing.
+   */
+  scans?: Record<string, ScanSummary>;
 }>();
 const emit = defineEmits<{
-  // `arg` carries the channel for kind 'channel', and is unused otherwise. One
-  // event rather than two keeps the parent's handler a single switch.
+  // `arg` carries the channel AND width for kind 'channel', and is unused
+  // otherwise. Both together because they are one choice: a channel number
+  // means nothing without the width it is a channel of.
   (e: 'action',
    kind: 'power-off' | 'power-on' | 'scan' | 'drop' | 'nudge' | 'steer' | 'channel',
-   iface: string, arg?: number): void;
+   iface: string, arg?: { channel: number; width: number }): void;
 }>();
 
 const byRole = (r: string) => props.info.ifaces.filter((i) => i.role === r);
@@ -43,10 +55,12 @@ const downstream = computed(() =>
   props.info.ifaces.filter((i) => i.role === 'ap' || i.role === 'radio' || i.role === 'lan'),
 );
 
-const W = 940;
 const NODE_W = 190;
 const NODE_H = 74;
-const GAP = 26;
+// Sized for the CONTROLS, not the boxes. Each downstream node's buttons and
+// channel plan overhang its rectangle by 20 either side, so a gap chosen for
+// bare rectangles put one radio's channel plan underneath the next radio's.
+const GAP = 64;
 
 // Downstream nodes are centred as a row under the bridge, so the picture stays
 // balanced whether there is one radio or three.
@@ -54,7 +68,10 @@ const rowWidth = computed(() => {
   const n = downstream.value.length;
   return n * NODE_W + Math.max(0, n - 1) * GAP;
 });
-const rowX = computed(() => (W - rowWidth.value) / 2);
+// The canvas grows to hold the row rather than the row being squeezed into a
+// fixed canvas: a third radio must push the picture wider, not overlap it.
+const W = computed(() => Math.max(940, rowWidth.value + 60));
+const rowX = computed(() => (W.value - rowWidth.value) / 2);
 const nodeX = (i: number) => rowX.value + i * (NODE_W + GAP);
 
 /**
@@ -99,14 +116,14 @@ const brH = computed(() =>
   bridge.value ? NODE_H + ADDR_LINE * (bridgeAddrs(bridge.value).length - 1) : NODE_H,
 );
 
-const CX = W / 2;
+const CX = computed(() => W.value / 2);
 const WAN_Y = 8;
 const BR_Y = 132;
 // The downstream row hangs off the BOTTOM of the bridge box, which is not a
 // constant: it grows with the number of addresses on the bridge.
 const DOWN_Y = computed(() => BR_Y + brH.value + 50);
 // Room under the downstream row for two rows of per-radio action buttons.
-const H = computed(() => DOWN_Y.value + NODE_H + 128);
+const H = computed(() => DOWN_Y.value + NODE_H + 166);
 
 /**
  * The band a channel is in. Derived from the channel number rather than read,
@@ -156,6 +173,106 @@ function channelsFor(i: IfaceInfo): number[] {
   if (!ch) return [];
   return ch > 14 ? CHANNELS_5 : CHANNELS_24;
 }
+
+/**
+ * The channel plan: the standard way this is drawn.
+ *
+ * Router admin pages give you two independent dropdowns, Channel and Channel
+ * Width, and say nothing about the fact that they interact -- which is why "36
+ * at 80MHz" and "40 at 80MHz" being the same spectrum comes as a surprise. The
+ * chart every Wi-Fi analyser and every published band plan uses instead is a
+ * frequency ruler with the widths stacked: 20MHz cells on top, 40MHz cells
+ * spanning pairs of them, 80MHz spanning four.
+ *
+ * Cells are sized in proportion to their bandwidth, so the nesting IS the
+ * picture -- an 80MHz cell is visibly the four 20MHz cells above it, and no
+ * bracket or legend is needed to say so. Picking a cell picks a channel and a
+ * width together, which is the choice that actually exists; the two dropdowns
+ * were always one decision wearing a disguise.
+ */
+interface PlanCell {
+  channels: number[];
+  label: string;
+}
+interface PlanRow {
+  width: number;
+  cells: PlanCell[];
+}
+
+function planRows(i: IfaceInfo): PlanRow[] {
+  const chans = channelsFor(i);
+  if (!chans.length) return [];
+  // 2.4GHz is offered at 20MHz only: 1/6/11 are the only non-overlapping
+  // choices, 40MHz eats two of the three, and 80MHz does not exist there.
+  const rows: PlanRow[] = [
+    { width: 20, cells: chans.map((c) => ({ channels: [c], label: String(c) })) },
+  ];
+  if (chans[0] <= 14) return rows;
+  const pairs: PlanCell[] = [];
+  for (let n = 0; n < chans.length; n += 2) {
+    const g = chans.slice(n, n + 2);
+    pairs.push({ channels: g, label: `${g[0]}–${g[g.length - 1]}` });
+  }
+  rows.push({ width: 40, cells: pairs });
+  rows.push({
+    width: 80,
+    cells: [{ channels: chans, label: `${chans[0]}–${chans[chans.length - 1]}` }],
+  });
+  return rows;
+}
+
+/** The cell the radio is running right now: same width, and holding its channel. */
+function isCurrent(i: IfaceInfo, row: PlanRow, cell: PlanCell): boolean {
+  return (i.ap?.width_mhz ?? 0) === row.width && cell.channels.includes(i.ap?.channel ?? 0);
+}
+
+/**
+ * A block is only as clear as its busiest slice, so a cell takes the WORST
+ * rating of the channels it covers. An 80MHz block containing one channel with
+ * six neighbours on it is not a quiet block, however empty the other three are.
+ */
+function cellClass(i: IfaceInfo, cell: PlanCell): string {
+  const order: Quality[] = ['unknown', 'clear', 'busy', 'crowded'];
+  let worst: Quality = 'clear';
+  for (const c of cell.channels) {
+    const q = rateFor(props.scans?.[i.name], c);
+    if (q === 'unknown') return 'q-unknown';
+    if (order.indexOf(q) > order.indexOf(worst)) worst = q;
+  }
+  return `q-${worst}`;
+}
+
+function cellNote(i: IfaceInfo, row: PlanRow, cell: PlanCell): string {
+  const per = cell.channels
+    .map((c) => `ch ${c}: ${describeChannel(props.scans?.[i.name], c)}`)
+    .join('; ');
+  if (isCurrent(i, row, cell)) return `${i.name} is here now. ${per}`;
+  return (
+    `Move ${i.name} to ${cell.label} at ${row.width} MHz. ${per}. ` +
+    `Takes the radio down and brings it back, so all ${i.ap?.stations ?? 0} ` +
+    `client(s) are dropped and NOT told.` +
+    (row.width >= 40
+      ? ' At this width hostapd picks which slice is the primary, so the channel it reports may be a sibling of the one asked for.'
+      : '')
+  );
+}
+
+/** Whether any radio is running wide enough for the grouping to mean something. */
+const anyWide = computed(() =>
+  props.info.ifaces.some((i) => (i.ap?.width_mhz ?? 0) >= 40),
+);
+
+/**
+ * A channel's colour, from that radio's own last scan.
+ *
+ * Per radio, not global: a 5GHz scan says nothing about which 2.4GHz channel is
+ * quiet, and colouring one band's buttons with the other band's findings would
+ * be worse than leaving them grey.
+ */
+const chanClass = (i: IfaceInfo, c: number) =>
+  `q-${rateFor(props.scans?.[i.name], c)}`;
+const chanNote = (i: IfaceInfo, c: number) =>
+  describeChannel(props.scans?.[i.name], c);
 
 /** The radio a client could be steered to: another one actually serving. */
 function otherRadio(i: IfaceInfo): string {
@@ -214,7 +331,7 @@ function otherRadio(i: IfaceInfo): string {
              keyboard-reachable, and styled like every other button here. -->
         <foreignObject
           v-if="i.wireless && i.ap"
-          :x="nodeX(n) - 20" :y="DOWN_Y + NODE_H + 6" :width="NODE_W + 40" height="90"
+          :x="nodeX(n) - 20" :y="DOWN_Y + NODE_H + 6" :width="NODE_W + 40" height="128"
         >
           <!-- Two rows, grouped as the panel below is: what changes WHO IS
                CONNECTED on top, the rest under it. The picture is where you are
@@ -254,24 +371,25 @@ function otherRadio(i: IfaceInfo): string {
               @click="emit('action', 'scan', i.name)"
             >scan</button>
           </div>
-          <!-- One press per channel, rather than the panel's pick-then-press:
-               on the picture you are already pointing at the radio, so the only
-               thing left to say is where it should go. Width is kept at
-               whatever the radio is running. -->
-          <div v-if="channelsFor(i).length" class="node-actions chans"
-               :class="{ working: busy }">
-            <span class="lbl">go to</span>
-            <button
-              v-for="c in channelsFor(i)" :key="c"
-              class="ghost" :disabled="busy || c === i.ap.channel"
-              :title="c === i.ap.channel
-                ? `${i.name} is already on channel ${c}.`
-                : `Take ${i.name} down and bring it back on channel ${c}. All ${i.ap.stations} client(s) dropped, and NOT told.`
-                  + ((i.ap.width_mhz ?? 0) >= 40
-                     ? ` At ${i.ap.width_mhz} MHz it may land on the adjacent channel instead: hostapd swaps primary and secondary when it hears neighbours on the secondary.`
-                     : '')"
-              @click="emit('action', 'channel', i.name, c)"
-            >{{ c }}</button>
+          <!-- The channel plan, drawn the way band plans are always drawn:
+               a frequency ruler with the widths stacked and each cell sized in
+               proportion to its bandwidth. Picking a cell picks a channel AND a
+               width, which is the choice that actually exists. -->
+          <div
+            v-if="planRows(i).length" class="plan" :class="{ working: busy }"
+          >
+            <div v-for="row in planRows(i)" :key="row.width" class="plan-row">
+              <span class="lbl">{{ row.width }}</span>
+              <button
+                v-for="cell in row.cells" :key="cell.label"
+                class="cell" :class="[cellClass(i, cell), { here: isCurrent(i, row, cell) }]"
+                :style="{ flexGrow: cell.channels.length }"
+                :disabled="busy || isCurrent(i, row, cell)"
+                :title="cellNote(i, row, cell)"
+                @click="emit('action', 'channel', i.name,
+                              { channel: cell.channels[0], width: row.width })"
+              >{{ cell.label }}</button>
+            </div>
           </div>
         </foreignObject>
       </g>
@@ -282,6 +400,12 @@ function otherRadio(i: IfaceInfo): string {
       <template v-if="downstream.some(unwatched)">
         A dashed link marks a radio the daemon is not watching — its clients are
         not conditioned and do not appear in the Clients tab.
+      </template>
+      <template v-if="anyWide">
+        Under each radio is its channel plan, widths stacked: a cell on the 40
+        or 80&#8239;MHz row <strong>is</strong> the 20&#8239;MHz cells above it,
+        so picking one chooses a channel and a width together. Colours come from
+        that radio's last scan — press <em>scan</em> to take one.
       </template>
     </figcaption>
   </figure>
@@ -337,11 +461,51 @@ svg { width: 100%; height: auto; display: block; }
    that was pressed: a power-on takes seconds and any other press would queue
    behind it. */
 .node-actions.working button { cursor: progress; }
-/* The channel row is tighter than the others: seven small numbers reading as a
-   dial, rather than seven buttons competing with the verbs above them. */
-.node-actions.chans { gap: 3px; }
-.node-actions.chans button { padding: 2px 5px; }
-.node-actions .lbl { font-size: 10px; color: var(--ink-faint); }
+/* The plan is a ruler, so the cells FILL the width and their proportions carry
+   the meaning. Nothing is centred and nothing is padded to fit: an 80MHz cell
+   is exactly as wide as the four 20MHz cells above it because it is them. */
+.plan { font-family: var(--sans); margin-top: 2px; }
+.plan-row { display: flex; align-items: stretch; gap: 2px; margin-bottom: 2px; }
+.plan .lbl {
+  font-size: 9px;
+  color: var(--ink-faint);
+  width: 14px;
+  flex: none;
+  text-align: right;
+  line-height: 16px;
+}
+.cell {
+  flex-basis: 0;
+  min-width: 0;
+  height: 16px;
+  padding: 0;
+  font-size: 10px;
+  line-height: 1;
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  background: var(--panel-2);
+  color: var(--ink-dim);
+  cursor: pointer;
+  overflow: hidden;
+}
+.cell:hover:not(:disabled) { background: var(--line); color: var(--ink); }
+.cell:disabled { cursor: default; }
+/* Where the radio is now. Filled rather than outlined, so it reads as a
+   position on the ruler rather than as one more thing to press. */
+.cell.here {
+  background: var(--line);
+  color: var(--ink);
+  font-weight: 600;
+  border-color: var(--ink-faint);
+  opacity: 1;
+}
+.plan.working .cell { cursor: progress; }
+/* Colour is a MEASUREMENT, so it only appears once a scan has been taken:
+   q-unknown is the plain cell, and a box nobody has scanned shows no opinion
+   at all rather than a wall of green. */
+.cell.q-clear { border-color: var(--ok); color: var(--ok); }
+.cell.q-busy { border-color: var(--warn); color: var(--warn); }
+.cell.q-crowded { border-color: var(--bad); color: var(--bad); }
 .node.unwatched .name { fill: var(--warn); }
 
 figcaption {

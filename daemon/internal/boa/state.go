@@ -120,6 +120,12 @@ type Engine struct {
 	radioOn   map[string]*RadioOn
 	radioOnAt time.Time
 
+	// scanSeen is the last band scan per radio, kept so the interface can
+	// colour its channel controls from a measurement rather than a guess. In
+	// memory like the event log, and for the same reason: it describes a
+	// moment, and a stale one restored from disk would be worse than none.
+	scanSeen map[string]ScanSummary
+
 	// lastActive is when each MAC was last moving more than a trickle.
 	// Telemetry, so it is held in memory and never written to the store: it
 	// rebuilds itself within seconds of a restart for anything actually doing

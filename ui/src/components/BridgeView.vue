@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, type Ref } from 'vue';
 import { DEVELOPER } from '@/types';
+import { describeChannel, rateFor } from '@/composables/channelQuality';
 import type { IfaceInfo } from '@/types';
 import { useBridge } from '@/composables/useBridge';
 import InterfaceDiagram from '@/components/InterfaceDiagram.vue';
@@ -117,16 +118,15 @@ const PROFILES = [
 function onDiagramAction(
   kind: 'power-off' | 'power-on' | 'scan' | 'drop' | 'nudge' | 'steer' | 'channel',
   iface: string,
-  arg?: number,
+  arg?: { channel: number; width: number },
 ) {
   if (kind === 'drop' || kind === 'nudge') return void bridge.linkAll(iface, kind);
   if (kind === 'steer') return void bridge.steerAll(iface);
   if (kind === 'channel' && arg) {
-    // The width the radio is ALREADY running, not the panel's selection: the
-    // diagram asks one question -- which channel -- and inheriting a width
-    // someone left set in the card below would answer a second one silently.
-    const r = bridge.info.value?.ifaces.find((i) => i.name === iface);
-    return void bridge.moveChannel(iface, arg, r?.ap?.width_mhz || 20);
+    // Channel and width together, from the cell that was pressed. They are one
+    // choice: picking a cell on the 80MHz row IS picking 80MHz, and taking the
+    // width from anywhere else would answer a question nobody asked.
+    return void bridge.moveChannel(iface, arg.channel, arg.width);
   }
   // A latch, matching the panel below: the diagram switch turns the radio off
   // and leaves it off. A button on a picture of a radio should behave like the
@@ -159,6 +159,7 @@ function otherRadio(r: IfaceInfo): string {
     <template v-if="bridge.info.value">
       <InterfaceDiagram
         :info="bridge.info.value" :busy="bridge.busy.value"
+        :scans="bridge.scanSummaries.value"
         @action="onDiagramAction"
       />
 
@@ -313,6 +314,16 @@ function otherRadio(r: IfaceInfo): string {
           </p>
 
           <h5>Move to another channel</h5>
+          <!-- The colours are a measurement, not advice: they come from that
+               radio's last scan and describe the moment it ran. No scan, no
+               colour -- a box nobody has scanned must not show a wall of
+               green. -->
+          <p v-if="bridge.scanSummaries.value[r.name]" class="meta">
+            Coloured from the last scan:
+            <span class="q q-clear">clear</span>
+            <span class="q q-busy">busy</span>
+            <span class="q q-crowded">crowded</span>
+          </p>
           <p class="warn-line">
             Down and back up on the new channel. All {{ r.ap.stations }} client(s)
             dropped, and not told.
@@ -321,7 +332,9 @@ function otherRadio(r: IfaceInfo): string {
             <div class="seg" role="group" aria-label="channel">
               <button
                 v-for="c in (r.ap.channel && r.ap.channel < 15 ? CHANNELS_24 : CHANNELS_5)" :key="c"
-                class="seg-btn" :class="{ on: pick(r).channel === c }"
+                class="seg-btn"
+                :class="[{ on: pick(r).channel === c }, `q-${rateFor(bridge.scanSummaries.value[r.name], c)}`]"
+                :title="`Channel ${c}: ${describeChannel(bridge.scanSummaries.value[r.name], c)}`"
                 @click="setChannel(r.name, c)"
               >{{ c }}</button>
             </div>
@@ -610,4 +623,22 @@ function otherRadio(r: IfaceInfo): string {
 .soon-text em { font-style: normal; color: var(--ink-faint); }
 
 .counters { width: 100%; }
+
+/* Channel quality, shared with the diagram's buttons so the two cannot show
+   different colours for the same channel. Text only -- the segmented control
+   already uses background to mean "selected", and a second background would
+   make a crowded channel look picked. */
+.q-clear { color: var(--ok); }
+.q-busy { color: var(--warn); }
+.q-crowded { color: var(--bad); }
+.seg-btn.q-clear.on,
+.seg-btn.q-busy.on,
+.seg-btn.q-crowded.on { color: var(--ink); }
+.q {
+  border: 1px solid currentColor;
+  border-radius: 4px;
+  padding: 0 4px;
+  margin-left: 4px;
+  font-size: 10px;
+}
 </style>

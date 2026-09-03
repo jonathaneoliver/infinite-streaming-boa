@@ -110,6 +110,26 @@ type BridgeInfo struct {
 	// clients are not conditioned". They exist because the alternative is an
 	// operator discovering it from an empty device list.
 	Notes []Notice `json:"notes,omitempty"`
+	// Scans is the last band scan per radio, kept so the interface can colour
+	// the channel controls by what was actually heard.
+	//
+	// Served from the daemon rather than held in the browser: a measurement
+	// that vanishes on a page reload is one people stop trusting, and two
+	// people looking at the same box should see the same colours. Only the
+	// per-channel summary travels here, never the access point list -- that is
+	// hundreds of entries on a busy band, and this payload is polled.
+	Scans map[string]ScanSummary `json:"scans,omitempty"`
+}
+
+// ScanSummary is what a scan concluded, small enough to carry in every poll.
+//
+// At is why this is not just the channel list: a colour is only as good as its
+// timestamp, and a scan from an hour ago describes an hour-old room.
+type ScanSummary struct {
+	At       int64         `json:"at"` // unix ms
+	Band     string        `json:"band,omitempty"`
+	Channels []ScanChannel `json:"channels,omitempty"`
+	Best     int           `json:"best_channel,omitempty"`
 }
 
 // BridgeState assembles the inventory. Best-effort by design: a box with no
@@ -155,6 +175,7 @@ func (e *Engine) BridgeState() BridgeInfo {
 		return roleOrder(bi.Ifaces[i].Role) < roleOrder(bi.Ifaces[j].Role)
 	})
 	bi.Notes = bridgeNotes(bi, e.cfg)
+	bi.Scans = e.lastScans()
 	return bi
 }
 

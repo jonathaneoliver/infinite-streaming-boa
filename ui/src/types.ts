@@ -395,6 +395,15 @@ export interface ScanChannel {
   recommended?: boolean;
 }
 
+/** What a scan concluded, as the daemon remembers it between polls. */
+export interface ScanSummary {
+  /** unix ms — a colour is only as good as its timestamp. */
+  at: number;
+  band?: string;
+  channels?: ScanChannel[];
+  best_channel?: number;
+}
+
 export interface ScanResult {
   iface: string;
   band: string;
@@ -415,6 +424,9 @@ export interface BridgeInfo {
   bridge: string;
   ifaces: IfaceInfo[];
   notes?: Notice[];
+  /** The last band scan per radio, kept by the daemon so the channel plan's
+   *  colours survive a reload and are the same for everyone looking. */
+  scans?: Record<string, ScanSummary>;
 }
 
 export interface SurveyChannel {
