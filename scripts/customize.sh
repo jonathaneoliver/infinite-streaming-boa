@@ -213,6 +213,32 @@ else
   warn "Set one in .env — it is the credential the sudo rule relies on."
 fi
 
+## 3b. USB power budget (Pi 5) ---------------------------------------------
+# The Pi 5 caps TOTAL USB peripheral current to 600mA unless it detects a
+# 5V/5A supply. That is enough to brown out two hungry dongles at once -- a
+# USB Wi-Fi radio plus a USB ethernet adapter -- which presents as an adapter
+# that "does not work when the other is plugged in" and, tellingly, never trips
+# the undervoltage flag: the cap is a proactive limit, not a measured sag.
+# usb_max_current_enable=1 tells the firmware to allow the full 1.6A budget.
+#
+# OFF by default, and deliberately so: on a supply that genuinely cannot deliver
+# 1.6A this lets the Pi draw into a sagging rail and makes brownouts WORSE.
+# Enable it only with the official 27W (5A) PSU or a powered USB hub.
+if [ "${BOA_USB_MAX_CURRENT:-0}" = "1" ]; then
+  CONFIG="$BOOT/config.txt"
+  if [ ! -f "$CONFIG" ]; then
+    warn "BOA_USB_MAX_CURRENT=1 but $CONFIG is absent; not applied"
+  elif grep -q '^usb_max_current_enable=' "$CONFIG"; then
+    sed -i 's/^usb_max_current_enable=.*/usb_max_current_enable=1/' "$CONFIG"
+    log "USB max current: full 1.6A budget (updated existing line)"
+  else
+    printf '\n# boa: allow the full 1.6A USB current budget (BOA_USB_MAX_CURRENT).\nusb_max_current_enable=1\n' >> "$CONFIG"
+    log "USB max current: full 1.6A budget (needs a 5A PSU or powered hub)"
+  fi
+else
+  log "USB max current: default (Pi 5 caps USB to 600mA without a 5A PSU)"
+fi
+
 ## 4. Identity --------------------------------------------------------------
 echo "$BOA_HOSTNAME" > "$ROOT/etc/hostname"
 sed -i "s/^127\.0\.1\.1.*/127.0.1.1\t${BOA_HOSTNAME}/" "$ROOT/etc/hosts"

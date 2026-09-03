@@ -412,6 +412,7 @@ Everything lives in `.env`; see `.env.example` for the full annotated list.
 | `AP_BAND`, `AP_CHANNEL` | `bg` (2.4GHz) or `a` (5GHz); 5GHz AP mode is limited to channels 36/40/44/48 |
 | `BOA_WAN_PORT` | The port cabled to your existing network. Conditioning is applied here |
 | `BOA_RESCUE_IP` | A fixed address on the bridge so the box is reachable even with no upstream DHCP |
+| `BOA_USB_MAX_CURRENT` | `1` lifts the Pi 5's 600mA USB cap to the full 1.6A — **only with a 5A PSU or powered hub** |
 | `BOA_USER`, `BOA_PASSWORD`, `BOA_SSH_PUBKEY` | Headless login — see below |
 | `BOA_NTOPNG_PASSWORD` | ntopng's admin password. **Keep it different from `BOA_PASSWORD`** — leaving it empty falls back to that, which stores your login password on the box a second time as an unsalted MD5 |
 | `AP_SSID_USB` | A different SSID for the USB radio while testing it. Empty means both publish `AP_SSID` |
