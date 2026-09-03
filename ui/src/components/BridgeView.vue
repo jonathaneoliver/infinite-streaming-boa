@@ -115,7 +115,10 @@ const PROFILES = [
  *  go through the same composable the panel below uses rather than a second
  *  path that could drift out of step. */
 function onDiagramAction(kind: 'power-off' | 'power-on' | 'scan', iface: string) {
-  if (kind === 'power-off') bridge.powerOutage(iface, outage.value[iface] ?? 10);
+  // A latch, matching the panel below: the diagram switch turns the radio off
+  // and leaves it off. A button on a picture of a radio should behave like the
+  // switch it is drawn as, not fire a timed pulse.
+  if (kind === 'power-off') bridge.setPower(iface, false);
   else if (kind === 'power-on') bridge.setPower(iface, true);
   else bridge.scanBand(iface, false);
 }
@@ -221,8 +224,35 @@ function otherRadio(r: IfaceInfo): string {
             of seconds of a network that looks up and carries nothing. This is
             what a tripped breaker or walking round a corner does.
           </p>
+          <!-- A latching toggle, not a timed pulse. The radio stays off until
+               it is switched back on, the way a power switch behaves -- which
+               is what makes it usable for "leave it down and watch what the
+               player does for the next ten minutes". -->
           <div class="action-row">
-            <label class="k">cut power for</label>
+            <button
+              class="power-toggle"
+              :class="{ accent: r.power_known && !r.powered, off: r.power_known && !r.powered }"
+              :disabled="bridge.busy.value || !r.power_known"
+              :title="r.powered
+                ? `Switch ${r.name} off. It stays off until switched back on. No client is told.`
+                : `Switch ${r.name} back on.`"
+              @click="bridge.setPower(r.name, !r.powered)"
+            >{{ r.powered ? `switch ${r.name} off` : `switch ${r.name} on` }}</button>
+
+            <span v-if="!r.power_known" class="meta">
+              power state unreadable on this radio
+            </span>
+            <span v-else-if="!r.powered" class="meta warn-line">
+              <strong>OFF</strong> — silent, and staying off until you switch it back
+            </span>
+            <span v-else class="meta">on</span>
+          </div>
+
+          <!-- The timed form is a convenience on top of the toggle, for the
+               common case of a fixed-length outage you do not want to have to
+               remember to end. -->
+          <div class="action-row">
+            <label class="k">or cut it for</label>
             <div class="seg" role="group" aria-label="outage length">
               <button
                 v-for="s in [5, 10, 30, 60]" :key="s"
@@ -233,15 +263,7 @@ function otherRadio(r: IfaceInfo): string {
             <button
               :disabled="bridge.busy.value || !r.powered"
               @click="bridge.powerOutage(r.name, outage[r.name] ?? 10)"
-            >cut power</button>
-            <button
-              v-if="r.power_known && !r.powered"
-              class="accent" :disabled="bridge.busy.value"
-              @click="bridge.setPower(r.name, true)"
-            >power back on</button>
-            <span v-if="r.power_known && !r.powered" class="meta warn-line">
-              radio is OFF — silent, not disconnected
-            </span>
+            >cut and restore automatically</button>
           </div>
 
           <!-- Scan. Disruptive by construction and says so, with the cost
@@ -536,6 +558,12 @@ function otherRadio(r: IfaceInfo): string {
 
 .survey { border-top: 1px solid var(--line-soft); margin-top: 10px; }
 .survey .facts { padding-left: 0; padding-right: 0; }
+
+/* The power switch reads as a switch: when the radio is off it is the loud
+   thing on the card, because an access point that is deliberately silent must
+   not be mistaken for one that is merely quiet. */
+.power-toggle { min-width: 170px; }
+.power-toggle.off { border-color: var(--warn); color: var(--bg); background: var(--warn); }
 
 .badge.warn-badge {
   color: var(--warn);

@@ -125,11 +125,12 @@ const unwatched = (i: IfaceInfo) => i.wireless && !i.serving;
           <div class="node-actions">
             <button
               class="ghost"
+              :class="{ accent: i.power_known && !i.powered }"
               :title="i.powered
-                ? `Cut power to ${i.name} for 10s. Clients are told NOTHING and must time out.`
-                : `${i.name} is powered off. Turn it back on.`"
+                ? `Switch ${i.name} off and leave it off. Clients are told NOTHING and must time out.`
+                : `${i.name} is switched off. Switch it back on.`"
               @click="emit('action', i.powered ? 'power-off' : 'power-on', i.name)"
-            >{{ i.powered ? 'cut power' : 'power on' }}</button>
+            >{{ i.powered ? 'switch off' : 'switch on' }}</button>
             <button
               class="ghost"
               :title="`Take ${i.name} out of service, scan its band, and bring it back.`"
