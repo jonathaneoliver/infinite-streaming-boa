@@ -40,6 +40,13 @@
 
 * { box-sizing: border-box; }
 
+/* Reserve the scrollbar gutter always.
+   Expanding a card makes the page scroll, the scrollbar appears, and every
+   right-aligned column on every row shifts 15px left -- measured: the viewport
+   goes 1850 to 1835. The card head is careful to keep its columns still as it
+   opens; without this the browser undoes that for the whole page. */
+html { scrollbar-gutter: stable; }
+
 body {
   margin: 0;
   background: var(--bg);

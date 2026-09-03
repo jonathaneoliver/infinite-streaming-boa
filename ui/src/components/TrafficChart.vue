@@ -691,8 +691,15 @@ const gid = `g${Math.random().toString(36).slice(2, 8)}`;
          toolbar a swatch must serve both directions at once and so has to stay
          neutral, whereas here blue means downlink because downlink is what is
          plotted. And the cap gets a key at all, which it never had: three
-         things are drawn on a conditioned chart and only two were ever named. -->
-    <span class="key" role="group" aria-label="Series shown">
+         things are drawn on a conditioned chart and only two were ever named.
+
+         Not on a folded row. There the chart is a two-centimetre sparkline
+         whose job is shape, the mean and cap lines are not drawn at all, and
+         the key collapses to a swatch and the word "live" -- restating the one
+         thing that is obviously being shown, on the row where vertical space
+         is the whole point. Every other decoration here is already guarded on
+         !compact; this one was missed. -->
+    <span v-if="!compact" class="key" role="group" aria-label="Series shown">
           <span v-if="showLive" class="key-item" title="Throughput during each sample. Bursty by nature: a player fetches a segment, then idles.">
             <svg width="16" height="8" aria-hidden="true">
               <line x1="0" y1="4" x2="16" y2="4" :stroke="color"
