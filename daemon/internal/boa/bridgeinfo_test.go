@@ -5,7 +5,17 @@ import (
 	"testing"
 )
 
-var testCfg = Config{Bridge: "br-lan", WANPort: "eth0", WlanPort: "wlan-usb", LanPort: "lan0"}
+var testCfg = Config{
+	Bridge: "br-lan", WANPort: "eth0", LanPort: "lan0",
+	WlanPorts: []string{"wlan-usb"},
+}
+
+// dualCfg is the two-radio box: onboard on 2.4GHz, USB adapter on 5GHz, both
+// serving and both watched.
+var dualCfg = Config{
+	Bridge: "br-lan", WANPort: "eth0", LanPort: "lan0",
+	WlanPorts: []string{"wlan-usb", "wlan0"},
+}
 
 func TestIfaceRoleNamesEachPortByItsJob(t *testing.T) {
 	tests := []struct {
@@ -115,6 +125,81 @@ func TestIPAddrParsingKeepsEveryAddressIncludingLinkLocal(t *testing.T) {
 	}
 	if len(out["eth0"].v4) != 0 {
 		t.Errorf("a bridged port carries no address of its own, got %v", out["eth0"].v4)
+	}
+}
+
+func TestBothRadiosCountAsServingWhenBothAreWatched(t *testing.T) {
+	// The regression this guards: `name == cfg.WlanPort` marked the second
+	// radio "not conditioned" even though the daemon was watching it, which
+	// would put a standing error notice on a perfectly healthy box.
+	for _, w := range []string{"wlan-usb", "wlan0"} {
+		if !dualCfg.IsWlan(w) {
+			t.Errorf("%s should be watched", w)
+		}
+	}
+	if dualCfg.IsWlan("wlan1") {
+		t.Error("a third radio nobody configured must not read as watched")
+	}
+	if dualCfg.PrimaryWlan() != "wlan-usb" {
+		t.Errorf("primary should be the first listed, got %q", dualCfg.PrimaryWlan())
+	}
+}
+
+func TestNoUnwatchedNoticeWhenBothRadiosAreServed(t *testing.T) {
+	bi := BridgeInfo{Ifaces: []IfaceInfo{
+		{Name: "wlan-usb", Wireless: true, Serving: true, Up: true, AP: &APStatus{Enabled: true}},
+		{Name: "wlan0", Wireless: true, Serving: true, Up: true, AP: &APStatus{Enabled: true}},
+	}}
+	if notes := bridgeNotes(bi, dualCfg); len(notes) != 0 {
+		t.Errorf("two watched radios is the normal dual-band case, got %+v", notes)
+	}
+}
+
+func TestUnwatchedNoticeNamesEveryWatchedRadio(t *testing.T) {
+	// With two radios watched, "the daemon watches wlan-usb" would be a
+	// half-truth. The notice has to name them all or it reads as a bug report
+	// against the wrong interface.
+	bi := BridgeInfo{Ifaces: []IfaceInfo{
+		{Name: "wlan1", Wireless: true, Serving: false, Up: true, AP: &APStatus{Enabled: true}},
+	}}
+	notes := bridgeNotes(bi, dualCfg)
+	if len(notes) != 1 {
+		t.Fatalf("want one note, got %+v", notes)
+	}
+	for _, want := range []string{"wlan-usb", "wlan0", "wlan1"} {
+		if !strings.Contains(notes[0].Text, want) {
+			t.Errorf("note should name %q: %s", want, notes[0].Text)
+		}
+	}
+}
+
+func TestSplitPortsAcceptsWhatTheUnitAndSelectorMightPass(t *testing.T) {
+	// select-radio writes a space-separated list into /etc/default; a person
+	// editing it by hand is as likely to use commas. Both have to work, and a
+	// single name must keep behaving exactly as it did.
+	tests := []struct {
+		in   string
+		want []string
+	}{
+		{"wlan0", []string{"wlan0"}},
+		{"wlan-usb wlan0", []string{"wlan-usb", "wlan0"}},
+		{"wlan-usb,wlan0", []string{"wlan-usb", "wlan0"}},
+		{" wlan-usb , wlan0 ", []string{"wlan-usb", "wlan0"}},
+		{"", []string{}},
+		{"   ", []string{}},
+	}
+	for _, tc := range tests {
+		got := SplitPorts(tc.in)
+		if len(got) != len(tc.want) {
+			t.Errorf("SplitPorts(%q) = %v, want %v", tc.in, got, tc.want)
+			continue
+		}
+		for i := range got {
+			if got[i] != tc.want[i] {
+				t.Errorf("SplitPorts(%q) = %v, want %v", tc.in, got, tc.want)
+				break
+			}
+		}
 	}
 }
 

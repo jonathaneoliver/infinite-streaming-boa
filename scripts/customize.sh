@@ -575,10 +575,11 @@ install -D -m 0644 /dev/stdin "$NL_UNMANAGED" <<'NMCONF'
 unmanaged-devices=interface-name:wlan-usb,wlan0
 NMCONF
 
-# hostapd's own config, generated once per radio. The AP settings come from
-# .env, so both radios publish the same SSID and passphrase and a client sees one
-# network whichever radio is up. select-radio (5b) symlinks /etc/hostapd/boa.conf
-# to the file for the radio it picks.
+# hostapd's own config, generated once per radio role. The AP settings come from
+# .env, so both radios publish the same SSID and passphrase and a client sees
+# ONE network across the two -- and, because both are bridged onto the same
+# segment, keeps its address when it moves between them. select-radio (5b)
+# starts one templated unit per config it wants running.
 #
 # The two radios differ in what hostapd may ask of them:
 #   * USB mt7921u      -- 80MHz + 802.11ac/ax, and ACS (survey-based auto
@@ -594,17 +595,18 @@ NMCONF
 # which radio a device actually joined.
 USB_SSID="${AP_SSID_USB:-$AP_SSID}"
 
-emit_hostapd_conf() {   # $1=class(usb|onboard)  $2=interface  $3=ssid
-  _class=$1; _iface=$2; _ssid=$3
-  _hw=$([ "$AP_BAND" = "a" ] && echo a || echo g)
+emit_hostapd_conf() {   # $1=name  $2=class(usb|onboard)  $3=interface  $4=ssid
+                        # $5=band(a|bg)  $6=channel
+  _name=$1; _class=$2; _iface=$3; _ssid=$4; _band=$5; _chan=$6
+  _hw=$([ "$_band" = "a" ] && echo a || echo g)
   if [ "$_class" = "usb" ]; then
-    _ac=1; _ax=1; _chan=$AP_CHANNEL
-    if [ "$AP_CHANNEL" = "0" ]; then
+    _ac=1; _ax=1
+    if [ "$_chan" = "0" ]; then
       _wide="acs_num_scans=5"
-    elif [ "$AP_BAND" = "a" ]; then
+    elif [ "$_band" = "a" ]; then
       # HT40 side: above the primary for 36/44, below for 40/48. Centre index 42
       # covers the 80MHz block of all four channels build.sh permits.
-      case "$AP_CHANNEL" in 40|48) _ht="[HT40-]" ;; *) _ht="[HT40+]" ;; esac
+      case "$_chan" in 40|48) _ht="[HT40-]" ;; *) _ht="[HT40+]" ;; esac
       _wide="ht_capab=$_ht
 vht_oper_chwidth=1
 vht_oper_centr_freq_seg0_idx=42
@@ -616,15 +618,14 @@ he_oper_centr_freq_seg0_idx=42"
   else
     # onboard brcmfmac: 20MHz, 802.11n, no ACS. Fall back to a sane fixed channel.
     _ac=0; _ax=0; _wide=""
-    if [ "$AP_CHANNEL" = "0" ]; then
-      _chan=$([ "$AP_BAND" = "a" ] && echo 36 || echo 6)
-    else
-      _chan=$AP_CHANNEL
+    if [ "$_chan" = "0" ]; then
+      _chan=$([ "$_band" = "a" ] && echo 36 || echo 6)
     fi
   fi
-  install -D -m 0600 /dev/stdin "$ROOT/etc/hostapd/boa-${_class}.conf" <<EOF
-# Managed by infinite-streaming-boa (radio class: ${_class}). select-radio
-# symlinks /etc/hostapd/boa.conf to this file when it selects this radio.
+  install -D -m 0600 /dev/stdin "$ROOT/etc/hostapd/boa-${_name}.conf" <<EOF
+# Managed by infinite-streaming-boa (radio class: ${_class}, band ${_band}).
+# Run by infinite-streaming-boa-hostapd@${_name}.service, which select-radio
+# starts. More than one may run at once -- see select-radio.
 interface=${_iface}
 bridge=br-lan
 driver=nl80211
@@ -652,16 +653,29 @@ wpa_passphrase=${AP_PASSWORD}
 EOF
 }
 
-emit_hostapd_conf usb     wlan-usb "$USB_SSID"
-emit_hostapd_conf onboard wlan0    "$AP_SSID"
+# Three configs, because the onboard radio is used two different ways.
+#
+#   usb       -- the adapter, on AP_BAND/AP_CHANNEL. 80MHz, ac/ax, ACS.
+#   onboard   -- the onboard chip when it is the ONLY radio, so it honours
+#                AP_BAND/AP_CHANNEL exactly as it did before.
+#   onboard24 -- the onboard chip alongside the adapter, pinned to 2.4GHz.
+#
+# The last one is what makes the box behave like a dual-band router: the
+# adapter takes 5GHz where its 80MHz/ax is worth having, and the onboard chip
+# takes 2.4GHz where its 20MHz/802.11n ceiling costs nothing it could have
+# delivered anyway. Same SSID and passphrase on both, bridged onto the same
+# segment, so a client sees one network and keeps its address across a roam.
+emit_hostapd_conf usb       usb     wlan-usb "$USB_SSID" "$AP_BAND" "$AP_CHANNEL"
+emit_hostapd_conf onboard   onboard wlan0    "$AP_SSID"  "$AP_BAND" "$AP_CHANNEL"
+emit_hostapd_conf onboard24 onboard wlan0    "$AP_SSID"  bg         "$AP_CHANNEL_24"
 
 # Our own unit rather than the packaged hostapd.service, which Debian ships
 # masked and pointed at /etc/default/hostapd. Ours is started and stopped by the
 # selector below, never enabled directly: with no adapter plugged in it would
 # fail on every boot and look like a broken box.
-install -D -m 0644 /dev/stdin "$ROOT/etc/systemd/system/infinite-streaming-boa-hostapd.service" <<'UNIT'
+install -D -m 0644 /dev/stdin "$ROOT/etc/systemd/system/infinite-streaming-boa-hostapd@.service" <<'UNIT'
 [Unit]
-Description=boa access point (hostapd, whichever radio select-radio picks)
+Description=boa access point on %i (hostapd)
 # After, but deliberately NOT BindsTo.
 #
 # BindsTo= on a .device unit makes systemd TRIGGER this service the moment the
@@ -675,21 +689,36 @@ Description=boa access point (hostapd, whichever radio select-radio picks)
 # connection and never run DHCP.
 #
 # The selector starts and stops this service. It is the only thing that should.
+#
+# A TEMPLATE, because two of these run at once in the dual-band case: %i names
+# the config, so boa-usb.conf and boa-onboard24.conf are separate instances
+# with separate lifetimes. hostapd names its control socket after the
+# INTERFACE, not the config, so /var/run/hostapd/wlan-usb and
+# /var/run/hostapd/wlan0 appear side by side and the daemon can drive either.
 After=NetworkManager.service
 
 [Service]
-ExecStart=/usr/sbin/hostapd /etc/hostapd/boa.conf
+ExecStart=/usr/sbin/hostapd /etc/hostapd/boa-%i.conf
 Restart=on-failure
 RestartSec=5
 UNIT
 
 install -D -m 0755 /dev/stdin "$ROOT/usr/local/sbin/infinite-streaming-boa-select-radio" <<'SEL'
 #!/bin/sh
-# Picks the radio that serves the access point, and makes sure only one does.
+# Brings up the access point on every radio the box has.
 #
-# USB adapter present -> hostapd on wlan-usb, onboard radio switched OFF at the
-# rfkill level so it cannot beacon or be associated to. Absent -> hostapd on the
-# onboard wlan0, unblocked at the rfkill level.
+#   USB adapter + onboard -> BOTH serve, like a dual-band router: the adapter
+#                            on 5GHz (80MHz, ax) and the onboard chip on
+#                            2.4GHz (20MHz, n), one SSID across the two.
+#   USB adapter only      -> hostapd on wlan-usb.
+#   onboard only          -> hostapd on wlan0, honouring AP_BAND/AP_CHANNEL.
+#
+# The onboard radio used to be rfkilled whenever an adapter was present,
+# because the daemon watched a single interface and anything associated to a
+# second AP was invisible to conditioning. The daemon now watches a list, so
+# the reason for switching it off is gone -- and 2.4GHz coverage that the
+# adapter's 5GHz cannot reach is worth having on a box whose subject is what
+# real clients do on real radios.
 #
 # The onboard radio is identified by its rfkill device path NOT containing
 # /usb, rather than by phy index or driver name: phy numbering depends on probe
@@ -712,15 +741,20 @@ onboard_rfkill() {
   done
 }
 
-if [ -d /sys/class/net/wlan-usb ]; then
-  WANT=wlan-usb
-  CLASS=usb
-  log "USB radio present: hostapd on wlan-usb, onboard radio off"
-  # Pin the bridge MAC before hostapd adds wlan-usb to br-lan. A bridge takes
+# The onboard radio must be UNBLOCKED for hostapd to bring it up, in every
+# case now: it either serves alongside the adapter or serves alone.
+for r in $(onboard_rfkill); do echo 0 > "$r/soft" 2>/dev/null; done
+
+HAVE_USB=0; [ -d /sys/class/net/wlan-usb ] && HAVE_USB=1
+HAVE_ONBOARD=0; [ -d /sys/class/net/wlan0 ] && HAVE_ONBOARD=1
+
+if [ "$HAVE_USB" = 1 ]; then
+  # Pin the bridge MAC before hostapd adds a radio to br-lan. A bridge takes
   # the LOWEST MAC among its members and recalculates as members come and go,
   # so an adapter sorting below the onboard NIC changes the box's identity --
   # and with it the IPv6 link-local address that is the no-configuration way
-  # back in when DHCP has failed.
+  # back in when DHCP has failed. Two radios joining makes this more likely,
+  # not less.
   #
   # Guarded on a DIFFERENCE: re-setting a MAC to the value it already holds
   # still raises a netlink change event, and doing that while NetworkManager is
@@ -729,28 +763,42 @@ if [ -d /sys/class/net/wlan-usb ]; then
   HAVEMAC=$(cat /sys/class/net/br-lan/address 2>/dev/null)
   [ -n "$WANMAC" ] && [ "$WANMAC" != "$HAVEMAC" ] \
     && ip link set dev br-lan address "$WANMAC" 2>/dev/null
-  for r in $(onboard_rfkill); do echo 1 > "$r/soft" 2>/dev/null; done
-else
-  WANT=wlan0
-  CLASS=onboard
-  log "No USB radio: hostapd on the onboard wlan0"
-  # hostapd drives the onboard radio directly now (no NetworkManager AP). It has
-  # to be UNBLOCKED at the rfkill level for hostapd to bring it up.
-  for r in $(onboard_rfkill); do echo 0 > "$r/soft" 2>/dev/null; done
 fi
 
-# Point hostapd at the selected radio's config and (re)start it. A symlink keeps
-# the unit's ExecStart fixed at /etc/hostapd/boa.conf while the target changes
-# with the radio; restart (not start) so a radio swap re-reads the new config.
-ln -sf "/etc/hostapd/boa-${CLASS}.conf" /etc/hostapd/boa.conf
-systemctl restart infinite-streaming-boa-hostapd.service
+# Decide which hostapd instances should be running, and which must not be.
+# Naming the losers explicitly matters: unplugging the adapter has to STOP the
+# instance that was serving it, or hostapd sits restarting forever against an
+# interface that is gone.
+if [ "$HAVE_USB" = 1 ] && [ "$HAVE_ONBOARD" = 1 ]; then
+  RUN="usb onboard24"; STOP="onboard"
+  WANT="wlan-usb wlan0"
+  log "Both radios: hostapd on wlan-usb (5GHz) and wlan0 (2.4GHz)"
+elif [ "$HAVE_USB" = 1 ]; then
+  RUN="usb"; STOP="onboard onboard24"
+  WANT="wlan-usb"
+  log "USB radio only: hostapd on wlan-usb"
+else
+  RUN="onboard"; STOP="usb onboard24"
+  WANT="wlan0"
+  log "No USB radio: hostapd on the onboard wlan0"
+fi
 
-# The daemon watches ONE wlan interface. Point it at whichever radio won, and
-# restart only when it actually changed -- a restart drops a running sweep.
+for i in $STOP; do
+  systemctl stop "infinite-streaming-boa-hostapd@$i.service" 2>/dev/null
+done
+for i in $RUN; do
+  # restart, not start, so a radio swap re-reads a config that may have changed
+  systemctl restart "infinite-streaming-boa-hostapd@$i.service"
+done
+
+# The daemon watches every radio in this list. It is ONE shell word on purpose:
+# the unit passes it as ${BOA_WLAN_PORT}, which systemd expands as a single
+# argument, and -wlan splits it. Restart only when it actually changed -- a
+# restart drops a running sweep.
 CUR=$(sed -n 's/^BOA_WLAN_PORT=//p' "$DEFAULTS" 2>/dev/null)
 if [ "$CUR" != "$WANT" ]; then
   sed -i "s/^BOA_WLAN_PORT=.*/BOA_WLAN_PORT=$WANT/" "$DEFAULTS"
-  log "BOA_WLAN_PORT $CUR -> $WANT; restarting daemon"
+  log "BOA_WLAN_PORT '$CUR' -> '$WANT'; restarting daemon"
   systemctl restart infinite-streaming-boa.service
 fi
 SEL

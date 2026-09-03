@@ -88,7 +88,23 @@ type BridgePort struct {
 // BridgeFDB reads the forwarding database: the MAC-to-port table every switch
 // maintains. Entries marked permanent or self are the bridge's own addresses
 // rather than clients, and are skipped.
-func BridgeFDB(bridge, wanPort, wlanPort string) map[string]BridgePort {
+// SplitPorts parses an interface list -- comma or space separated, empty
+// entries dropped. Written once here because the flag, the systemd unit and
+// select-radio all have to agree on it, and "wlan-usb wlan0" arriving as one
+// interface name would silently match nothing.
+func SplitPorts(s string) []string {
+	out := []string{}
+	for _, f := range strings.FieldsFunc(s, func(r rune) bool {
+		return r == ',' || r == ' ' || r == '\t' || r == '\n'
+	}) {
+		if f != "" {
+			out = append(out, f)
+		}
+	}
+	return out
+}
+
+func BridgeFDB(bridge, wanPort string, wlanPorts []string) map[string]BridgePort {
 	out := map[string]BridgePort{}
 	raw, err := exec.Command("bridge", "fdb", "show", "br", bridge).Output()
 	if err != nil {
@@ -112,9 +128,16 @@ func BridgeFDB(bridge, wanPort, wlanPort string) map[string]BridgePort {
 			strings.Contains(sc.Text(), "self") {
 			continue
 		}
+		// Set membership, not equality: with two radios serving, a client on
+		// the second one is still on Wi-Fi. Testing against a single name
+		// labelled half the wireless clients "wired", and the medium badge is
+		// what tells an operator why a device behaves the way it does.
 		medium := "wired"
-		if port == wlanPort {
-			medium = "wifi"
+		for _, w := range wlanPorts {
+			if port == w {
+				medium = "wifi"
+				break
+			}
 		}
 		out[mac] = BridgePort{MAC: mac, Port: port, Medium: medium}
 	}

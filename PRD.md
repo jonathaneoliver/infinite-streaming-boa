@@ -46,10 +46,14 @@ Intended for:
 - **Honest measurement.** The interface reports what the kernel is doing, and
   states plainly where the numbers cannot be trusted.
 - **Self-contained appliance.** Boots ready; no first-boot internet required.
-- **The best radio available serves the AP.** A USB Wi-Fi adapter takes over the
-  access point when present and the onboard radio is switched off; unplugging it
-  restores the onboard AP. Exactly one radio serves at a time, because
-  conditioning follows a single interface. The AP runs in **Bridged AP mode**:
+- **Every radio present serves the AP.** With a USB adapter fitted alongside
+  the onboard chip the box runs **dual-band, like a router**: the adapter on
+  5 GHz, where its 80 MHz and 802.11ax are worth having, and the onboard chip on
+  2.4 GHz, where its 20 MHz ceiling costs nothing it could have delivered.
+  One SSID across both, on one bridged segment, so a client sees a single
+  network and keeps its address when it moves between them. Either radio alone
+  serves on its own. **Clients on every radio are conditioned** — the daemon
+  follows a list of interfaces, not one. The AP runs in **Bridged AP mode**:
   bridged onto the upstream LAN with no separate subnet, DHCP, or NAT, so a
   Wi-Fi client is conditioned exactly like a wired one.
 - **One credential, and it is the SSH key.** When a public key is configured the

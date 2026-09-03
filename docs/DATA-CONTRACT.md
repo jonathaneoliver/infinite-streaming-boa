@@ -807,6 +807,16 @@ in the daemon knows them otherwise.
 - A genuine cross-channel survey needs a radio that is **not** beaconing —
   a second adapter, or the onboard one while the dongle serves. That is why
   scanning for a best channel is not implemented against the serving radio.
+- **The onboard `brcmfmac` radio reports no survey data at all.** Measured
+  2026-09-03 with it serving a 2.4 GHz AP: `iw dev wlan0 survey dump` prints
+  **nothing whatsoever** — no blocks, no error, exit status 0. It is the same
+  missing capability that makes ACS impossible there.
+
+  Empty output and a genuinely idle channel are indistinguishable in the
+  numbers, so the daemon reports the absence explicitly rather than rendering a
+  blank panel under a heading about airtime. This is also why the "idle radio
+  measures the air" idea only works when the **USB** adapter is the idle one:
+  the onboard chip can neither survey nor go into monitor mode.
 
 ## Source M — hostapd control actions · what the radio will actually do
 

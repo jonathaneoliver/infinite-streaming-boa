@@ -29,6 +29,10 @@ set -a; . "./$ENV_FILE"; set +a
 AP_COUNTRY="${AP_COUNTRY:-US}"
 AP_BAND="${AP_BAND:-bg}"
 AP_CHANNEL="${AP_CHANNEL:-6}"
+# The 2.4GHz channel the ONBOARD radio takes when it serves alongside a USB
+# adapter. Only used in that dual-band case; on its own the onboard radio
+# honours AP_BAND/AP_CHANNEL like anything else.
+AP_CHANNEL_24="${AP_CHANNEL_24:-6}"
 BOA_WAN_PORT="${BOA_WAN_PORT:-eth0}"
 BOA_RESCUE_IP="${BOA_RESCUE_IP:-192.168.99.1}"
 AP_HIDDEN="${AP_HIDDEN:-false}"
@@ -123,6 +127,12 @@ fi
 if [ "$AP_BAND" = "bg" ] && [[ ! " 1 2 3 4 5 6 7 8 9 10 11 0 " =~ " $AP_CHANNEL " ]]; then
   die "AP_CHANNEL $AP_CHANNEL is not a valid 2.4GHz channel; use 1, 6, 11, or 0 for auto"
 fi
+# The onboard radio has no survey, so ACS is impossible there and 0 is not an
+# option: it would silently become a fixed channel anyway. Refuse it here
+# rather than let a build produce an AP on a channel nobody chose.
+if [[ ! " 1 2 3 4 5 6 7 8 9 10 11 " =~ " $AP_CHANNEL_24 " ]]; then
+  die "AP_CHANNEL_24 $AP_CHANNEL_24 is not a valid 2.4GHz channel; use 1, 6 or 11 (0/auto is not available on the onboard radio)"
+fi
 
 ## Source image -------------------------------------------------------------
 mkdir -p cache work dist overlay
@@ -176,6 +186,7 @@ docker run --rm --privileged \
   -e XZ_NAME="$XZ_NAME" \
   -e OUT_NAME="$OUT_NAME" \
   -e AP_SSID -e AP_SSID_USB -e AP_PASSWORD -e AP_COUNTRY -e AP_BAND -e AP_CHANNEL \
+  -e AP_CHANNEL_24 \
   -e AP_HIDDEN -e BOA_WAN_PORT -e BOA_RESCUE_IP \
   -e BOA_HOSTNAME -e BOA_USER -e BOA_PASSWORD -e BOA_SSH_PUBKEY \
   -e BOA_NTOPNG_PASSWORD -e BOA_SSH_PASSWORD_LOGIN \

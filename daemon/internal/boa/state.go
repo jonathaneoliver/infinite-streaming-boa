@@ -14,10 +14,20 @@ import (
 type Config struct {
 	// Version is the running build's version string, threaded in from main so
 	// the snapshot can report which build a box is on. See main.version.
-	Version   string
-	Bridge    string // br-lan
-	WANPort   string // the port cabled to the existing network; uplink shaped here
-	WlanPort  string // wlan0
+	Version string
+	Bridge  string // br-lan
+	WANPort string // the port cabled to the existing network; uplink shaped here
+	// WlanPorts is every radio serving the access point, in preference order.
+	//
+	// A list rather than one name because the box can run two radios at once --
+	// the onboard chip on 2.4GHz and a USB adapter on 5GHz, the way a
+	// dual-band router does. It used to be a single interface, and everything
+	// associated to any other radio was invisible: not in the station table the
+	// daemon read, not conditioned, and absent from the device list while
+	// happily passing traffic.
+	//
+	// Empty is not a valid state; NewEngine falls back to one default name.
+	WlanPorts []string
 	LanPort   string // lan0, the USB adapter (may be absent)
 	StatePath string
 	// Addr is where the interface is served, e.g. ":80". The shaper needs it:
@@ -28,6 +38,27 @@ type Config struct {
 	// Demo serves synthetic clients and touches no kernel state, so the web
 	// interface can be developed without a Pi. See demo.go.
 	Demo bool
+}
+
+// PrimaryWlan is the radio reported wherever a single name is still wanted --
+// the header's readout, and the older API fields that predate two radios.
+func (c Config) PrimaryWlan() string {
+	if len(c.WlanPorts) == 0 {
+		return ""
+	}
+	return c.WlanPorts[0]
+}
+
+// IsWlan reports whether an interface is one of the radios this daemon watches.
+// The distinction that matters: a wireless interface the daemon does NOT watch
+// carries clients nobody is conditioning.
+func (c Config) IsWlan(name string) bool {
+	for _, p := range c.WlanPorts {
+		if p == name {
+			return true
+		}
+	}
+	return false
 }
 
 // counterSample remembers one class's byte count so throughput can be derived
@@ -67,6 +98,12 @@ type Engine struct {
 	// is what decides whether a wireless client is still here. In memory only,
 	// like lastActive: it rebuilds on the first tick after a restart.
 	lastAssoc map[string]int64
+
+	// stationRadio maps a MAC to the radio it is associated to, refreshed each
+	// tick. With two radios serving, a per-client link event must go to the
+	// control socket of the radio holding that station; the other one answers
+	// with a station it has never heard of.
+	stationRadio map[string]string
 
 	// lastActive is when each MAC was last moving more than a trickle.
 	// Telemetry, so it is held in memory and never written to the store: it
@@ -118,21 +155,22 @@ func NewEngine(cfg Config) *Engine {
 		cfg.Tick = time.Second
 	}
 	return &Engine{
-		cfg:        cfg,
-		sh:         NewShaper(cfg.WANPort, cfg.Bridge, managementPorts(cfg.Addr)),
-		st:         NewStore(cfg.StatePath),
-		pat:        NewPatternStore(patternsPathFor(cfg.StatePath)),
-		lad:        NewLadderStore(ladderPathFor(cfg.StatePath)),
-		learn:      NewLearner(cfg.Bridge, cfg.WlanPort, cfg.LanPort),
-		prev:       map[string]counterSample{},
-		lastActive: map[string]int64{},
-		lastAssoc:  map[string]int64{},
-		demo:       newDemoFleet(),
-		demoBytes:  map[string]uint64{},
-		hist:       NewHistory(),
-		sweep:      &Sweeper{},
-		player:     &Player{},
-		subs:       map[chan Snapshot]struct{}{},
+		cfg:          cfg,
+		sh:           NewShaper(cfg.WANPort, cfg.Bridge, managementPorts(cfg.Addr)),
+		st:           NewStore(cfg.StatePath),
+		pat:          NewPatternStore(patternsPathFor(cfg.StatePath)),
+		lad:          NewLadderStore(ladderPathFor(cfg.StatePath)),
+		learn:        NewLearner(cfg.Bridge, append(append([]string{}, cfg.WlanPorts...), cfg.LanPort)...),
+		prev:         map[string]counterSample{},
+		lastActive:   map[string]int64{},
+		lastAssoc:    map[string]int64{},
+		stationRadio: map[string]string{},
+		demo:         newDemoFleet(),
+		demoBytes:    map[string]uint64{},
+		hist:         NewHistory(),
+		sweep:        &Sweeper{},
+		player:       &Player{},
+		subs:         map[chan Snapshot]struct{}{},
 	}
 }
 
@@ -379,8 +417,21 @@ const wlanPresenceGrace = time.Minute
 func (e *Engine) tick() {
 	now := time.Now()
 
-	stations := StationDump(e.cfg.WlanPort)
-	fdb := BridgeFDB(e.cfg.Bridge, e.cfg.WANPort, e.cfg.WlanPort)
+	// One dump per radio, merged, remembering which radio each station is on.
+	// The radio matters beyond the label: a per-client link event has to be
+	// sent to the control socket of the radio the client is actually
+	// associated to, and sending it to the other one fails with a station
+	// hostapd has never heard of.
+	stations := map[string]*Station{}
+	stationRadio := map[string]string{}
+	for _, w := range e.cfg.WlanPorts {
+		for mac, st := range StationDump(w) {
+			stations[mac] = st
+			stationRadio[mac] = w
+		}
+	}
+	e.stationRadio = stationRadio
+	fdb := BridgeFDB(e.cfg.Bridge, e.cfg.WANPort, e.cfg.WlanPorts)
 	// ARP is the primary source for both address and port: it observes the
 	// client directly, whereas the forwarding database depends on MAC learning
 	// that ages out and, in practice, is often empty.
@@ -410,7 +461,11 @@ func (e *Engine) tick() {
 	// ARP too, and without this they would appear as clients of this box.
 	wanSide := WANSideMACs(e.cfg.Bridge, e.cfg.WANPort)
 	for mac := range stations {
-		merged[mac] = &acc{medium: "wifi", port: e.cfg.WlanPort, present: true}
+		// The radio this station is actually on, not a fixed name: the port is
+		// what a downlink tc filter attaches to, so with two radios serving,
+		// naming the wrong one attaches the filter to an interface the client's
+		// traffic never leaves by.
+		merged[mac] = &acc{medium: "wifi", port: stationRadio[mac], present: true}
 	}
 	for mac, bp := range fdb {
 		if a, ok := merged[mac]; ok {
@@ -440,7 +495,10 @@ func (e *Engine) tick() {
 	// DOWNSTREAM port. Anything seen on the WAN port lives upstream, and a
 	// device whose port is unknown cannot be shaped anyway (a tc filter has to
 	// attach to an interface), so listing it would be noise.
-	downstream := map[string]bool{e.cfg.WlanPort: true, e.cfg.LanPort: true}
+	downstream := map[string]bool{e.cfg.LanPort: true}
+	for _, w := range e.cfg.WlanPorts {
+		downstream[w] = true
+	}
 	for mac, sn := range arp {
 		if sn.Port == e.cfg.WANPort || fdb[mac].Port == e.cfg.WANPort || wanSide[mac] {
 			continue
@@ -467,7 +525,7 @@ func (e *Engine) tick() {
 		// table across a roam or a power-save transition, and flapping the list
 		// would be worse than a stale entry. The device stays LISTED either
 		// way; only "present" changes.
-		if sn.Port == e.cfg.WlanPort {
+		if e.cfg.IsWlan(sn.Port) {
 			if last, seen := e.lastAssoc[mac]; !seen ||
 				now.Sub(time.UnixMilli(last)) > wlanPresenceGrace {
 				continue
@@ -477,7 +535,7 @@ func (e *Engine) tick() {
 			continue // not on a port of ours: upstream, or not yet placed
 		}
 		medium := "wired"
-		if sn.Port == e.cfg.WlanPort {
+		if e.cfg.IsWlan(sn.Port) {
 			medium = "wifi"
 		}
 		merged[mac] = &acc{medium: medium, port: sn.Port, present: true}
@@ -650,13 +708,14 @@ func (e *Engine) tick() {
 		Clients: clients,
 		Caps: Capabilities{
 			Shaping: ready, Uplink: ready, Reason: reason,
-			Radio:     LinkExists(e.cfg.WlanPort),
+			Radio:     LinkExists(e.cfg.PrimaryWlan()),
 			Leases:    false, // transparent bridge: upstream owns DHCP
-			WlanIface: e.cfg.WlanPort, UplinkIf: e.cfg.WANPort,
-			Adapter: Radio(e.cfg.WlanPort),
-			Ntopng:  e.ntopngUp(), NtopngPort: ntopngPort,
+			WlanIface: e.cfg.PrimaryWlan(), WlanIfaces: e.cfg.WlanPorts,
+			UplinkIf: e.cfg.WANPort,
+			Adapter:  Radio(e.cfg.PrimaryWlan()),
+			Ntopng:   e.ntopngUp(), NtopngPort: ntopngPort,
 			Iperf: PortListening(iperfPort), IperfPort: iperfPort,
-			LinkControl: hostapdAvailable(e.cfg.WlanPort),
+			LinkControl: e.anyLinkControl(),
 			LossBurst:   burstOK, LossBurstNote: burstNote,
 			NamesLearned: len(names), NamesByMAC: len(macNames),
 		},

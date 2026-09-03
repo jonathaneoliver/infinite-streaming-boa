@@ -412,11 +412,11 @@ func demoBridgeState(cfg Config) BridgeInfo {
 			IPv6: []string{"fe80::9eef:d5ff:fef6:3ff2/64"},
 		},
 		{
-			Name: cfg.WlanPort, Role: RoleAP, MAC: apMAC,
+			Name: cfg.PrimaryWlan(), Role: RoleAP, MAC: apMAC,
 			Up: true, Carrier: true, CarrierKnown: true,
 			Master: cfg.Bridge, Wireless: true, Serving: true,
 			Radio: &RadioInfo{
-				Iface: cfg.WlanPort, Driver: "mt7921u", Bus: "usb",
+				Iface: cfg.PrimaryWlan(), Driver: "mt7921u", Bus: "usb",
 				Vendor: "Panda Wireless", Product: "PAU0F AXE3000",
 				LinkMbps: 5000, USBVersion: "3.20",
 			},

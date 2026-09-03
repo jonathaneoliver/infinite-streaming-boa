@@ -134,7 +134,7 @@ func (e *Engine) BridgeState() BridgeInfo {
 		if in.Wireless {
 			r := Radio(name)
 			in.Radio = &r
-			in.Serving = name == e.cfg.WlanPort
+			in.Serving = e.cfg.IsWlan(name)
 			if hostapdAvailable(name) {
 				if ap := apStatus(name, country); ap != nil {
 					in.AP = ap
@@ -164,7 +164,7 @@ func bridgeNotes(bi BridgeInfo, cfg Config) []Notice {
 			out = append(out, Notice{"error", fmt.Sprintf(
 				"%s is serving an access point but the daemon watches %s. "+
 					"Clients on %s are NOT conditioned and do not appear in the device list.",
-				in.Name, cfg.WlanPort, in.Name)})
+				in.Name, strings.Join(cfg.WlanPorts, ", "), in.Name)})
 			continue
 		}
 		if in.Up {
