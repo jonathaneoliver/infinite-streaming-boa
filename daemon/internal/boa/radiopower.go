@@ -599,6 +599,20 @@ func (e *Engine) ScanBand(iface string, apply bool) (ScanResult, error) {
 		}
 	}
 
+	// A scan that "succeeded while serving" may still have taken the access
+	// point down. VERIFY, do not infer.
+	//
+	// The non-disruptive branch concluded "no outage" purely from `iw scan`
+	// exiting zero. Measured 2026-09-03 on mt7921u: it exited zero, returned 28
+	// access points, and left the BSS DISABLED and the interface out of the
+	// bridge -- a radio serving nobody, reported as "scanned while serving,
+	// stayed on 40". The one thing worse than an outage is an outage the box
+	// says did not happen.
+	if wasEnabled && !apEnabled(iface) {
+		disrupted = true
+		e.reenableAP(iface)
+	}
+
 	aps := parseScan(string(raw))
 	for i := range aps {
 		aps[i].Ours = ourBSSIDs[strings.ToLower(aps[i].BSSID)]
@@ -618,8 +632,10 @@ func (e *Engine) ScanBand(iface string, apply bool) (ScanResult, error) {
 		// outage and says so. On the other radio the same button costs nothing,
 		// and claiming otherwise either way would be a lie about what happened.
 		res.OutageSec = res.ScanSec
-		res.Note += " This radio will not scan while it is serving, so the " +
-			"access point was stopped for the duration and its clients were dropped."
+		res.Note += " The access point went down for the duration of the scan " +
+			"and its clients were dropped -- either because this radio refuses " +
+			"to scan while serving, or because scanning knocked it off the air " +
+			"anyway. It has been brought back."
 	} else {
 		res.Note += " This radio scans off-channel while still serving, so " +
 			"nobody was dropped -- the cost was a few beacon gaps."
@@ -706,7 +722,41 @@ func (e *Engine) ScanBand(iface string, apply bool) (ScanResult, error) {
 			iface, band, len(aps), res.Now)
 	}
 	e.syncRadioState(iface)
+	e.rememberScan(iface, res)
 	return res, nil
+}
+
+// rememberScan keeps the per-channel conclusions of a scan, so the interface
+// can colour its channel controls long after the scan itself has scrolled away.
+//
+// The access point list is deliberately dropped here. It is the large half of
+// the result and it is only interesting while the scan is on screen; what has
+// to survive is the summary the colours are drawn from.
+func (e *Engine) rememberScan(iface string, res ScanResult) {
+	sum := ScanSummary{
+		At: time.Now().UnixMilli(), Band: res.Band,
+		Channels: res.Channels, Best: res.Best,
+	}
+	e.mu.Lock()
+	if e.scanSeen == nil {
+		e.scanSeen = map[string]ScanSummary{}
+	}
+	e.scanSeen[iface] = sum
+	e.mu.Unlock()
+}
+
+// lastScans copies out what has been scanned, for the inventory payload.
+func (e *Engine) lastScans() map[string]ScanSummary {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	if len(e.scanSeen) == 0 {
+		return nil
+	}
+	out := make(map[string]ScanSummary, len(e.scanSeen))
+	for k, v := range e.scanSeen {
+		out[k] = v
+	}
+	return out
 }
 
 // ownBSSIDs collects the BSSIDs this box serves, so its own access points are
