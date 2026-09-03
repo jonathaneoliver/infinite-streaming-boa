@@ -390,16 +390,66 @@ func (e *Engine) MoveChannel(iface string, channel, widthMHz int) (int, error) {
 	if st, err := hostapdCmd(iface, "STATUS"); err == nil {
 		now = atoiSafe(parseHostapdKV(st)["channel"])
 	}
-	if refused != "" && now != channel {
+	// ANY mismatch is reported, not just one caused by a refusal.
+	//
+	// This used to require refused != "", so the most common failure on this box
+	// passed silently: every SET returns OK, and the radio comes back somewhere
+	// else anyway. Asking for 36 and being told "now on channel 40" with no
+	// explanation is precisely the confidently-wrong readout the rest of this
+	// file exists to avoid.
+	if now != channel {
 		e.logEvent(EventWarning, iface, "",
-			"%s was asked for channel %d but came back on %d (%q refused)",
-			iface, channel, now, refused)
-		return now, fmt.Errorf(
-			"%q was refused, so %s came back on channel %d", refused, iface, now)
+			"%s was asked for channel %d and came back on %d", iface, channel, now)
+		if refused != "" {
+			return now, fmt.Errorf(
+				"%q was refused, so %s came back on channel %d", refused, iface, now)
+		}
+		return now, coexError(iface, channel, now, widthMHz)
 	}
 	e.noteMoveChannel(iface, now)
 	e.syncRadioState(iface)
 	return now, nil
+}
+
+// coexError explains a move that hostapd accepted, applied, and then undid.
+//
+// MEASURED on hardware 2026-09-03, from hostapd's own log:
+//
+//	wlan-usb: interface state COUNTRY_UPDATE->HT_SCAN
+//	Switch own primary and secondary channel to get secondary channel
+//	  with no Beacons from other BSSes
+//	wlan-usb: interface state HT_SCAN->ENABLED
+//
+// That is the 802.11 20/40MHz coexistence scan. Before enabling a 40 or 80MHz
+// BSS, hostapd looks for neighbours on the channel it intends to use as the
+// SECONDARY, and if it finds any it swaps primary and secondary rather than
+// interfering with them. So a config saying "channel 36, HT40+" -- primary 36,
+// secondary 40 -- comes up as primary 40, secondary 36.
+//
+// This box has been on channel 40 all along for that reason, with
+// /etc/hostapd/boa-usb.conf saying 36. It is not a fault and it is not
+// overridable through the control socket: SET ht_capab [HT40+] is accepted and
+// changes nothing, because secondary_channel is derived during the scan, and
+// SET secondary_channel is refused outright as derived state.
+//
+// The practical consequence is the useful half of this message: at 40 or 80MHz
+// the primary can only land where the coex scan puts it, so only one of each
+// adjacent pair is reachable. At 20MHz there is no secondary, no scan, and
+// every channel is exact.
+func coexError(iface string, want, got, widthMHz int) error {
+	if widthMHz < 40 {
+		return fmt.Errorf(
+			"%s was asked for channel %d but came back on %d, and hostapd "+
+				"refused nothing along the way -- the driver overrode it",
+			iface, want, got)
+	}
+	return fmt.Errorf(
+		"%s came back on channel %d, not %d. Every setting was accepted; "+
+			"hostapd's 20/40MHz coexistence scan then found neighbouring "+
+			"access points on the secondary channel and swapped its primary "+
+			"and secondary to avoid them. At %dMHz the primary can only land "+
+			"where that scan puts it -- move at 20MHz to choose exactly",
+		iface, got, want, widthMHz)
 }
 
 // --- scanning -------------------------------------------------------------

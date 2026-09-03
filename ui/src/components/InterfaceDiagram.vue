@@ -266,7 +266,10 @@ function otherRadio(i: IfaceInfo): string {
               class="ghost" :disabled="busy || c === i.ap.channel"
               :title="c === i.ap.channel
                 ? `${i.name} is already on channel ${c}.`
-                : `Take ${i.name} down and bring it back on channel ${c}. All ${i.ap.stations} client(s) dropped, and NOT told.`"
+                : `Take ${i.name} down and bring it back on channel ${c}. All ${i.ap.stations} client(s) dropped, and NOT told.`
+                  + ((i.ap.width_mhz ?? 0) >= 40
+                     ? ` At ${i.ap.width_mhz} MHz it may land on the adjacent channel instead: hostapd swaps primary and secondary when it hears neighbours on the secondary.`
+                     : '')"
               @click="emit('action', 'channel', i.name, c)"
             >{{ c }}</button>
           </div>

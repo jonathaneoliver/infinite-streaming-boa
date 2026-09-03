@@ -351,6 +351,17 @@ function otherRadio(r: IfaceInfo): string {
             802.11h would move them without dropping anyone, but
             <strong>both radios here refuse it</strong> (#154).
           </p>
+          <!-- Measured on hardware: hostapd's 20/40MHz coexistence scan swaps
+               primary and secondary when it finds neighbours on the secondary,
+               so a 40/80MHz move lands on whichever of the pair that scan
+               picks. This box has been on 40 all along with its config saying
+               36 for exactly that reason. -->
+          <p v-if="pick(r).width >= 40" class="meta">
+            At {{ pick(r).width }}&#8239;MHz the radio can come back on the
+            <strong>adjacent channel</strong>: hostapd swaps primary and
+            secondary if it hears neighbours on the secondary. Move at
+            20&#8239;MHz to choose exactly.
+          </p>
 
           <h4>Conditioning the link</h4>
           <p class="meta group-note">Clients stay associated; the link they are on gets worse.</p>

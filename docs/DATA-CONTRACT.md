@@ -977,3 +977,54 @@ three attempts to make the switch-on "fast" were all fixes to the wrong thing.
   (`wlan-usb access point back after 25s`), because it is the number that
   answers "why did my client take so long to come back" and it differs by an
   order of magnitude between the two radios on this box.
+
+## Source M addendum 2 — why a channel move lands somewhere else
+
+**MEASURED on hardware 2026-09-03.** Asking for channel 36 at 80 MHz returned
+"now on channel 40", with every `SET` having answered `OK`. The readback was
+right; the explanation was missing.
+
+hostapd's own log says what happened:
+
+```
+wlan-usb: interface state COUNTRY_UPDATE->HT_SCAN
+Switch own primary and secondary channel to get secondary channel
+  with no Beacons from other BSSes
+wlan-usb: interface state HT_SCAN->ENABLED
+```
+
+That is the 802.11 **20/40 MHz coexistence scan**. Before enabling a 40 or
+80 MHz BSS, hostapd scans for neighbours on the channel it intends to use as the
+*secondary*, and if it finds any it swaps primary and secondary rather than
+interfering with them.
+
+**Semantics that bite**
+
+- **The configured channel is not the operating channel.**
+  `/etc/hostapd/boa-usb.conf` says `channel=36` with `ht_capab=[HT40+]` — primary
+  36, secondary 40 — and the radio has served on **40** since the image was
+  built. A clean `systemctl restart` of the hostapd unit reproduces it every
+  time. Nothing is broken.
+
+- **Only one of each adjacent pair is reachable at 40/80 MHz.** Measured from a
+  radio running 40 with `secondary_channel=-1`: asking for 48 (same offset)
+  lands on 48; asking for 44 or 36 (opposite offset) lands back on 40. Which one
+  is reachable depends on what the scan hears, so it can change.
+
+- **The offset cannot be forced through the control socket.**
+  `SET ht_capab [HT40+]` is accepted and changes nothing — `secondary_channel`
+  is derived during the scan, not from that string — and `SET secondary_channel`
+  is refused outright as derived state. A 20 MHz intermediate step does not help
+  either: the swap happens again when the width is restored.
+
+- **At 20 MHz every channel is exact**, because there is no secondary channel
+  and therefore no coexistence scan. Verified: 36 at 20 MHz lands on 36.
+
+- **So a mismatch is reported even when nothing was refused.** The check used to
+  require a refused `SET`, which made the most common outcome on this box the
+  silent one.
+
+`noscan=1` in the hostapd config would skip the scan and honour the configured
+channel. It is deliberately not set: the scan exists to avoid clobbering
+neighbouring networks, and turning it off is a decision about someone else's
+airtime, not a bug fix.
