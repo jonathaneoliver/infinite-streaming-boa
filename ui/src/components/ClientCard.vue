@@ -95,12 +95,16 @@ const IDENTITY_COLS = [
   '30px',                 // fold toggle -- first, so it never moves
   '14px',                 // presence dot
   '170px',                // name -- fixed, so what follows holds its x
-  '58px',                 // medium badge
+  // 84px, not 58: the badge now carries the radio name ("wlan-usb"), not the
+  // word "wifi", because which radio a client is on is the fact that matters
+  // once the box serves two bands.
+  'minmax(0, 84px)',      // medium / radio badge
   // 268px fits a full IPv4 with room to spare and most of an IPv6; longer
   // addresses ellipsise and carry the full value in a tooltip.
   'minmax(96px, 268px)',  // address
   'minmax(0, 62px)',      // +N IPv6
   'minmax(0, 132px)',     // MAC -- 17 monospace characters
+  'minmax(0, 168px)',     // radio summary: "ch 40 · 80 MHz · 802.11ax"
   'minmax(0, 96px)',      // signal, or the longer tx-fail fallback
   'minmax(0, 76px)',      // PHY rate
   // 104px, not 92: "assoc 42m 35s" is the longest common form and 92 clipped
@@ -142,6 +146,19 @@ const EXPANDED_H = 196;
 const expandedH = computed(() => (props.chart.tallCharts ? EXPANDED_H * 2 : EXPANDED_H));
 
 const open = ref(false);
+
+/** "ch 40 · 80 MHz · 802.11ax", the same phrasing the bridge diagram uses for
+ *  the radio node, so the two read as descriptions of the same thing. Empty
+ *  for a wired client and for a wireless one not currently on a radio. */
+const radioSummary = computed(() => {
+  const r = props.client.radio_on;
+  if (!r) return '';
+  return [
+    r.channel ? `ch ${r.channel}` : '',
+    r.width_mhz ? `${r.width_mhz} MHz` : '',
+    r.mode || '',
+  ].filter(Boolean).join(' · ');
+});
 
 // Signal quality bands are the conventional Wi-Fi ones: above -60 dBm is a
 // strong link, below -75 is where retries and rate-drops begin to dominate and
@@ -425,10 +442,24 @@ function fmtBytes(n: number): string {
         @change="emit('label', ($event.target as HTMLInputElement).value)"
       />
 
+      <!-- WHICH radio, not merely "wifi".
+           The box serves both bands at once, and a client on 2.4GHz at 20MHz
+           behaves nothing like one on 5GHz at 80MHz -- so "wifi" alone stopped
+           being an answer the moment the second radio came up. -->
       <span class="cell">
-        <span v-if="client.medium" class="badge" :class="client.medium">
-          {{ client.medium }}
-        </span>
+        <span
+          v-if="client.medium" class="badge" :class="client.medium"
+          :title="client.radio_on
+            ? `Associated to ${client.radio_on.iface}`
+            : (client.port ? `On ${client.port}` : '')"
+        >{{ client.radio_on?.iface || client.port || client.medium }}</span>
+      </span>
+
+      <!-- What that radio is doing, in the same words the diagram uses. Its own
+           column rather than a second line: the head is one row by design, and
+           a wrapping cell makes this card taller than its neighbours. -->
+      <span class="cell meta num" :title="client.radio_on ? 'The access point this client is associated to' : ''">
+        {{ radioSummary }}
       </span>
 
       <span

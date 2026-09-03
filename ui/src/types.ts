@@ -272,6 +272,18 @@ export interface Counters {
   cap_mbps: number;
 }
 
+/** The access point a wireless client is associated to. Absent for a wired
+ *  client, and for a wireless one not currently on any radio. */
+export interface RadioOn {
+  iface: string;
+  channel?: number;
+  width_mhz?: number;
+  mode?: string;
+  /** "2.4GHz" or "5GHz" — the single most useful fact about which radio a
+   *  client is on, now that the box serves both at once. */
+  band?: string;
+}
+
 export interface Client {
   mac: string;
   ip?: string;
@@ -281,6 +293,7 @@ export interface Client {
   label: string;
   medium: string;
   port?: string;
+  radio_on?: RadioOn;
   present: boolean;
   shapeable: boolean;
   station?: Station;

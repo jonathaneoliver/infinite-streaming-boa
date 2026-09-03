@@ -178,6 +178,129 @@ func (e *Engine) radioExists(iface string) error {
 	return nil
 }
 
+// radioOnFor describes the access point behind a radio, for the device list.
+//
+// CACHED, and refreshed on a slow timer rather than per tick. Channel, width
+// and mode change only when something deliberately changes them, while asking
+// hostapd costs a control round-trip per radio -- at 1Hz across two radios that
+// is pure waste on a value that is almost always the same as last time.
+//
+// The cache is dropped whenever this daemon moves a radio, so the one case that
+// would go stale fastest cannot.
+func (e *Engine) radioOnFor(iface string) *RadioOn {
+	if iface == "" {
+		return nil
+	}
+	e.mu.RLock()
+	r, ok := e.radioOn[iface]
+	fresh := time.Since(e.radioOnAt) < 15*time.Second
+	e.mu.RUnlock()
+	if ok && fresh {
+		return r
+	}
+
+	out := &RadioOn{Iface: iface}
+	if e.cfg.Demo {
+		out.Channel, out.WidthMHz, out.Mode, out.Band = 36, 80, "802.11ax", "5GHz"
+	} else if hostapdAvailable(iface) {
+		if st, err := hostapdCmd(iface, "STATUS"); err == nil {
+			kv := parseHostapdKV(st)
+			out.Channel = atoiSafe(kv["channel"])
+			out.WidthMHz = apWidth(kv)
+			out.Mode = apMode(kv)
+		}
+	}
+	if out.Channel > 0 {
+		out.Band = "2.4GHz"
+		if out.Channel > 14 {
+			out.Band = "5GHz"
+		}
+	}
+	e.mu.Lock()
+	if e.radioOn == nil {
+		e.radioOn = map[string]*RadioOn{}
+	}
+	e.radioOn[iface] = out
+	e.radioOnAt = time.Now()
+	e.mu.Unlock()
+	return out
+}
+
+// forgetRadioOn drops the cache after this daemon changes a radio, so the
+// device list does not go on reporting the channel it used to be on.
+func (e *Engine) forgetRadioOn() {
+	e.mu.Lock()
+	e.radioOn = nil
+	e.radioOnAt = time.Time{}
+	e.mu.Unlock()
+}
+
+// MoveChannel puts a radio on a chosen channel by taking it down and bringing
+// it back up there.
+//
+// The working half of two ways to change channel, and the difference matters:
+//
+//	CHAN_SWITCH (802.11h)  the AP counts down in its beacons and clients FOLLOW,
+//	                       staying associated -- seamless, and refused by both
+//	                       drivers on this box (issue #154)
+//	down and up            the AP vanishes and reappears elsewhere; clients are
+//	                       told nothing and must notice, rescan and rejoin
+//
+// So this is the one that works here, and it is also what most consumer routers
+// actually do when their channel changes. The cost is a reconnect for every
+// client on the radio, which is why it says so before it runs.
+//
+// Returns the channel the radio is actually on afterwards, READ BACK rather
+// than assumed -- a refused SET partway through does not undo the ones before
+// it, and reporting the requested channel would be confidently wrong.
+func (e *Engine) MoveChannel(iface string, channel, widthMHz int) (int, error) {
+	ch, ok := apChannels[channel]
+	if !ok {
+		return 0, fmt.Errorf(
+			"channel %d is not offered: 2.4GHz 1/6/11, 5GHz 36/40/44/48 "+
+				"(DFS is excluded -- the Pi cannot serve an AP on one)", channel)
+	}
+	cmds := setChannelCommands(ch, widthMHz)
+	if err := e.radioReady(iface); err != nil {
+		return 0, err
+	}
+	if e.cfg.Demo {
+		return channel, nil
+	}
+
+	wasEnabled := false
+	if st, err := hostapdCmd(iface, "STATUS"); err == nil {
+		wasEnabled = strings.Contains(st, "state=ENABLED")
+	}
+	if wasEnabled {
+		if _, err := hostapdCmd(iface, "DISABLE"); err != nil {
+			return 0, fmt.Errorf("could not take %s down to move it: %w", iface, err)
+		}
+	}
+	var refused string
+	for _, cmd := range cmds {
+		reply, err := hostapdCmd(iface, cmd)
+		if err != nil || !strings.HasPrefix(reply, "OK") {
+			refused = cmd
+			break
+		}
+	}
+	if wasEnabled {
+		e.reenableAP(iface)
+	}
+	e.forgetRadioOn()
+
+	now := 0
+	if st, err := hostapdCmd(iface, "STATUS"); err == nil {
+		now = atoiSafe(parseHostapdKV(st)["channel"])
+	}
+	if refused != "" && now != channel {
+		return now, fmt.Errorf(
+			"%q was refused, so %s came back on channel %d", refused, iface, now)
+	}
+	return now, nil
+}
+
 // --- scanning -------------------------------------------------------------
 
 // ScanAP is one access point the scan found.
@@ -408,6 +531,8 @@ func (e *Engine) ScanBand(iface string, apply bool) (ScanResult, error) {
 			} else if moved {
 				res.Applied, res.Now = true, res.Best
 			}
+			// The device list caches each radio's channel; this just changed it.
+			e.forgetRadioOn()
 			// Only now is there an outage to report: the BSS was down from the
 			// DISABLE above until reenableAP runs in the deferred call.
 			res.OutageSec = time.Since(started).Seconds() - res.ScanSec

@@ -105,6 +105,13 @@ type Engine struct {
 	// with a station it has never heard of.
 	stationRadio map[string]string
 
+	// radioOn caches each radio's channel/width/mode for the device list,
+	// refreshed on a slow timer: it changes only when something deliberately
+	// changes it, and asking hostapd per tick is a round-trip per radio for a
+	// value that is almost always unchanged.
+	radioOn   map[string]*RadioOn
+	radioOnAt time.Time
+
 	// lastActive is when each MAC was last moving more than a trickle.
 	// Telemetry, so it is held in memory and never written to the store: it
 	// rebuilds itself within seconds of a restart for anything actually doing
@@ -601,6 +608,13 @@ func (e *Engine) tick() {
 			Present: a.present, Shapeable: ip != "" || len(v6) > 0,
 			Station: stations[mac], Policy: pol, LastSeen: now.UnixMilli(),
 			SubCounters: map[string]Counters{},
+		}
+		// Which radio, and what that radio is doing. Only for a client actually
+		// associated to one: a wired client has no radio, and a wireless client
+		// the station table has lost is not on any radio right now, so claiming
+		// one would be inventing a fact.
+		if w := stationRadio[mac]; w != "" {
+			c.RadioOn = e.radioOnFor(w)
 		}
 		clients = append(clients, c)
 	}

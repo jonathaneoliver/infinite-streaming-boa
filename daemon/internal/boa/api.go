@@ -38,7 +38,9 @@ func (a *API) Routes() *http.ServeMux {
 	mux.HandleFunc("GET /api/bridge", a.getBridge)
 	mux.HandleFunc("GET /api/bridge/radios/{iface}/survey", a.getSurvey)
 	mux.HandleFunc("POST /api/bridge/radios/{iface}/channel", a.postChannel)
+	mux.HandleFunc("POST /api/bridge/radios/{iface}/move-channel", a.postMoveChannel)
 	mux.HandleFunc("POST /api/bridge/radios/{iface}/deauth-all", a.postDeauthAll)
+	mux.HandleFunc("POST /api/bridge/radios/{iface}/link-all", a.postLinkAll)
 	mux.HandleFunc("POST /api/bridge/radios/{iface}/power", a.postRadioPower)
 	mux.HandleFunc("POST /api/bridge/radios/{iface}/scan", a.postScan)
 	mux.HandleFunc("POST /api/bridge/radios/{iface}/profile", a.postRadioProfile)
@@ -121,6 +123,50 @@ func (a *API) getSurvey(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, res)
 }
 
+// postMoveChannel puts a radio on a chosen channel by taking it down and
+// bringing it back up there.
+//
+// The working counterpart to postChannel. That one announces the move and lets
+// clients follow without reconnecting, which is the nicer behaviour and is
+// refused by both drivers on this box; this one drops the access point and
+// brings it back elsewhere, which works and is what most consumer routers
+// actually do. Clients are not told and must rediscover it.
+func (a *API) postMoveChannel(w http.ResponseWriter, r *http.Request) {
+	iface := r.PathValue("iface")
+	if err := a.e.radioReady(iface); err != nil {
+		writeErr(w, http.StatusServiceUnavailable, err.Error())
+		return
+	}
+	ch, err := strconv.Atoi(strings.TrimSpace(r.URL.Query().Get("channel")))
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, "channel must be a number")
+		return
+	}
+	width := 20
+	if q := strings.TrimSpace(r.URL.Query().Get("width")); q != "" {
+		n, werr := strconv.Atoi(q)
+		if werr != nil {
+			writeErr(w, http.StatusBadRequest, "width must be a number")
+			return
+		}
+		width = n
+	}
+	dropped := len(StationDump(iface))
+	now, err := a.e.MoveChannel(iface, ch, width)
+	if err != nil {
+		if _, known := apChannels[ch]; !known {
+			writeErr(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		writeErr(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"iface": iface, "action": "move_channel", "channel": now,
+		"width_mhz": width, "stations_dropped": dropped,
+	})
+}
+
 // postChannel moves a radio, and every client associated to it, to another
 // channel via an 802.11h channel switch announcement.
 //
@@ -181,6 +227,35 @@ func (a *API) postDeauthAll(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"iface": iface, "action": "deauth_all", "stations": n,
+	})
+}
+
+// postLinkAll applies a per-client link event to every station on a radio.
+//
+// The AP-wide sibling of the drop and nudge buttons on a device card. Both are
+// ANNOUNCED -- the clients are told and reconnect knowing why, which is the
+// whole distinction from switching the radio off.
+func (a *API) postLinkAll(w http.ResponseWriter, r *http.Request) {
+	iface := r.PathValue("iface")
+	if err := a.e.radioReady(iface); err != nil {
+		writeErr(w, http.StatusServiceUnavailable, err.Error())
+		return
+	}
+	kind := strings.TrimSpace(r.URL.Query().Get("kind"))
+	if kind == "" {
+		kind = LinkDrop
+	}
+	n, err := a.e.LinkAll(iface, kind)
+	if err != nil {
+		code := http.StatusBadGateway
+		if kind != LinkDrop && kind != LinkNudge {
+			code = http.StatusBadRequest
+		}
+		writeErr(w, code, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"iface": iface, "action": "link_all", "kind": kind, "stations": n,
 	})
 }
 

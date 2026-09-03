@@ -204,10 +204,27 @@ function otherRadio(r: IfaceInfo): string {
             {{ r.ap.stations }} associated right now.
           </p>
 
+          <!-- The announced events, in the same words the device cards use.
+               Whatever can be done to one client can be done to every client on
+               a radio; only the blast radius differs. -->
           <div class="action-row">
-            <button :disabled="bridge.busy.value" @click="bridge.deauthAll(r.name)">
-              deauthenticate all {{ r.ap.stations }}
-            </button>
+            <label class="k">all {{ r.ap.stations }} clients</label>
+            <button
+              :disabled="bridge.busy.value || !r.ap.stations"
+              title="Deauthenticate every client. The link goes down and they reconnect — they are TOLD, so it is quick."
+              @click="bridge.linkAll(r.name, 'drop')"
+            >drop all</button>
+            <button
+              :disabled="bridge.busy.value || !r.ap.stations"
+              title="Disassociate every client — a softer 802.11 transition some clients ride out without a full reconnect."
+              @click="bridge.linkAll(r.name, 'nudge')"
+            >nudge all</button>
+            <button
+              v-if="otherRadio(r)"
+              :disabled="bridge.busy.value || !r.ap.stations"
+              :title="`Ask every client to move to ${otherRadio(r)} (802.11v). They may refuse.`"
+              @click="bridge.steerAll(r.name)"
+            >steer all to {{ otherRadio(r) }}</button>
             <button :disabled="bridge.busy.value" @click="bridge.loadSurvey(r.name)">
               read airtime
             </button>
@@ -300,20 +317,6 @@ function otherRadio(r: IfaceInfo): string {
           <!-- Steering only exists when there is somewhere to steer TO. On a
                one-radio box the button would be permanently dead, so it is
                absent rather than disabled. -->
-          <template v-if="otherRadio(r)">
-            <h4>Steer to the other radio</h4>
-            <p class="warn-line">
-              Asks all {{ r.ap.stations }} client(s) on {{ r.name }} to move to
-              <strong>{{ otherRadio(r) }}</strong>. A <em>request</em> — 802.11v
-              leaves the choice with the client, and whether a given phone
-              honours it is the thing worth finding out.
-            </p>
-            <div class="action-row">
-              <button :disabled="bridge.busy.value" @click="bridge.steerAll(r.name)">
-                ask all {{ r.ap.stations }} to move to {{ otherRadio(r) }}
-              </button>
-            </div>
-          </template>
 
           <h4>Radio profile</h4>
           <p class="warn-line">
@@ -396,9 +399,39 @@ function otherRadio(r: IfaceInfo): string {
             address.
           </p>
 
-          <!-- Channel switch is implemented end to end but this adapter's
-               driver refuses it, so it sits behind the developer flag rather
-               than standing in the way as a control that always errors. -->
+          <h4>Move to another channel</h4>
+          <p class="warn-line">
+            Takes {{ r.name }} down and brings it back up on the new channel.
+            All {{ r.ap.stations }} client(s) are dropped and
+            <strong>not told</strong> — they have to notice and rediscover it,
+            which is what most consumer routers do when their channel changes.
+          </p>
+          <div class="action-row">
+            <div class="seg" role="group" aria-label="channel">
+              <button
+                v-for="c in (r.ap.channel && r.ap.channel < 15 ? CHANNELS_24 : CHANNELS_5)" :key="c"
+                class="seg-btn" :class="{ on: pick(r).channel === c }"
+                @click="setChannel(r.name, c)"
+              >{{ c }}</button>
+            </div>
+            <div class="seg" role="group" aria-label="width">
+              <button
+                v-for="wd in widthsFor(pick(r).channel)" :key="wd"
+                class="seg-btn" :class="{ on: pick(r).width === wd }"
+                @click="target = { ...target, [r.name]: { ...pick(r), width: wd } }"
+              >{{ wd }}&#8239;MHz</button>
+            </div>
+            <button
+              class="accent"
+              :disabled="bridge.busy.value || pick(r).channel === r.ap.channel"
+              @click="bridge.moveChannel(r.name, pick(r).channel, pick(r).width)"
+            >move to {{ pick(r).channel }}</button>
+          </div>
+
+          <!-- The announced alternative. Kept behind the developer flag because
+               both drivers on this box refuse it, so it can only ever report a
+               refusal -- but the path is correct and a radio that supports CSA
+               would move without dropping anyone. -->
           <div v-if="DEVELOPER" class="action-row">
             <label class="k">move to channel</label>
             <div class="seg" role="group" aria-label="channel">
@@ -421,14 +454,14 @@ function otherRadio(r: IfaceInfo): string {
             >announce channel switch</button>
           </div>
           <p v-if="DEVELOPER" class="meta">
-            An 802.11h channel switch announcement: clients are told to move and
-            should follow without reassociating.
-            <strong>Measured 2026-09-03: the mt7921u driver refuses this.</strong>
-            The phy advertises <code>channel_switch</code> and hostapd accepts and
-            logs the request, then every form of the command returns FAIL — the
-            AP does not move. The control is kept behind the developer flag
-            because the path is correct and a radio that supports it would work;
-            the refusal is reported rather than swallowed.
+            An 802.11h channel switch announcement: the access point counts down
+            in its beacons and clients <em>follow</em>, staying associated the
+            whole time — no drop, no rediscovery. That is strictly nicer than the
+            control above, and
+            <strong>measured 2026-09-03 both drivers on this box refuse it</strong>
+            — mt7921u and brcmfmac alike return FAIL and the AP does not move.
+            Kept here because the path is correct and a radio that supports CSA
+            would move seamlessly; the refusal is reported rather than swallowed.
           </p>
 
           <div v-if="bridge.survey.value?.iface === r.name" class="survey">

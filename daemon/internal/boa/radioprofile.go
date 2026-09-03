@@ -221,6 +221,7 @@ func (e *Engine) ApplyRadioProfile(iface, name string) (int, error) {
 			refused = append(refused, cmd)
 		}
 	}
+	e.forgetRadioOn() // width and mode may have changed
 	if len(refused) > 0 {
 		return dropped, fmt.Errorf(
 			"applied, but this radio refused %d of %d settings: %s",

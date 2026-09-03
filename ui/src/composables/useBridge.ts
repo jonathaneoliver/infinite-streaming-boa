@@ -68,6 +68,22 @@ export function useBridge(active: Ref<boolean>) {
     }
   }
 
+  /**
+   * Move a radio to a chosen channel by taking it down and bringing it back up
+   * there. The working counterpart to chanSwitch, which announces the move and
+   * is refused by both drivers on this box.
+   */
+  const moveChannel = (iface: string, channel: number, width: number) =>
+    act(
+      `/api/bridge/radios/${encodeURIComponent(iface)}/move-channel` +
+        `?channel=${channel}&width=${width}`,
+      (b) =>
+        `${b.iface}: now on channel ${b.channel} at ${b.width_mhz} MHz` +
+        (b.stations_dropped
+          ? `, ${b.stations_dropped} client(s) dropped — they were not told, so they have to rediscover it.`
+          : '.'),
+    );
+
   const chanSwitch = (iface: string, channel: number, width: number) =>
     act(
       `/api/bridge/radios/${encodeURIComponent(iface)}/channel` +
@@ -174,10 +190,20 @@ export function useBridge(active: Ref<boolean>) {
       `refuse — 802.11v is a suggestion. Watch the stations counts to see who went.`,
     );
 
-  const deauthAll = (iface: string) =>
-    act(`/api/bridge/radios/${encodeURIComponent(iface)}/deauth-all`, (b) =>
-      `${b.iface}: ${b.stations} station(s) deauthenticated. They reconnect on their own.`,
+  /**
+   * A per-client link event applied to every station on a radio.
+   *
+   * Both are ANNOUNCED: the clients are told and reconnect knowing why, which
+   * is the whole distinction from switching the radio off.
+   */
+  const linkAll = (iface: string, kind: 'drop' | 'nudge') =>
+    act(`/api/bridge/radios/${encodeURIComponent(iface)}/link-all?kind=${kind}`, (b) =>
+      kind === 'drop'
+        ? `${b.iface}: ${b.stations} station(s) deauthenticated. They were told, so they reconnect quickly.`
+        : `${b.iface}: ${b.stations} station(s) disassociated — the softer transition. Some clients ride it out without a full reconnect.`,
     );
+
+  const deauthAll = (iface: string) => linkAll(iface, 'drop');
 
   async function loadSurvey(iface: string) {
     try {
@@ -206,6 +232,6 @@ export function useBridge(active: Ref<boolean>) {
   return {
     info, survey, scan, error, actionMsg, busy,
     load, loadSurvey, chanSwitch, deauthAll, setPower, powerOutage, scanBand,
-    applyProfile, setThreshold, steerAll,
+    applyProfile, setThreshold, steerAll, linkAll, moveChannel,
   };
 }
