@@ -422,7 +422,14 @@ func demoBridgeState(cfg Config) BridgeInfo {
 			Name: cfg.Bridge, Role: RoleBridge, MAC: apMAC,
 			Up: true, Carrier: true, CarrierKnown: true,
 			IPv4: []string{"192.168.1.42/24", "192.168.99.1/24"},
-			IPv6: []string{"fe80::9eef:d5ff:fef6:3ff2/64"},
+			// A unique-local address AND a link-local, because the box really
+			// has both and the interface must show one and hide the other:
+			// fe80:: is on every interface, identifies nothing, and cannot be
+			// pasted into ssh without a %scope naming the CLIENT's interface.
+			IPv6: []string{
+				"fdd5:a04f:f953:4412:da3a:ddff:fead:86/64",
+				"fe80::9eef:d5ff:fef6:3ff2/64",
+			},
 		},
 		{
 			Name: cfg.PrimaryWlan(), Role: RoleAP, MAC: apMAC,

@@ -59,13 +59,29 @@ const nodeX = (i: number) => rowX.value + i * (NODE_W + GAP);
  * and it is the address people actually type.
  */
 function bridgeAddrs(i: IfaceInfo): string[] {
-  const v4 = i.ipv4 ?? [];
-  if (v4.length) return v4;
-  return i.ipv6?.length ? [i.ipv6[0]] : [i.mac ?? ''];
+  const out = [...(i.ipv4 ?? []), ...routableV6(i)];
+  return out.length ? out : [i.mac ?? ''];
+}
+
+/**
+ * The IPv6 addresses worth putting on screen: global and unique-local, never
+ * link-local.
+ *
+ * fe80:: is on every interface, is not an identifier for the box, and cannot be
+ * used without a %interface scope naming the CLIENT's interface -- so printing
+ * it here would be offering an address that does not work when pasted. The ULA
+ * is the one mDNS hands out and the one that answers ssh.
+ */
+function routableV6(i: IfaceInfo): string[] {
+  return (i.ipv6 ?? []).filter((a) => !a.toLowerCase().startsWith('fe80:'));
 }
 
 /** The bridge box grows a line per extra address rather than hiding one. */
 const ADDR_LINE = 17;
+// Wider than the others, because it is the only node carrying an IPv6 address
+// and 40 characters of one do not fit in 190px. It is centred with room either
+// side, so widening it costs the layout nothing.
+const BR_W = 340;
 const brH = computed(() =>
   bridge.value ? NODE_H + ADDR_LINE * (bridgeAddrs(bridge.value).length - 1) : NODE_H,
 );
@@ -145,7 +161,7 @@ function otherRadio(i: IfaceInfo): string {
       </g>
 
       <g v-if="bridge" class="node bridge">
-        <rect :x="CX - NODE_W / 2" :y="BR_Y" :width="NODE_W" :height="brH" rx="8" />
+        <rect :x="CX - BR_W / 2" :y="BR_Y" :width="BR_W" :height="brH" rx="8" />
         <text :x="CX" :y="BR_Y + 22" class="name">{{ bridge.name }}</text>
         <text :x="CX" :y="BR_Y + 39" class="sub">one layer-2 segment</text>
         <text
