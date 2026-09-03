@@ -44,19 +44,40 @@ const rowWidth = computed(() => {
 const rowX = computed(() => (W - rowWidth.value) / 2);
 const nodeX = (i: number) => rowX.value + i * (NODE_W + GAP);
 
+/**
+ * EVERY address on the bridge, not just the first.
+ *
+ * The bridge is the only interface on the box that carries an IP at all -- the
+ * ports are layer 2, because the box is not a hop -- and it normally carries
+ * TWO: the address your router leased it, and BOA_RESCUE_IP, the static
+ * fallback that keeps the box reachable when no DHCP answers.
+ *
+ * Showing one of them was showing the wrong one. The kernel lists the rescue
+ * address first and reports both as permanent, so there is nothing in `ip addr`
+ * that says which is the lease -- and a box displaying only 192.168.99.1 looks
+ * exactly like a box that never got one. Both, always: it is at most two lines
+ * and it is the address people actually type.
+ */
+function bridgeAddrs(i: IfaceInfo): string[] {
+  const v4 = i.ipv4 ?? [];
+  if (v4.length) return v4;
+  return i.ipv6?.length ? [i.ipv6[0]] : [i.mac ?? ''];
+}
+
+/** The bridge box grows a line per extra address rather than hiding one. */
+const ADDR_LINE = 17;
+const brH = computed(() =>
+  bridge.value ? NODE_H + ADDR_LINE * (bridgeAddrs(bridge.value).length - 1) : NODE_H,
+);
+
 const CX = W / 2;
 const WAN_Y = 8;
 const BR_Y = 132;
-const DOWN_Y = 256;
+// The downstream row hangs off the BOTTOM of the bridge box, which is not a
+// constant: it grows with the number of addresses on the bridge.
+const DOWN_Y = computed(() => BR_Y + brH.value + 50);
 // Room under the downstream row for two rows of per-radio action buttons.
-const H = DOWN_Y + NODE_H + 100;
-
-/** First address, preferring IPv4 — the one a person will recognise. */
-function addr(i: IfaceInfo): string {
-  if (i.ipv4?.length) return i.ipv4[0];
-  if (i.ipv6?.length) return i.ipv6[0];
-  return '';
-}
+const H = computed(() => DOWN_Y.value + NODE_H + 100);
 
 /**
  * The band a channel is in. Derived from the channel number rather than read,
@@ -107,7 +128,7 @@ function otherRadio(i: IfaceInfo): string {
         <line v-if="wan" :x1="CX" :y1="WAN_Y + NODE_H" :x2="CX" :y2="BR_Y" />
         <template v-for="(i, n) in downstream" :key="`w-${i.name}`">
           <path
-            :d="`M ${CX} ${BR_Y + NODE_H} V ${BR_Y + NODE_H + 26}
+            :d="`M ${CX} ${BR_Y + brH} V ${BR_Y + brH + 26}
                  H ${nodeX(n) + NODE_W / 2} V ${DOWN_Y}`"
             :class="{ dashed: unwatched(i) }"
           />
@@ -124,10 +145,13 @@ function otherRadio(i: IfaceInfo): string {
       </g>
 
       <g v-if="bridge" class="node bridge">
-        <rect :x="CX - NODE_W / 2" :y="BR_Y" :width="NODE_W" :height="NODE_H" rx="8" />
+        <rect :x="CX - NODE_W / 2" :y="BR_Y" :width="NODE_W" :height="brH" rx="8" />
         <text :x="CX" :y="BR_Y + 22" class="name">{{ bridge.name }}</text>
         <text :x="CX" :y="BR_Y + 39" class="sub">one layer-2 segment</text>
-        <text :x="CX" :y="BR_Y + 56" class="mono">{{ addr(bridge) || bridge.mac }}</text>
+        <text
+          v-for="(a, k) in bridgeAddrs(bridge)" :key="a"
+          :x="CX" :y="BR_Y + 56 + k * ADDR_LINE" class="mono"
+        >{{ a }}</text>
       </g>
 
       <g v-for="(i, n) in downstream" :key="i.name"
