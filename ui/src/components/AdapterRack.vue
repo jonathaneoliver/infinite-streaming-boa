@@ -31,6 +31,8 @@ const props = defineProps<{
   /** Per-device history, keyed by MAC -- the same object the client cards read,
    *  so a band in the fold and the line on the card cannot disagree. */
   series?: Record<string, Series>;
+  /** MAC to display name, covering devices that have since left. */
+  labels?: Record<string, string>;
 }>();
 
 const PROFILES = [
@@ -246,12 +248,16 @@ function degraded(i: IfaceInfo): boolean {
              and the client cards below -- how the adapter's capacity is being
              divided right now. A stream that halved because the radio halved
              looks identical, on its own card, to one that halved by itself.
-             Gated on having DEVICES, not on being a radio: lan0 carries traffic
-             and divides it between devices exactly as a radio does, and gating
-             on `r.ap` silently left the wired port with no chart at all. -->
+             Shown on EVERY adapter, unconditionally. It was gated first on
+             being a radio, which left the wired port with no chart at all, and
+             then on having devices attached, which was subtler and worse: the
+             chart went blank the moment an adapter emptied, deleting the very
+             traffic you had just been watching. What a radio carried is asked
+             about most often right after it stopped carrying it. With nothing
+             in the window the component says so in words. -->
         <AdapterStack
-          v-if="series && on(r).length"
-          :iface="r.name" :clients="on(r)" :series="series"
+          v-if="series"
+          :iface="r.name" :series="series" :labels="labels ?? {}"
         />
 
         <p v-if="degraded(r)" class="notice bad inline">

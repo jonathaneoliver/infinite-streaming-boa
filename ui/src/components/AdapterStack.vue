@@ -33,11 +33,39 @@ import { chartHeight, chartPrefs } from '@/composables/useChartPrefs';
 const props = defineProps<{
   /** The adapter whose traffic this is, matched against each sample's iface. */
   iface: string;
-  /** Every device that might be on it, for names and colours. */
-  clients: { mac: string; label: string }[];
-  /** Per-device history, keyed by MAC -- the same object the client cards read. */
+  /** Per-device history, keyed by MAC -- the same object the client cards read.
+   *  This, and NOT the current device list, decides what the chart contains. */
   series: Record<string, Series>;
+  /** MAC to display name, for whatever the history turns out to hold. Missing
+   *  entries fall back to the MAC: a device can leave the snapshot entirely
+   *  while its last minute of traffic is still on screen, and an unnamed band
+   *  is better than a disappearing one. */
+  labels: Record<string, string>;
 }>();
+
+/**
+ * Who was on this adapter, from the RECORD rather than from the roster.
+ *
+ * Membership used to come from the list of currently-attached devices, which
+ * quietly made the chart a live gauge rather than a history: the moment a
+ * device left, the traffic it had just been doing vanished from the plot, and
+ * an adapter that emptied went blank instead of showing what had happened on
+ * it. That is backwards for the question being asked -- "what was this radio
+ * carrying" is asked most often just after something stopped.
+ *
+ * Each sample already records the adapter that carried it (DATA-CONTRACT
+ * Source R), so the history is self-describing and no roster is needed. A
+ * device that has left keeps its band for as long as its samples are inside
+ * the window, and then ages out of it naturally.
+ */
+const members = computed<string[]>(() => {
+  const out: string[] = [];
+  for (const mac of Object.keys(props.series)) {
+    const s = props.series[mac];
+    if (s?.iface?.some((f) => f === props.iface)) out.push(mac);
+  }
+  return out;
+});
 
 /*
  * Padding and HEIGHT both come from the client charts, the height through the
@@ -103,8 +131,8 @@ interface Band {
  */
 const allTimes = computed<number[]>(() => {
   const seen = new Set<number>();
-  for (const c of props.clients) {
-    const s = props.series[c.mac];
+  for (const mac of members.value) {
+    const s = props.series[mac];
     if (!s) continue;
     for (let i = 0; i < s.t.length; i++) {
       // Only samples this adapter actually carried. A device that roamed in
@@ -140,8 +168,8 @@ const grid = computed(() => allTimes.value.filter((t) => t >= start.value));
 function bandsFor(dir: 'down' | 'up'): Band[] {
   const at = new Map(grid.value.map((t, i) => [t, i]));
   const out: Band[] = [];
-  for (const c of props.clients) {
-    const s = props.series[c.mac];
+  for (const mac of members.value) {
+    const s = props.series[mac];
     if (!s) continue;
     const vals = new Array(grid.value.length).fill(0);
     let peak = 0;
@@ -156,7 +184,13 @@ function bandsFor(dir: 'down' | 'up'): Band[] {
       any = true;
     }
     if (!any) continue;
-    out.push({ mac: c.mac, label: c.label, colour: clientColour(c.mac), vals, peak });
+    out.push({
+      mac,
+      label: props.labels[mac] ?? mac,
+      colour: clientColour(mac),
+      vals,
+      peak,
+    });
   }
   // Biggest at the BOTTOM. A stack's lowest band is the only one with a flat
   // baseline, so it is the only one whose shape can be read directly; giving

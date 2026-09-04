@@ -56,6 +56,18 @@ watchEffect(() => setAdapterIfaces(bridge.info.value?.ifaces ?? []));
  * From the snapshot because the rack and the device list below it must agree,
  * and the list is the thing being read.
  */
+/**
+ * Names for the adapter charts, covering devices that are NOT currently
+ * attached. `onAdapter` above is the live roster and is right for the header
+ * row; a chart showing the last five minutes needs to name whatever was on the
+ * adapter during them, including something that has since left.
+ */
+const labels = computed(() => {
+  const out: Record<string, string> = {};
+  for (const c of props.clients ?? []) out[c.mac] = c.label || c.mac;
+  return out;
+});
+
 const onAdapter = computed(() => {
   const out: Record<string, { mac: string; label: string }[]> = {};
   for (const c of props.clients ?? []) {
@@ -155,7 +167,7 @@ const pending = ref('');
 
       <AdapterRack
         :bridge="bridge" :on-adapter="onAdapter"
-        :series="series"
+        :series="series" :labels="labels"
         v-model:outage="outage"
       >
         <template #plan="{ radio }">
