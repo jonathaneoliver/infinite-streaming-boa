@@ -496,7 +496,7 @@ Everything lives in `.env`; see `.env.example` for the full annotated list.
 |---|---|
 | `AP_SSID`, `AP_PASSWORD` | The wireless network the Pi publishes |
 | `AP_COUNTRY` | Regulatory domain. **The radio stays blocked until this is right** |
-| `AP_BAND`, `AP_CHANNEL` | `bg` (2.4GHz) or `a` (5GHz); 5GHz AP mode is limited to channels 36/40/44/48 |
+| `AP_BAND`, `AP_CHANNEL` | `bg` (2.4GHz) or `a` (5GHz); 5GHz AP mode is limited to the non-DFS channels 36/40/44/48 and 149/153/157/161/165 |
 | `BOA_WAN_PORT` | The port cabled to your existing network. Conditioning is applied here |
 | `BOA_RESCUE_IP` | A fixed address on the bridge so the box is reachable even with no upstream DHCP |
 | `BOA_USB_MAX_CURRENT` | `1` lifts the Pi 5's 600mA USB cap to the full 1.6A — **only with a 5A PSU or powered hub** |

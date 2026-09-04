@@ -175,6 +175,26 @@ func TestSetChannelCommandsAgreeWithThemselves(t *testing.T) {
 		}
 	}
 
+	// The UNII-3 block carries a DIFFERENT centre index, and getting it from
+	// the table rather than from a constant is the whole reason the table has
+	// the field. 5775MHz is channel 155; 42 up here would name a centre 565MHz
+	// away from the primary and fail the ENABLE.
+	got = strings.Join(setChannelCommands(apChannels[149], 80), " | ")
+	for _, want := range []string{
+		"SET channel 149",
+		"SET ht_capab [HT40+]", // 149 sits below its partner, as 36 does
+		"SET vht_oper_chwidth 1",
+		"SET vht_oper_centr_freq_seg0_idx 155", // 5775MHz == channel 155
+		"SET he_oper_centr_freq_seg0_idx 155",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("missing %q in: %s", want, got)
+		}
+	}
+	if strings.Contains(got, "seg0_idx 42") {
+		t.Errorf("UNII-3 was given the UNII-1 centre: %s", got)
+	}
+
 	// 40 sits ABOVE its partner, so the secondary is below it. Naming the wrong
 	// side is the same failure as naming none.
 	if !strings.Contains(strings.Join(setChannelCommands(apChannels[40], 80), " "),

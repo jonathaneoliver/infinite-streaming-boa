@@ -29,9 +29,11 @@ const wired = computed(
 );
 
 /** Channels the box will accept, mirroring apChannels in radioctl.go. DFS is
- *  excluded because the Pi cannot serve an access point on one. */
+ *  excluded because the Pi cannot serve an access point on one; the 5GHz list
+ *  is two blocks with the whole DFS range between them, so that two 5GHz
+ *  radios have somewhere to go that is not inside each other's spectrum. */
 const CHANNELS_24 = [1, 6, 11];
-const CHANNELS_5 = [36, 40, 44, 48];
+const CHANNELS_5 = [36, 40, 44, 48, 149, 153, 157, 161, 165];
 
 const target = ref<Record<string, { channel: number; width: number }>>({});
 /** Chosen outage length per radio; 10s is long enough to drain a player's
@@ -47,9 +49,12 @@ function pick(i: IfaceInfo) {
   }
   return target.value[i.name];
 }
-/** 2.4GHz is 20MHz only: 80 does not exist there and 40 is antisocial. The
- *  daemon refuses the combination too; this keeps it from being offered. */
-const widthsFor = (ch: number) => (ch < 15 ? [20] : [20, 40, 80]);
+/** 2.4GHz is 20MHz only: 80 does not exist there and 40 is antisocial.
+ *
+ *  So is 165, for a different reason -- the channel above it may not be
+ *  radiated on ("no IR" in `iw phy`), so it has no 40MHz partner. The daemon
+ *  refuses both combinations too; this keeps them from being offered. */
+const widthsFor = (ch: number) => (ch < 15 || ch === 165 ? [20] : [20, 40, 80]);
 
 function setChannel(name: string, ch: number) {
   const cur = target.value[name];

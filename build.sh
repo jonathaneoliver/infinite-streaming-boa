@@ -121,8 +121,14 @@ fi
 
 # The Pi's onboard radio cannot run an AP on a DFS channel (radar-avoidance
 # channels require a detection capability the chip does not expose in AP mode).
-if [ "$AP_BAND" = "a" ] && [[ ! " 36 40 44 48 0 " =~ " $AP_CHANNEL " ]]; then
-  die "AP_CHANNEL $AP_CHANNEL is DFS or invalid for 5GHz AP mode; use 36, 40, 44, 48, or 0 for auto"
+#
+# The non-DFS 5GHz channels fall in two blocks either side of the DFS range:
+# UNII-1's 36/40/44/48 and UNII-3's 149/153/157/161/165. Both are listed by
+# both radios under US: DFS-FCC with neither "radar detection" nor "no IR" --
+# verified on the box 2026-09-03. Keep in step with apChannels in radioctl.go.
+if [ "$AP_BAND" = "a" ] \
+  && [[ ! " 36 40 44 48 149 153 157 161 165 0 " =~ " $AP_CHANNEL " ]]; then
+  die "AP_CHANNEL $AP_CHANNEL is DFS or invalid for 5GHz AP mode; use 36, 40, 44, 48, 149, 153, 157, 161, 165, or 0 for auto"
 fi
 if [ "$AP_BAND" = "bg" ] && [[ ! " 1 2 3 4 5 6 7 8 9 10 11 0 " =~ " $AP_CHANNEL " ]]; then
   die "AP_CHANNEL $AP_CHANNEL is not a valid 2.4GHz channel; use 1, 6, 11, or 0 for auto"

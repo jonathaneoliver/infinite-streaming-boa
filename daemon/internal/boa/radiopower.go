@@ -352,8 +352,18 @@ func (e *Engine) MoveChannel(iface string, channel, widthMHz int) (int, error) {
 	ch, ok := apChannels[channel]
 	if !ok {
 		return 0, fmt.Errorf(
-			"channel %d is not offered: 2.4GHz 1/6/11, 5GHz 36/40/44/48 "+
-				"(DFS is excluded -- the Pi cannot serve an AP on one)", channel)
+			"channel %d is not offered: %s "+
+				"(DFS is excluded -- the Pi cannot serve an AP on one)",
+			channel, offeredChannels)
+	}
+	// Checked HERE rather than left to setChannelCommands, which is a pure
+	// builder with nowhere to report from. An over-wide request would otherwise
+	// build an ht_capab naming a partner that does not exist, and every SET
+	// would return OK before the ENABLE failed and left the radio down --
+	// exactly the shape of #166.
+	if max := ch.maxWidth(); widthMHz > max {
+		return 0, fmt.Errorf(
+			"channel %d runs at %dMHz at most (asked for %d)", channel, max, widthMHz)
 	}
 	cmds := setChannelCommands(ch, widthMHz)
 	if err := e.radioReady(iface); err != nil {
@@ -666,8 +676,24 @@ func (e *Engine) ScanBand(iface string, apply bool) (ScanResult, error) {
 				}
 			}()
 
+			// The width the radio was on may be wider than the channel the scan
+			// chose can carry -- 165 is 20MHz only. Narrowed rather than
+			// refused, because this is an automatic move the user asked for by
+			// picking "quietest", and coming back on a quiet 20MHz channel
+			// serves that better than staying on a crowded 80MHz one. It is
+			// SAID, though: a width that changed without being asked for is
+			// exactly the kind of silent difference this file reports.
+			useWidth := wasWidth
+			if max := ch.maxWidth(); useWidth > max {
+				useWidth = max
+				res.Note += fmt.Sprintf(
+					" Channel %d runs at %dMHz at most, so the radio came back "+
+						"narrower than the %dMHz it was on.",
+					res.Best, max, wasWidth)
+			}
+
 			moved := true
-			for _, cmd := range setChannelCommands(ch, wasWidth) {
+			for _, cmd := range setChannelCommands(ch, useWidth) {
 				reply, err := hostapdCmd(iface, cmd)
 				if err != nil || !strings.HasPrefix(reply, "OK") {
 					// Reported, not swallowed: a half-applied channel change is

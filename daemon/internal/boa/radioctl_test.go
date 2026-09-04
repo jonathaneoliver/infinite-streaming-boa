@@ -43,6 +43,26 @@ func TestChanSwitchCommandBuildsTheArgumentsHostapdNeeds(t *testing.T) {
 			"2.4GHz is 20MHz only", 6, 20,
 			"CHAN_SWITCH 5 2437 bandwidth=20 sec_channel_offset=0 ht",
 		},
+		{
+			// UNII-3's 80MHz block centres on 5775, NOT the 5210 the 36-48
+			// block uses. Carrying 5210 up here would name a centre 565 MHz
+			// from the primary, which is the specific way this table goes
+			// wrong while still looking right.
+			"UNII-3 80MHz on 149", 149, 80,
+			"CHAN_SWITCH 5 5745 center_freq1=5775 bandwidth=80 sec_channel_offset=1 vht he",
+		},
+		{
+			"UNII-3 80MHz on 161 takes the secondary below", 161, 80,
+			"CHAN_SWITCH 5 5805 center_freq1=5775 bandwidth=80 sec_channel_offset=-1 vht he",
+		},
+		{
+			"UNII-3 40MHz on 157", 157, 40,
+			"CHAN_SWITCH 5 5785 bandwidth=40 sec_channel_offset=1 ht",
+		},
+		{
+			"channel 165 at its only width", 165, 20,
+			"CHAN_SWITCH 5 5825 bandwidth=20 sec_channel_offset=0 ht",
+		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -75,15 +95,61 @@ func TestChanSwitchCommandRefusesWidthsTheBandCannotDo(t *testing.T) {
 
 func TestOnlyNonDFSChannelsAreOffered(t *testing.T) {
 	// The Pi cannot serve an AP on a DFS channel, so offering one produces a
-	// radio that refuses to start. 52 and 100 are the usual temptations.
-	for _, ch := range []int{52, 56, 100, 149, 165, 0, -1} {
+	// radio that refuses to start. 52 and 100 are the usual temptations; 144 is
+	// the one that looks like it borders UNII-3 and does not -- `iw phy` on the
+	// box marks it "radar detection".
+	//
+	// 169 is here for a different reason: it is NOT DFS, and is still refused,
+	// because the same dump marks it "no IR". Not radiating and not being
+	// allowed to radiate exclude a channel just as completely.
+	for _, ch := range []int{52, 56, 100, 144, 169, 173, 0, -1} {
 		if _, ok := apChannels[ch]; ok {
 			t.Errorf("channel %d is offered but should not be", ch)
 		}
 	}
-	for _, ch := range []int{1, 6, 11, 36, 40, 44, 48} {
+	// UNII-3 IS offered: verified against `iw reg get` (5730-5850 carries no
+	// DFS flag under US: DFS-FCC) and `iw phy` on both radios, 2026-09-03.
+	for _, ch := range []int{1, 6, 11, 36, 40, 44, 48, 149, 153, 157, 161, 165} {
 		if _, ok := apChannels[ch]; !ok {
 			t.Errorf("channel %d should be offered", ch)
+		}
+	}
+}
+
+func TestTheTwo5GHzBlocksAreFarEnoughApartToBeWorthHaving(t *testing.T) {
+	// The entire point of UNII-3 (issue #162) is that two 5GHz radios can sit
+	// somewhere they are not inside each other's spectrum. If the table ever
+	// drifts to two channels in one block this fails, which is the only
+	// automated way to catch a change that still looks reasonable.
+	lo, hi := apChannels[36], apChannels[149]
+	// 80MHz each side means 40 MHz of occupied spectrum either way; anything
+	// under that is overlap rather than separation.
+	if gap := hi.FreqMHz - lo.FreqMHz; gap < 200 {
+		t.Errorf("36 and 149 are %d MHz apart; that is not two places to be", gap)
+	}
+	if lo.Center80 == hi.Center80 {
+		t.Errorf("both blocks centre on %d; they are one block, not two", lo.Center80)
+	}
+}
+
+func TestChannel165IsOfferedAt20MHzOnly(t *testing.T) {
+	// 165 has no 40MHz partner: `iw phy` marks 169 "no IR", so the channel
+	// above it may not be radiated on. Building an ht_capab for a partner that
+	// does not exist is accepted one SET at a time and then fails the ENABLE,
+	// leaving the radio down -- the failure #166 was written to stop.
+	if got := apChannels[165].maxWidth(); got != 20 {
+		t.Errorf("channel 165 maxWidth = %d, want 20", got)
+	}
+	for _, width := range []int{40, 80} {
+		if _, err := chanSwitchCommand(apChannels[165], width); err == nil {
+			t.Errorf("channel 165 at %dMHz was accepted; it has no partner above it", width)
+		}
+	}
+	// Its four neighbours below it are full-width, so the refusal is about 165
+	// and not about UNII-3.
+	for _, ch := range []int{149, 153, 157, 161} {
+		if got := apChannels[ch].maxWidth(); got != 80 {
+			t.Errorf("channel %d maxWidth = %d, want 80", ch, got)
 		}
 	}
 }
