@@ -363,6 +363,12 @@ const anyWide = computed(() =>
   props.info.ifaces.some((i) => (i.ap?.width_mhz ?? 0) >= 40),
 );
 
+/** Whether any cell on screen is actually coloured, which is what decides
+ *  whether a colour legend is a key or a puzzle. */
+const anyScanned = computed(() =>
+  Object.keys(props.scans ?? {}).length > 0,
+);
+
 /**
  * A channel's colour, from that radio's own last scan.
  *
@@ -525,6 +531,28 @@ function otherRadio(i: IfaceInfo): string {
         so picking one chooses a channel and a width together. Colours come from
         that radio's last scan — press <em>scan</em> to take one.
       </template>
+      <!-- The colours are a measurement, not advice: they describe the moment
+           that radio's scan ran. No scan, no legend -- a box nobody has scanned
+           must not be given a key to colours it is not showing. -->
+      <template v-if="anyScanned">
+        <span class="legend">
+          <span class="q q-clear">clear</span>
+          <span class="q q-busy">busy</span>
+          <span class="q q-crowded">crowded</span>
+        </span>
+      </template>
+      <!-- The other way to change channel, and why it is not a cell you can
+           press. 802.11h CSA counts the switch down in the beacons and clients
+           follow WITHOUT dropping -- strictly better, and refused by both chips
+           on this box (measured on brcmfmac and mt7921u, #154). A control that
+           can only ever report a refusal is worse than a sentence saying so, so
+           this is the sentence. POST .../channel still exists and still works
+           the day a driver gains support. -->
+      <template v-if="downstream.some((i) => i.wireless && i.ap)">
+        Moving takes the radio down and back up, so its clients are dropped and
+        not told: 802.11h would move them without dropping anyone, but
+        <strong>both radios here refuse it</strong> (#154).
+      </template>
     </figcaption>
   </figure>
 </template>
@@ -654,6 +682,13 @@ figcaption {
   font-size: 12px;
   margin-top: 6px;
 }
+/* The legend borrows the cells' own colours rather than restating them, so a
+   change to one cannot drift from the other. */
+.legend { display: inline-flex; gap: 8px; margin: 0 4px; }
+.legend .q { font-family: var(--mono); font-size: 11px; }
+.legend .q-clear { color: var(--ok); }
+.legend .q-busy { color: var(--warn); }
+.legend .q-crowded { color: var(--bad); }
 
 @media (max-width: 760px) {
   /* The row of downstream nodes stops being legible well before the page does,
