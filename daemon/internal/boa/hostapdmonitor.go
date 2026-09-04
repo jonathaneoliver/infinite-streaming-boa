@@ -3,7 +3,6 @@ package boa
 import (
 	"fmt"
 	"net"
-	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -175,6 +174,11 @@ func (e *Engine) watchOneRadio(iface string) {
 			continue
 		}
 		e.readHostapdEvents(iface, conn)
+		// Say goodbye before dropping the socket, so hostapd forgets this
+		// monitor rather than discovering it is gone one failed send at a
+		// time. Best effort by nature -- the usual reason the read loop ended
+		// is that hostapd is no longer there to be told.
+		hostapdDetach(conn)
 		conn.Close()
 		time.Sleep(retry)
 	}
@@ -191,7 +195,19 @@ func hostapdAttach(iface string) (*net.UnixConn, error) {
 	if !hostapdAvailable(iface) {
 		return nil, fmt.Errorf("no control socket for %s", iface)
 	}
-	local := fmt.Sprintf("@boa-hostapd-mon-%d-%s", os.Getpid(), iface)
+	// STABLE per radio, with no pid in it.
+	//
+	// hostapd remembers each ATTACHed address and keeps sending to it. An
+	// address carrying the daemon's pid is a NEW monitor on every restart, so
+	// each deploy left another dead registration behind and hostapd logged
+	// "CTRL_IFACE monitor: Connection refused" for every event against every
+	// one of them until it gave up after ten failures. MEASURED 2026-09-04: 34
+	// of those in half an hour across a day's deploys.
+	//
+	// A stable name means a restart re-attaches as the SAME monitor rather
+	// than accumulating a new one, so the worst case is one stale registration
+	// per radio instead of one per deploy.
+	local := fmt.Sprintf("@boa-hostapd-mon-%s", iface)
 	conn, err := net.DialUnix("unixgram",
 		&net.UnixAddr{Name: local, Net: "unixgram"},
 		&net.UnixAddr{Name: hostapdSocket(iface), Net: "unixgram"})
@@ -210,6 +226,17 @@ func hostapdAttach(iface string) (*net.UnixConn, error) {
 		return nil, fmt.Errorf("%s refused ATTACH: %q", iface, strings.TrimSpace(string(buf[:n])))
 	}
 	return conn, nil
+}
+
+// hostapdDetach unregisters a monitor connection.
+//
+// Short deadline and the reply ignored: this runs on a path where hostapd has
+// usually just gone away, and waiting on an answer that is not coming would
+// hold the reconnect loop open for no benefit. Sending it costs one datagram
+// and saves hostapd ten failed deliveries per orphaned monitor.
+func hostapdDetach(conn *net.UnixConn) {
+	_ = conn.SetWriteDeadline(time.Now().Add(500 * time.Millisecond))
+	_, _ = conn.Write([]byte("DETACH"))
 }
 
 // readHostapdEvents reads until the connection fails, which is how a hostapd
