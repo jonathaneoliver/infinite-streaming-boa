@@ -488,6 +488,11 @@ func (e *Engine) SteerClient(mac, fromIface, toIface string) error {
 				"802.11v support, or the client may not have advertised it",
 			strings.TrimSpace(reply))
 	}
+	// Armed BEFORE the event is logged, so an answer that arrives in the same
+	// millisecond has something to be matched against. The client's reply is
+	// asynchronous and comes back through the monitor connection, not as a
+	// reply to this command -- see hostapdmonitor.go.
+	e.notePendingSteer(m, fromIface, e.describeRadio(toIface))
 	e.noteSteer(m, fromIface, toIface)
 	return nil
 }

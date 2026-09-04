@@ -98,6 +98,13 @@ type Engine struct {
 	radioMu    sync.Mutex
 	radioLocks map[string]*sync.Mutex
 
+	// pendingSteers is every 802.11v transition request still waiting for the
+	// client's answer, keyed by MAC. The answer arrives asynchronously on the
+	// monitor connection, so it has to be matched against something; and a
+	// request that is never answered is itself the result, which is why these
+	// are aged out loudly rather than dropped. See hostapdmonitor.go.
+	pendingSteers map[string]pendingSteer
+
 	rev, ctrlRev uint64
 	snap         Snapshot
 
@@ -280,6 +287,10 @@ func (e *Engine) Start() {
 	// mid-outage, so a client is never stranded off the AP across a restart.
 	e.clearDenyACL()
 	e.restoreRadioPower()
+	// A monitor connection per radio, for the messages hostapd sends unasked.
+	// Everything else here talks to hostapd in request/reply, which cannot see
+	// a client's answer to a steer -- see hostapdmonitor.go.
+	e.watchHostapdEvents()
 	// Devices announce only occasionally -- on join, on wake, when services
 	// change -- so an in-memory-only name table means every daemon restart
 	// drops every client back to a bare MAC until the next announcement,
@@ -681,6 +692,9 @@ func (e *Engine) tick() {
 	e.noteClientChanges(stationRadio, labels)
 	e.noteRadioChanges()
 	e.noteAPServing()
+	// A steered client that never answered: the silence is the result, so it
+	// is stated rather than left for the reader to infer from a missing line.
+	e.reportMuteSteers()
 	// AFTER the two watches above, so a radio that has drifted is reported as
 	// having drifted before anything moves it back. The restore is loud, but
 	// it is not the only thing that should have spoken.
