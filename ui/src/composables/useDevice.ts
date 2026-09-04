@@ -190,11 +190,19 @@ export function useDevice() {
   function linkDeadzone(mac: string, sec: number) {
     return send(`/api/devices/${mac}/link/deadzone?dur=${sec}`, 'POST', undefined);
   }
+  // steer: ask this one client to move to the box's other radio (802.11v).
+  // A REQUEST -- the client decides, and whether it complies is the result
+  // being looked for. The daemon resolves both radios, so nothing here needs
+  // to know which band the client is on.
+  function linkSteer(mac: string) {
+    return send(`/api/devices/${mac}/link/steer`, 'POST', undefined);
+  }
 
   return {
     linkDeauth,
     linkDisassoc,
     linkDeadzone,
+    linkSteer,
     writing,
     conflict,
     patchShape,

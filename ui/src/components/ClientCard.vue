@@ -32,6 +32,7 @@ const emit = defineEmits<{
   linkDrop: [];
   linkNudge: [];
   linkDeadzone: [sec: number];
+  linkSteer: [];
   toggle: [];
   addSub: [];
   removeSub: [string];
@@ -279,9 +280,9 @@ const connectedLabel = computed(() => {
 
 // Transient acknowledgement that a link event was sent. The lasting proof is
 // the connected-time above resetting; this just confirms the click dispatched.
-const linkFlash = ref<'drop' | 'nudge' | 'deadzone' | null>(null);
+const linkFlash = ref<'drop' | 'nudge' | 'deadzone' | 'steer' | null>(null);
 let linkFlashTimer: ReturnType<typeof setTimeout> | undefined;
-function flashLink(kind: 'drop' | 'nudge' | 'deadzone') {
+function flashLink(kind: 'drop' | 'nudge' | 'deadzone' | 'steer') {
   linkFlash.value = kind;
   clearTimeout(linkFlashTimer);
   linkFlashTimer = setTimeout(() => (linkFlash.value = null), 1400);
@@ -297,6 +298,23 @@ const deadzoneSec = ref(10);
 function fireDeadzone() {
   emit('linkDeadzone', deadzoneSec.value);
   flashLink('deadzone');
+}
+
+/*
+ * Ask THIS client to move to the other radio (802.11v).
+ *
+ * The gentlest of the four: drop and nudge take the link away and let the
+ * client choose where to land, where this names a destination and leaves the
+ * link up. A client that honours it moves without ever disconnecting.
+ *
+ * "sent" is all this can honestly report. The request either reaches the client
+ * or it does not; whether the client ACTS on it shows up as the radio on this
+ * card changing, which is the thing actually worth watching -- and a device
+ * that ignores transition requests is a finding, not a failure.
+ */
+function fireSteer() {
+  emit('linkSteer');
+  flashLink('steer');
 }
 
 // Past a few seconds of blackout a phone stops waiting and leaves the AP for
@@ -805,6 +823,17 @@ function fmtBytes(n: number): string {
         class="ghost" :class="{ flash: linkFlash === 'nudge', active: activeLinkKinds.has('nudge') }" @click="fireLink('nudge')"
         title="Disassociate: the softer 802.11 disconnect, usually a quicker recovery than drop"
       >{{ linkFlash === 'nudge' ? 'sent' : 'nudge' }}</button>
+      <!-- Only when the daemon says there is somewhere to send it. A transition
+           request has to NAME a destination access point, so on a box serving
+           one radio there is nothing to offer and the button is absent rather
+           than present-and-failing. -->
+      <button
+        v-if="client.steer_to"
+        class="ghost" :class="{ flash: linkFlash === 'steer' }" @click="fireSteer"
+        :title="`Ask this client to move to ${client.steer_to} (802.11v BSS transition). `
+          + `The link stays up and it may refuse — whether this device honours a `
+          + `transition request is the thing being tested.`"
+      >{{ linkFlash === 'steer' ? 'sent' : 'steer' }}</button>
       <button
         class="ghost" :class="{ flash: linkFlash === 'deadzone', active: activeLinkKinds.has('deadzone') }" @click="fireDeadzone"
         title="Hold the link down for the duration -- long enough to drain a player's buffer and force a rebuffer, unlike a single drop"

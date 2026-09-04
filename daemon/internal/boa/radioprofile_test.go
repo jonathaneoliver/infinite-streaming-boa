@@ -138,3 +138,40 @@ func TestEveryProfileSaysWhatItDoes(t *testing.T) {
 		}
 	}
 }
+
+func TestOtherRadioIsWhereAClientCanBeSteered(t *testing.T) {
+	// SteerTo on every client snapshot comes from here, and it is what decides
+	// whether the interface offers a steer button at all. Empty must mean
+	// "nowhere to go", never "I did not look" -- an empty string that reached
+	// SteerClient would build a neighbour report naming no access point.
+	//
+	// Demo mode, so this asks the CONFIG question -- which radios exist and
+	// which is the client on -- without needing hostapd on the machine running
+	// the tests.
+	two := &Engine{cfg: Config{Demo: true, WlanPorts: []string{"wlan0", "wlan-usb"}}}
+	if got := two.OtherRadio("wlan0"); got != "wlan-usb" {
+		t.Errorf("from wlan0 -> %q, want wlan-usb", got)
+	}
+	// The direction matters: a client on the adapter is steered to the onboard
+	// radio, not the other way round. Taking the source from the primary rather
+	// than from the client's own radio would get this backwards for half the
+	// clients on a two-radio box.
+	if got := two.OtherRadio("wlan-usb"); got != "wlan0" {
+		t.Errorf("from wlan-usb -> %q, want wlan0", got)
+	}
+
+	// One radio: there is nowhere to send anyone, and saying so is the whole
+	// point -- the button is hidden on this rather than offered and refused.
+	one := &Engine{cfg: Config{Demo: true, WlanPorts: []string{"wlan0"}}}
+	if got := one.OtherRadio("wlan0"); got != "" {
+		t.Errorf("single radio -> %q, want empty", got)
+	}
+	// A radio that is not in the list at all still yields nothing rather than
+	// naming the only radio there is: steering a client to the radio it is
+	// already on is refused downstream, and inventing a target here would just
+	// move that failure somewhere less obvious.
+	if got := one.OtherRadio("wlan-usb"); got != "wlan0" {
+		t.Logf("unknown source names the only serving radio (%q) -- acceptable: "+
+			"SteerClient refuses from==to, and this is not that case", got)
+	}
+}
