@@ -76,6 +76,12 @@ Intended for:
   being duplicated by it.
 - Certification-grade impairment. Profiles approximate real links; they are a
   place to start, not a standard.
+- **Attenuation.** boa does not weaken the radio, and on this hardware it could
+  not: setting transmit power is accepted by the driver and has no effect,
+  measured across the adapter's entire legal range. A weak signal is produced by
+  distance or obstruction, not from the interface. What the box does instead is
+  condition the link above the radio, and impose real MAC-layer cost through the
+  radio profiles — which change what the radio *is*, never how loudly it talks.
 
 ## 4) Users & Use Cases
 
