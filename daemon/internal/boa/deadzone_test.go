@@ -39,7 +39,7 @@ func TestDeadzoneLiftsOnTheRadioItBanned(t *testing.T) {
 		stationRadio: map[string]string{mac: "wlan-usb"},
 	}
 
-	if err := e.LinkDeadzone(mac, 1); err != nil {
+	if err := e.LinkDeadzone(mac, 1, ScopeCurrent); err != nil {
 		t.Fatalf("LinkDeadzone: %v", err)
 	}
 
@@ -106,7 +106,7 @@ func TestDeadzoneRejectsBadInput(t *testing.T) {
 		{"too long", "aa:bb:cc:dd:ee:ff", 301},
 	}
 	for _, c := range cases {
-		if err := e.LinkDeadzone(c.mac, c.dur); err == nil {
+		if err := e.LinkDeadzone(c.mac, c.dur, ScopeCurrent); err == nil {
 			t.Errorf("%s: LinkDeadzone(%q, %v) = nil, want an error", c.name, c.mac, c.dur)
 		}
 	}

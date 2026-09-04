@@ -66,6 +66,25 @@ const (
 	LinkDeadzone = "deadzone" // deauth held for DurSec: the client cannot stay on
 )
 
+// Deadzone scope: which radios a deadzone holds a client off.
+//
+// The distinction only exists because this box can serve two radios from one
+// SSID onto one bridge, which turns a deny on one of them into an open door on
+// the other -- measured at under a second on the bench. Naming the scope is the
+// difference between a test that says what it does and one that reads as an
+// outage while delivering a roam. See issue #206.
+const (
+	// ScopeCurrent denies on the radio the client is associated to, and only
+	// that one. The client lands on another radio if the box is serving one, so
+	// this is a forced roam -- a useful primitive precisely because, unlike a
+	// steer, the client cannot decline it.
+	ScopeCurrent = "current"
+	// ScopeAll denies on every radio serving the AP, which is the sustained
+	// outage the deadzone was always described as. Refused rather than
+	// half-applied when a radio cannot be reached; see LinkDeadzone.
+	ScopeAll = "all"
+)
+
 // LinkEvent is one entry on a pattern's link lane. A pulse (drop/nudge) fires
 // once as the playhead crosses AtSec; a deadzone re-fires for DurSec, holding
 // the client off long enough to drain a player's buffer.
@@ -73,6 +92,9 @@ type LinkEvent struct {
 	AtSec  float64 `json:"at_sec"`
 	Kind   string  `json:"kind"`
 	DurSec float64 `json:"dur_sec,omitempty"` // deadzone only
+	// Scope is deadzone only, and empty means ScopeCurrent -- so a pattern
+	// saved before this field existed keeps doing exactly what it did.
+	Scope string `json:"scope,omitempty"`
 }
 
 // LinkFire is a link action the Player determined should happen this tick,
@@ -82,6 +104,7 @@ type LinkFire struct {
 	MAC    string
 	Kind   string
 	DurSec float64 // deadzone only
+	Scope  string  // deadzone only; empty means ScopeCurrent
 }
 
 // Pattern is an ordered list of keyframes plus how to leave the end of it.
@@ -288,8 +311,17 @@ func validPattern(p Pattern) error {
 			if ev.DurSec <= 0 || ev.DurSec > maxPatternSec {
 				return fmt.Errorf("link event %d: deadzone needs a duration of 1-%ds", i, maxPatternSec)
 			}
+			switch ev.Scope {
+			case "", ScopeCurrent, ScopeAll:
+			default:
+				return fmt.Errorf("link event %d: deadzone scope must be %q or %q (got %q)",
+					i, ScopeCurrent, ScopeAll, ev.Scope)
+			}
 		default:
 			return fmt.Errorf("link event %d: unknown kind %q (want drop, nudge or deadzone)", i, ev.Kind)
+		}
+		if ev.Scope != "" && ev.Kind != LinkDeadzone {
+			return fmt.Errorf("link event %d: scope is deadzone only, not %s", i, ev.Kind)
 		}
 		if ev.AtSec < 0 || ev.AtSec > maxPatternSec {
 			return fmt.Errorf("link event %d: at %gs is out of range", i, ev.AtSec)
@@ -475,7 +507,9 @@ func (p Pattern) linkFires(mac string, prev, pos float64, looped bool, dur float
 		if crossed(prev, pos, looped, dur, ev.AtSec) {
 			// deadzone carries its duration; the Engine holds the client off
 			// with a deny-ACL ban rather than re-firing each tick.
-			out = append(out, LinkFire{MAC: mac, Kind: ev.Kind, DurSec: ev.DurSec})
+			out = append(out, LinkFire{
+				MAC: mac, Kind: ev.Kind, DurSec: ev.DurSec, Scope: ev.Scope,
+			})
 		}
 	}
 	return out

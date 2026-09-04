@@ -263,6 +263,14 @@ damages packets, never link state.
   deadzone denies the MAC for its length so the client cannot re-associate until
   it lifts, rather than a repeated deauth it could slip between. And **steer**,
   the only one that does not take the link away at all.
+- **A deadzone names how far it reaches**, because this box can serve two radios
+  from one SSID. `current` denies on the radio the client is on and nothing
+  else: measured, the client re-associates on the other radio in under a second,
+  so it is a forced **roam** — useful precisely because, unlike a steer, the
+  client cannot refuse it. `all` denies on every radio and is the **outage**
+  above. A deadzone that cannot cover every radio is refused rather than
+  half-applied, because one that reads as total and delivers a roam is worse
+  than one that did not run.
 - **Steer asks one client to move to the box's other radio** (802.11v BSS
   transition), naming it as the destination. It is a **request**: the link stays
   up, the client decides, and a device that ignores transition requests is a
