@@ -112,13 +112,17 @@ const vw = useViewportWidth();
  * script -- it depends on which directions are shown and whether the card is
  * open, which no media query can see.
  */
-// A FOLDED row has less room for identity than an open one, at the same window
-// width: it also carries a sparkline and a figure per direction plus the unit,
-// roughly 250px the open card spends on a single tail cell. Using one set of
-// breakpoints for both left folded rows crushed while open ones were fine --
-// measured at 1200px, where the open card read cleanly and the folded row below
-// it showed "WL... ch 40 - 80 MHz - ... no a... -42 ...".
-const identityBudget = computed(() => vw.value - (props.collapsed ? 250 : 0));
+// Folded and open rows have the SAME room for identity, because the open row
+// reserves the folded tail's width rather than sizing its middle to fit -- see
+// foldedTailPx. One budget for both states is what makes that true.
+//
+// This used to subtract 250px when folded, on the premise that a folded row
+// "has less room for identity than an open one, at the same window width".
+// That was correct then and is not now: it is the same 250-odd pixels either
+// way. Leaving the subtraction in place kept the two states on different sides
+// of these breakpoints, so a fold changed which columns existed and shifted the
+// address by ~43px even once the tails matched.
+const identityBudget = computed(() => vw.value);
 
 const showIPv6Count = computed(() => identityBudget.value >= 1600);
 const showAssoc = computed(() => identityBudget.value >= 1500);
@@ -140,14 +144,23 @@ const IDENTITY_COLS = computed(() => [
   // "wifi", because which radio a client is on is the fact that matters once
   // the box serves two bands.
   'minmax(0, 84px)',      // medium / radio badge
+  // The radio summary is never dropped: which radio a client is on, and what
+  // that radio is doing, is the reason this row exists on a two-band box.
+  //
+  // BEFORE the address, because that is the order the template renders them in.
+  // These two were transposed: the template emits radio summary then address,
+  // while this list named address first, so the address landed in the radio
+  // summary's minmax(0, 168px) track. With no lower bound it collapsed under
+  // the folded row's extra ~326px of sparklines and figures, and its left edge
+  // moved as the card toggled -- 99px at a 1200px window, 146px at 1100px,
+  // measured. The radio summary meanwhile sat in a 268px track it did not need,
+  // empty on every wired client.
+  'minmax(0, 168px)',     // "ch 40 · 80 MHz · 802.11ax"
   // 268px fits a full IPv4 with room to spare and most of an IPv6; longer
   // addresses ellipsise and carry the full value in a tooltip.
   'minmax(96px, 268px)',  // address
   ...(showIPv6Count.value ? ['minmax(0, 62px)'] : []),
   ...(showMAC.value ? ['minmax(0, 132px)'] : []),
-  // The radio summary is never dropped: which radio a client is on, and what
-  // that radio is doing, is the reason this row exists on a two-band box.
-  'minmax(0, 168px)',     // "ch 40 · 80 MHz · 802.11ax"
   ...(showSignal.value ? ['minmax(0, 96px)'] : []),
   ...(showPHY.value ? ['minmax(0, 76px)'] : []),
   // 104px, not 92: "assoc 42m 35s" is the longest common form and 92 clipped
@@ -160,19 +173,47 @@ const IDENTITY_COLS = computed(() => [
 // point, disappears -- before the sparklines and throughput figures give up any
 // width. Everything in it is recoverable by expanding the card; a clipped rate
 // figure is not, and it is what the row exists to show.
+// Must match `gap` on .card-head below: the open row reserves the folded row's
+// tail width, and that total includes the gaps between its tracks.
+const HEAD_GAP_PX = 8;
+
+/** The folded row's tail: a sparkline and a figure per direction, then the unit. */
+const foldedTail = computed(() => [
+  ...(props.chart.showDown ? [76, 68] : []),
+  ...(props.chart.showUp ? [76, 68] : []),
+  38,
+]);
+
+/**
+ * What that tail occupies in total, its internal gaps included.
+ *
+ * The OPEN row reserves exactly this for its single middle cell, rather than
+ * sizing it to its contents. Both states then demand the same width, so the
+ * identity tracks squeeze by the same amount and nothing shifts as a card is
+ * toggled -- which is what the grid in .card-head exists to guarantee.
+ *
+ * Sizing the open middle to its contents instead left the folded row asking for
+ * ~326px more than the open one. Below about 1400px that difference came out of
+ * the identity tracks, which are minmax(0, ...) and squeeze first by design, so
+ * folding a card dragged the address leftwards: 95px at a 1200px window and
+ * 146px at 1100px, measured, and 0 at 1400px and above where there was slack to
+ * absorb it. The slack track alone could not fix this -- it only absorbs a
+ * difference that exists, and the difference was the whole problem.
+ */
+const foldedTailPx = computed(() =>
+  foldedTail.value.reduce((total, px) => total + px, 0)
+  + (foldedTail.value.length - 1) * HEAD_GAP_PX);
+
 const headCols = computed(() => [
   ...IDENTITY_COLS.value,
-  'minmax(0, 1fr)', // slack: absorbs the difference between the two middles
+  'minmax(0, 1fr)', // slack: absorbs what is left once both middles agree
   ...(props.collapsed
     // Folded: sparkline and figure per direction, then the unit.
-    ? [
-        ...(props.chart.showDown ? ['76px', '68px'] : []),
-        ...(props.chart.showUp ? ['76px', '68px'] : []),
-        '38px',
-      ]
+    ? foldedTail.value.map(px => `${px}px`)
     // Open: one cell holding the reset action, laid out as a flex row inside so
-    // its contents cannot push a track around.
-    : ['auto']),
+    // its contents cannot push a track around -- held to the folded tail's
+    // width so the identity group's budget does not change as the card opens.
+    : [`${foldedTailPx.value}px`]),
   // Shared from here on, so none of it moves as the card opens.
   ...(showLinks.value ? ['minmax(0, 124px)'] : []), // ntopng deep links
   // 106px: the badge is uppercase 11px with letter-spacing and padding, and at
