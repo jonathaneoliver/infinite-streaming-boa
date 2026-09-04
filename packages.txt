@@ -15,3 +15,9 @@ iperf3
 # ("Hotspot network creation took too long"); hostapd brings the same radio up
 # at 80MHz where wpa_supplicant managed nothing at all.
 hostapd
+
+# Builds the venv that section 8e of scripts/customize.sh installs glances
+# into. glances itself is deliberately NOT an apt package: Debian ships it
+# +dfsg, with the built web frontend stripped out, so `glances -w` from the
+# .deb serves nothing. See that section.
+python3-venv

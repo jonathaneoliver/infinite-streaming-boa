@@ -416,6 +416,10 @@ func (e *Engine) rate(key string, bytes uint64, now time.Time) float64 {
 
 const ntopngPort = 3000
 
+// glancesPort is where the glances web UI listens; the unit that puts it there
+// is written by section 8e of scripts/customize.sh.
+const glancesPort = 61208
+
 // sshPort is exempted from shaping alongside the interface: the way out of a
 // cap set too low is often the shell, and it must not be caught by the thing it
 // is there to undo.
@@ -438,7 +442,7 @@ func managementPorts(addr string) []int {
 		}
 	}
 	ports := []int{web}
-	for _, p := range []int{sshPort, ntopngPort} {
+	for _, p := range []int{sshPort, ntopngPort, glancesPort} {
 		if p != web {
 			ports = append(ports, p)
 		}
@@ -821,6 +825,10 @@ func (e *Engine) tick() {
 			Adapter:  Radio(e.cfg.PrimaryWlan()),
 			Ntopng:   e.ntopngUp(), NtopngPort: ntopngPort,
 			Iperf: PortListening(iperfPort), IperfPort: iperfPort,
+			// /proc rather than a dial, as for iperf3: glances binds a fixed
+			// port on every address, so a listener in the table is the whole
+			// answer and costs no connection.
+			Glances: PortListening(glancesPort), GlancesPort: glancesPort,
 			LinkControl: e.anyLinkControl(),
 			LossBurst:   burstOK, LossBurstNote: burstNote,
 			NamesLearned: len(names), NamesByMAC: len(macNames),

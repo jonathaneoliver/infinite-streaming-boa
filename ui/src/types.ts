@@ -486,6 +486,9 @@ export interface Capabilities {
   /** True only when the iperf3 server is LISTENING, not merely installed. */
   iperf: boolean;
   iperf_port: number;
+  /** True only when the glances web UI is LISTENING, not merely installed. */
+  glances: boolean;
+  glances_port: number;
   /** True when per-client link events (deauth/disassoc) can be driven -- i.e.
    *  hostapd is serving the AP and exposing its control socket. False on the
    *  onboard/NetworkManager radio, so the link actions are hidden rather than
@@ -519,6 +522,18 @@ export function ntopngUrl(
   if (!path) return `http://${host}:${port}/`;
   const qs = new URLSearchParams({ ifid: '0', ...params }).toString();
   return `http://${host}:${port}${path}?${qs}`;
+}
+
+/**
+ * Build a link to the glances web UI.
+ *
+ * Host from the current page, for the same reason ntopngUrl does it: the box
+ * answers to several names and only the browser knows which one got here.
+ * glances has a single page and no deep links, so there is no path to build.
+ */
+export function glancesUrl(port: number): string {
+  const host = window.location.hostname || 'localhost';
+  return `http://${host}:${port}/`;
 }
 
 export interface Notice {

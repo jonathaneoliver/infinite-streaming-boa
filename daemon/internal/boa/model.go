@@ -454,6 +454,11 @@ type Capabilities struct {
 	// It measures the unshaped link only; see the unit file for why.
 	Iperf     bool `json:"iperf"`
 	IperfPort int  `json:"iperf_port"`
+	// Glances reports whether the glances web UI is LISTENING. Same reasoning
+	// as Ntopng: the header link is hidden rather than shown pointing at a
+	// refused connection, so an image built without it degrades to silence.
+	Glances     bool `json:"glances"`
+	GlancesPort int  `json:"glances_port"`
 	// LinkControl reports whether per-client link events (deauth/disassoc) can
 	// be driven -- i.e. hostapd is serving the AP and exposing its control
 	// socket. False on the onboard/NetworkManager radio, which offers no such

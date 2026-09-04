@@ -2,7 +2,7 @@
 import { computed, provide, ref, watch } from 'vue';
 import { useSnapshot } from '@/composables/useSnapshot';
 import { useDevice } from '@/composables/useDevice';
-import { ntopngUrl } from '@/types';
+import { ntopngUrl, glancesUrl } from '@/types';
 import { exportConfig, importConfig } from '@/composables/useConfig';
 import ClientsView from '@/components/ClientsView.vue';
 import BridgeView from '@/components/BridgeView.vue';
@@ -228,6 +228,15 @@ the file are replaced, devices not mentioned are left alone.">
         target="_blank" rel="noopener"
         title="Traffic analysis for the whole bridge, in ntopng"
       >ntopng ↗</a>
+      <a
+        v-if="caps?.glances"
+        class="pill link"
+        :href="glancesUrl(caps.glances_port)"
+        target="_blank" rel="noopener"
+        title="The box's own health -- CPU, memory, temperature, disk and
+per-process load -- in glances. Says nothing about the clients; this is the
+appliance watching itself."
+      >glances ↗</a>
     </header>
 
     <div class="tabs" role="tablist" aria-label="views">

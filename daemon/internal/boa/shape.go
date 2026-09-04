@@ -130,9 +130,10 @@ const (
 	prefExempt = 50
 
 	// The block reserved for exemptions: one filter per local address per
-	// management port. Two addresses and three ports is the normal case, and
-	// the whole block is cleared before it is rewritten, so the only cost of
-	// headroom is a few no-op deletes.
+	// management port. Two addresses and four ports -- the interface, SSH,
+	// ntopng and glances -- is the normal case, and the whole block is cleared
+	// before it is rewritten, so the only cost of headroom is a few no-op
+	// deletes.
 	exemptSlots = 32
 )
 

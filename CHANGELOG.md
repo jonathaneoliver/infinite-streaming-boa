@@ -12,6 +12,30 @@ deliberate and documented so they are not mistaken for defects — see
 
 ## [Unreleased]
 
+### Added
+
+- **glances on `:61208`**, linked from the header beside ntopng, for the box's
+  own health — CPU, memory, SoC temperature, disk and per-process load. ntopng
+  answers what the traffic is doing; nothing answered whether the appliance was
+  keeping up, which is the question when a throughput figure is wrong because
+  the Pi is thermally throttled rather than because the policy says so. Its port
+  joins the management exemption, so a cap can no more throttle it than the
+  dashboard. The link is hidden unless the port is actually listening.
+
+  Installed from a pinned upstream wheel into a venv at `/opt/glances` rather
+  than from apt: Debian ships glances `+dfsg` with the built web frontend
+  stripped out, so `glances -w` from the `.deb` aborts on a missing
+  `outputs/static/public`. The build asserts the frontend is present before
+  enabling the unit. The venv also keeps ~90 packages of desktop plotting stack
+  (matplotlib, tk, PIL, fonttools) that the Debian package depends on off a
+  headless appliance.
+
+### Changed
+
+- The measured RAM figures in `README.md` were re-taken on the same box. ntopng
+  had grown from 278 MB to 386 MB with no change made to it, which is the
+  unbounded-growth caveat already documented there showing up in practice.
+
 ## [0.1.0] — 2026-09-01
 
 First tagged release. boa is a Raspberry Pi that sits invisibly in a network as a
