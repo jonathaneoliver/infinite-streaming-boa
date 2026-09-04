@@ -37,6 +37,7 @@ func (a *API) Routes() *http.ServeMux {
 	mux.HandleFunc("GET /api/history", a.getHistory)
 	mux.HandleFunc("GET /api/bridge", a.getBridge)
 	mux.HandleFunc("GET /api/events", a.getEvents)
+	mux.HandleFunc("GET /api/events/stream", a.streamEvents)
 	mux.HandleFunc("GET /api/bridge/radios/{iface}/survey", a.getSurvey)
 	mux.HandleFunc("POST /api/bridge/radios/{iface}/channel", a.postChannel)
 	mux.HandleFunc("POST /api/bridge/radios/{iface}/move-channel", a.postMoveChannel)
@@ -122,6 +123,154 @@ func (a *API) getBridge(w http.ResponseWriter, r *http.Request) {
 // for ten minutes, then six in a second when a radio is switched off -- and
 // attaching them to a 1Hz snapshot would mean carrying an empty array 99% of
 // the time.
+// eventPoll is how often the capture stream looks for new events.
+//
+// The ring is in memory and a poll is a mutex and a slice walk, so this is
+// cheap; the number is chosen against the thing being captured rather than
+// against cost. Associations land tens of milliseconds apart, and a capture
+// that batched them into one-second lumps would put the reader back where
+// /api/events already leaves them.
+const eventPoll = 250 * time.Millisecond
+
+// eventHeartbeat is how long the stream will say nothing before saying so.
+//
+// A capture file that is silent for ten minutes is either a quiet network or a
+// dead connection, and a reader cannot tell which. A heartbeat line makes the
+// difference recordable, which is the same reason everything else here reports
+// rather than going quiet.
+const eventHeartbeat = 30 * time.Second
+
+// streamEvents streams the activity log as newline-delimited JSON, one object
+// per line, until the client goes away.
+//
+// NDJSON rather than the server-sent events /api/state/stream uses, because the
+// consumers are different: that one feeds a browser, this one feeds
+// `curl -sN http://box/api/events/stream > run.ndjson` and whatever reads the
+// file afterwards. An SSE frame has to be unwrapped before it can be parsed,
+// and a capture format that needs unwrapping is one more step between a run and
+// an answer.
+//
+// # Why this exists at all
+//
+// The ring holds eventRing events, in memory, and is cleared by every restart.
+// Its own sizing note says a few hundred covers "several minutes of a device
+// flapping" -- which is precisely what a bounce or drop experiment is, times
+// however many clients are in it. Polling /api/events on a cursor works, but it
+// is a race against the ring that the operator has to run themselves. This is
+// that race, run by the box, at a rate the ring cannot outpace.
+//
+// # What it will not do
+//
+// It does not persist anything. A deploy still clears the ring and ends the
+// stream, so events raised while the daemon was down are gone -- but everything
+// already written to the capture file is safe, which is the difference that
+// matters. Deliberately no SD writes; see the note on eventLog.
+func (a *API) streamEvents(w http.ResponseWriter, r *http.Request) {
+	fl, ok := w.(http.Flusher)
+	if !ok {
+		writeErr(w, http.StatusInternalServerError, "streaming unsupported")
+		return
+	}
+	cursor := uint64(0)
+	if q := strings.TrimSpace(r.URL.Query().Get("since")); q != "" {
+		n, err := strconv.ParseUint(q, 10, 64)
+		if err != nil {
+			writeErr(w, http.StatusBadRequest, "since must be an event sequence number")
+			return
+		}
+		cursor = n
+	}
+
+	w.Header().Set("Content-Type", "application/x-ndjson")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	// Proxies that buffer would defeat the point of streaming entirely.
+	w.Header().Set("X-Accel-Buffering", "no")
+	w.WriteHeader(http.StatusOK)
+
+	line := func(v any) bool {
+		raw, err := json.Marshal(v)
+		if err != nil {
+			return true // skip the line rather than kill the capture
+		}
+		if _, err := fmt.Fprintf(w, "%s\n", raw); err != nil {
+			return false
+		}
+		fl.Flush()
+		return true
+	}
+
+	// A marker is anything that is not an event but that the capture should
+	// record: the reader is offline and cannot ask what happened.
+	marker := func(kind, note string, extra map[string]any) bool {
+		m := map[string]any{
+			"marker": kind,
+			"at":     time.Now().UnixMilli(),
+			"note":   note,
+		}
+		for k, v := range extra {
+			m[k] = v
+		}
+		return line(m)
+	}
+
+	if !marker("open", "capture started", map[string]any{"since": cursor}) {
+		return
+	}
+
+	tick := time.NewTicker(eventPoll)
+	defer tick.Stop()
+	lastWord := time.Now()
+
+	for {
+		select {
+		case <-r.Context().Done():
+			return
+		case <-tick.C:
+		}
+
+		// The sequence restarts at 1 on every daemon restart, so a latest lower
+		// than the cursor is unambiguous -- see eventLog.latest. Say so and
+		// start again rather than returning an empty list forever (#196).
+		if latest := a.e.LatestEventSeq(); latest < cursor {
+			if !marker("restart", "the daemon restarted; sequence numbers begin again",
+				map[string]any{"latest": latest}) {
+				return
+			}
+			cursor = 0
+			lastWord = time.Now()
+		}
+
+		evs := a.e.Events(cursor, eventRing)
+		if len(evs) > 0 {
+			// The ring dropped events between polls. Vanishingly unlikely at
+			// this rate, and recorded rather than assumed away: a gap the
+			// reader cannot see is a gap they will explain with a theory.
+			if evs[0].Seq > cursor+1 {
+				if !marker("gap", "events were dropped from the ring before they could be read",
+					map[string]any{"missed": evs[0].Seq - cursor - 1}) {
+					return
+				}
+			}
+			for _, ev := range evs {
+				if !line(ev) {
+					return
+				}
+			}
+			cursor = evs[len(evs)-1].Seq
+			lastWord = time.Now()
+			continue
+		}
+
+		if time.Since(lastWord) >= eventHeartbeat {
+			if !marker("heartbeat", "still connected, nothing happened", nil) {
+				return
+			}
+			lastWord = time.Now()
+		}
+	}
+}
+
 func (a *API) getEvents(w http.ResponseWriter, r *http.Request) {
 	since := uint64(0)
 	if q := strings.TrimSpace(r.URL.Query().Get("since")); q != "" {
