@@ -295,6 +295,19 @@ func (e *Engine) demoTick() {
 			Cap:  clients[i].DownCounters.CapMbps,
 		})
 	}
+	// The event log gets the same treatment as everything else here: fed from
+	// the demo fleet through the SAME function production uses, so the panel
+	// can be designed against real joins and leaves rather than a fixture.
+	assoc := map[string]string{}
+	labels := map[string]string{}
+	for _, c := range clients {
+		labels[c.MAC] = c.Label
+		if c.Present && c.Medium == "wifi" && c.Port != "" {
+			assoc[c.MAC] = c.Port
+		}
+	}
+	e.noteClientChanges(assoc, labels)
+
 	live := make(map[string]bool, len(clients))
 	for _, c := range clients {
 		live[c.MAC] = c.Present && c.Shapeable
@@ -409,12 +422,20 @@ func demoBridgeState(cfg Config) BridgeInfo {
 			Name: cfg.Bridge, Role: RoleBridge, MAC: apMAC,
 			Up: true, Carrier: true, CarrierKnown: true,
 			IPv4: []string{"192.168.1.42/24", "192.168.99.1/24"},
-			IPv6: []string{"fe80::9eef:d5ff:fef6:3ff2/64"},
+			// A unique-local address AND a link-local, because the box really
+			// has both and the interface must show one and hide the other:
+			// fe80:: is on every interface, identifies nothing, and cannot be
+			// pasted into ssh without a %scope naming the CLIENT's interface.
+			IPv6: []string{
+				"fdd5:a04f:f953:4412:da3a:ddff:fead:86/64",
+				"fe80::9eef:d5ff:fef6:3ff2/64",
+			},
 		},
 		{
 			Name: cfg.PrimaryWlan(), Role: RoleAP, MAC: apMAC,
 			Up: true, Carrier: true, CarrierKnown: true,
 			Master: cfg.Bridge, Wireless: true, Serving: true,
+			Powered: true, PowerKnown: true,
 			Radio: &RadioInfo{
 				Iface: cfg.PrimaryWlan(), Driver: "mt7921u", Bus: "usb",
 				Vendor: "Panda Wireless", Product: "PAU0F AXE3000",
@@ -431,6 +452,7 @@ func demoBridgeState(cfg Config) BridgeInfo {
 			Name: "wlan1", Role: RoleAP, MAC: "9c:ef:d5:aa:11:07",
 			Up: true, Carrier: true, CarrierKnown: true,
 			Master: cfg.Bridge, Wireless: true, Serving: false,
+			Powered: true, PowerKnown: true,
 			Radio: &RadioInfo{
 				Iface: "wlan1", Driver: "mt7921u", Bus: "usb",
 				Vendor: "Panda Wireless", Product: "PAU0F AXE3000",

@@ -135,29 +135,62 @@ func (e *Engine) ChanSwitch(iface string, channel, widthMHz int) error {
 	if !strings.HasPrefix(reply, "OK") {
 		return fmt.Errorf("hostapd rejected %q: %s", cmd, strings.TrimSpace(reply))
 	}
+	e.logEvent(EventRadio, iface, "",
+		"%s announced a channel switch to %d (802.11h); clients were asked to follow",
+		iface, channel)
+	e.syncRadioState(iface)
 	return nil
 }
 
-// DeauthAll drops every station on a radio at once. They reassociate on their
-// own; this is the AP-wide sibling of the per-client drop in hostapd.go.
-func (e *Engine) DeauthAll(iface string) (int, error) {
+// LinkAll applies a per-client link event to EVERY station on a radio at once.
+//
+// The AP-wide siblings of the drop and nudge buttons on a device card, and they
+// exist for the same reason those do: what a client does when it is thrown off
+// is worth watching, and doing it to one device answers a different question
+// from doing it to all of them.
+//
+//	drop   DEAUTHENTICATE -- the link goes down and the client reconnects
+//	nudge  DISASSOCIATE   -- a softer 802.11 transition some clients ride out
+//
+// Both are ANNOUNCED. The client is told, so it reconnects in a second or two
+// knowing why. That is the whole distinction from switching the radio off,
+// which tells it nothing and leaves it to notice.
+//
+// There is deliberately no radio-wide deadzone. Holding every client off for a
+// fixed window is what the power switch already does, without a deny ACL per
+// station to build up and unwind.
+func (e *Engine) LinkAll(iface, kind string) (int, error) {
+	verb := "DEAUTHENTICATE"
+	if kind == LinkNudge {
+		verb = "DISASSOCIATE"
+	} else if kind != LinkDrop {
+		return 0, fmt.Errorf("link event must be %q or %q (got %q)", LinkDrop, LinkNudge, kind)
+	}
 	if err := e.radioReady(iface); err != nil {
 		return 0, err
 	}
 	n := len(StationDump(iface))
 	if e.cfg.Demo {
+		e.noteLinkAll(iface, kind, n)
 		return n, nil
 	}
-	reply, err := hostapdCmd(iface, "DEAUTHENTICATE ff:ff:ff:ff:ff:ff")
+	// The broadcast address, which hostapd accepts for both verbs -- verified
+	// on hardware rather than assumed, since a per-station loop would race
+	// clients associating while it runs.
+	reply, err := hostapdCmd(iface, verb+" ff:ff:ff:ff:ff:ff")
 	if err != nil {
 		return 0, err
 	}
 	if !strings.HasPrefix(reply, "OK") {
-		return 0, fmt.Errorf("hostapd rejected the broadcast deauthentication: %s",
-			strings.TrimSpace(reply))
+		return 0, fmt.Errorf("hostapd rejected the broadcast %s: %s",
+			strings.ToLower(verb), strings.TrimSpace(reply))
 	}
+	e.noteLinkAll(iface, kind, n)
 	return n, nil
 }
+
+// DeauthAll is LinkAll's drop case, kept for the older endpoint.
+func (e *Engine) DeauthAll(iface string) (int, error) { return e.LinkAll(iface, LinkDrop) }
 
 // radioReady is the capability gate every action shares. It names the specific
 // reason rather than returning a bare false: "unavailable" with no cause is the

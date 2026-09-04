@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, type Ref } from 'vue';
 import { DEVELOPER } from '@/types';
+import { describeChannel, rateFor } from '@/composables/channelQuality';
 import type { IfaceInfo } from '@/types';
 import { useBridge } from '@/composables/useBridge';
 import InterfaceDiagram from '@/components/InterfaceDiagram.vue';
@@ -33,6 +34,10 @@ const CHANNELS_24 = [1, 6, 11];
 const CHANNELS_5 = [36, 40, 44, 48];
 
 const target = ref<Record<string, { channel: number; width: number }>>({});
+/** Chosen outage length per radio; 10s is long enough to drain a player's
+ *  buffer without being long enough for a phone to give up and leave for
+ *  another network. */
+const outage = ref<Record<string, number>>({});
 function pick(i: IfaceInfo) {
   if (!target.value[i.name]) {
     target.value = {
@@ -89,37 +94,53 @@ const degraded = (i: IfaceInfo) =>
  */
 const SOON = [
   {
-    label: 'Scan for best channel',
-    what: 'Off-channel survey on a radio that is not beaconing, ranked by busy time.',
-    why: 'A serving radio never visits other channels, so its survey reports zeroes for all of them. This needs the second adapter.',
-    issue: '#122 Group D',
-  },
-  {
-    label: 'Move clients to the other radio',
-    what: '802.11v BSS transition request, steering associated clients to another BSS.',
-    why: 'Needs two access points running at once. One adapter reports #{ AP } <= 1, so this waits on the second radio.',
-    issue: '#122 Group A',
-  },
-  {
-    label: 'Radio profile: 20 MHz / legacy rates / RTS',
-    what: 'Force the AP down to 802.11n, 20 MHz, or RTS/CTS before every frame.',
-    why: 'Real airtime contention and MAC retries, which netem cannot imitate. Needs a hostapd restart, which drops every client.',
-    issue: '#122 Group B',
-  },
-  {
-    label: 'Power-save profile: DTIM / beacon / U-APSD',
-    what: 'Lengthen the wake cycle a dozing phone waits through between segment fetches.',
-    why: 'Produces a comb of periodic spikes no netem delay distribution can. Needs a hostapd restart.',
-    issue: '#122 Group C',
-  },
-  {
     label: 'Monitor-mode capture on the idle radio',
     what: 'Per-frame retries, actual MCS and per-frame RSSI, without disturbing the AP.',
-    why: 'Answers what `iw station dump` cannot. The USB adapter supports monitor mode; the onboard one does not.',
+    why: 'Blocked three ways: tcpdump is not on the image, brcmfmac has no monitor mode at all, and the one radio that does (mt7921u) is now busy serving 5GHz. Needs a free radio and an image change.',
     issue: '#122 Group D',
   },
 ];
 const pending = ref('');
+
+/** Mirrors radioProfiles in radioprofile.go. "clean" first, because it is the
+ *  way back from every other one. */
+const PROFILES = [
+  { name: 'clean', label: 'clean', desc: 'everything back to how the image configured it.' },
+  { name: 'legacy', label: '802.11n only', desc: 'no ac, no ax \u2014 the ceiling an older device sees, with real MAC-layer cost rather than a rate limit.' },
+  { name: 'narrow', label: '20 MHz', desc: 'a quarter of the spectrum, so airtime contention is real and shared rather than imposed per client.' },
+  { name: 'dozy', label: 'power-save torture', desc: 'DTIM 10 at a 300 ms beacon, U-APSD off \u2014 a dozing phone waits up to three seconds for buffered downlink, drawing a comb of spikes no netem delay can.' },
+];
+
+/** Quick actions fired from the diagram. The picture is the natural place to
+ *  press them -- the radio being cut is the box you are pointing at -- so they
+ *  go through the same composable the panel below uses rather than a second
+ *  path that could drift out of step. */
+function onDiagramAction(
+  kind: 'power-off' | 'power-on' | 'scan' | 'drop' | 'nudge' | 'steer' | 'channel',
+  iface: string,
+  arg?: { channel: number; width: number },
+) {
+  if (kind === 'drop' || kind === 'nudge') return void bridge.linkAll(iface, kind);
+  if (kind === 'steer') return void bridge.steerAll(iface);
+  if (kind === 'channel' && arg) {
+    // Channel and width together, from the cell that was pressed. They are one
+    // choice: picking a cell on the 80MHz row IS picking 80MHz, and taking the
+    // width from anywhere else would answer a question nobody asked.
+    return void bridge.moveChannel(iface, arg.channel, arg.width);
+  }
+  // A latch, matching the panel below: the diagram switch turns the radio off
+  // and leaves it off. A button on a picture of a radio should behave like the
+  // switch it is drawn as, not fire a timed pulse.
+  if (kind === 'power-off') bridge.setPower(iface, false);
+  else if (kind === 'power-on') bridge.setPower(iface, true);
+  else bridge.scanBand(iface, false);
+}
+
+/** The radio a client could be steered to: another one that is serving. Empty
+ *  on a single-radio box, where the control is absent rather than dead. */
+function otherRadio(r: IfaceInfo): string {
+  return radios.value.find((o) => o.name !== r.name && o.ap?.enabled)?.name ?? '';
+}
 </script>
 
 <template>
@@ -136,7 +157,11 @@ const pending = ref('');
     </div>
 
     <template v-if="bridge.info.value">
-      <InterfaceDiagram :info="bridge.info.value" />
+      <InterfaceDiagram
+        :info="bridge.info.value" :busy="bridge.busy.value"
+        :scans="bridge.scanSummaries.value"
+        @action="onDiagramAction"
+      />
 
       <section v-for="r in radios" :key="r.name" class="card radio-card">
         <div class="card-head">
@@ -190,40 +215,126 @@ const pending = ref('');
         <!-- Box-wide controls. The blast radius is stated on the control, not
              in a tooltip: every one of these acts on the whole radio. -->
         <div v-if="r.ap" class="actions">
-          <h4>Radio controls</h4>
-          <p class="warn-line">
-            These act on <strong>every client on {{ r.name }}</strong> at once —
-            {{ r.ap.stations }} associated right now.
+          <p class="warn-line scope-note">
+            Everything below acts on <strong>every client on {{ r.name }}</strong>
+            at once — {{ r.ap.stations }} associated right now.
           </p>
 
+          <!-- THREE groups, and the line between the first two is the one that
+               matters: does the client stay associated?
+               
+               Conditioning makes the link worse while the client stays on it.
+               Connection control changes whether, or where, it is attached at
+               all. They were interleaved before, which made a power cut look
+               like a sibling of an RTS threshold when they answer completely
+               different questions. -->
+          <h4>Who is connected</h4>
+          <p class="meta group-note">
+            The association itself. Nothing is degraded — it exists or it does not.
+          </p>
+
+          <!-- The announced events, in the same words the device cards use.
+               Whatever can be done to one client can be done to every client on
+               a radio; only the blast radius differs. -->
           <div class="action-row">
-            <button :disabled="bridge.busy.value" @click="bridge.deauthAll(r.name)">
-              deauthenticate all {{ r.ap.stations }}
-            </button>
-            <button :disabled="bridge.busy.value" @click="bridge.loadSurvey(r.name)">
-              read airtime
-            </button>
+            <label class="k">all {{ r.ap.stations }} clients</label>
+            <button
+              :disabled="bridge.busy.value || !r.ap.stations"
+              title="Deauthenticate every client. The link goes down and they reconnect — they are TOLD, so it is quick."
+              @click="bridge.linkAll(r.name, 'drop')"
+            >drop all</button>
+            <button
+              :disabled="bridge.busy.value || !r.ap.stations"
+              title="Disassociate every client — a softer 802.11 transition some clients ride out without a full reconnect."
+              @click="bridge.linkAll(r.name, 'nudge')"
+            >nudge all</button>
+            <button
+              v-if="otherRadio(r)"
+              :disabled="bridge.busy.value || !r.ap.stations"
+              :title="`Ask every client to move to ${otherRadio(r)} (802.11v). They may refuse.`"
+              @click="bridge.steerAll(r.name)"
+            >steer all to {{ otherRadio(r) }}</button>
           </div>
+
+          <!-- Still connection control, but the SILENT member of it: every
+               action above announces itself, this one does not. That difference
+               is the whole reason it exists, so it keeps its own paragraph. -->
+          <p class="warn-line">
+            <strong>Silent.</strong> Clients are told nothing and must time out —
+            a tripped breaker, not a disconnection.
+          </p>
+          <!-- A latching toggle, not a timed pulse. The radio stays off until
+               it is switched back on, the way a power switch behaves -- which
+               is what makes it usable for "leave it down and watch what the
+               player does for the next ten minutes". -->
+          <div class="action-row">
+            <button
+              class="power-toggle"
+              :class="{ accent: r.power_known && !r.powered, off: r.power_known && !r.powered }"
+              :disabled="bridge.busy.value || !r.power_known"
+              :title="r.powered
+                ? `Switch ${r.name} off. It stays off until switched back on. No client is told.`
+                : `Switch ${r.name} back on.`"
+              @click="bridge.setPower(r.name, !r.powered)"
+            >{{ r.powered ? `switch ${r.name} off` : `switch ${r.name} on` }}</button>
+
+            <span v-if="!r.power_known" class="meta">
+              power state unreadable on this radio
+            </span>
+            <span v-else-if="!r.powered" class="meta warn-line">
+              <strong>OFF</strong> — silent, and staying off until you switch it back
+            </span>
+            <span v-else class="meta">on</span>
+          </div>
+
+          <!-- The timed form is a convenience on top of the toggle, for the
+               common case of a fixed-length outage you do not want to have to
+               remember to end. -->
+          <div class="action-row">
+            <label class="k">or cut it for</label>
+            <div class="seg" role="group" aria-label="outage length">
+              <button
+                v-for="s in [5, 10, 30, 60]" :key="s"
+                class="seg-btn" :class="{ on: outage[r.name] === s }"
+                @click="outage = { ...outage, [r.name]: s }"
+              >{{ s }}s</button>
+            </div>
+            <button
+              :disabled="bridge.busy.value || !r.powered"
+              @click="bridge.powerOutage(r.name, outage[r.name] ?? 10)"
+            >cut and restore automatically</button>
+          </div>
+
           <!-- Measured, not theorised: a deauthenticated iPhone came back under
                a new MAC within nine seconds. Policy is keyed by MAC, so the
                device returns as a stranger with no conditioning. Issue #45. -->
           <p class="meta">
-            A client using a private (randomised) Wi-Fi address may reassociate
-            under a <strong>different MAC</strong> and arrive as a new device with
-            no policy — observed here on a reconnect nine seconds after a
-            deauthentication. Its old conditioning stays behind on the old
-            address.
+            A client with a randomised MAC may return as a <strong>new
+            device</strong>, leaving its policy behind on the old address (#45).
           </p>
 
-          <!-- Channel switch is implemented end to end but this adapter's
-               driver refuses it, so it sits behind the developer flag rather
-               than standing in the way as a control that always errors. -->
-          <div v-if="DEVELOPER" class="action-row">
-            <label class="k">move to channel</label>
+          <h5>Move to another channel</h5>
+          <!-- The colours are a measurement, not advice: they come from that
+               radio's last scan and describe the moment it ran. No scan, no
+               colour -- a box nobody has scanned must not show a wall of
+               green. -->
+          <p v-if="bridge.scanSummaries.value[r.name]" class="meta">
+            Coloured from the last scan:
+            <span class="q q-clear">clear</span>
+            <span class="q q-busy">busy</span>
+            <span class="q q-crowded">crowded</span>
+          </p>
+          <p class="warn-line">
+            Down and back up on the new channel. All {{ r.ap.stations }} client(s)
+            dropped, and not told.
+          </p>
+          <div class="action-row">
             <div class="seg" role="group" aria-label="channel">
               <button
-                v-for="c in [...CHANNELS_24, ...CHANNELS_5]" :key="c"
-                class="seg-btn" :class="{ on: pick(r).channel === c }"
+                v-for="c in (r.ap.channel && r.ap.channel < 15 ? CHANNELS_24 : CHANNELS_5)" :key="c"
+                class="seg-btn"
+                :class="[{ on: pick(r).channel === c }, `q-${rateFor(bridge.scanSummaries.value[r.name], c)}`]"
+                :title="`Channel ${c}: ${describeChannel(bridge.scanSummaries.value[r.name], c)}`"
                 @click="setChannel(r.name, c)"
               >{{ c }}</button>
             </div>
@@ -235,21 +346,110 @@ const pending = ref('');
               >{{ wd }}&#8239;MHz</button>
             </div>
             <button
-              class="accent" :disabled="bridge.busy.value"
-              @click="bridge.chanSwitch(r.name, pick(r).channel, pick(r).width)"
-            >announce channel switch</button>
+              class="accent"
+              :disabled="bridge.busy.value || pick(r).channel === r.ap.channel"
+              @click="bridge.moveChannel(r.name, pick(r).channel, pick(r).width)"
+            >move to {{ pick(r).channel }}</button>
           </div>
-          <p v-if="DEVELOPER" class="meta">
-            An 802.11h channel switch announcement: clients are told to move and
-            should follow without reassociating.
-            <strong>Measured 2026-09-03: the mt7921u driver refuses this.</strong>
-            The phy advertises <code>channel_switch</code> and hostapd accepts and
-            logs the request, then every form of the command returns FAIL — the
-            AP does not move. The control is kept behind the developer flag
-            because the path is correct and a radio that supports it would work;
-            the refusal is reported rather than swallowed.
+
+          <!-- The other way to change channel, and why it is not a button.
+               802.11h CSA counts the switch down in the beacons and clients
+               follow WITHOUT dropping -- which is strictly better, and which
+               both chips on this box refuse (measured on brcmfmac and mt7921u,
+               #154). A control that can only ever report a refusal is worse
+               than a sentence saying so, so this is the sentence. POST
+               .../channel still exists and still works the day a driver gains
+               support. -->
+          <p class="meta">
+            802.11h would move them without dropping anyone, but
+            <strong>both radios here refuse it</strong> (#154).
+          </p>
+          <!-- Measured on hardware: hostapd's 20/40MHz coexistence scan swaps
+               primary and secondary when it finds neighbours on the secondary,
+               so a 40/80MHz move lands on whichever of the pair that scan
+               picks. This box has been on 40 all along with its config saying
+               36 for exactly that reason. -->
+          <p v-if="pick(r).width >= 40" class="meta">
+            At {{ pick(r).width }}&#8239;MHz the radio can come back on the
+            <strong>adjacent channel</strong>: hostapd swaps primary and
+            secondary if it hears neighbours on the secondary. Move at
+            20&#8239;MHz to choose exactly.
           </p>
 
+          <h4>Conditioning the link</h4>
+          <p class="meta group-note">Clients stay associated; the link they are on gets worse.</p>
+          <h5>Radio profile</h5>
+          <p class="warn-line">
+            Restarts the access point, dropping all {{ r.ap.stations }} client(s).
+          </p>
+          <div class="action-row">
+            <button
+              v-for="p in PROFILES" :key="p.name"
+              :class="{ accent: p.name === 'clean' }"
+              :disabled="bridge.busy.value"
+              :title="p.desc"
+              @click="bridge.applyProfile(r.name, p.name)"
+            >{{ p.label }}</button>
+          </div>
+
+
+          <h5>Thresholds</h5>
+          <p class="meta">Live on the next frame. Nobody dropped.</p>
+          <div class="action-row">
+            <label class="k">RTS/CTS</label>
+            <button
+              :disabled="bridge.busy.value"
+              title="RTS/CTS before every frame — roughly halves throughput and adds two control frames of latency per data frame. What a real AP does in a dense environment."
+              @click="bridge.setThreshold(r.name, 'rts', 0)"
+            >every frame</button>
+            <button :disabled="bridge.busy.value" @click="bridge.setThreshold(r.name, 'rts', 'off')">off</button>
+            <label class="k">fragment</label>
+            <button
+              :disabled="bridge.busy.value"
+              title="Fragment every frame at 256 bytes. With any error rate the retry cost explodes superlinearly, because losing one fragment costs the whole frame."
+              @click="bridge.setThreshold(r.name, 'frag', 256)"
+            >at 256</button>
+            <button :disabled="bridge.busy.value" @click="bridge.setThreshold(r.name, 'frag', 'off')">off</button>
+          </div>
+
+          <h4>Measurement</h4>
+          <p class="meta group-note">Changes nothing. A scan costs a few beacon gaps, or an outage on a radio that will not scan while serving.</p>
+          <!-- Scan. Disruptive by construction and says so, with the cost
+               reported afterwards as the measured out-of-service time. -->
+          <h5>Channel scan</h5>
+
+          <div class="action-row">
+            <button :disabled="bridge.busy.value" @click="bridge.scanBand(r.name, false)">
+              scan {{ r.ap.channel && r.ap.channel < 15 ? '2.4GHz' : '5GHz' }}
+            </button>
+            <button
+              class="accent" :disabled="bridge.busy.value"
+              @click="bridge.scanBand(r.name, true)"
+            >scan and move to the quietest</button>
+          </div>
+
+
+          <div v-if="bridge.scan.value?.iface === r.name" class="survey">
+            <table class="counters">
+              <thead>
+                <tr><th>channel</th><th>neighbours</th><th>strongest</th><th></th></tr>
+              </thead>
+              <tbody>
+                <tr v-for="c in bridge.scan.value.channels" :key="c.channel">
+                  <td class="num">{{ c.channel }}</td>
+                  <td class="num">{{ c.aps }}</td>
+                  <td class="num">{{ c.strongest_dbm ? `${c.strongest_dbm} dBm` : '—' }}</td>
+                  <td>
+                    <span v-if="c.recommended" class="badge" style="color: var(--ok)">
+                      quietest
+                    </span>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+            <p class="meta">{{ bridge.scan.value.note }}</p>
+            <p class="meta">Only non-overlapping channels are recommended.</p>
+          </div>
           <div v-if="bridge.survey.value?.iface === r.name" class="survey">
             <template v-for="c in bridge.survey.value.channels" :key="c.reported_freq_mhz">
               <div class="facts">
@@ -267,12 +467,14 @@ const pending = ref('');
             </template>
             <p class="meta">{{ bridge.survey.value.note }}</p>
             <p class="meta">
-              Transmit and receive are not parts of busy — they overlap it and can
-              add up to more, so airtime used by other devices cannot be got by
-              subtracting them.
+              Transmit and receive overlap busy rather than dividing it.
             </p>
           </div>
         </div>
+          <!-- Steering only exists when there is somewhere to steer TO. On a
+               one-radio box the button would be permanently dead, so it is
+               absent rather than disabled. -->
+
         <p v-else class="meta disabled-note">
           <template v-if="!r.up">
             {{ r.name }} is switched off — on this image the onboard radio is
@@ -360,23 +562,48 @@ const pending = ref('');
 .v { color: var(--ink); }
 .addrs div { white-space: nowrap; }
 
-.actions { padding: 4px 14px 0; border-top: 1px solid var(--line-soft); }
+.actions { padding: 2px 14px 8px; border-top: 1px solid var(--line-soft); }
+/* The three group headings carry the structure, so they are the loud ones. */
+/* Denser than the rest of the page on purpose: this is a control panel, not
+   prose. Every explanation not needed AT THE MOMENT OF PRESSING moved into a
+   button title. */
 .actions h4 {
-  margin: 12px 0 4px;
+  margin: 14px 0 2px;
+  padding-top: 9px;
+  border-top: 1px solid var(--line-soft);
   font-size: 11px; font-weight: 600;
   text-transform: uppercase; letter-spacing: 0.09em;
   color: var(--ink-dim);
 }
 /* The blast radius, stated where the buttons are rather than in a tooltip. */
-.warn-line { color: var(--warn); font-size: 12px; margin: 0 0 10px; }
-.action-row {
-  display: flex; align-items: center; gap: 8px;
-  flex-wrap: wrap; margin-bottom: 8px;
+.warn-line { color: var(--warn); font-size: 12px; margin: 0 0 6px; }
+/* What the group IS, in plain words, under its heading. Quieter than a warning:
+   it is orientation, not something to act on. */
+.group-note { margin: 0 0 6px; max-width: 84ch; }
+.scope-note { margin-bottom: 4px; }
+/* Sub-headings inside a group. Deliberately much quieter than the h4 above
+   them, so the three groups read as the structure and these as its contents. */
+.actions h5 {
+  margin: 9px 0 3px;
+  font-size: 11px; font-weight: 600;
+  text-transform: uppercase; letter-spacing: 0.06em;
+  color: var(--ink-faint);
 }
+.action-row {
+  display: flex; align-items: center; gap: 6px;
+  flex-wrap: wrap; margin-bottom: 5px;
+}
+.actions .warn-line, .actions .meta { line-height: 1.35; }
 .action-row .k { min-width: auto; }
 
 .survey { border-top: 1px solid var(--line-soft); margin-top: 10px; }
 .survey .facts { padding-left: 0; padding-right: 0; }
+
+/* The power switch reads as a switch: when the radio is off it is the loud
+   thing on the card, because an access point that is deliberately silent must
+   not be mistaken for one that is merely quiet. */
+.power-toggle { min-width: 170px; }
+.power-toggle.off { border-color: var(--warn); color: var(--bg); background: var(--warn); }
 
 .badge.warn-badge {
   color: var(--warn);
@@ -396,4 +623,22 @@ const pending = ref('');
 .soon-text em { font-style: normal; color: var(--ink-faint); }
 
 .counters { width: 100%; }
+
+/* Channel quality, shared with the diagram's buttons so the two cannot show
+   different colours for the same channel. Text only -- the segmented control
+   already uses background to mean "selected", and a second background would
+   make a crowded channel look picked. */
+.q-clear { color: var(--ok); }
+.q-busy { color: var(--warn); }
+.q-crowded { color: var(--bad); }
+.seg-btn.q-clear.on,
+.seg-btn.q-busy.on,
+.seg-btn.q-crowded.on { color: var(--ink); }
+.q {
+  border: 1px solid currentColor;
+  border-radius: 4px;
+  padding: 0 4px;
+  margin-left: 4px;
+  font-size: 10px;
+}
 </style>

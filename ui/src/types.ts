@@ -272,6 +272,18 @@ export interface Counters {
   cap_mbps: number;
 }
 
+/** The access point a wireless client is associated to. Absent for a wired
+ *  client, and for a wireless one not currently on any radio. */
+export interface RadioOn {
+  iface: string;
+  channel?: number;
+  width_mhz?: number;
+  mode?: string;
+  /** "2.4GHz" or "5GHz" — the single most useful fact about which radio a
+   *  client is on, now that the box serves both at once. */
+  band?: string;
+}
+
 export interface Client {
   mac: string;
   ip?: string;
@@ -281,6 +293,7 @@ export interface Client {
   label: string;
   medium: string;
   port?: string;
+  radio_on?: RadioOn;
   present: boolean;
   shapeable: boolean;
   station?: Station;
@@ -352,15 +365,68 @@ export interface IfaceInfo {
   wireless: boolean;
   radio?: RadioInfo;
   ap?: APStatus;
-  /** The one radio the daemon watches. Clients on any other are NOT
-   *  conditioned and never appear in the Clients tab. */
+  /** A radio the daemon watches. Clients on any other are NOT conditioned and
+   *  never appear in the Clients tab. */
   serving: boolean;
+  /** rfkill state. false means the transmitter is off and the AP is silent
+   *  WITHOUT having told any client — they must time out and discover it.
+   *  `power_known` is false when the switch could not be read; unknown must
+   *  not render as "off", which would show a healthy radio as dead. */
+  powered: boolean;
+  power_known: boolean;
+}
+
+export interface ScanAP {
+  bssid: string;
+  ssid?: string;
+  freq_mhz: number;
+  channel: number;
+  signal_dbm: number;
+  /** Served by this box — excluded from the competition count. */
+  ours?: boolean;
+}
+
+export interface ScanChannel {
+  channel: number;
+  freq_mhz: number;
+  /** Neighbouring APs, excluding our own. */
+  aps: number;
+  strongest_dbm?: number;
+  recommended?: boolean;
+}
+
+/** What a scan concluded, as the daemon remembers it between polls. */
+export interface ScanSummary {
+  /** unix ms — a colour is only as good as its timestamp. */
+  at: number;
+  band?: string;
+  channels?: ScanChannel[];
+  best_channel?: number;
+}
+
+export interface ScanResult {
+  iface: string;
+  band: string;
+  channels: ScanChannel[];
+  aps: ScanAP[];
+  best_channel?: number;
+  was_channel?: number;
+  now_channel?: number;
+  /** The radio came back up on best_channel rather than where it started. */
+  applied?: boolean;
+  /** How long the radio was actually out of service, so the cost of the
+   *  answer is reported next to it. */
+  outage_sec: number;
+  note: string;
 }
 
 export interface BridgeInfo {
   bridge: string;
   ifaces: IfaceInfo[];
   notes?: Notice[];
+  /** The last band scan per radio, kept by the daemon so the channel plan's
+   *  colours survive a reload and are the same for everyone looking. */
+  scans?: Record<string, ScanSummary>;
 }
 
 export interface SurveyChannel {

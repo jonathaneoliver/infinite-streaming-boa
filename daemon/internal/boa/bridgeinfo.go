@@ -91,9 +91,15 @@ type IfaceInfo struct {
 	Wireless bool       `json:"wireless"`
 	Radio    *RadioInfo `json:"radio,omitempty"`
 	AP       *APStatus  `json:"ap,omitempty"`
-	// Serving marks the one radio the daemon watches. Clients on any other
-	// radio are not conditioned and do not appear in the device list.
+	// Serving marks a radio the daemon watches. Clients on any other radio are
+	// not conditioned and do not appear in the device list.
 	Serving bool `json:"serving"`
+	// Powered is the rfkill state: false means the transmitter is switched off
+	// and the access point is silent without having told anyone. PowerKnown is
+	// false when the switch could not be read at all -- an unknown state must
+	// not render as "off", which would show a healthy radio as dead.
+	Powered    bool `json:"powered"`
+	PowerKnown bool `json:"power_known"`
 }
 
 // BridgeInfo is the whole answer for the bridge view.
@@ -104,6 +110,26 @@ type BridgeInfo struct {
 	// clients are not conditioned". They exist because the alternative is an
 	// operator discovering it from an empty device list.
 	Notes []Notice `json:"notes,omitempty"`
+	// Scans is the last band scan per radio, kept so the interface can colour
+	// the channel controls by what was actually heard.
+	//
+	// Served from the daemon rather than held in the browser: a measurement
+	// that vanishes on a page reload is one people stop trusting, and two
+	// people looking at the same box should see the same colours. Only the
+	// per-channel summary travels here, never the access point list -- that is
+	// hundreds of entries on a busy band, and this payload is polled.
+	Scans map[string]ScanSummary `json:"scans,omitempty"`
+}
+
+// ScanSummary is what a scan concluded, small enough to carry in every poll.
+//
+// At is why this is not just the channel list: a colour is only as good as its
+// timestamp, and a scan from an hour ago describes an hour-old room.
+type ScanSummary struct {
+	At       int64         `json:"at"` // unix ms
+	Band     string        `json:"band,omitempty"`
+	Channels []ScanChannel `json:"channels,omitempty"`
+	Best     int           `json:"best_channel,omitempty"`
 }
 
 // BridgeState assembles the inventory. Best-effort by design: a box with no
@@ -134,6 +160,7 @@ func (e *Engine) BridgeState() BridgeInfo {
 		if in.Wireless {
 			r := Radio(name)
 			in.Radio = &r
+			in.Powered, in.PowerKnown = radioPowered(name)
 			in.Serving = e.cfg.IsWlan(name)
 			if hostapdAvailable(name) {
 				if ap := apStatus(name, country); ap != nil {
@@ -148,6 +175,7 @@ func (e *Engine) BridgeState() BridgeInfo {
 		return roleOrder(bi.Ifaces[i].Role) < roleOrder(bi.Ifaces[j].Role)
 	})
 	bi.Notes = bridgeNotes(bi, e.cfg)
+	bi.Scans = e.lastScans()
 	return bi
 }
 

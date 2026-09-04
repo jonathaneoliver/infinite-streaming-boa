@@ -845,6 +845,48 @@ differently from how they read.
   why the refusal is surfaced as a `502` carrying hostapd's own text rather than
   being reported as success.
 
+- **The two radios have OPPOSITE scanning capabilities**, so neither order of
+  operations suits both. Measured 2026-09-03 with both serving:
+
+  | | `iw dev <if> scan` while beaconing | with the BSS `DISABLE`d |
+  |---|---|---|
+  | `brcmfmac` (onboard) | **works**, 4 s, 23 APs | fails, `Network is down (-100)` |
+  | `mt7921u` (USB) | fails, `Operation not supported (-95)` | **works**, 3 s |
+
+  `DISABLE` takes the interface down, which is why the onboard radio then
+  cannot scan; the adapter needs `ip link set <if> up` after the disable before
+  it will. The daemon therefore tries the free path first and falls back, so a
+  scan costs nothing on one radio and an outage on the other — and says which.
+
+- **`iw scan` prints the frequency as a FLOAT.** `freq: 2417.0`, where
+  `survey dump` prints `frequency: 2412 MHz` as an integer. Parsing it with a
+  plain integer conversion yields **0**, and since 0 is below 3 GHz every access
+  point then looks like a 2.4 GHz one — so a band filter silently passes
+  everything. It stayed invisible because the channel arrives separately on the
+  `DS Parameter set` line.
+
+- **`SET secondary_channel` is refused by hostapd**; it is derived state,
+  reported in `STATUS` and not settable. Of the parameters used to move a
+  channel it is the only one rejected. The 40 MHz offset is set through
+  `ht_capab` (`[HT40+]` / `[HT40-]`) instead, and **it must agree with the
+  channel**: setting `[HT40-]` and then channel 36, whose secondary sits above
+  it, is accepted one command at a time and then fails the whole `ENABLE`,
+  leaving the access point down.
+
+- **A refused `SET` mid-sequence does not undo the ones before it.** Measured:
+  a channel move reported "came back on 6" while the radio was demonstrably on
+  11 — `SET channel` had landed before a later command was refused. The channel
+  is now read back from `STATUS` after `ENABLE` rather than inferred from
+  whether every command succeeded.
+
+- **`iw phy set frag off` is not portable.** It fails on `brcmfmac` with
+  `Invalid exchange (-52)` and leaves the threshold where it was, while
+  succeeding on `mt7921u`. The numeric IEEE disabled values — 2346 for
+  fragmentation, 2347 for RTS — are accepted by both. Without that, an
+  impairment could be switched on and never off. `iw phy info` reports the
+  fragmentation threshold but **never** the RTS threshold, so RTS cannot be
+  verified by readback on either driver.
+
 - **A broadcast deauthentication can strand a device's policy.** Observed on the
   same run: of two stations kicked, one reassociated under a **different MAC**
   (`fc:9c:a7:93:7f:ed` → `92:d2:2b:bd:91:b2`) nine seconds later. That is
@@ -854,3 +896,135 @@ differently from how they read.
   conditioning, and the old policy stays behind on an address that will never be
   seen again. This is issue #45, and this action makes that path hot rather than
   incidental — so the interface says so where the button is, not in a document.
+
+## Source N — the activity log · what changed, as opposed to what is
+
+Not a measurement. Every other source here answers "what is true now"; this one
+answers "what just happened", and it is **derived entirely from the sources
+above** rather than read from anywhere new.
+
+| Field | Where it comes from |
+|---|---|
+| `join` / `leave` / `roam` | The per-radio `iw dev <if> station dump` of Source A, diffed against the previous tick |
+| `radio` | `hostapd STATUS` (Source K) — channel, width and mode, diffed; plus every action this daemon takes to a radio |
+| `action` | Raised at the point the action succeeds, never before |
+| `warning` | A refusal that left the radio somewhere other than where it was asked to be |
+
+**Semantics that bite**
+
+- **A roam is invisible in state.** A client that moved from 5GHz to 2.4GHz is
+  simply *on* 2.4GHz; nothing anywhere records that it moved. The diff is the
+  only place that fact exists, which is why the log is derived at the tick and
+  not reconstructed by a reader.
+
+- **A radio change is detected at the cache's resolution, not the tick's.**
+  `RadioOn` is cached for 15 s (asking hostapd per tick is a round-trip per
+  radio for a value that almost never changes), so a channel change made
+  *outside* this daemon is noticed within 15 s, not within 1 s. Anything done
+  through the interface records itself immediately and re-syncs the cache, so it
+  is never reported twice.
+
+- **`join` on a fresh start is not a join.** The first tick has no previous
+  association map, so every client currently associated is recorded as having
+  joined at that moment. That is a restart artefact, not an event — the daemon's
+  own start time is the giveaway.
+
+- **In memory, and deliberately lossy.** A ring of 500, cleared by a restart or
+  a deploy. Persisting an association event per client per roam is the kind of
+  steady write that wears an SD card out, and the box is a bench instrument that
+  is watched while it runs.
+
+- **A silent poll failure looks exactly like a quiet box.** The interface shows
+  the fetch error inside the log rather than beside it, because "nothing has
+  happened" and "I stopped being able to ask" are the two readings this panel
+  must never confuse.
+
+## Source M addendum — what a radio power cycle actually costs
+
+**MEASURED on hardware 2026-09-03**, several cycles per radio, because the first
+three attempts to make the switch-on "fast" were all fixes to the wrong thing.
+
+| | rfkill block | back on the air |
+|---|---|---|
+| `wlan0` (brcmfmac, 2.4GHz 20MHz) | ~0.9 s | **~0 s** |
+| `wlan-usb` (mt7921u, 5GHz 80MHz) | ~0.03 s | **~25 s** |
+
+**Semantics that bite**
+
+- **hostapd handles rfkill itself.** Its own log shows the unblock and the
+  recovery in the same second — `rfkill: WLAN unblocked` then
+  `wlan0: INTERFACE-ENABLED`. Nothing needs to send `ENABLE` after a power-on.
+
+- **Sending `ENABLE` anyway makes it worse.** Aimed at a BSS hostapd had already
+  restored, it took an mt7921u switch-on from about a second to 25, apparently
+  tearing the interface down to rebuild it.
+
+- **`ENABLE` acknowledges only when the BSS is up**, which on mt7921u at 80MHz
+  outlasts the control socket's 2 s deadline. A perfectly healthy recovery
+  therefore reports `i/o timeout`. Treating that as failure and retrying turned
+  a 4.5 s operation into a 27.8 s one — six attempts each paying the same
+  deadline for a reply that was never going to arrive in time.
+
+- **The control socket itself goes unresponsive for 10–25 s** after an mt7921u
+  unblock, while the driver re-initialises. One `STATUS` took 14 seconds to
+  answer. So a client-side wait is waiting on the socket, not on the radio, and
+  no amount of polling makes it faster. During it the whole box is loaded enough
+  that SSH banner exchange can time out.
+
+- **Therefore the power endpoint returns as soon as power is restored**, which
+  is what a mains switch controls, and a background watch confirms the access
+  point re-formed. The duration is recorded as an event
+  (`wlan-usb access point back after 25s`), because it is the number that
+  answers "why did my client take so long to come back" and it differs by an
+  order of magnitude between the two radios on this box.
+
+## Source M addendum 2 — why a channel move lands somewhere else
+
+**MEASURED on hardware 2026-09-03.** Asking for channel 36 at 80 MHz returned
+"now on channel 40", with every `SET` having answered `OK`. The readback was
+right; the explanation was missing.
+
+hostapd's own log says what happened:
+
+```
+wlan-usb: interface state COUNTRY_UPDATE->HT_SCAN
+Switch own primary and secondary channel to get secondary channel
+  with no Beacons from other BSSes
+wlan-usb: interface state HT_SCAN->ENABLED
+```
+
+That is the 802.11 **20/40 MHz coexistence scan**. Before enabling a 40 or
+80 MHz BSS, hostapd scans for neighbours on the channel it intends to use as the
+*secondary*, and if it finds any it swaps primary and secondary rather than
+interfering with them.
+
+**Semantics that bite**
+
+- **The configured channel is not the operating channel.**
+  `/etc/hostapd/boa-usb.conf` says `channel=36` with `ht_capab=[HT40+]` — primary
+  36, secondary 40 — and the radio has served on **40** since the image was
+  built. A clean `systemctl restart` of the hostapd unit reproduces it every
+  time. Nothing is broken.
+
+- **Only one of each adjacent pair is reachable at 40/80 MHz.** Measured from a
+  radio running 40 with `secondary_channel=-1`: asking for 48 (same offset)
+  lands on 48; asking for 44 or 36 (opposite offset) lands back on 40. Which one
+  is reachable depends on what the scan hears, so it can change.
+
+- **The offset cannot be forced through the control socket.**
+  `SET ht_capab [HT40+]` is accepted and changes nothing — `secondary_channel`
+  is derived during the scan, not from that string — and `SET secondary_channel`
+  is refused outright as derived state. A 20 MHz intermediate step does not help
+  either: the swap happens again when the width is restored.
+
+- **At 20 MHz every channel is exact**, because there is no secondary channel
+  and therefore no coexistence scan. Verified: 36 at 20 MHz lands on 36.
+
+- **So a mismatch is reported even when nothing was refused.** The check used to
+  require a refused `SET`, which made the most common outcome on this box the
+  silent one.
+
+`noscan=1` in the hostapd config would skip the scan and honour the configured
+channel. It is deliberately not set: the scan exists to avoid clobbering
+neighbouring networks, and turning it off is a decision about someone else's
+airtime, not a bug fix.

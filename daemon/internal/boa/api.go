@@ -36,9 +36,17 @@ func (a *API) Routes() *http.ServeMux {
 	mux.HandleFunc("GET /api/health", a.health)
 	mux.HandleFunc("GET /api/history", a.getHistory)
 	mux.HandleFunc("GET /api/bridge", a.getBridge)
+	mux.HandleFunc("GET /api/events", a.getEvents)
 	mux.HandleFunc("GET /api/bridge/radios/{iface}/survey", a.getSurvey)
 	mux.HandleFunc("POST /api/bridge/radios/{iface}/channel", a.postChannel)
+	mux.HandleFunc("POST /api/bridge/radios/{iface}/move-channel", a.postMoveChannel)
 	mux.HandleFunc("POST /api/bridge/radios/{iface}/deauth-all", a.postDeauthAll)
+	mux.HandleFunc("POST /api/bridge/radios/{iface}/link-all", a.postLinkAll)
+	mux.HandleFunc("POST /api/bridge/radios/{iface}/power", a.postRadioPower)
+	mux.HandleFunc("POST /api/bridge/radios/{iface}/scan", a.postScan)
+	mux.HandleFunc("POST /api/bridge/radios/{iface}/profile", a.postRadioProfile)
+	mux.HandleFunc("POST /api/bridge/radios/{iface}/threshold", a.postThreshold)
+	mux.HandleFunc("POST /api/bridge/radios/{iface}/steer", a.postSteer)
 	mux.HandleFunc("PATCH /api/devices/{mac}/policy", a.patchPolicy)
 	mux.HandleFunc("POST /api/devices/{mac}/sub", a.postSub)
 	mux.HandleFunc("PATCH /api/devices/{mac}/sub/{id}", a.patchSub)
@@ -101,6 +109,47 @@ func (a *API) getBridge(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, a.e.BridgeState())
 }
 
+// getEvents returns what has HAPPENED, newest events last.
+//
+// Polled with ?since=<seq> so a caller asks only for what it has not seen: the
+// ring holds a few hundred events and re-sending all of them at the tab's poll
+// rate would be most of the payload, every time, to say nothing new. since=0
+// asks for everything the ring still holds, which is what a freshly-opened tab
+// wants.
+//
+// Deliberately not part of the SSE frame. Events are bursty and rare -- nothing
+// for ten minutes, then six in a second when a radio is switched off -- and
+// attaching them to a 1Hz snapshot would mean carrying an empty array 99% of
+// the time.
+func (a *API) getEvents(w http.ResponseWriter, r *http.Request) {
+	since := uint64(0)
+	if q := strings.TrimSpace(r.URL.Query().Get("since")); q != "" {
+		n, err := strconv.ParseUint(q, 10, 64)
+		if err != nil {
+			writeErr(w, http.StatusBadRequest, "since must be an event sequence number")
+			return
+		}
+		since = n
+	}
+	limit := 200
+	if q := strings.TrimSpace(r.URL.Query().Get("limit")); q != "" {
+		n, err := strconv.Atoi(q)
+		if err != nil || n < 1 || n > eventRing {
+			writeErr(w, http.StatusBadRequest,
+				fmt.Sprintf("limit must be 1-%d", eventRing))
+			return
+		}
+		limit = n
+	}
+	// events is never null in the payload: a caller that has seen everything
+	// gets [], not a value it has to guard before iterating.
+	evs := a.e.Events(since, limit)
+	if evs == nil {
+		evs = []Event{}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"events": evs})
+}
+
 // getSurvey reads a radio's airtime counters.
 //
 // A GET even though it costs a subprocess, because it changes nothing. Note the
@@ -114,6 +163,50 @@ func (a *API) getSurvey(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, res)
+}
+
+// postMoveChannel puts a radio on a chosen channel by taking it down and
+// bringing it back up there.
+//
+// The working counterpart to postChannel. That one announces the move and lets
+// clients follow without reconnecting, which is the nicer behaviour and is
+// refused by both drivers on this box; this one drops the access point and
+// brings it back elsewhere, which works and is what most consumer routers
+// actually do. Clients are not told and must rediscover it.
+func (a *API) postMoveChannel(w http.ResponseWriter, r *http.Request) {
+	iface := r.PathValue("iface")
+	if err := a.e.radioReady(iface); err != nil {
+		writeErr(w, http.StatusServiceUnavailable, err.Error())
+		return
+	}
+	ch, err := strconv.Atoi(strings.TrimSpace(r.URL.Query().Get("channel")))
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, "channel must be a number")
+		return
+	}
+	width := 20
+	if q := strings.TrimSpace(r.URL.Query().Get("width")); q != "" {
+		n, werr := strconv.Atoi(q)
+		if werr != nil {
+			writeErr(w, http.StatusBadRequest, "width must be a number")
+			return
+		}
+		width = n
+	}
+	dropped := len(StationDump(iface))
+	now, err := a.e.MoveChannel(iface, ch, width)
+	if err != nil {
+		if _, known := apChannels[ch]; !known {
+			writeErr(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		writeErr(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"iface": iface, "action": "move_channel", "channel": now,
+		"width_mhz": width, "stations_dropped": dropped,
+	})
 }
 
 // postChannel moves a radio, and every client associated to it, to another
@@ -176,6 +269,214 @@ func (a *API) postDeauthAll(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"iface": iface, "action": "deauth_all", "stations": n,
+	})
+}
+
+// postLinkAll applies a per-client link event to every station on a radio.
+//
+// The AP-wide sibling of the drop and nudge buttons on a device card. Both are
+// ANNOUNCED -- the clients are told and reconnect knowing why, which is the
+// whole distinction from switching the radio off.
+func (a *API) postLinkAll(w http.ResponseWriter, r *http.Request) {
+	iface := r.PathValue("iface")
+	if err := a.e.radioReady(iface); err != nil {
+		writeErr(w, http.StatusServiceUnavailable, err.Error())
+		return
+	}
+	kind := strings.TrimSpace(r.URL.Query().Get("kind"))
+	if kind == "" {
+		kind = LinkDrop
+	}
+	n, err := a.e.LinkAll(iface, kind)
+	if err != nil {
+		code := http.StatusBadGateway
+		if kind != LinkDrop && kind != LinkNudge {
+			code = http.StatusBadRequest
+		}
+		writeErr(w, code, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"iface": iface, "action": "link_all", "kind": kind, "stations": n,
+	})
+}
+
+// postRadioPower cuts or restores a radio's power, telling its clients nothing.
+//
+// The one impairment here that is SILENT. Every other action announces itself:
+// a deauthenticated client knows it was thrown off and reconnects in a second
+// or two. A client whose access point loses power is told nothing at all and
+// has to notice the beacons stopped, which takes it tens of seconds of
+// believing it is still connected. That is the case a real power cut, a
+// tripped breaker or walking round a corner produces, and nothing else in this
+// codebase can imitate it.
+//
+// `?on=0|1` sets it and leaves it. `?dur=N` cuts power for N seconds and
+// restores it -- the more useful form, since what matters is what a player does
+// DURING an outage and how it recovers, and a manual off/on pair makes the
+// duration whatever the operator's reflexes were.
+func (a *API) postRadioPower(w http.ResponseWriter, r *http.Request) {
+	iface := r.PathValue("iface")
+	if err := a.e.radioExists(iface); err != nil {
+		writeErr(w, http.StatusServiceUnavailable, err.Error())
+		return
+	}
+	q := r.URL.Query()
+	// A timed outage is a different verb from a plain toggle, so it is decided
+	// before `on` is read: ?dur= always means "off, then back".
+	if s := strings.TrimSpace(q.Get("dur")); s != "" {
+		dur, err := strconv.ParseFloat(s, 64)
+		if err != nil {
+			writeErr(w, http.StatusBadRequest, "dur must be a number of seconds")
+			return
+		}
+		if err := a.e.RadioOutage(iface, dur); err != nil {
+			writeErr(w, http.StatusBadGateway, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusAccepted, map[string]any{
+			"iface": iface, "action": "power_outage", "dur_sec": dur,
+		})
+		return
+	}
+	on := q.Get("on") != "0" && !strings.EqualFold(q.Get("on"), "false")
+	if err := a.e.SetRadioPower(iface, on); err != nil {
+		writeErr(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"iface": iface, "action": "power", "on": on,
+	})
+}
+
+// postScan takes a radio out of service, scans its band, and puts it back --
+// optionally on the quietest channel it found (`?apply=1`).
+//
+// A beaconing radio cannot survey other channels, so this is genuinely
+// disruptive: the BSS is torn down for a few seconds and its clients are
+// dropped. On a box serving two radios they land on the other band and come
+// back, which is what makes it affordable; on a single-radio box it is an
+// outage. Either way the cost is reported in the result as outage_sec.
+//
+// Applying happens while the radio is still down, which is why it works on
+// hardware that refuses CHAN_SWITCH (issue #154): nothing is announced, the
+// access point simply reappears elsewhere.
+func (a *API) postScan(w http.ResponseWriter, r *http.Request) {
+	iface := r.PathValue("iface")
+	if err := a.e.radioReady(iface); err != nil {
+		writeErr(w, http.StatusServiceUnavailable, err.Error())
+		return
+	}
+	apply := r.URL.Query().Get("apply") == "1"
+	res, err := a.e.ScanBand(iface, apply)
+	if err != nil {
+		writeErr(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, res)
+}
+
+// postRadioProfile applies a named PHY or power-save profile, restarting the
+// BSS. Every client on the radio is dropped: these parameters are advertised in
+// the beacon and negotiated at association, so an associated station cannot be
+// told about them.
+func (a *API) postRadioProfile(w http.ResponseWriter, r *http.Request) {
+	iface := r.PathValue("iface")
+	if err := a.e.radioReady(iface); err != nil {
+		writeErr(w, http.StatusServiceUnavailable, err.Error())
+		return
+	}
+	name := strings.TrimSpace(r.URL.Query().Get("name"))
+	dropped, err := a.e.ApplyRadioProfile(iface, name)
+	if err != nil {
+		// A refused SETTING is a partial success worth reporting as one: the
+		// radio is back up, some of the profile took, and the caller is told
+		// exactly which parts did not.
+		if dropped > 0 {
+			writeJSON(w, http.StatusOK, map[string]any{
+				"iface": iface, "action": "profile", "profile": name,
+				"stations_dropped": dropped, "warning": err.Error(),
+			})
+			return
+		}
+		writeErr(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"iface": iface, "action": "profile", "profile": name,
+		"stations_dropped": dropped,
+	})
+}
+
+// postThreshold sets the RTS or fragmentation threshold. The only radio
+// impairment here that costs nothing: live on the next frame, nobody dropped.
+func (a *API) postThreshold(w http.ResponseWriter, r *http.Request) {
+	iface := r.PathValue("iface")
+	if err := a.e.radioExists(iface); err != nil {
+		writeErr(w, http.StatusServiceUnavailable, err.Error())
+		return
+	}
+	q := r.URL.Query()
+	kind := strings.TrimSpace(q.Get("kind"))
+	// -1 is "off", and is the default so a request with no value turns the
+	// impairment off rather than silently setting it to zero -- which for rts
+	// means "every frame" and is the strongest setting there is.
+	val := -1
+	if s := strings.TrimSpace(q.Get("value")); s != "" && s != "off" {
+		n, err := strconv.Atoi(s)
+		if err != nil {
+			writeErr(w, http.StatusBadRequest, "value must be a number, or 'off'")
+			return
+		}
+		val = n
+	}
+	if err := a.e.SetPhyThreshold(iface, kind, val); err != nil {
+		writeErr(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"iface": iface, "action": "threshold", "kind": kind, "value": val,
+	})
+}
+
+// postSteer asks clients to move to the other radio via 802.11v.
+//
+// A REQUEST, not an instruction: the decision stays with the client, and
+// whether a given phone honours it is exactly the behaviour worth testing.
+// `?mac=` steers one; omitted, it asks everyone on the radio.
+func (a *API) postSteer(w http.ResponseWriter, r *http.Request) {
+	from := r.PathValue("iface")
+	if err := a.e.radioReady(from); err != nil {
+		writeErr(w, http.StatusServiceUnavailable, err.Error())
+		return
+	}
+	to := strings.TrimSpace(r.URL.Query().Get("to"))
+	if to == "" {
+		to = a.e.OtherRadio(from)
+	}
+	if to == "" {
+		writeErr(w, http.StatusServiceUnavailable,
+			"nowhere to steer to: this box is serving only one radio, and a "+
+				"transition request needs another access point to name")
+		return
+	}
+	if mac := strings.TrimSpace(r.URL.Query().Get("mac")); mac != "" {
+		if err := a.e.SteerClient(mac, from, to); err != nil {
+			writeErr(w, http.StatusBadGateway, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"iface": from, "action": "steer", "to": to, "asked": 1, "mac": normMAC(mac),
+		})
+		return
+	}
+	n, err := a.e.SteerAll(from, to)
+	if err != nil {
+		writeErr(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"iface": from, "action": "steer", "to": to, "asked": n,
 	})
 }
 
@@ -1421,6 +1722,16 @@ func (a *API) linkEvent(w http.ResponseWriter, r *http.Request, action string) {
 		writeErr(w, http.StatusBadGateway, err.Error())
 		return
 	}
+	// Logged HERE rather than in LinkDeauth, so the log records what an
+	// OPERATOR did. The same two calls are made at up to 1Hz by a running
+	// pattern, and a deadzone would fill the ring with its own repeats inside a
+	// minute; what a pattern does to a client already shows up as the join and
+	// leave it causes.
+	verb := "dropped"
+	if action == "disassoc" {
+		verb = "nudged"
+	}
+	a.e.logEvent(EventAction, "", mac, "%s %s", verb, a.e.labelFor(mac))
 	writeJSON(w, http.StatusOK, map[string]any{"mac": mac, "action": action, "reason": reason})
 }
 

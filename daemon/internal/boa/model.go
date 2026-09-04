@@ -337,6 +337,13 @@ type Client struct {
 	Medium string `json:"medium"`
 	// Port is the bridge port the client was last seen on, for display.
 	Port string `json:"port,omitempty"`
+	// RadioOn describes the access point a WIRELESS client is associated to.
+	//
+	// It matters now that the box serves two bands at once: a client on 2.4GHz
+	// at 20MHz and one on 5GHz at 80MHz behave completely differently, and
+	// until this existed the interface said only "wifi" for both. Absent for a
+	// wired client, and for a wireless one whose radio could not be read.
+	RadioOn *RadioOn `json:"radio_on,omitempty"`
 
 	// Present means currently associated to the radio. A DHCP lease alone does
 	// NOT set this: leases outlive the clients that held them.
@@ -493,6 +500,20 @@ type Snapshot struct {
 //
 //	"error" - something is wrong and the box is not doing its job
 //	"info"  - a standing truth about how the system behaves
+//
+// RadioOn is the access point a client is associated to, as the device list
+// shows it. A trimmed APStatus: the client card wants what distinguishes one
+// radio from the other, not the whole BSS configuration.
+type RadioOn struct {
+	Iface    string `json:"iface"`
+	Channel  int    `json:"channel,omitempty"`
+	WidthMHz int    `json:"width_mhz,omitempty"`
+	Mode     string `json:"mode,omitempty"`
+	// Band is "2.4GHz" or "5GHz", derived from the channel. The single most
+	// useful fact about which radio a client is on.
+	Band string `json:"band,omitempty"`
+}
+
 type Notice struct {
 	Level string `json:"level"`
 	Text  string `json:"text"`

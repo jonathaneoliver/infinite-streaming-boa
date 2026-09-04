@@ -8,6 +8,7 @@ import SubClasses from './SubClasses.vue';
 import LadderPanel from './LadderPanel.vue';
 import PatternPanel from './PatternPanel.vue';
 import TrafficChart from './TrafficChart.vue';
+import { useViewportWidth } from '@/composables/useViewport';
 
 const props = defineProps<{
   client: Client;
@@ -91,30 +92,76 @@ const chartProps = computed(() => ({
  *  - No track may be max-content. Every row is its own grid, so a
  *    content-sized track is measured per row and the list stops lining up.
  */
-const IDENTITY_COLS = [
+const vw = useViewportWidth();
+
+/**
+ * The identity columns, and which of them survive a narrow window.
+ *
+ * Every one of these started as minmax(0, ...) so the group would squeeze
+ * before the charts did. That degrades well for one or two columns and badly
+ * for nine: at 1200px the row truncated to "802...", "192.168...", "fc:9c:a..."
+ * -- every field present, none of them readable, which is a worse answer than
+ * showing fewer fields properly.
+ *
+ * So past a breakpoint columns are DROPPED rather than crushed, least useful
+ * first. Dropping is safe here only because the cells are dropped WITH them:
+ * the tracks are positional, so a cell without a track slides every later one.
+ * cols and the template are driven from the same list for that reason.
+ *
+ * Breakpoints are in script rather than CSS because the template is built in
+ * script -- it depends on which directions are shown and whether the card is
+ * open, which no media query can see.
+ */
+// A FOLDED row has less room for identity than an open one, at the same window
+// width: it also carries a sparkline and a figure per direction plus the unit,
+// roughly 250px the open card spends on a single tail cell. Using one set of
+// breakpoints for both left folded rows crushed while open ones were fine --
+// measured at 1200px, where the open card read cleanly and the folded row below
+// it showed "WL... ch 40 - 80 MHz - ... no a... -42 ...".
+const identityBudget = computed(() => vw.value - (props.collapsed ? 250 : 0));
+
+const showIPv6Count = computed(() => identityBudget.value >= 1600);
+const showAssoc = computed(() => identityBudget.value >= 1500);
+const showPHY = computed(() => identityBudget.value >= 1400);
+const showMAC = computed(() => identityBudget.value >= 1300);
+const showSignal = computed(() => identityBudget.value >= 1200);
+
+// The ntopng links are in the SHARED trailing group, so this is keyed off the
+// raw window width rather than the folded-adjusted budget: dropping them in one
+// state and not the other would pull the conditioned badge and the actions out
+// of alignment, which the shared group exists to prevent.
+const showLinks = computed(() => vw.value >= 1300);
+
+const IDENTITY_COLS = computed(() => [
   '30px',                 // fold toggle -- first, so it never moves
   '14px',                 // presence dot
   '170px',                // name -- fixed, so what follows holds its x
-  '58px',                 // medium badge
+  // 84px, not 58: the badge carries the radio name ("wlan-usb"), not the word
+  // "wifi", because which radio a client is on is the fact that matters once
+  // the box serves two bands.
+  'minmax(0, 84px)',      // medium / radio badge
   // 268px fits a full IPv4 with room to spare and most of an IPv6; longer
   // addresses ellipsise and carry the full value in a tooltip.
   'minmax(96px, 268px)',  // address
-  'minmax(0, 62px)',      // +N IPv6
-  'minmax(0, 132px)',     // MAC -- 17 monospace characters
-  'minmax(0, 96px)',      // signal, or the longer tx-fail fallback
-  'minmax(0, 76px)',      // PHY rate
+  ...(showIPv6Count.value ? ['minmax(0, 62px)'] : []),
+  ...(showMAC.value ? ['minmax(0, 132px)'] : []),
+  // The radio summary is never dropped: which radio a client is on, and what
+  // that radio is doing, is the reason this row exists on a two-band box.
+  'minmax(0, 168px)',     // "ch 40 · 80 MHz · 802.11ax"
+  ...(showSignal.value ? ['minmax(0, 96px)'] : []),
+  ...(showPHY.value ? ['minmax(0, 76px)'] : []),
   // 104px, not 92: "assoc 42m 35s" is the longest common form and 92 clipped
   // it to "assoc 42m 3...". A column narrower than the value it always holds is
   // not a graceful degradation, it is a bug that only shows on real data.
-  'minmax(0, 104px)',     // assoc age
-];
+  ...(showAssoc.value ? ['minmax(0, 104px)'] : []),
+]);
 
 // Every identity track is minmax(0, ...) so the group squeezes -- and, past a
 // point, disappears -- before the sparklines and throughput figures give up any
 // width. Everything in it is recoverable by expanding the card; a clipped rate
 // figure is not, and it is what the row exists to show.
 const headCols = computed(() => [
-  ...IDENTITY_COLS,
+  ...IDENTITY_COLS.value,
   'minmax(0, 1fr)', // slack: absorbs the difference between the two middles
   ...(props.collapsed
     // Folded: sparkline and figure per direction, then the unit.
@@ -127,7 +174,7 @@ const headCols = computed(() => [
     // its contents cannot push a track around.
     : ['auto']),
   // Shared from here on, so none of it moves as the card opens.
-  'minmax(0, 124px)', // ntopng deep links
+  ...(showLinks.value ? ['minmax(0, 124px)'] : []), // ntopng deep links
   // 106px: the badge is uppercase 11px with letter-spacing and padding, and at
   // 92px it read "CONDITION..." -- a truncated warning is a worse warning.
   '106px',            // conditioned badge
@@ -142,6 +189,30 @@ const EXPANDED_H = 196;
 const expandedH = computed(() => (props.chart.tallCharts ? EXPANDED_H * 2 : EXPANDED_H));
 
 const open = ref(false);
+
+/** "ch 40 · 80 MHz · 802.11ax", the same phrasing the bridge diagram uses for
+ *  the radio node, so the two read as descriptions of the same thing. Empty
+ *  for a wired client and for a wireless one not currently on a radio. */
+const radioSummary = computed(() => {
+  const r = props.client.radio_on;
+  if (!r) return '';
+  return [
+    r.channel ? `ch ${r.channel}` : '',
+    r.width_mhz ? `${r.width_mhz} MHz` : '',
+    r.mode || '',
+  ].filter(Boolean).join(' · ');
+});
+
+// Signal quality bands are the conventional Wi-Fi ones: above -60 dBm is a
+// strong link, below -75 is where retries and rate-drops begin to dominate and
+// the radio's own behaviour will start to confound whatever is being tested.
+/** The two bands are told apart by colour as well as by label, the same way
+ *  downlink and uplink are: which band a client is on is the most confusable
+ *  thing on this row once both radios serve. */
+const bandClass = computed(() => {
+  const b = props.client.radio_on?.band;
+  return b === '5GHz' ? 'band5' : b === '2.4GHz' ? 'band24' : '';
+});
 
 // Signal quality bands are the conventional Wi-Fi ones: above -60 dBm is a
 // strong link, below -75 is where retries and rate-drops begin to dominate and
@@ -425,10 +496,28 @@ function fmtBytes(n: number): string {
         @change="emit('label', ($event.target as HTMLInputElement).value)"
       />
 
+      <!-- WHICH radio, not merely "wifi".
+           The box serves both bands at once, and a client on 2.4GHz at 20MHz
+           behaves nothing like one on 5GHz at 80MHz -- so "wifi" alone stopped
+           being an answer the moment the second radio came up. -->
       <span class="cell">
-        <span v-if="client.medium" class="badge" :class="client.medium">
-          {{ client.medium }}
-        </span>
+        <!-- The BAND, not the interface name. "5 GHz" is the fact that means
+             something about how this client will behave; "wlan-usb" is an
+             implementation detail of which adapter happens to serve it, and it
+             is one hover away in the tooltip. -->
+        <span
+          v-if="client.medium" class="badge" :class="[client.medium, bandClass]"
+          :title="client.radio_on
+            ? `On ${client.radio_on.iface}, channel ${client.radio_on.channel}`
+            : (client.port ? `On ${client.port}` : '')"
+        >{{ client.radio_on?.band || client.port || client.medium }}</span>
+      </span>
+
+      <!-- What that radio is doing, in the same words the diagram uses. Its own
+           column rather than a second line: the head is one row by design, and
+           a wrapping cell makes this card taller than its neighbours. -->
+      <span class="cell meta num" :title="client.radio_on ? 'The access point this client is associated to' : ''">
+        {{ radioSummary }}
       </span>
 
       <span
@@ -439,8 +528,11 @@ function fmtBytes(n: number): string {
       </span>
 
       <!-- Privacy extensions give a device several v6 addresses at once, so
-           the count matters more than any one value; all of them are shaped. -->
+           the count matters more than any one value; all of them are shaped.
+           v-if paired with its track in IDENTITY_COLS: a cell without a track
+           slides every later one and the row stops lining up. -->
       <span
+        v-if="showIPv6Count"
         class="cell meta num"
         :title="client.ipv6?.length ? 'IPv6, all conditioned:\n' + client.ipv6.join('\n') : ''"
       >{{ client.ipv6?.length ? `+${client.ipv6.length} IPv6` : '' }}</span>
@@ -451,7 +543,7 @@ function fmtBytes(n: number): string {
            rotates its private Wi-Fi address comes back as a different client
            with no conditioning. Spotting that from a folded list is the point;
            having to expand every card to compare MACs is not. -->
-      <span class="cell meta num mac" :title="client.mac">{{ client.mac }}</span>
+      <span v-if="showMAC" class="cell meta num mac" :title="client.mac">{{ client.mac }}</span>
 
       <!-- Signal, and the same fallback the expanded head uses. Only shown when
            the driver actually reports it: the Pi's Broadcom chip gives no
@@ -459,7 +551,7 @@ function fmtBytes(n: number): string {
            confident-looking lie. Wired clients have no station at all, so the
            cell stays empty rather than being dropped -- the columns are
            positional, and a missing cell slides every later one left. -->
-      <span class="cell meta num" :class="client.station?.signal_dbm ? signalClass : ''">
+      <span v-if="showSignal" class="cell meta num" :class="client.station?.signal_dbm ? signalClass : ''">
         <template v-if="client.station?.signal_dbm">
           {{ client.station.signal_dbm }} dBm
         </template>
@@ -473,6 +565,7 @@ function fmtBytes(n: number): string {
            2 Mbps, so it is never allowed to appear as a bare number next to the
            throughput figures further along this same row. -->
       <span
+        v-if="showPHY"
         class="cell meta num"
         :title="client.station ? 'Negotiated radio modulation rate, NOT achieved throughput' : ''"
       >{{ client.station ? `PHY ${client.station.tx_phy_mbps.toFixed(0)}` : '' }}</span>
@@ -482,6 +575,7 @@ function fmtBytes(n: number): string {
            a drop or nudge actually happened -- worth being able to watch down a
            list of devices rather than only on the one card that is open. -->
       <span
+        v-if="showAssoc"
         class="cell meta num"
         :title="client.station ? 'How long this device has been continuously associated. It resets when the link drops and re-associates, so it falls to a few seconds right after a drop or nudge.' : ''"
       >{{ client.station ? `assoc ${connectedLabel}` : '' }}</span>
@@ -542,7 +636,7 @@ function fmtBytes(n: number): string {
            the filtered view to resolve to anything. Folded too: jumping to a
            device's flows is a thing you want from the list, not something worth
            opening a card for first. -->
-      <span class="cell tail">
+      <span v-if="showLinks" class="cell tail">
         <template v-if="ntopngPort && client.ip">
           <a
             class="ntop-link"
@@ -851,6 +945,11 @@ function fmtBytes(n: number): string {
 /* Dimmer than the address: the MAC is the identity, but the address is what
    someone is usually reading down the list for. */
 .card-head .mac { color: var(--ink-faint); }
+/* 5GHz and 2.4GHz told apart at a glance. Not the direction pair's blue and
+   orange -- those mean downlink and uplink everywhere else in this interface,
+   and reusing them here would make band look like direction. */
+.badge.band5 { color: #7dd3fc; border-color: color-mix(in srgb, #7dd3fc 40%, var(--line)); }
+.badge.band24 { color: #c4b5fd; border-color: color-mix(in srgb, #c4b5fd 40%, var(--line)); }
 .card-head.folded .val { text-align: right; font-size: 12px; font-weight: 600; }
 .card-head.folded .unit { font-size: 11px; }
 .card-head.folded .spark { display: block; }

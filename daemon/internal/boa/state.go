@@ -105,6 +105,27 @@ type Engine struct {
 	// with a station it has never heard of.
 	stationRadio map[string]string
 
+	// events is the in-memory log of what CHANGED -- joins, roams, radio
+	// moves, actions. Everything else here is state; see events.go for why
+	// that is not enough. prevRadio is the previous tick's associations, which
+	// is the only way to notice a client moved between radios.
+	events         eventLog
+	prevRadio      map[string]string
+	prevRadioState map[string]string
+
+	// radioOn caches each radio's channel/width/mode for the device list,
+	// refreshed on a slow timer: it changes only when something deliberately
+	// changes it, and asking hostapd per tick is a round-trip per radio for a
+	// value that is almost always unchanged.
+	radioOn   map[string]*RadioOn
+	radioOnAt time.Time
+
+	// scanSeen is the last band scan per radio, kept so the interface can
+	// colour its channel controls from a measurement rather than a guess. In
+	// memory like the event log, and for the same reason: it describes a
+	// moment, and a stale one restored from disk would be worse than none.
+	scanSeen map[string]ScanSummary
+
 	// lastActive is when each MAC was last moving more than a trickle.
 	// Telemetry, so it is held in memory and never written to the store: it
 	// rebuilds itself within seconds of a restart for anything actually doing
@@ -224,6 +245,7 @@ func (e *Engine) Start() {
 	// Clear any deadzone ban left in hostapd's deny list by a daemon that died
 	// mid-outage, so a client is never stranded off the AP across a restart.
 	e.clearDenyACL()
+	e.restoreRadioPower()
 	// Devices announce only occasionally -- on join, on wake, when services
 	// change -- so an in-memory-only name table means every daemon restart
 	// drops every client back to a bare MAC until the next announcement,
@@ -601,8 +623,24 @@ func (e *Engine) tick() {
 			Station: stations[mac], Policy: pol, LastSeen: now.UnixMilli(),
 			SubCounters: map[string]Counters{},
 		}
+		// Which radio, and what that radio is doing. Only for a client actually
+		// associated to one: a wired client has no radio, and a wireless client
+		// the station table has lost is not on any radio right now, so claiming
+		// one would be inventing a fact.
+		if w := stationRadio[mac]; w != "" {
+			c.RadioOn = e.radioOnFor(w)
+		}
 		clients = append(clients, c)
 	}
+	// What CHANGED since the last tick, raised now that both the associations
+	// and the labels for them are in hand.
+	labels := make(map[string]string, len(clients))
+	for _, c := range clients {
+		labels[c.MAC] = c.Label
+	}
+	e.noteClientChanges(stationRadio, labels)
+	e.noteRadioChanges()
+
 	sort.Slice(clients, func(i, j int) bool {
 		// Present devices first, then by label, so the list does not reshuffle
 		// as telemetry changes.
