@@ -259,6 +259,8 @@ appliance watching itself."
     <BridgeView
       :active="true" :clients="snap?.clients"
       :series="series"
+      :radios="caps?.wlan_ifaces ?? []"
+      :adapter-run="snap?.adapter_run ?? null"
     />
     <ClientsView
       :snap="snap" :series="series" :bucket-ms="bucketMs" :caps="caps"

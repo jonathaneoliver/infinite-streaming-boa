@@ -165,11 +165,36 @@ export interface LinkEvent {
   scope?: 'current' | 'all';
 }
 
+/** One entry on an adapter pattern's radio lanes.
+ *
+ *  `iface` is the radio the event acts ON, and that is the whole grammar: an
+ *  `off` block takes it down, `deauth` throws its clients off, `evict` sends
+ *  them away from it, and `gather` brings everyone else to it. */
+export interface RadioEvent {
+  at_sec: number;
+  iface: string;
+  kind: 'gather' | 'evict' | 'deauth' | 'off';
+  /** `off` only — how long the radio stays down. The rest are pulses. */
+  dur_sec?: number;
+}
+
+/** The shortest outage an adapter pattern may author.
+ *
+ *  Cutting radio power is the one impairment that announces nothing, so the
+ *  client discovers it by missing beacons — tens of seconds on most devices.
+ *  A shorter block authors an outage many clients never notice at all. Use
+ *  `deauth` for a short, announced disturbance. Kept in step with
+ *  minRadioOffSec in the daemon. */
+export const MIN_RADIO_OFF_SEC = 30;
+
 export interface Pattern {
   name: string;
   keys: Keyframe[];
   loop: boolean;
   links?: LinkEvent[];
+  /** The adapter lanes. A pattern carrying these is played against the BOX
+   *  rather than a device. */
+  radios?: RadioEvent[];
 }
 
 /**
@@ -494,6 +519,10 @@ export interface Capabilities {
   radio: boolean;
   leases: boolean;
   wlan_iface: string;
+  /** Every radio the daemon watches, in preference order. This is the set an
+   *  adapter pattern may address; wlan_iface above is the back-compat single
+   *  name and predates the box serving two. */
+  wlan_ifaces?: string[];
   uplink_if: string;
   /** The radio actually serving the AP. `bus` is "usb" or "onboard"; for a USB
    *  adapter `link_mbps` is the speed it NEGOTIATED (5000 = SuperSpeed,
@@ -569,6 +598,10 @@ export interface Snapshot {
   caps: Capabilities;
   clients: Client[];
   notices?: Notice[];
+  /** The box's own pattern run, when one is playing — carried here for the same
+   *  reason a device's is: so the adapter editor draws a moving playhead
+   *  without polling a second endpoint. */
+  adapter_run?: PatternView | null;
 }
 
 export const CLEAN: Shape = {
