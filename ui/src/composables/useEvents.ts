@@ -38,7 +38,26 @@ export function useEvents(pollMs = 3000) {
     try {
       const r = await fetch(`/api/events?since=${since}`);
       if (!r.ok) throw new Error(`${r.status}`);
-      const body = (await r.json()) as { events: BoaEvent[] };
+      const body = (await r.json()) as { events: BoaEvent[]; latest?: number };
+      // The log RESTARTED under us: the daemon's ring is in memory, so a
+      // deploy begins its sequence again at 1 while this page is still holding
+      // a cursor from the previous run. Asking for events after that cursor
+      // then returns an empty list -- correctly, and for as long as the page
+      // stays open, because the new sequence may never reach the old one.
+      //
+      // Nothing about that looks like a failure: the fetch succeeds, the array
+      // is valid, and the panel renders as a quiet box. It is the one lie this
+      // panel must not tell, and it is why `latest` is sent with every
+      // response rather than only with a populated one (#196).
+      //
+      // Within one run the sequence only grows, so latest < since cannot mean
+      // anything else. Everything held is dropped, because those events belong
+      // to a run that has ended.
+      if (body.latest !== undefined && body.latest < since) {
+        since = 0;
+        events.value = [];
+        unseen.value = 0;
+      }
       if (body.events.length) {
         since = body.events[body.events.length - 1].seq;
         // Newest first: the interesting event is the one that just happened,

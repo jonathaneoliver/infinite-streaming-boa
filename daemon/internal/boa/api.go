@@ -148,7 +148,14 @@ func (a *API) getEvents(w http.ResponseWriter, r *http.Request) {
 	if evs == nil {
 		evs = []Event{}
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"events": evs})
+	// latest travels with every response, including empty ones, because the
+	// empty response is the case that needs it: a caller holding a cursor from
+	// before a daemon restart would otherwise be told "nothing new" forever and
+	// have no way to tell that from a quiet box (#196).
+	writeJSON(w, http.StatusOK, map[string]any{
+		"events": evs,
+		"latest": a.e.LatestEventSeq(),
+	})
 }
 
 // getSurvey reads a radio's airtime counters.

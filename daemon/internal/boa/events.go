@@ -87,6 +87,23 @@ func (l *eventLog) add(kind, iface, mac, text string) {
 	l.ring[len(l.ring)-1] = e
 }
 
+// latest is the highest sequence this log has issued.
+//
+// Published so a reader can tell that the log RESTARTED underneath it. The ring
+// is in memory, so the sequence begins again at 1 on every daemon restart --
+// every deploy -- while a page that has been open across one is still holding a
+// cursor from the previous run. Asking for events after that cursor then
+// returns an empty list, correctly and forever, and the panel renders as a
+// quiet box rather than a broken one (#196).
+//
+// Within one run the sequence only grows, so a latest LOWER than the cursor a
+// caller holds is unambiguous: there is no other way to observe it.
+func (l *eventLog) latest() uint64 {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.seq
+}
+
 func (l *eventLog) label(mac string) string {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -121,6 +138,10 @@ func (l *eventLog) since(seq uint64, limit int) []Event {
 
 // Events returns what the log holds newer than seq.
 func (e *Engine) Events(seq uint64, limit int) []Event { return e.events.since(seq, limit) }
+
+// LatestEventSeq is the highest sequence issued, so a caller can notice the log
+// restarted under it. See eventLog.latest.
+func (e *Engine) LatestEventSeq() uint64 { return e.events.latest() }
 
 // logEvent records something that happened. Never blocks the caller for long
 // and never fails: a log that can refuse is one more thing to check.
