@@ -204,6 +204,89 @@ func (e *Engine) noteRadioChanges() {
 // tick would notice the same change a second later and report it again.
 func (e *Engine) syncRadioState(iface string) { e.setRadioState(iface, e.radioSummary(iface)) }
 
+/*
+ * Whether a radio is SERVING, which the channel summary above cannot say.
+ *
+ * radioSummary is built from channel/width/mode, and a DISABLED BSS still
+ * answers STATUS with the channel it will use when it returns -- so a radio
+ * serving nobody produced exactly the same summary as one serving happily, and
+ * the tick saw no change. That is how a radio came back from a power cut with
+ * no access point on it, warned once, recovered minutes later, and left the
+ * warning standing as the last word on it (issue #174).
+ *
+ * Four states rather than a bool, because "not serving" has three quite
+ * different meanings and only one of them is worth an alarm:
+ *
+ *	serving    the BSS is up
+ *	down       powered on, hostapd present, BSS not up -- the fault case
+ *	off        deliberately switched off; not serving is CORRECT here, and
+ *	           warning would make the power button alarm every time it is used
+ *	unmanaged  no control socket, so there is no BSS to have an opinion about
+ */
+func (e *Engine) apServiceState(iface string) string {
+	if e.cfg.Demo {
+		return "serving"
+	}
+	if on, known := radioPowered(iface); known && !on {
+		return "off"
+	}
+	if !hostapdAvailable(iface) {
+		return "unmanaged"
+	}
+	if r := e.radioOnFor(iface); r != nil && r.Serving {
+		return "serving"
+	}
+	return "down"
+}
+
+// noteAPServing reports a radio that stopped serving, and -- the half that was
+// missing -- one that started again.
+//
+// Only the two edges that carry information are logged. A deliberate power
+// cycle passes through "off", and notePower has already said so in the operator's
+// own terms; repeating it here would double every press of the button.
+func (e *Engine) noteAPServing() {
+	for _, w := range e.cfg.WlanPorts {
+		now := e.apServiceState(w)
+		was := e.setAPServing(w, now)
+		if was == "" || was == now {
+			continue
+		}
+		switch {
+		case was == "serving" && now == "down":
+			// SERVING -> down specifically, not "anything -> down". A normal
+			// power cycle passes off -> down -> serving on its way back up, and
+			// warning on the middle step would make the power button raise an
+			// alarm every time it is used. What this catches is a radio that
+			// was serving and stopped: a hand-run DISABLE, a driver that
+			// wedged, a cut that did not come back. The tick does not know
+			// which, and does not need to -- it reports the fact.
+			e.logEvent(EventWarning, w, "",
+				"%s stopped serving — it is powered on but has no access point on it", w)
+		case was == "down" && now == "serving":
+			e.logEvent(EventRadio, w, "", "%s is serving again", w)
+		}
+	}
+}
+
+// syncAPServing records the serving state WITHOUT logging it, for the same
+// reason syncRadioState exists: an action that already reported what it did
+// must not have the next tick report it a second time.
+func (e *Engine) syncAPServing(iface string) { e.setAPServing(iface, e.apServiceState(iface)) }
+
+// setAPServing stores a radio's serving state and returns the previous one, or
+// "" on the first reading.
+func (e *Engine) setAPServing(iface, now string) string {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.prevAPServing == nil {
+		e.prevAPServing = map[string]string{}
+	}
+	was := e.prevAPServing[iface]
+	e.prevAPServing[iface] = now
+	return was
+}
+
 // setRadioState stores a radio's summary and returns the previous one, or ""
 // when this is the first reading. Locked: the tick and an API handler both
 // reach it.

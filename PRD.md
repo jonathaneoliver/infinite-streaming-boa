@@ -391,6 +391,17 @@ damages packets, never link state.
   answers "what is true now" and is silent about "what just happened", which on
   a two-radio box is the more interesting question -- a device that moved to the
   other band is simply on the other band, with nothing saying it moved.
+- **A radio that stops serving is reported, and so is its recovery.** Whether a
+  radio is powered is not the same question as whether it has a working access
+  point on it, and the second one is what decides if anybody can connect: a
+  disabled BSS still reports the channel it will use when it returns, so a radio
+  serving nobody otherwise looks identical to one serving happily. Both edges
+  are logged — stopped serving, and serving again — whatever the cause. A
+  warning is therefore never left standing over a radio that has since
+  recovered, which is the state that misleads during a test. A radio
+  deliberately switched **off** is not reported as a fault: not serving is the
+  correct state for a radio that is off, and the power control has already said
+  what it did.
 - The log is **in memory and lossy by design**: a few hundred events, cleared by
   a restart or a deploy. An association event per client per roam, persisted, is
   exactly the steady write that wears an SD card out, and every event still
