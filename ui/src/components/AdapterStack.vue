@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
+import { computed, onBeforeUnmount, ref, watch } from 'vue';
 import type { Series } from '@/types';
 import { clientColour } from '@/composables/useClientColours';
 import { axisDecimals, axisTicks, niceMax, spanLabel } from '@/composables/chartAxis';
@@ -97,16 +97,30 @@ const PLOT_H = computed(() => H.value - PAD.t - PAD.b);
  */
 const col = ref<HTMLElement | null>(null);
 const chartW = ref(320);
-let ro: ResizeObserver | null = null;
-onMounted(() => {
-  if (!col.value) return;
-  ro = new ResizeObserver((e) => {
-    const cw = e[0]?.contentRect.width ?? 0;
-    if (cw > 0) chartW.value = Math.max(200, Math.floor(cw));
-  });
-  ro.observe(col.value);
+
+/*
+ * Re-observed WHENEVER the element changes, not once on mount.
+ *
+ * Observing in `onMounted` looked right and was wrong in one specific case that
+ * this component hits routinely: the measured column lives inside the
+ * `v-if="!empty"` branch, so an adapter with nothing in its window has no such
+ * element when it mounts, the observer is never attached, and when traffic
+ * arrives and the pair finally renders nothing measures it. The plot then keeps
+ * its initial width forever -- a stunted x-axis inside a full-width column.
+ *
+ * An adapter that has gone quiet and comes back is not an edge case here, it is
+ * the normal life of a radio, and it is exactly the state the drain-to-empty
+ * behaviour creates.
+ */
+const ro = new ResizeObserver((e) => {
+  const cw = e[0]?.contentRect.width ?? 0;
+  if (cw > 0) chartW.value = Math.max(200, Math.floor(cw));
 });
-onBeforeUnmount(() => ro?.disconnect());
+watch(col, (el, prev) => {
+  if (prev) ro.unobserve(prev);
+  if (el) ro.observe(el);
+}, { immediate: true, flush: 'post' });
+onBeforeUnmount(() => ro.disconnect());
 
 const plotW = computed(() => Math.max(40, chartW.value - PAD.l - PAD.r));
 
