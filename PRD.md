@@ -154,6 +154,12 @@ put it on a network where that is acceptable.
   other device on that port being conditioned — which this box cannot allow.
 - `rate_mbps = 0` means unlimited. `delay_ms` is **per direction**; the round
   trip is the sum, and the interface shows that sum.
+- A slider **applies when it is released**, not while it moves. The readout
+  follows the handle throughout, so the control still reads as live, but the
+  device is conditioned once, with the value that was chosen. Applying every
+  value a drag passes over would impose a dozen caps nobody selected on a live
+  client — each a real reconfiguration the device under test reacts to — which
+  changes the run that the drag was setting up.
 - **Loss runs to 100%, which is a blackhole** — the "drove into a tunnel" test.
   Its control is log-scaled for the same reason the rate control is: everything
   ordinarily interesting sits below 5%, and a linear track to 100 would bury it.
