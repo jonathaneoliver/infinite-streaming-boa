@@ -1,21 +1,25 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue';
-import { useEvents, type BoaEvent } from '@/composables/useEvents';
+import { useEvents } from '@/composables/useEvents';
 
 /**
  * The activity log: a strip under the tabs saying what just happened.
  *
- * Collapsed to ONE line by default. The question it answers -- "did anything
- * change while I was not looking" -- is answered by the newest line alone
- * nine times out of ten, and a permanently open log of twenty lines would push
- * the devices, which are the actual content, down the page. Open it when the
- * one line is not enough.
+ * Collapsed it shows the newest few lines, not one. One line answers "did
+ * anything change while I was not looking" but not "what changed", and a single
+ * event is often meaningless alone -- a client leaving one radio and appearing
+ * on the other is two lines, and the second is what makes the first mean
+ * something. A fixed preview of a few rows still keeps the devices, which are
+ * the actual content, above the fold; open it for the rest.
  *
  * It does NOT survive a restart of the daemon, by design: the ring is in
  * memory, so a deploy clears it. Persisting an association event per client per
  * roam is exactly the steady write that wears an SD card out.
  */
 const OPEN_KEY = 'boa.activity.open';
+
+/** Rows shown while collapsed. Enough for a roam and the context around it. */
+const PREVIEW = 4;
 
 const log = useEvents();
 const open = ref(localStorage.getItem(OPEN_KEY) === '1');
@@ -32,7 +36,17 @@ watch(log.events, () => {
   if (open.value) log.markSeen();
 });
 
-const latest = computed<BoaEvent | undefined>(() => log.events.value[0]);
+const shown = computed(() =>
+  open.value ? log.events.value : log.events.value.slice(0, PREVIEW),
+);
+const hidden = computed(() => log.events.value.length - shown.value.length);
+
+/**
+ * The badge counts only what SCROLLED PAST unseen. The newest few lines are on
+ * screen even when collapsed, so counting those as unseen would claim there is
+ * something to look at while the reader is looking straight at it.
+ */
+const unseenHidden = computed(() => Math.max(0, log.unseen.value - PREVIEW));
 
 /**
  * Clock time, not "3m ago". These events are read against a bench test that is
@@ -56,23 +70,18 @@ function clock(ms: number): string {
     >
       <span class="caret">{{ open ? '▾' : '▸' }}</span>
       <span class="k">activity</span>
-      <!-- The newest line is the WHOLE bar when closed, and disappears from it
-           when open: the list below starts with that same line, and showing it
-           twice makes the panel look like it stuttered. -->
-      <template v-if="!open">
-        <span v-if="latest" class="dot" :class="latest.kind" />
-        <span v-if="latest" class="line">
-          <span class="t">{{ clock(latest.at) }}</span> {{ latest.text }}
-        </span>
-        <span v-else class="line quiet">nothing yet</span>
-        <span v-if="log.unseen.value" class="badge">{{ log.unseen.value }}</span>
-      </template>
-      <span v-else class="line quiet">
-        {{ log.events.value.length }} since the daemon started
+      <!-- The bar carries no event text of its own: the rows below always show
+           the newest lines, and repeating one of them here reads as a stutter.
+           It says what is NOT on screen instead. -->
+      <span class="line quiet">
+        <template v-if="!log.events.value.length">nothing yet</template>
+        <template v-else-if="hidden > 0">{{ hidden }} more</template>
+        <template v-else>{{ log.events.value.length }} since the daemon started</template>
       </span>
+      <span v-if="!open && unseenHidden" class="badge">{{ unseenHidden }}</span>
     </button>
 
-    <div v-if="open" class="rows">
+    <div class="rows" :class="{ scroll: open }">
       <!-- The failure is shown IN the log rather than beside it: an activity
            panel that has silently stopped polling looks exactly like a quiet
            box, and that is the one lie it must not tell. -->
@@ -81,10 +90,10 @@ function clock(ms: number): string {
         Nothing has happened since the daemon started. Joins, roams between
         radios, channel changes and anything pressed here land in this list.
       </p>
-      <p v-for="e in log.events.value" :key="e.seq" class="row">
+      <p v-for="e in shown" :key="e.seq" class="row">
         <span class="t">{{ clock(e.at) }}</span>
         <span class="dot" :class="e.kind" />
-        <span>{{ e.text }}</span>
+        <span class="text">{{ e.text }}</span>
       </p>
     </div>
   </section>
@@ -119,8 +128,6 @@ function clock(ms: number): string {
   font-size: 10px;
   color: var(--ink-faint);
 }
-/* The newest line is truncated rather than wrapped: the bar is one line high
-   whatever it holds, so the page below it never moves as events arrive. */
 .line {
   flex: 1;
   min-width: 0;
@@ -138,10 +145,14 @@ function clock(ms: number): string {
   font-variant-numeric: tabular-nums;
 }
 .rows {
-  max-height: 220px;
-  overflow-y: auto;
   border-top: 1px solid var(--line-soft);
   padding: 4px 10px 6px;
+}
+/* Only the open log scrolls. Collapsed it is a fixed handful of rows, so the
+   page below it sits at the same height whatever has just happened. */
+.rows.scroll {
+  max-height: 220px;
+  overflow-y: auto;
 }
 .row {
   display: flex;
@@ -151,6 +162,14 @@ function clock(ms: number): string {
   padding: 2px 0;
   font-size: 12px;
   color: var(--ink-dim);
+}
+/* Each row is one line high, truncated rather than wrapped, for the same
+   reason: a long event text must not reflow the devices below it. */
+.row .text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .row.bad { color: var(--bad); }
 .t {

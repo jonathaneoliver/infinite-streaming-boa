@@ -367,8 +367,9 @@ damages packets, never link state.
   conditioning is additive on top of it; that `overlimits` is not an error; that
   PHY rate is not throughput.
 
-- An **activity log** sits under the tabs on both views, one line high until it
-  is opened. It records what CHANGED rather than what is: a client joining,
+- An **activity log** sits under the tabs on both views, showing the newest few
+  lines until it is opened. One line says that something changed without saying
+  what; a roam alone is two lines. It records what CHANGED rather than what is: a client joining,
   leaving, or moving between radios; a radio's channel, width or mode changing,
   whether this box did it or not; and every box-wide action taken here. State
   answers "what is true now" and is silent about "what just happened", which on
