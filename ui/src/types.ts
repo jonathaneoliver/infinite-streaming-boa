@@ -218,6 +218,10 @@ export interface PatternView {
   up: Shape;
   reason?: string;
   started_at: number;
+  /** The scenario this run belongs to, or absent for a lone run. Present when
+   *  several devices were started on ONE clock, so the interface can draw one
+   *  transport for the set and warn that a stop takes the others with it. */
+  group?: string;
 }
 
 export interface Policy {

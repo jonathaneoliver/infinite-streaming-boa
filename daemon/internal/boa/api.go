@@ -61,6 +61,7 @@ func (a *API) Routes() *http.ServeMux {
 	mux.HandleFunc("GET /api/patterns", a.listPatterns)
 	mux.HandleFunc("GET /api/patterns/{name}", a.getPattern)
 	mux.HandleFunc("POST /api/patterns/merge", a.mergePatterns)
+	mux.HandleFunc("POST /api/patterns/scenario", a.playScenario)
 	mux.HandleFunc("PUT /api/patterns/{name}", a.savePattern)
 	mux.HandleFunc("DELETE /api/patterns/{name}", a.deleteSavedPattern)
 	mux.HandleFunc("POST /api/devices/{mac}/pattern/select", a.selectPattern)
@@ -984,15 +985,148 @@ func (a *API) playPattern(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// playScenario starts one pattern on several devices at the SAME instant.
+//
+// Two devices given the same pattern from two separate clicks are offset by
+// however long the operator took, and a comparison between different moments of
+// the same pattern is not a comparison. This is the endpoint for "the same
+// stimulus, at the same time, to both of them, and see which reacted first".
+//
+// Body:
+//
+//	{"macs": ["aa:..","bb:.."]}                 each device's own stored pattern
+//	{"macs": [...], "pattern": "square_wave"}   one named pattern on all of them
+//
+// Optional "service" and "stretch" resolve a built-in exactly as playing one on
+// a single device does, so a scenario and a card produce the same pattern.
+//
+// There is no matching stop: DELETE on any member's play already ends the whole
+// group, because Player.Stop takes a run's group with it.
+func (a *API) playScenario(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		MACs    []string `json:"macs"`
+		Pattern string   `json:"pattern"`
+		Service string   `json:"service"`
+		Stretch float64  `json:"stretch"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+		writeErr(w, http.StatusBadRequest, "malformed body: "+err.Error())
+		return
+	}
+	if len(in.MACs) < 2 {
+		writeErr(w, http.StatusBadRequest,
+			"a scenario needs at least 2 devices; play a pattern on the device "+
+				"itself when there is only one")
+		return
+	}
+	if in.Stretch == 0 {
+		in.Stretch = 1
+	}
+
+	// Everything is checked BEFORE anything starts. A scenario that began on
+	// two devices of three is not the scenario that was asked for, and leaving
+	// it running while reporting an error would be the worst of both.
+	snap := a.e.Snapshot()
+	shapeable := map[string]bool{}
+	for _, c := range snap.Clients {
+		shapeable[c.MAC] = c.Present && c.Shapeable
+	}
+
+	members := map[string]Pattern{}
+	for _, raw := range in.MACs {
+		mac := normMAC(raw)
+		if !validMAC(mac) {
+			writeErr(w, http.StatusBadRequest, "not a MAC address: "+raw)
+			return
+		}
+		if _, dup := members[mac]; dup {
+			writeErr(w, http.StatusBadRequest, "device listed twice: "+mac)
+			return
+		}
+		if !shapeable[mac] {
+			writeErr(w, http.StatusConflict,
+				mac+" is not present and shapeable; a pattern cannot condition it")
+			return
+		}
+		if sv := a.e.Sweeper().View(mac); sv != nil && sv.State == "running" {
+			writeErr(w, http.StatusConflict,
+				"a ladder sweep is running on "+mac+"; stop it before playing a scenario")
+			return
+		}
+
+		pol := a.load(mac)
+		if in.Pattern == "" {
+			if pol.Pattern == nil {
+				writeErr(w, http.StatusBadRequest,
+					mac+" has no pattern; author one, or name a pattern for the whole scenario")
+				return
+			}
+			members[mac] = *pol.Pattern
+			continue
+		}
+		name := normPatternName(in.Pattern)
+		if IsBuiltin(name) {
+			// Per-device, exactly as playing a built-in on one card is: the
+			// same name is a different pattern on two devices with different
+			// ladders, and that IS the point of a built-in.
+			pat, _, _, err := a.resolveBuiltin(name, pol, in.Service, in.Stretch)
+			if err != nil {
+				writeErr(w, http.StatusBadRequest, err.Error())
+				return
+			}
+			members[mac] = pat
+			continue
+		}
+		sp, ok := a.e.PatternStore().Get(name)
+		if !ok {
+			writeErr(w, http.StatusNotFound, "no pattern named "+name)
+			return
+		}
+		st, err := StretchPattern(sp, in.Stretch)
+		if err != nil {
+			writeErr(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		members[mac] = st
+	}
+
+	id := fmt.Sprintf("scn-%d", time.Now().UnixNano())
+	if err := a.e.Player().StartGroup(id, members, time.Now()); err != nil {
+		writeErr(w, http.StatusConflict, err.Error())
+		return
+	}
+
+	macs := make([]string, 0, len(members))
+	for mac := range members {
+		macs = append(macs, mac)
+	}
+	sort.Strings(macs)
+	a.e.logEvent(EventAction, "", "",
+		"scenario started on %d devices at one clock: %s",
+		len(macs), strings.Join(macs, ", "))
+	writeJSON(w, http.StatusAccepted, map[string]any{
+		"group": id, "started": macs, "pattern": in.Pattern,
+	})
+}
+
 // stopPattern ends a run. The device returns to stored policy on the next tick;
 // nothing needs unwinding because nothing was written.
 func (a *API) stopPattern(w http.ResponseWriter, r *http.Request) {
 	mac := normMAC(r.PathValue("mac"))
+	// Named before the stop, because after it there is no group to ask about.
+	group := a.e.Player().GroupOf(mac)
 	if err := a.e.Player().Stop(mac); err != nil {
 		writeErr(w, http.StatusConflict, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"stopped": mac})
+	out := map[string]any{"stopped": mac}
+	if group != "" {
+		// Say so. Stopping one card of a scenario stops the others, and an
+		// operator who is not told will read the still cards as a bug.
+		out["group"] = group
+		out["note"] = "this device was in a scenario, so the whole scenario stopped"
+	}
+	writeJSON(w, http.StatusOK, out)
 }
 
 type subPatch struct {

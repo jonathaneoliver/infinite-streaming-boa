@@ -366,6 +366,10 @@ type patternRun struct {
 	idx       int
 	down, up  Shape
 	reason    string
+	// group ties this run to the others started with it. Empty for a lone
+	// per-device run, which is the common case and must stay exactly what it
+	// was: a group of one is not a concept the ordinary path pays for.
+	group string
 }
 
 // Start begins a run, or restarts one that has finished.
@@ -389,13 +393,104 @@ func (p *Player) Start(mac string, pat Pattern, now time.Time) error {
 	return nil
 }
 
+// StartGroup begins several runs on ONE clock.
+//
+// # Why a group at all
+//
+// Each run already advances by wall clock so that "the same run happens the
+// same way twice". That holds for one device and stops holding the moment two
+// runs are meant to relate to each other, because nothing made them start
+// together: two devices given the same pattern are offset by however long the
+// operator took to click the second one, and a comparison between different
+// moments of the same pattern is not a comparison.
+//
+// Members are given the same lastAt, and Advance moves every run against a
+// single `now`, so they stay in lockstep for the life of the run rather than
+// merely starting together.
+//
+// # Why the group is stopped as a whole
+//
+// A scenario is one thing, so stopping or pausing any member ends it for all
+// of them -- see Stop and Pause. A member that carried on after a sibling was
+// interrupted would be measuring against a premise that no longer holds, and
+// reporting that as a result is worse than reporting nothing.
+//
+// A member reaching its OWN last keyframe is not that: it is the pattern doing
+// what it says, and a scenario pairing a 60s ladder walk with a 180s radio
+// outage is a normal thing to want. Done ends that member only.
+//
+// All or nothing: if any member is refused, none of them start.
+func (p *Player) StartGroup(id string, members map[string]Pattern, now time.Time) error {
+	if id == "" {
+		return fmt.Errorf("a group needs an id")
+	}
+	if len(members) == 0 {
+		return fmt.Errorf("a group needs at least one member")
+	}
+	for _, pat := range members {
+		if err := validPattern(pat); err != nil {
+			return err
+		}
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for mac := range members {
+		if r, ok := p.runs[mac]; ok && r.state == PatternRunning {
+			return fmt.Errorf("a pattern is already running on %s", mac)
+		}
+	}
+	if p.runs == nil {
+		p.runs = map[string]*patternRun{}
+	}
+	for mac, pat := range members {
+		d, u, i := pat.At(0)
+		p.runs[mac] = &patternRun{
+			pat: pat, state: PatternRunning, lastAt: now, startedAt: now,
+			down: d, up: u, idx: i, group: id,
+		}
+	}
+	return nil
+}
+
+// GroupOf names the group a device's run belongs to, or "" if it is a lone run.
+func (p *Player) GroupOf(mac string) string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	r, ok := p.runs[mac]
+	if !ok {
+		return ""
+	}
+	return r.group
+}
+
+// groupMembers lists the MACs in a group. Caller holds the lock.
+func (p *Player) groupMembers(id string) []string {
+	if id == "" {
+		return nil
+	}
+	var out []string
+	for mac, r := range p.runs {
+		if r.group == id {
+			out = append(out, mac)
+		}
+	}
+	return out
+}
+
 // Stop forgets a run. Stored policy takes over on the next tick; there is
 // nothing to unwind because nothing was ever written.
+//
+// A run in a group takes its group with it: the others were only meaningful
+// alongside it.
 func (p *Player) Stop(mac string) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if _, ok := p.runs[mac]; !ok {
+	r, ok := p.runs[mac]
+	if !ok {
 		return fmt.Errorf("no pattern is loaded on this device")
+	}
+	for _, m := range p.groupMembers(r.group) {
+		delete(p.runs, m)
 	}
 	delete(p.runs, mac)
 	return nil
@@ -417,6 +512,16 @@ func (p *Player) Pause(mac, reason string) {
 	}
 	r.state = PatternPaused
 	r.reason = reason
+	// The rest of the scenario goes with it. The reasoning above is about one
+	// device, but it applies harder to several: a run that continues after a
+	// sibling's premise changed is still moving its playhead and still looks
+	// like a measurement, and it is not one.
+	for _, m := range p.groupMembers(r.group) {
+		if o := p.runs[m]; o.state == PatternRunning {
+			o.state = PatternPaused
+			o.reason = reason + " (paused with the rest of the scenario)"
+		}
+	}
 }
 
 // Resume picks a paused run up from where it stopped.
@@ -430,6 +535,15 @@ func (p *Player) Resume(mac string, now time.Time) error {
 	r.state = PatternRunning
 	r.lastAt = now
 	r.reason = ""
+	// Every member gets the SAME now, so a scenario resumes in the lockstep it
+	// was paused in rather than fanning out by however long the loop took.
+	for _, m := range p.groupMembers(r.group) {
+		if o := p.runs[m]; o.state == PatternPaused {
+			o.state = PatternRunning
+			o.lastAt = now
+			o.reason = ""
+		}
+	}
 	return nil
 }
 
@@ -550,6 +664,10 @@ type PatternView struct {
 	Up        Shape  `json:"up"`
 	Reason    string `json:"reason,omitempty"`
 	StartedAt int64  `json:"started_at"`
+	// Group is the scenario this run belongs to, or empty for a lone run. The
+	// interface uses it to draw ONE transport for several devices rather than
+	// one per card, and to say which devices a stop is about to take with it.
+	Group string `json:"group,omitempty"`
 }
 
 // View returns this device's run, or nil if it has none this daemon run.
@@ -561,6 +679,7 @@ func (p *Player) View(mac string) *PatternView {
 		return nil
 	}
 	return &PatternView{
+		Group: r.group,
 		State: r.state, Name: r.pat.Name,
 		PosSec: round2(r.pos), DurSec: r.pat.DurSec(), Loop: r.pat.Loop,
 		Laps: r.laps, Index: r.idx, Down: r.down, Up: r.up,
