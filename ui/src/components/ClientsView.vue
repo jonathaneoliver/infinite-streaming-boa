@@ -1,10 +1,11 @@
 <script setup lang="ts">
-import { computed, inject, onUnmounted, ref, watch } from 'vue';
+import { computed, inject, ref, watch } from 'vue';
 import type {
   Capabilities, ChartPrefs, Client, Pattern, Series, Shape, Snapshot, SortMode, YMode,
 } from '@/types';
 import { SUSTAINED_SEC, sortClients } from '@/types';
 import { chartPrefs } from '@/composables/useChartPrefs';
+import { chartNow, holdClock } from '@/composables/useChartClock';
 import type { useDevice } from '@/composables/useDevice';
 import ClientCard from '@/components/ClientCard.vue';
 import ChartToolbar from '@/components/ChartToolbar.vue';
@@ -169,20 +170,11 @@ const chart = chartPrefs;
 // wanted.
 watch(() => chart.value.rangeSec, (v) => emit('range', v), { immediate: true });
 
-/**
- * The right-hand edge of every plot, advanced once a second.
- *
- * Held still while the pointer is inside a chart. Without that, the plot slides
- * left under the cursor while it is being read, and the crosshair silently
- * comes to rest on a different sample than the one aimed at -- the reading is
- * wrong by however long the pointer stayed there.
- */
-const now = ref(Date.now());
-const hovering = ref(false);
-const ticker = window.setInterval(() => {
-  if (!hovering.value) now.value = Date.now();
-}, 1000);
-onUnmounted(() => window.clearInterval(ticker));
+/* The right-hand edge of every plot, and the hold that keeps it still while a
+   chart is being read. Both now live in useChartClock, shared with the adapter
+   charts in the folds above: two tickers would drift and put "now" at two
+   different x positions on panes meant to line up. */
+const now = chartNow;
 </script>
 
 <template>
@@ -242,7 +234,7 @@ onUnmounted(() => window.clearInterval(ticker));
       v-for="c in clients" :key="c.mac" :id="`client-${c.mac}`"
       :client="c" :series="series[c.mac]"
       :chart="chart" :now="now"
-      @hovering="(v: boolean) => (hovering = v)"
+      @hovering="holdClock"
       :ntopng-port="caps?.ntopng ? caps.ntopng_port : 0"
       :link-control="caps?.link_control ?? false"
       :collapsed="isFolded(c.mac)"

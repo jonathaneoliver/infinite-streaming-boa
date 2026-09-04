@@ -4,6 +4,7 @@ import type { Series } from '@/types';
 import { clientColour } from '@/composables/useClientColours';
 import { axisDecimals, axisTicks, niceMax, spanLabel } from '@/composables/chartAxis';
 import { chartHeight, chartPrefs } from '@/composables/useChartPrefs';
+import { chartNow } from '@/composables/useChartClock';
 
 /**
  * What one adapter is carrying, stacked by device.
@@ -146,21 +147,36 @@ const allTimes = computed<number[]>(() => {
 });
 
 /**
- * The window, taken from the DATA rather than from the clock.
+ * The window's right-hand edge: the SHARED CLOCK, not the newest sample.
  *
- * This was `Date.now()` inside a computed, which is a trap worth naming: a
- * computed re-runs only when a reactive dependency changes, and the wall clock
- * is not one. The window froze at page load while samples kept arriving, so
- * every new point mapped past the right-hand edge -- measured at x = 1035 in a
- * 700-wide viewBox before this was fixed, which drew the plot off its own pane.
+ * Two wrong answers preceded this one and both are worth keeping named. First
+ * `Date.now()` inside a computed, which never re-runs because the wall clock is
+ * not a reactive dependency -- the window froze at page load while samples kept
+ * arriving, and every new point mapped past the right edge (measured at x=1035
+ * in a 700-wide viewBox). Then the newest SAMPLE, which is reactive and fixed
+ * that, but stopped time whenever an adapter went quiet: the window ceased
+ * advancing, old traffic never aged out, and the axis label "now" pointed at
+ * whenever the last sample had happened to arrive.
  *
- * Anchoring to the newest sample makes the window reactive with the series that
- * fills it, and is the more honest edge anyway: the right of the plot is the
- * last thing recorded, not the moment the page happened to be rendered.
+ * A ticking ref is the only one of the three that is both reactive and honest,
+ * and sharing it with the client charts keeps the two panes' "now" at the same
+ * x. It also means an idle adapter drains to the left and empties, which is the
+ * correct picture: a radio carrying nothing should look like a radio carrying
+ * nothing, not like a radio frozen at the last thing it did.
  */
 const edge = computed(() => {
+  // Whichever is LATER, and the max is not defensive tidying -- it is the only
+  // thing keeping both properties true at once. The clock ticks once a second
+  // while samples are stamped with Date.now(), so the newest sample is
+  // routinely up to a second AHEAD of it; taking the clock alone drew that
+  // sample past the right-hand edge and into the margin, measured at 7.3px
+  // beyond a plot 718px wide. Taking the newest sample alone is the bug this
+  // replaced, where an adapter receiving nothing froze.
+  //
+  // So: an active adapter follows its data, a silent one follows the clock and
+  // drains to the left, and neither case can overshoot the pane.
   const t = allTimes.value;
-  return t.length ? t[t.length - 1] : Date.now();
+  return Math.max(chartNow.value, t.length ? t[t.length - 1] : 0);
 });
 const start = computed(() => edge.value - windowMs.value);
 const grid = computed(() => allTimes.value.filter((t) => t >= start.value));
@@ -286,9 +302,15 @@ const legend = computed(() => charts.value[0].bands);
 
 <template>
   <div class="stack" ref="wrap">
+    <!-- "in the last 5m", not "yet". Both states reach here and they are
+         different facts: a page just opened has no record, and an adapter that
+         has gone quiet has had its record age out of the window. Saying "yet"
+         claimed the first in both cases, which on an adapter you had been
+         watching a minute earlier reads as the chart having lost the data
+         rather than the traffic having stopped. -->
     <p v-if="empty" class="none">
-      Nothing recorded on {{ iface }} yet — a device has to be associated and
-      moving traffic for a second or two before there is a shape to draw.
+      No traffic on {{ iface }} in the last {{ span }} — either nothing has been
+      on it, or whatever was has gone quiet long enough to scroll off.
     </p>
 
     <template v-else>
