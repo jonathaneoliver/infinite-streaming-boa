@@ -107,9 +107,17 @@ disciplines and opens a packet socket.
 **ntopng** — traffic analysis on :3000, watching `br-lan`. Deep links from each
 device card. Optional: the image builds without it.
 
-Neither :80 nor :3000 authenticates. The box is a bench appliance for a network
-you already control, and anyone who can reach it can re-shape any device on it;
-put it on a network where that is acceptable.
+**glances** — the box's own health on :61208: CPU, memory, SoC temperature,
+disk and per-process load, linked from the header. It answers a different
+question from ntopng's, and the one that matters when a throughput figure looks
+wrong for a reason that is not the policy — a thermally throttled Pi, a full
+card, the daemon itself eating a core. It says nothing about clients. Optional
+on the same terms: the image builds without it and the UI hides the link.
+
+None of :80, :3000 or :61208 authenticates. The box is a bench appliance for a
+network you already control, and anyone who can reach it can re-shape any
+device on it — and, through glances, read its whole process list; put it on a
+network where that is acceptable.
 
 ## 6) Behaviour
 
@@ -306,7 +314,8 @@ damages packets, never link state.
   player starts a segment and measures throughput. HTB is a classifier and byte
   counter only.
 - Both IPv4 and IPv6 are conditioned by one policy.
-- The box's **management traffic** — the interface, SSH, ntopng — is exempt, so
+- The box's **management traffic** — the interface, SSH, ntopng, glances — is
+  exempt, so
   it cannot throttle itself on a device it is conditioning. The exemption is
   scoped to those ports, not to the box as a whole: everything else the box
   sends is conditioned like any other traffic, which is what lets the box

@@ -342,9 +342,10 @@ func (e *Engine) demoTick() {
 				LinkMbps: 5000, USBVersion: "3.20",
 			},
 			// On so the deep links and the measurement note are visible
-			// during UI development; neither is actually running here.
+			// during UI development; none of them is actually running here.
 			Ntopng: true, NtopngPort: ntopngPort,
 			Iperf: true, IperfPort: iperfPort,
+			Glances: true, GlancesPort: glancesPort,
 			// No kernel here to ask, so the control is offered: demo exists to
 			// develop the interface, and a permanently disabled control cannot
 			// be developed against.

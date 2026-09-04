@@ -1170,6 +1170,90 @@ else
   log "No prebuilt ntopng in cache/ -- image will not include it"
 fi
 
+## 8e. glances (system monitor, :61208) -------------------------------------
+# What the box itself is doing -- CPU, memory, temperature, disk, per-process
+# load. ntopng answers "what is the traffic doing"; nothing until now answered
+# "is the appliance keeping up", which is the question when a shaped throughput
+# figure looks wrong and the cause might be a thermally throttled Pi rather
+# than the policy under test.
+#
+# NOT the Debian package, and this is the whole reason this section exists
+# rather than one more line in packages.txt. Debian ships glances as +dfsg with
+# the webpack-built frontend REMOVED -- their packaging carries a patch named
+# 006_indicate_user_webserver_static_files_not_included. The Vue sources are
+# present, the bundle is not, and `glances -w` from the .deb therefore aborts
+# at startup with
+#     RuntimeError: Directory '.../glances/outputs/static/public' does not exist
+# Upstream's wheel ships that bundle prebuilt, so it comes from PyPI instead.
+#
+# A venv also keeps the .deb's dependency tree off a headless appliance: the
+# Debian package pulls matplotlib, python3-tk, blt, PIL and fonttools, a
+# desktop plotting stack no box without a screen has any use for. The venv is
+# ~50 MB against ~300 MB for that.
+#
+# Pinned, because an unpinned build is a different build every time and this
+# one has a frontend that either arrives or does not.
+GLANCES_VERSION=4.5.6
+GLANCES_PORT=61208
+
+log "Installing glances ${GLANCES_VERSION} into /opt/glances"
+cp "$ROOT/etc/resolv.conf" "$ROOT/etc/resolv.conf.boa-bak" 2>/dev/null || true
+echo "nameserver 1.1.1.1" > "$ROOT/etc/resolv.conf"
+
+GLANCES_OK=""
+if ! chroot "$ROOT" sh -c 'command -v python3 >/dev/null'; then
+  warn "python3 absent from the image -- glances will not be installed"
+elif chroot "$ROOT" python3 -m venv /opt/glances \
+  && chroot "$ROOT" /opt/glances/bin/pip install --quiet --no-cache-dir \
+       "glances[web]==${GLANCES_VERSION}"; then
+  # The install can succeed and still leave the thing unable to serve, which is
+  # exactly how the Debian package fails. Assert the built frontend is on disk
+  # rather than trusting pip's exit status: a missing bundle here is a link in
+  # the header that opens a 500, discovered on the bench.
+  GL_PUBLIC=$(echo "$ROOT"/opt/glances/lib/python*/site-packages/glances/outputs/static/public)
+  if [ -d "$GL_PUBLIC" ] && [ -n "$(ls -A "$GL_PUBLIC" 2>/dev/null)" ]; then
+    GLANCES_OK=1
+    log "glances web assets present ($(find "$GL_PUBLIC" -type f | wc -l | tr -d ' ') files)"
+  else
+    warn "glances installed but its web frontend is missing -- not enabling it"
+  fi
+else
+  warn "glances could not be installed (no network, or PyPI refused the pin);"
+  warn "the image will build without it and the UI will hide the link"
+fi
+
+mv -f "$ROOT/etc/resolv.conf.boa-bak" "$ROOT/etc/resolv.conf" 2>/dev/null || true
+
+if [ -n "$GLANCES_OK" ]; then
+  install -D -m 0644 /dev/stdin "$ROOT/etc/systemd/system/glances.service" <<UNIT
+[Unit]
+Description=glances system monitor (web interface)
+Documentation=https://github.com/nicolargo/glances
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Runs as root deliberately. Dropped to an unprivileged user, glances reports
+# only that user's processes and cannot read the SoC temperature -- it would
+# still start, still serve, and quietly answer a different question than the
+# one it is here for.
+#
+# It binds every address, like boad on :80 and ntopng on :3000, and like them
+# it does not authenticate. Same bargain, stated in PRD.md: this is a bench
+# appliance for a network you already control.
+ExecStart=/opt/glances/bin/glances -w --bind 0.0.0.0 --port ${GLANCES_PORT}
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+  ln -sf /etc/systemd/system/glances.service \
+    "$ROOT/etc/systemd/system/multi-user.target.wants/glances.service"
+  log "glances will serve on :${GLANCES_PORT} ($(du -sh "$ROOT/opt/glances" | cut -f1))"
+fi
+
 ## 9. First-boot service ----------------------------------------------------
 install -D -m 0755 /dev/stdin "$ROOT/usr/local/sbin/infinite-streaming-boa-firstboot" <<EOF
 #!/bin/sh

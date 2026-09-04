@@ -97,6 +97,10 @@ delay, jitter and loss lanes unused in this run.
   per service, because no two streaming services share a ladder.
 - **Ships ntopng** on `:3000`, watching the bridge, with per-device deep links
   from each card for traffic breakdown and nDPI-labelled flows.
+- **Ships glances** on `:61208`, linked from the header — the appliance
+  watching itself rather than the traffic: CPU, memory, SoC temperature, disk
+  and per-process load, for when a throughput number is wrong because the Pi is
+  throttling rather than because the policy says so.
 - **Ships an iperf3 server** on `:5201`, so the ceiling a cap has to sit under
   can be measured without installing anything on the device under test. It
   measures the link **unshaped** — see below.
@@ -230,28 +234,37 @@ else works identically.
 
 ### How much RAM this actually needs
 
-Measured on a running box: **539 MB used of 4 GB**, 3.5 GB available, swap
-untouched, and the kernel's own `Committed_AS` estimate at 733 MB.
+Measured on a running box: **762 MB used of 4 GB**, 3.2 GB available, swap
+untouched, and the kernel's own `Committed_AS` estimate at 1156 MB.
 
 | | RSS |
 |---|---|
-| ntopng | 278 MB |
+| ntopng | 386 MB |
+| glances | 72 MB |
 | NetworkManager | 21 MB |
-| redis (for ntopng) | 16 MB |
+| redis (for ntopng) | 17 MB |
 | **boad** — the conditioner itself | **14 MB** |
 | hostapd | 9 MB |
 
-The appliance's own work is 14 MB. Over half the footprint is ntopng, which is
-optional to the conditioning and only there for flow visibility. **A 2 GB Pi 5
-has ample headroom**, and the 4 GB board this was built on is not a
-requirement — it is what happened to be to hand.
+The appliance's own work is 14 MB. Over half the footprint is ntopng, and
+another 72 MB is glances; both are optional to the conditioning and there only
+for visibility. **A 2 GB Pi 5 has ample headroom**, and the 4 GB board this was
+built on is not a requirement — it is what happened to be to hand.
+
+An earlier reading of this same box put ntopng at 278 MB and the total at
+539 MB. Nothing was done to it in between; it simply ran for longer, which is
+the caveat below arriving on schedule rather than a separate measurement.
 
 One caveat before buying the smaller board. Nothing bounds ntopng's growth:
 its config sets no memory limit and redis runs with `maxmemory 0`. It holds
-per-host and per-flow state, so 278 MB is a floor measured on a quiet segment,
-not a ceiling. On a busy network over days it will be larger. If you run 2 GB
-and ntopng grows into it, the answer is a retention limit rather than a bigger
-board — unbounded growth eventually fills a 16 GB card whatever the RAM.
+per-host and per-flow state, so any figure here is a floor measured on a quiet
+segment, not a ceiling. On a busy network over days it will be larger. If you
+run 2 GB and ntopng grows into it, the answer is a retention limit rather than a
+bigger board — unbounded growth eventually fills a 16 GB card whatever the RAM.
+
+glances has no such problem: it holds a short in-memory window and persists
+nothing, so its 72 MB is flat and it writes nothing to the card. That last part
+is worth having deliberately on an appliance that boots from SD.
 
 There is **no 3 GB Pi 5**; that variant is a Pi 4. The Pi 5 ships in 2, 4, 8
 and 16 GB.
@@ -572,6 +585,7 @@ adapter in for a wired device under test, then:
 |---|---|
 | Web interface | `http://infinite-streaming-boa.local/` |
 | ntopng | `http://infinite-streaming-boa.local:3000/` — no login |
+| glances | `http://infinite-streaming-boa.local:61208/` — no login |
 | iperf3 | `iperf3 -c infinite-streaming-boa.local` from a device under test |
 | SSH | `ssh boa@infinite-streaming-boa.local` |
 | Rescue | `http://<BOA_RESCUE_IP>/` when upstream DHCP is absent |
@@ -583,8 +597,9 @@ policy, so this is the cap being enforced. Without `-R` you are measuring upload
 shaping lives; that reports what the link can do, not what the policy allows.
 Verifying uplink needs load from a host beyond `eth0`.
 
-Only the box's management ports — the interface, SSH and ntopng — are exempt
-from shaping, so a cap can never throttle the dashboard needed to undo it.
+Only the box's management ports — the interface, SSH, ntopng and glances — are
+exempt from shaping, so a cap can never throttle the dashboard needed to undo
+it.
 Everything else the box sends is conditioned like any other traffic.
 
 **Bind the test to the path you mean.** A laptop on both Wi-Fi and ethernet has
@@ -604,6 +619,17 @@ package after buster. `scripts/package-ntopng.sh` captures a source build into
 `cache/`, which `build.sh` then grafts into every image, so a reflash costs
 seconds rather than a recompile. Without that artifact the image simply builds
 without it.
+
+**glances comes from PyPI, not apt, and that is deliberate.** Debian ships it
+as `+dfsg` with the webpack-built frontend removed — their packaging carries a
+patch named `006_indicate_user_webserver_static_files_not_included` — so
+`glances -w` from the `.deb` aborts at startup on a missing
+`outputs/static/public` and serves nothing at all. The build therefore installs
+a pinned upstream wheel into a venv at `/opt/glances`, and then asserts the
+frontend is on disk before it enables the unit, because an install that
+succeeds and still cannot serve is exactly how the `.deb` fails. Going through
+a venv also keeps the Debian package's dependencies — matplotlib, tk, PIL,
+fonttools, about 90 packages of desktop plotting stack — off a headless box.
 
 ## Configuration
 
