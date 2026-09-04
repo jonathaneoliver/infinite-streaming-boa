@@ -140,14 +140,23 @@ const IDENTITY_COLS = computed(() => [
   // "wifi", because which radio a client is on is the fact that matters once
   // the box serves two bands.
   'minmax(0, 84px)',      // medium / radio badge
+  // The radio summary is never dropped: which radio a client is on, and what
+  // that radio is doing, is the reason this row exists on a two-band box.
+  //
+  // BEFORE the address, because that is the order the template renders them in.
+  // These two were transposed: the template emits radio summary then address,
+  // while this list named address first, so the address landed in the radio
+  // summary's minmax(0, 168px) track. With no lower bound it collapsed under
+  // the folded row's extra ~326px of sparklines and figures, and its left edge
+  // moved as the card toggled -- 99px at a 1200px window, 146px at 1100px,
+  // measured. The radio summary meanwhile sat in a 268px track it did not need,
+  // empty on every wired client.
+  'minmax(0, 168px)',     // "ch 40 · 80 MHz · 802.11ax"
   // 268px fits a full IPv4 with room to spare and most of an IPv6; longer
   // addresses ellipsise and carry the full value in a tooltip.
   'minmax(96px, 268px)',  // address
   ...(showIPv6Count.value ? ['minmax(0, 62px)'] : []),
   ...(showMAC.value ? ['minmax(0, 132px)'] : []),
-  // The radio summary is never dropped: which radio a client is on, and what
-  // that radio is doing, is the reason this row exists on a two-band box.
-  'minmax(0, 168px)',     // "ch 40 · 80 MHz · 802.11ax"
   ...(showSignal.value ? ['minmax(0, 96px)'] : []),
   ...(showPHY.value ? ['minmax(0, 76px)'] : []),
   // 104px, not 92: "assoc 42m 35s" is the longest common form and 92 clipped
