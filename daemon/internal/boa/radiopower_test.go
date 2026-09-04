@@ -287,3 +287,160 @@ func TestParseScanSurvivesEmptyAndTruncatedOutput(t *testing.T) {
 		}
 	}
 }
+
+func TestScanReadsBSSLoadAndWidth(t *testing.T) {
+	// Real shape, taken from `iw dev wlan0 scan` on the box 2026-09-04. The
+	// indentation and the starred sub-fields are what the parser has to walk;
+	// an invented fixture would agree with whatever it happens to do.
+	const fixture = `BSS 48:22:54:4e:90:76(on wlan0)
+	freq: 5180.0
+	signal: -20.00 dBm
+	SSID: jeo-1
+	DS Parameter set: channel 36
+	BSS Load:
+		 * station count: 10
+		 * channel utilisation: 22/255
+		 * available admission capacity: 0 [*32us]
+	HT capabilities:
+		 * STA channel width: 20 MHz
+	HT operation:
+		 * primary channel: 36
+		 * secondary channel offset: above
+	VHT operation:
+		 * channel width: 1 (80 MHz)
+		 * center freq segment 1: 42
+`
+	aps := parseScan(fixture)
+	if len(aps) != 1 {
+		t.Fatalf("parsed %d APs, want 1", len(aps))
+	}
+	a := aps[0]
+	if !a.UtilKnown || a.UtilRaw != 22 {
+		t.Errorf("utilisation = %d (known %v), want raw 22", a.UtilRaw, a.UtilKnown)
+	}
+	// 22/255 is 8.6%, not 22%. Storing the percentage here is the units error
+	// the raw value exists to prevent.
+	if pct := float64(a.UtilRaw) / 255 * 100; pct < 8 || pct > 9 {
+		t.Errorf("22/255 came to %.1f%%, want ~8.6", pct)
+	}
+	if a.Stations != 10 {
+		t.Errorf("station count = %d, want 10", a.Stations)
+	}
+	// "* STA channel width: 20 MHz" must NOT win over the VHT width: it is an
+	// HT capability describing what the AP accepts from a station, not what the
+	// BSS runs. Matching it would report 20MHz for an AP that is on 80.
+	if a.WidthMHz != 80 {
+		t.Errorf("width = %d MHz, want 80 (STA channel width must not win)", a.WidthMHz)
+	}
+	if a.Centre != 42 {
+		t.Errorf("centre = %d, want 42", a.Centre)
+	}
+}
+
+func TestCoveredChannelsFollowsTheCentreNotThePrimary(t *testing.T) {
+	// An 80MHz neighbour occupies four channels whichever one it beacons on,
+	// so the set comes from the CENTRE. Getting this from the primary would
+	// produce a plausible-looking wrong answer rather than an error (#180).
+	got := coveredChannels(ScanAP{Channel: 36, FreqMHz: 5180, WidthMHz: 80, Centre: 42})
+	want := []int{36, 40, 44, 48}
+	if len(got) != len(want) {
+		t.Fatalf("80MHz on centre 42 covered %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("80MHz on centre 42 covered %v, want %v", got, want)
+		}
+	}
+	// The UNII-3 block centres on 155, and the same arithmetic must land on it.
+	got = coveredChannels(ScanAP{Channel: 161, FreqMHz: 5805, WidthMHz: 80, Centre: 155})
+	want = []int{149, 153, 157, 161}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("80MHz on centre 155 covered %v, want %v", got, want)
+		}
+	}
+
+	// 40MHz takes its partner from the side the offset names.
+	if got := coveredChannels(ScanAP{Channel: 36, FreqMHz: 5180, WidthMHz: 40, SecAbove: true}); got[0] != 36 || got[1] != 40 {
+		t.Errorf("40MHz above covered %v, want [36 40]", got)
+	}
+	if got := coveredChannels(ScanAP{Channel: 40, FreqMHz: 5200, WidthMHz: 40}); got[0] != 36 || got[1] != 40 {
+		t.Errorf("40MHz below covered %v, want [36 40]", got)
+	}
+	// 20MHz is itself alone, and 2.4GHz is left to pickBestChannel's own
+	// overlap window -- deriving coverage here as well would count it twice.
+	if got := coveredChannels(ScanAP{Channel: 6, FreqMHz: 2437, WidthMHz: 40}); len(got) != 1 || got[0] != 6 {
+		t.Errorf("2.4GHz covered %v, want [6] -- the +/-4 window handles that band", got)
+	}
+}
+
+func TestAChannelNobodyMeasuredIsNotAnIdleChannel(t *testing.T) {
+	// The inversion this must never make: absent BSS Load read as 0% would
+	// paint the busiest channel green. A channel with neighbours but no
+	// measurement has to fall back to the headcount, not to zero.
+	aps := []ScanAP{
+		// Measured, and busy.
+		{BSSID: "a", Channel: 36, FreqMHz: 5180, WidthMHz: 20, SignalDBm: -50,
+			UtilRaw: 200, UtilKnown: true, Stations: 1},
+		// Not measured at all, and loud -- the fallback's territory.
+		{BSSID: "b", Channel: 149, FreqMHz: 5745, WidthMHz: 20, SignalDBm: -40},
+	}
+	res := summariseScan("wlan-usb", "5GHz", aps)
+	var ch36, ch149 *ScanChannel
+	for i := range res.Channels {
+		switch res.Channels[i].Channel {
+		case 36:
+			ch36 = &res.Channels[i]
+		case 149:
+			ch149 = &res.Channels[i]
+		}
+	}
+	if ch36 == nil || ch149 == nil {
+		t.Fatalf("expected both channels in %v", res.Channels)
+	}
+	if ch36.UtilFrom != 1 || ch36.UtilPct < 78 || ch36.UtilPct > 79 {
+		t.Errorf("ch36 util = %.1f%% from %d, want ~78.4 from 1", ch36.UtilPct, ch36.UtilFrom)
+	}
+	if ch149.UtilFrom != 0 {
+		t.Errorf("ch149 reported %d measurements; nothing advertised BSS Load there", ch149.UtilFrom)
+	}
+	if ch149.UtilPct != 0 {
+		t.Errorf("ch149 carries a utilisation of %.1f with nothing measuring it", ch149.UtilPct)
+	}
+	// And the recommendation must not pick the measured-busy one.
+	if best := pickBestChannel(res.Channels, "5GHz"); best == 36 {
+		t.Errorf("recommended ch 36 at 78%% airtime over an unmeasured alternative")
+	}
+}
+
+func TestAnEightyMHzNeighbourOccupiesFourChannels(t *testing.T) {
+	// The case from the box: one AP beaconing on 36 at 80MHz. By headcount
+	// 40/44/48 are empty; in fact all four are inside its block.
+	aps := []ScanAP{{
+		BSSID: "a", Channel: 36, FreqMHz: 5180, SignalDBm: -45,
+		WidthMHz: 80, Centre: 42, UtilRaw: 128, UtilKnown: true,
+	}}
+	res := summariseScan("wlan-usb", "5GHz", aps)
+	seen := map[int]ScanChannel{}
+	for _, c := range res.Channels {
+		seen[c.Channel] = c
+	}
+	for _, ch := range []int{36, 40, 44, 48} {
+		c, ok := seen[ch]
+		if !ok {
+			t.Fatalf("channel %d missing; an 80MHz block covers it", ch)
+		}
+		if c.Covering != 1 {
+			t.Errorf("ch %d covering = %d, want 1", ch, c.Covering)
+		}
+		if c.UtilFrom != 1 {
+			t.Errorf("ch %d has no airtime, but the block covering it measured some", ch)
+		}
+	}
+	// Only 36 is PRIMARY, and that distinction has to survive: it is where the
+	// beacons and management traffic actually are.
+	if seen[36].APs != 1 || seen[40].APs != 0 {
+		t.Errorf("primary lost: ch36 aps=%d, ch40 aps=%d, want 1 and 0",
+			seen[36].APs, seen[40].APs)
+	}
+}

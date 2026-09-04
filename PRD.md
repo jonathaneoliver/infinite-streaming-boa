@@ -453,6 +453,24 @@ damages packets, never link state.
   165 has no channel above it that may be radiated on, so it appears at 20MHz
   only. Where an automatic move must narrow a radio to fit the channel it chose,
   it says so.
+- **A channel's colour is a measurement where one exists.** Most neighbours
+  advertise BSS Load — the airtime they observe busy, and their client count —
+  and that is what decides clear/busy/crowded. A headcount is the fallback for
+  channels where nobody advertised it, and the interface says which of the two
+  it is quoting: a colour resting on evidence and one resting on a guess must
+  not look identical. A channel nobody measured is never treated as idle, which
+  would paint the busiest one green.
+- **A neighbour is counted on every channel it occupies, not just the one it
+  beacons on.** An access point at 80MHz fills four 20MHz channels and competes
+  across all of them, so a channel with no access point primary on it can still
+  be fully occupied — the common case on 5GHz, and invisible to a headcount.
+  The primary is kept as a separate figure, because that is where the beacons
+  and management traffic actually are.
+- **What a scan found is recorded in the activity log**, not just what it
+  recommended: how many access points and clients were heard, the busiest and
+  quietest channels with their measured airtime, and how many channels carried a
+  measurement at all. A recommendation that cannot be checked against the
+  evidence behind it is one that has to be taken on trust.
 
 ### 6.7 Measuring
 
