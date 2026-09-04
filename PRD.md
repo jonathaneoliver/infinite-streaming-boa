@@ -525,6 +525,20 @@ damages packets, never link state.
   The axis is floored at 1 Mbit/s rather than scaled to whatever is there: an
   idle radio otherwise scales to a trickle of ARP and mDNS chatter and draws
   background noise as a full-height mountain range.
+- **What an adapter carried outlives what is attached to it.** The chart's
+  contents come from the recorded history, which names the adapter that carried
+  each sample, and never from the list of currently-attached devices. A device
+  that leaves keeps its band until its samples age out of the window, and an
+  adapter emptied by a steer still shows what it was doing a moment ago —
+  which is the moment the question is most often asked. The row above it still
+  reports who is on it *now*: "what it carried" and "who is on it" are
+  different questions and are answered separately.
+- **Time advances whether or not data is arriving.** The right-hand edge of
+  every plot follows the clock, so a radio that goes quiet drains to the left
+  and empties rather than freezing on the last thing it did — a chart that
+  stopped telling the time would be most misleading exactly when "nothing is
+  happening" is the finding. The edge is held still while a chart is being
+  read, so the point under the pointer stays the point measured.
 - The airtime readout is labelled as the **operating channel only**. It is not a
   survey of the band: a beaconing radio never visits other channels, so their
   counters are zero, and one driver measured here mislabels the frequency
