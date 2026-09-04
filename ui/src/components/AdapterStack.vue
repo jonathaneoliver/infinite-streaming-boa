@@ -82,26 +82,32 @@ const PAD = { l: 40, r: 68, t: 10, b: 20 };
 const H = computed(() => chartHeight(chartPrefs.value));
 const PLOT_H = computed(() => H.value - PAD.t - PAD.b);
 
-const wrap = ref<HTMLElement | null>(null);
-const w = ref(320);
+/*
+ * Width comes from measuring the COLUMN, not from halving the row.
+ *
+ * Computing `(row - gap) / 2` here meant this component owned a copy of the
+ * layout, and it drifted from the real one: the client cards lay their pair out
+ * with `.dirs` at `1fr 1fr` and a 1px gap, while this assumed 12px, so the two
+ * families rendered 1105px against 1093px on the same screen. Measuring
+ * whatever CSS actually handed the column removes the copy -- the grid decides,
+ * and the chart follows, which is how TrafficChart has always sized itself.
+ *
+ * The first column is measured and both use it; they are `1fr 1fr` and so
+ * always equal, and observing one element is cheaper than observing two.
+ */
+const col = ref<HTMLElement | null>(null);
+const chartW = ref(320);
 let ro: ResizeObserver | null = null;
 onMounted(() => {
-  if (!wrap.value) return;
+  if (!col.value) return;
   ro = new ResizeObserver((e) => {
     const cw = e[0]?.contentRect.width ?? 0;
-    if (cw > 0) w.value = cw;
+    if (cw > 0) chartW.value = Math.max(200, Math.floor(cw));
   });
-  ro.observe(wrap.value);
+  ro.observe(col.value);
 });
 onBeforeUnmount(() => ro?.disconnect());
 
-/** Half the row each, less the gap between them. Below the point where that
- *  leaves a plot too narrow to read, the grid wraps to one column and each
- *  chart takes the full width instead. */
-const oneCol = computed(() => w.value < 640);
-const chartW = computed(() =>
-  Math.max(240, oneCol.value ? w.value : Math.floor((w.value - 12) / 2)),
-);
 const plotW = computed(() => Math.max(40, chartW.value - PAD.l - PAD.r));
 
 const windowMs = computed(() => chartPrefs.value.rangeSec * 1000);
@@ -301,7 +307,7 @@ const legend = computed(() => charts.value[0].bands);
 </script>
 
 <template>
-  <div class="stack" ref="wrap">
+  <div class="stack">
     <!-- "in the last 5m", not "yet". Both states reach here and they are
          different facts: a page just opened has no record, and an adapter that
          has gone quiet has had its record age out of the window. Saying "yet"
@@ -314,8 +320,11 @@ const legend = computed(() => charts.value[0].bands);
     </p>
 
     <template v-else>
-      <div class="pair" :class="{ single: oneCol }">
-        <div v-for="c in charts" :key="c.dir" class="one">
+      <div class="pair">
+        <div
+          v-for="(c, i) in charts" :key="c.dir" class="one"
+          :ref="(el) => { if (i === 0) col = el as HTMLElement }"
+        >
           <div class="head">
             <!-- NAMED, not coloured. Direction is blue and orange everywhere
                  else in this interface; here colour has been given to the
@@ -375,11 +384,27 @@ const legend = computed(() => charts.value[0].bands);
   color: var(--ink-faint);
   max-width: 62ch;
 }
-/* Side by side. The single class comes from the measured width rather than a
-   media query, because what matters is how wide this FOLD is, not the page. */
-.pair { display: flex; gap: 12px; }
-.pair.single { flex-direction: column; }
-.one { min-width: 0; }
+/* The client cards' own `.dirs` rule, deliberately identical: `1fr 1fr` with a
+   1px gap on the line colour, so the hairline between download and upload is
+   the same hairline in a fold as on a card, and the two collapse to one column
+   at the same width rather than at two nearby ones. */
+.pair {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1px;
+  background: var(--line-soft);
+  /* Cancels the fold body's 10px side padding so the pair spans the full width
+     of the fold, exactly as `.dirs` spans the full width of a card. Without it
+     the two families sit on containers 20px apart and no amount of matching the
+     inner rules makes the plots the same size. */
+  margin-left: -10px;
+  margin-right: -10px;
+}
+@media (max-width: 860px) { .pair { grid-template-columns: 1fr; } }
+/* `.dir`'s padding, to the pixel: the chart is inset from its column by the
+   same amount on a card and in a fold, which is the other half of the two
+   plots coming out the same width. */
+.one { min-width: 0; background: var(--panel); padding: 13px 14px; }
 .head {
   display: flex;
   align-items: baseline;
