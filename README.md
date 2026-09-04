@@ -221,7 +221,7 @@ every number in this document.
 | Power | [Official Raspberry Pi 27 W USB-C PSU](https://www.amazon.com/dp/B0CW7XCY75?tag=jonathaneoliv-20) | A SuperSpeed Wi-Fi adapter is a real load. Check `vcgencmd get_throttled` reads `0x0` |
 | Storage | [SanDisk Ultra 16 GB microSDHC](https://www.amazon.com/dp/B074B4P7KD?tag=jonathaneoliv-20) | What was used, and enough — the finished image is ~4.6 GB. A 32 GB card costs little more and leaves room for `ntopng` data |
 | Wi-Fi adapter | [Panda Wireless PAU0F AXE3000 (mt7921u)](https://www.amazon.com/dp/B0D972VY9B?tag=jonathaneoliv-20) | Optional, and the single biggest change to what the box can test — see below |
-| Wired downstream | Any USB ethernet adapter; a Realtek RTL8156 (2.5 GbE) for the figures below | Becomes `lan0`. Optional. 2.5 GbE needs a SuperSpeed cable — see [Wired downstream performance](#wired-downstream-performance) |
+| Wired downstream | Any USB ethernet adapter — e.g. [UGREEN USB-C 2.5 GbE](https://www.amazon.com/dp/B0CD1FDKT1?tag=jonathaneoliv-20); the figures below are a Realtek RTL8156 at both ends | Becomes `lan0`. Optional. 2.5 GbE needs a SuperSpeed link end to end, and a USB-C part reaches the Pi's USB-A socket through a converter that is usually the weak point — see [The cable decides whether you get 2.5 GbE at all](#the-cable-decides-whether-you-get-25-gbe-at-all) |
 
 The product links above are Amazon affiliate links. **As an Amazon Associate I
 earn from qualifying purchases.** No part was chosen for that reason — each one
@@ -400,10 +400,30 @@ wrong instrument.
 
 ### The cable decides whether you get 2.5 GbE at all
 
-An RTL8156 on a USB 2.0 link does not advertise 2.5 Gbit/s — it cannot fit
-through a 480 Mbit/s bus — so it negotiates 1000 Mbit/s and looks like an
+A 2.5 GbE adapter on a USB 2.0 link does not advertise 2.5 Gbit/s — it cannot
+fit through a 480 Mbit/s bus — so it negotiates 1000 Mbit/s and looks like an
 ordinary gigabit adapter. Both ends read `1000baseT`, nothing errors, and the
 only trace is the enumeration speed.
+
+**A USB-C adapter adds a converter to the path, and that is where SuperSpeed is
+most easily lost.** The Pi's sockets are USB-A, so a USB-C NIC reaches them
+through a C-to-A cable or a stubby C-to-A dongle — and most of those are USB 2.0
+only, carrying four pins where SuperSpeed needs nine. A USB-A plug at least
+advertises itself with a blue tongue; a USB-C plug looks identical either way,
+so the only way to know is to plug it in and read the enumeration speed below.
+SuperSpeed C-to-A cables exist and are cheap — the failure is reaching for
+whichever converter was already in the drawer.
+
+**Before blaming the cable, unplug the USB-C end, turn it over, and plug it back
+in.** If the link comes up at 5000 Mbit/s one way up and 480 the other, the pins
+were there all along. A C-to-A cable has only one SuperSpeed lane pair to give —
+USB-A 3.0 has one TX and one RX pair, so there is no second set to fall back on
+the way a C-to-C cable has — and the standard expects the device end to carry a
+mux that routes SuperSpeed to whichever orientation the CC pins say is live.
+Cheap parts omit that mux or wire it to one side only. It costs five seconds and
+it separates a bad cable from a badly built one, which the enumeration speed
+alone cannot. Not observed on this box; the failure here was a cable with no
+SuperSpeed pins in either orientation.
 
 The same adapter here was moved through two different USB 3.0 ports and
 enumerated at 480 Mbit/s in both, so the port was never at fault; a cable change
