@@ -49,6 +49,7 @@ func validMAC(mac string) bool { return macRE.MatchString(mac) }
 var (
 	hostapdSend      = hostapdCmd
 	hostapdReachable = hostapdAvailable
+	linkPresent      = LinkExists
 )
 
 func hostapdAvailable(iface string) bool {
@@ -170,7 +171,7 @@ func (e *Engine) fireLink(f LinkFire) {
 	var err error
 	switch f.Kind {
 	case LinkDeadzone:
-		err = e.LinkDeadzone(f.MAC, f.DurSec) // clean deny-ACL block
+		err = e.LinkDeadzone(f.MAC, f.DurSec, f.Scope) // clean deny-ACL block
 	case LinkNudge:
 		if f.DurSec > 0 {
 			e.LinkFlap(f.MAC, LinkNudge, f.DurSec)
@@ -264,19 +265,30 @@ func (e *Engine) clearDenyACL() {
 	}
 }
 
-// LinkDeadzone holds a client off ONE radio for durSec: it is added to that
-// radio's deny ACL (so it cannot re-associate there for the window) and
-// deauthenticated once to kick it off now. The ban is lifted in the background;
-// the call returns once it is in force. See issue #135.
+// LinkDeadzone holds a client off the AP for durSec: it is added to the deny
+// ACL of one or every radio (so it cannot re-associate there for the window)
+// and deauthenticated once to kick it off now. The ban is lifted in the
+// background; the call returns once it is in force. See issues #135 and #206.
 //
-// On a single-radio box this is a sustained outage, with no traffic leaking
-// through the reconnect gaps the way a repeated deauth allows. On THIS box it
-// is not: both radios publish one SSID onto one bridge, so the client simply
-// associates on the other one -- measured at under a second on the bench. It is
-// therefore a forced roam the client cannot decline, which is a useful thing,
-// but it is not the outage this comment used to claim. Naming that choice is
-// issue #206; this function keeps today's behaviour.
-func (e *Engine) LinkDeadzone(mac string, durSec float64) error {
+// scope decides WHICH radios, and the choice is the whole point:
+//
+//	ScopeCurrent  the radio the client is on, and only that one. On a box
+//	              serving two radios from one SSID the client re-associates on
+//	              the other within a second -- measured -- so this is a forced
+//	              ROAM. Useful precisely because, unlike a steer, the client
+//	              cannot decline it.
+//	ScopeAll      every radio serving the AP: the sustained OUTAGE this was
+//	              always described as, with no traffic leaking through the
+//	              reconnect gaps the way a repeated deauth allows.
+//
+// Empty means ScopeCurrent, so a caller written before this argument existed
+// keeps the behaviour it had.
+//
+// ScopeAll refuses rather than half-applies. A deadzone that covers one of two
+// radios reads as a total outage and delivers a roam, which is the failure this
+// argument exists to end -- so a radio that is present but unreachable is an
+// error, not a radio to skip.
+func (e *Engine) LinkDeadzone(mac string, durSec float64, scope string) error {
 	if !e.LinkControlAvailable() {
 		return fmt.Errorf("link control unavailable: hostapd is not serving the AP")
 	}
@@ -292,18 +304,68 @@ func (e *Engine) LinkDeadzone(mac string, durSec float64) error {
 	}
 	// Captured HERE, before the deauth below moves the client, and used by the
 	// lift rather than asked again. See denyACLOn.
-	on := e.radioFor(mac)
-	if err := e.denyACLOn(on, "ADD", mac); err != nil {
+	on, err := e.deadzoneRadios(mac, scope)
+	if err != nil {
 		return err
+	}
+	for i, w := range on {
+		if err := e.denyACLOn(w, "ADD", mac); err != nil {
+			// Unwind what did land. A deadzone that covered half the radios is
+			// the thing this function refuses to be, and leaving the halves in
+			// place would strand the client exactly as #205 did.
+			for _, done := range on[:i] {
+				if e2 := e.denyACLOn(done, "DEL", mac); e2 != nil {
+					log.Printf("deadzone unwind %s on %s: %v", mac, done, e2)
+				}
+			}
+			return fmt.Errorf("deadzone on %s: %w", w, err)
+		}
 	}
 	_ = e.LinkDeauth(mac, 0) // kick it off now; the ACL keeps it off
 	go func() {
 		time.Sleep(time.Duration(durSec * float64(time.Second)))
-		if err := e.denyACLOn(on, "DEL", mac); err != nil {
-			log.Printf("deadzone lift %s on %s: %v", mac, on, err)
+		for _, w := range on {
+			if err := e.denyACLOn(w, "DEL", mac); err != nil {
+				log.Printf("deadzone lift %s on %s: %v", mac, w, err)
+			}
 		}
 	}()
 	return nil
+}
+
+// deadzoneRadios resolves scope to the radios a deadzone must deny on, in the
+// order they will be applied.
+//
+// ScopeAll is deliberately strict. A radio the daemon watches that is present
+// but whose control socket is missing cannot be denied on, and the client may
+// still be able to associate there -- so a "total" outage would have a hole in
+// it that nothing on screen would show. Refusing names the radio, which is a
+// fixable message; a silent hole is not.
+func (e *Engine) deadzoneRadios(mac, scope string) ([]string, error) {
+	switch scope {
+	case "", ScopeCurrent:
+		return []string{e.radioFor(mac)}, nil
+	case ScopeAll:
+		var on []string
+		for _, w := range e.cfg.WlanPorts {
+			switch {
+			case hostapdReachable(w):
+				on = append(on, w)
+			case linkPresent(w):
+				return nil, fmt.Errorf(
+					"a %q deadzone cannot cover %s: it is present but hostapd is "+
+						"not serving it, so the client could associate there and the "+
+						"outage would have a hole in it", ScopeAll, w)
+			}
+		}
+		if len(on) == 0 {
+			return nil, fmt.Errorf("no radio is serving the AP, so there is nothing to hold the client off")
+		}
+		return on, nil
+	default:
+		return nil, fmt.Errorf("deadzone scope must be %q or %q (got %q)",
+			ScopeCurrent, ScopeAll, scope)
+	}
 }
 
 // linkAction sends one control command on behalf of a specific client. The MAC
