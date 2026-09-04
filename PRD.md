@@ -364,16 +364,35 @@ damages packets, never link state.
 
 ### 6.5 Interface
 
-- The interface has **two tabs**. **Clients** is the device list and everything
-  that conditions one device; **Bridge** is the box itself. They are separate
-  because the controls differ in kind, not merely in subject: everything on a
-  device card acts on one device, and everything on the Bridge tab acts on a
-  whole radio at once. Clients is the default — the devices are what the box is
-  for, and the bridge is what you go and look at.
-- The page header is shared by both and reports the same things throughout:
-  transport, the WAN port, and which radio is serving with its negotiated bus
-  speed. A USB adapter that quietly enumerated at High-Speed is invisible from
-  every other angle, so it must not become invisible from whichever tab is open.
+- The interface is **one scrolling view**, read top to bottom in the order the
+  traffic travels: the fabric that reaches the internet, then the adapters that
+  carry the air, then the devices on them. It was two tabs, and the split was
+  wrong for the question actually being asked — "why is this device slow" is
+  answered by facts on both sides of it, and a tab made comparing them an act of
+  memory. Nothing here acts on more than one subject, so nothing needed
+  separating; the controls that act on a whole radio live on that radio, and the
+  controls that act on one device live on that device.
+- **Adapters come before devices, in a fixed order that does not move.** The
+  rack is `wlan-usb`, `wlan0`, `lan0` — the same order every load, regardless of
+  which is serving, which has clients, or what just changed. An interface whose
+  position encodes its current state cannot be pointed at across time, and a
+  device roaming between radios must never reorder anything.
+- **One token stands for an adapter everywhere it is named**: a colour swatch, the
+  interface name, and its channel. The colour is fixed per interface and is
+  drawn from a palette deliberately disjoint from the direction and status
+  colours, so an adapter is never mistaken for a downlink or a fault. Where the
+  token is not the subject it also offers a jump to wherever that subject is.
+- Under each device's charts, an **ON ADAPTER strip** runs on the same x-axis,
+  saying which radio carried each moment and marking where its channel changed.
+  A roam is otherwise invisible in a throughput plot: the line simply gets worse,
+  and the reason is off-screen in another component.
+- The fabric — the WAN port and the bridge — is **one line**, with the topology
+  diagram behind a disclosure. It is the part that is either working or not, and
+  a picture of it is reference rather than something read every visit.
+- The page header reports the same things throughout: transport, the WAN port,
+  and which radio is serving with its negotiated bus speed. A USB adapter that
+  quietly enumerated at High-Speed is invisible from every other angle, so it
+  must not become invisible.
 
 - State arrives as **complete snapshots** over server-sent events, with polling
   as an equivalent fallback. A dropped frame cannot cause drift.
@@ -412,7 +431,7 @@ damages packets, never link state.
   conditioning is additive on top of it; that `overlimits` is not an error; that
   PHY rate is not throughput.
 
-- An **activity log** sits under the tabs on both views, showing the newest few
+- An **activity log** sits under the page header, showing the newest few
   lines until it is opened. One line says that something changed without saying
   what; a roam alone is two lines. It records what CHANGED rather than what is: a client joining,
   leaving, or moving between radios; a radio's channel, width or mode changing,
@@ -438,19 +457,31 @@ damages packets, never link state.
 
 ### 6.6 The bridge
 
-- The Bridge tab shows **every interface the box has**, discovered from the
-  kernel rather than read from configuration: the WAN port, the bridge, each
-  radio and the wired downstream port, with MAC, addresses, link state and — for
-  a radio — its adapter, driver, negotiated bus speed, and the SSID, channel,
-  width, mode and country its access point is actually running. A diagram draws
-  the same thing as a topology.
+- The rack shows **every interface the box has**, discovered from the kernel
+  rather than read from configuration: the WAN port, the bridge, each radio and
+  the wired downstream port, with MAC, addresses, link state and — for a radio —
+  its adapter, driver, negotiated bus speed, and the SSID, channel, width, mode
+  and country its access point is actually running. A diagram draws the same
+  thing as a topology.
+- **An adapter collapses to one line, and that line is a table row.** Every field
+  describing the radio sits in a fixed column — the token and its channel, width
+  and mode, airtime, then the devices on it — so the rack is read down as
+  columns rather than found again on each row. The devices are **named, not
+  counted**: they are the blast radius of every control to the right of them, and
+  a name says that where a tally does not. The list is capped and carries a
+  leading count so an abbreviated one still says how many it stands for, and each
+  name jumps to that device's card below.
+- The fold opens on the **facts first, then the controls, and the band plan
+  leads the controls** — opening an adapter is nearly always to change where it
+  is, and the band plan is the one control here that is read rather than
+  pressed.
 - **A radio the daemon is not watching is named as such, prominently.** The
   daemon follows one interface, so a second adapter's clients associate, take
   addresses and pass traffic while being conditioned by nothing and appearing
-  nowhere in the Clients tab. Discovering the hardware rather than the
+  nowhere in the device list. Discovering the hardware rather than the
   configuration is what lets the interface say this instead of leaving it to be
   inferred from a device list that is quietly short.
-- The tab offers **box-wide radio controls**: a broadcast deauthentication and
+- The rack offers **box-wide radio controls**: a broadcast deauthentication and
   an airtime readout. Each states on screen that it affects **every client on
   that radio**, and how many that currently is. It also warns that a client
   using a private Wi-Fi address may reassociate under a different MAC and so
@@ -459,16 +490,14 @@ damages packets, never link state.
   because the box is a single-operator instrument and because these impairments
   are unreachable any other way — not a general licence for AP-wide controls to
   appear beside per-device ones.
-- **Each box-wide control appears exactly once, on whichever of the two
-  surfaces names its subject.** A control whose subject is the radio as a thing
-  in the topology — cut it, empty it, move it, survey it — is on that radio in
-  the diagram, where the reader is already pointing at it: switching it off,
-  dropping, nudging or steering its clients, scanning, and picking a channel
-  from the band plan. What is left below is what a node cannot draw: a
-  fixed-length outage that ends itself, the link-conditioning profiles and
-  thresholds, and the scan that acts on its own answer by moving to the
-  quietest channel. Two copies of one action is a second place for the two to
-  disagree, and the copy further from the thing it names is the one to lose.
+- **Each box-wide control appears exactly once, on the adapter it acts on.**
+  Everything that acts on a radio — switching it off, dropping, nudging or
+  steering its clients, scanning, moving it, taking it away for a fixed outage,
+  and the link-conditioning profiles and thresholds — is on that radio's own row
+  or in its fold, and nowhere else. The topology diagram is a picture only: it
+  once carried these controls too, and two copies of one action is a second
+  place for the two to disagree. The copy further from the thing it names is the
+  one to lose.
 - Where a radio exposes no hostapd control socket, its controls are **shown
   disabled with the reason**, never offered and silently ignored. Where a radio
   refuses an action its driver claims to support — an 802.11h channel switch on
