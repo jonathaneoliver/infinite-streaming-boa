@@ -446,6 +446,31 @@ damages packets, never link state.
   2.4GHz 1/6/11, and the non-DFS 5GHz channels 36/40/44/48 and
   149/153/157/161/165. DFS is excluded because neither radio can serve an
   access point on one.
+- **A chosen channel is remembered, and a radio is put back on it.** The move
+  itself is applied to the running access point and lasts only as long as that
+  process, so a restart, a reboot, a USB re-enumeration or a driver reload
+  would otherwise return the radio to whatever the image was built with,
+  silently. The choice is kept as box state rather than written into the access
+  point's own configuration, which has no single file it belongs in: those
+  configurations are per ROLE, two of them describe the same onboard radio in
+  different bands, and which one is live depends on whether the USB adapter is
+  present.
+- Putting it back **costs an outage and says so before it takes one**. The move
+  drops every client on that radio without telling them, so the log names the
+  channel it drifted to and the one it is going back to, before it moves. It is
+  attempted only on a radio that is actually serving — a radio deliberately
+  switched off stays off, because being off is the operator's decision and not
+  something a restore may quietly undo. After a few failed attempts it stops
+  and says it has stopped: a channel that will not stick is a cause the box
+  cannot fix, and retrying it would be an outage every second in pursuit of it.
+- Where the coexistence scan lands a radio on the sibling of the channel asked
+  for, **that is remembered as satisfying the choice**, not as a drift to be
+  corrected. Otherwise the one normal case on this box would be a permanent
+  mismatch, and correcting it forever would be worse than the mismatch.
+- **One radio reconfigures at a time.** A channel move is a read-modify-write
+  on hardware taking seconds, so two at once interleave and each reads back the
+  other's result. Two radios still move in parallel; one radio does not move
+  twice.
 - The two 5GHz blocks are drawn **with a break between them**, because they are
   not adjacent: the whole DFS range sits in the gap. Offering both is what lets
   two 5GHz radios sit somewhere they are not inside each other's spectrum.

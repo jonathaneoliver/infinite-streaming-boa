@@ -84,7 +84,19 @@ type Engine struct {
 	st    *Store
 	pat   *PatternStore
 	lad   *LadderStore
+	chp   *ChannelStore
 	learn *Learner
+
+	// restore keeps the channel restore terminating: what is mid-move, how
+	// many times each radio has been put back, and which have been given up
+	// on. See channelrestore.go -- a restore that repeated would take the
+	// access point down every tick.
+	restore restoreState
+
+	// radioLocks serialises reconfiguration per radio, so a move from the API
+	// and a move from the tick's restore cannot interleave on one interface.
+	radioMu    sync.Mutex
+	radioLocks map[string]*sync.Mutex
 
 	rev, ctrlRev uint64
 	snap         Snapshot
@@ -193,6 +205,7 @@ func NewEngine(cfg Config) *Engine {
 		st:           NewStore(cfg.StatePath),
 		pat:          NewPatternStore(patternsPathFor(cfg.StatePath)),
 		lad:          NewLadderStore(ladderPathFor(cfg.StatePath)),
+		chp:          NewChannelStore(channelsPathFor(cfg.StatePath)),
 		learn:        NewLearner(cfg.Bridge, append(append([]string{}, cfg.WlanPorts...), cfg.LanPort)...),
 		prev:         map[string]counterSample{},
 		lastActive:   map[string]int64{},
@@ -215,6 +228,10 @@ func ladderPathFor(statePath string) string {
 	return filepath.Join(filepath.Dir(statePath), "ladder.json")
 }
 
+func channelsPathFor(statePath string) string {
+	return filepath.Join(filepath.Dir(statePath), "channels.json")
+}
+
 func (e *Engine) Store() *Store { return e.st }
 
 // PatternStore holds the box's saved patterns. Beside policy.json rather than
@@ -222,6 +239,11 @@ func (e *Engine) Store() *Store { return e.st }
 // patterns in would change that file's shape and need a migration on every
 // existing box for no benefit over a second small file.
 func (e *Engine) PatternStore() *PatternStore { return e.pat }
+
+// ChannelStore holds the operator's chosen channel per radio. Beside
+// policy.json rather than in hostapd's config, which has no single file a
+// channel belongs in -- see ChannelStore.
+func (e *Engine) ChannelStore() *ChannelStore { return e.chp }
 
 // LadderStore holds THE ladder for the box. See LadderStore.
 func (e *Engine) LadderStore() *LadderStore { return e.lad }
@@ -659,6 +681,10 @@ func (e *Engine) tick() {
 	e.noteClientChanges(stationRadio, labels)
 	e.noteRadioChanges()
 	e.noteAPServing()
+	// AFTER the two watches above, so a radio that has drifted is reported as
+	// having drifted before anything moves it back. The restore is loud, but
+	// it is not the only thing that should have spoken.
+	e.restoreChannels()
 
 	sort.Slice(clients, func(i, j int) bool {
 		// Present devices first, then by label, so the list does not reshuffle
