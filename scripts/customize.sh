@@ -665,6 +665,20 @@ channel=${_chan}
 ssid=${_ssid}
 ignore_broadcast_ssid=$([ "$AP_HIDDEN" = "true" ] && echo 1 || echo 0)
 wmm_enabled=1
+# Advertise 802.11v BSS Transition Management, which the steer control needs.
+#
+# The control already sends the request and hostapd already accepts it -- but
+# hostapd defaults this to 0, so the capability bit was never set in the
+# Extended Capabilities the AP puts in its beacons and association responses.
+# A client that never saw it advertised may ignore the request entirely, and
+# from the box's side that is indistinguishable from a client that considered
+# it and declined -- which is the one distinction steering exists to measure.
+# With it advertised, a client that supports BTM answers with a Response frame
+# carrying a status code instead of saying nothing. Issue #191.
+#
+# On every role, because it is a property of the access point rather than of a
+# band: the frame goes out through nl80211 and both radios run this same build.
+bss_transition=1
 ieee80211n=1
 ieee80211ac=${_ac}
 ieee80211ax=${_ax}
