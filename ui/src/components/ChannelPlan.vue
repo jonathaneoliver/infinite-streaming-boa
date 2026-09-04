@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { computed } from 'vue';
 import type { IfaceInfo, ScanSummary } from '@/types';
 import { describeChannel, rateFor, type Quality } from '@/composables/channelQuality';
 
@@ -23,7 +24,24 @@ const props = defineProps<{
   busy?: boolean;
 }>();
 const emit = defineEmits<{ (e: 'move', channel: number, width: number): void }>();
-const radio = props.radio;
+
+/*
+ * A COMPUTED, not `const radio = props.radio`.
+ *
+ * That plain capture is what this line used to be, and it read as harmless
+ * shorthand: `props` is reactive, so the value is right at setup. But it is
+ * read ONCE and frozen, and every snapshot replaces `props.radio` with a
+ * freshly parsed object -- so after a move the plan went on comparing against
+ * the channel the radio was on when the fold was opened, and the highlight
+ * never followed. The fold body is `v-if`, so closing and reopening it
+ * rebuilt the component and appeared to fix it, which is exactly the shape of
+ * bug that survives a manual test.
+ *
+ * The header token got this right by accident rather than by design: it reads
+ * the channel through `useAdapters`, a separate reactive path. Two sources for
+ * one fact, disagreeing on screen.
+ */
+const radio = computed(() => props.radio);
 
 
 /**
