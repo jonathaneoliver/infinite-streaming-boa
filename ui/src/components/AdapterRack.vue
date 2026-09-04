@@ -47,10 +47,18 @@ function otherRadio(r: IfaceInfo): string {
   return rackAdapters.value.find((o) => o.name !== r.name && o.ap?.enabled)?.name ?? '';
 }
 
+/**
+ * What the row says beyond the token.
+ *
+ * NOT the channel: the token already carries it, and printing "ch 149" twice in
+ * one row reads as two different facts about the same radio. Width and mode are
+ * what the token leaves out, and they are what says how the link will behave.
+ */
 function summary(r: IfaceInfo): string {
   if (!r.ap) return r.speed_mbps ? `${r.speed_mbps} Mb/s` : (r.up ? 'up' : 'down');
-  const bits = [r.ap.channel ? `ch ${r.ap.channel}` : '', r.ap.width_mhz ? `${r.ap.width_mhz} MHz` : '', r.ap.mode ?? ''];
-  return bits.filter(Boolean).join(' · ');
+  return [r.ap.width_mhz ? `${r.ap.width_mhz} MHz` : '', r.ap.mode ?? '']
+    .filter(Boolean)
+    .join(' · ');
 }
 
 /**

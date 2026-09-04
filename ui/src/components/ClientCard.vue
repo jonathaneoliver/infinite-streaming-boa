@@ -150,10 +150,15 @@ const IDENTITY_COLS = computed(() => [
   '30px',                 // fold toggle -- first, so it never moves
   '14px',                 // presence dot
   '170px',                // name -- fixed, so what follows holds its x
-  // 84px, not 58: the badge carries the radio name ("wlan-usb"), not the word
-  // "wifi", because which radio a client is on is the fact that matters once
-  // the box serves two bands.
-  'minmax(0, 84px)',      // medium / radio badge
+  // 152px: the cell holds the adapter TOKEN now -- a swatch, the interface
+  // name, its channel and the jump arrow -- not a one-word badge. At the old
+  // 84px it clipped to "wlan·", which is the identity this token exists to
+  // carry being the first thing thrown away.
+  // A FLOOR, like the address track has: this identifies which radio the client
+  // is on, and "wlan·" identifies nothing. 128px holds the swatch, the longest
+  // interface name the box has and the arrow; the channel is what gives way
+  // first, and it is repeated in the summary beside it.
+  'minmax(128px, 152px)', // adapter token
   // The radio summary is never dropped: which radio a client is on, and what
   // that radio is doing, is the reason this row exists on a two-band box.
   //
@@ -165,7 +170,7 @@ const IDENTITY_COLS = computed(() => [
   // moved as the card toggled -- 99px at a 1200px window, 146px at 1100px,
   // measured. The radio summary meanwhile sat in a 268px track it did not need,
   // empty on every wired client.
-  'minmax(0, 168px)',     // "ch 40 · 80 MHz · 802.11ax"
+  'minmax(0, 128px)',     // "80 MHz · 802.11ax" -- the channel is on the token
   // 268px fits a full IPv4 with room to spare and most of an IPv6; longer
   // addresses ellipsise and carry the full value in a tooltip.
   'minmax(96px, 268px)',  // address
@@ -247,8 +252,10 @@ const open = ref(false);
 const radioSummary = computed(() => {
   const r = props.client.radio_on;
   if (!r) return '';
+  // NOT the channel: the adapter token beside this carries it, and the same
+  // number twice in one row reads as two facts about the same radio. What is
+  // left is what the token leaves out, and what says how the link behaves.
   return [
-    r.channel ? `ch ${r.channel}` : '',
     r.width_mhz ? `${r.width_mhz} MHz` : '',
     r.mode || '',
   ].filter(Boolean).join(' · ');
@@ -793,6 +800,17 @@ function fmtBytes(n: number): string {
           :cap="downCap" :height="expandedH"
           @hovering="(v: boolean) => emit('hovering', v)"
         />
+        <!-- ON ADAPTER, inside the direction column rather than spanning both.
+             The two charts sit SIDE BY SIDE, each with its own plot area, so a
+             band across the whole card lines up with neither of them -- and a
+             band a few pixels out is worse than none, because it puts a roam
+             beside the wrong part of the trace. Alignment is the entire claim
+             this makes, so it is drawn where it can be true. -->
+        <OnAdapterStrip
+          v-if="series"
+          :t="series.t" :iface="series.iface" :chan="series.chan"
+          :window-ms="chartProps.windowMs" :now="chartProps.now"
+        />
         <p v-if="sweeping" class="meta swept-note">
           These controls are showing what the sweep is enforcing, not your saved
           settings — those are untouched and return when it ends.
@@ -823,6 +841,11 @@ function fmtBytes(n: number): string {
           :height="expandedH"
           @hovering="(v: boolean) => emit('hovering', v)"
         />
+        <OnAdapterStrip
+          v-if="series"
+          :t="series.t" :iface="series.iface" :chan="series.chan"
+          :window-ms="chartProps.windowMs" :now="chartProps.now"
+        />
         <ShapeSliders
           :shape="upShape" dir="up"
           :disabled="!client.shapeable || playing"
@@ -830,17 +853,6 @@ function fmtBytes(n: number): string {
         />
       </div>
     </div>
-
-    <!-- ON ADAPTER, under BOTH charts rather than one per direction: the two
-         share an x-axis and the client was on one adapter, not one per
-         direction. Drawing it twice would invite reading them as separate
-         facts. Wi-Fi only in effect -- a wired client has one segment and no
-         channel, which the strip renders honestly but which says nothing. -->
-    <OnAdapterStrip
-      v-if="!collapsed && series"
-      :t="series.t" :iface="series.iface" :chan="series.chan"
-      :window-ms="chartProps.windowMs" :now="chartProps.now"
-    />
 
     <!-- Group A link events: an impairment on the ASSOCIATION, not the packets,
          and not tied to a direction -- so they get their own section under both
