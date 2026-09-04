@@ -1099,6 +1099,64 @@ airtime, not a bug fix.
   already counted with a ±4-channel overlap window, and layering a second
   coverage set on top would count the same interference twice.
 
+## Source P — hostapd `BSS-TM-RESP` · what a client said about a steer
+
+**What it is.** A steer sends an 802.11v BSS Transition Management request. The
+client answers with a Response frame carrying a status code, and hostapd
+forwards that to anything ATTACHed to its control socket:
+
+```
+BSS-TM-RESP <mac> status_code=<n> bss_termination_delay=<n> [target_bssid=<mac>]
+```
+
+Read by a monitor connection per radio (`hostapdmonitor.go`). Every other use of
+the control socket in this codebase is request/reply, which cannot see a message
+hostapd sends unasked — so before this, the interface could report only that a
+request had been **sent**.
+
+**Units and meaning.** `status_code` is an integer from IEEE 802.11 Table 9-428.
+The activity log renders it in words, because a bare number in a log is one
+nobody looks up. The mapping, so the phrase can always be traced back to the
+code it came from:
+
+| code | rendered as |
+|---|---|
+| 0 | accepted |
+| 1 | refused, giving no reason |
+| 2 | refused: it had no recent measurement of the other radio |
+| 3 | refused: the other radio has no capacity for it |
+| 4 | refused: it does not want this BSS to go away |
+| 5 | refused, asking for more time before this BSS goes away |
+| 6 | refused, offering its own list of candidates instead |
+| 7 | refused: none of the candidates offered suit it |
+| 8 | refused: it is leaving this network entirely |
+
+`bss_termination_delay` is in **TBTTs**, not seconds, and is not currently
+displayed. `target_bssid` appears only on an accept.
+
+**Confidence: high for what it says, and it does not say much.** The code is the
+client's own account of its decision and is exactly as trustworthy as the
+client. It describes an intention, not an outcome: a client may answer `0` and
+not move, or move without answering at all.
+
+**The edge case that matters, MEASURED 2026-09-04.** An iPhone asked to leave
+`wlan-usb` **moved one second later and sent no response frame at all.** Asked
+in the other direction from `wlan0` minutes later, it neither answered nor
+moved. So:
+
+- **Moving and answering are independent**, and the log reports them as two
+  facts. A client that moves in silence must not be described as unresponsive —
+  it plainly acted.
+- **Silence is reported, not left as an absence** (after 5s). A reader who sees
+  "asked to move" and then nothing cannot otherwise tell a refusal from a
+  request that went nowhere.
+
+**A caveat on comparing the two directions.** They differ in more than the
+capability advertisement: `wlan0` is 2.4GHz/20MHz/802.11n and `wlan-usb` is
+5GHz/80MHz/802.11ax, so a client weighing the target's band is a competing
+explanation for any difference between them. Neither leg alone supports a
+conclusion about advertisement.
+
 ## Source Q — `iw ... set txpower` · a control that validates and then ignores
 
 **VERIFIED** on hardware 2026-09-04, mt7921u on channel 149 at 80MHz, with the

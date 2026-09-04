@@ -264,6 +264,20 @@ damages packets, never link state.
   on either band is steered the right way round. Offered **only when there is
   somewhere to send it**: on a box serving one radio a transition request has no
   destination to name, so the control is absent rather than present and failing.
+- **The client's own answer is reported, in words.** A transition request is
+  answered with a status code, and the log renders it — accepted, or the reason
+  it was refused — rather than the number, which is a value nobody looks up.
+  Whether a device honours a steer is the behaviour the control exists to
+  measure, and a request whose result cannot be read measures nothing.
+- **Moving and answering are separate facts, and are reported separately.** A
+  client can honour a transition and send no answer, or answer and not move;
+  both were measured here on the same device within minutes. Nothing infers one
+  from the other, because reading "did not move" as "refused" — or silence as
+  "does not support transitions" — is a conclusion the evidence does not carry.
+- **Silence is stated rather than left as a gap.** A client that has not
+  answered within a few seconds is reported as not having answered, along with
+  whether it moved anyway. A reader who sees a request and then nothing cannot
+  otherwise tell a refusal from a request that went nowhere.
 - They are driven from the device card as **one-shot** buttons, or scheduled on
   a **pattern lane** beside rate and loss — a deauth at t=120s is exactly
   reproducible, which no packet impairment is, and is the specific event this
