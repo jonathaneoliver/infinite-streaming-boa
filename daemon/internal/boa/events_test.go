@@ -1,6 +1,9 @@
 package boa
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
 
 // The ring is the part worth testing: it is the only place in the daemon where
 // dropping data is CORRECT, and an off-by-one there either loses an event a
@@ -74,5 +77,116 @@ func TestEventLogLabelFallsBackToMAC(t *testing.T) {
 	l.setLabels(map[string]string{"aa:bb": "Apple TV"})
 	if got := l.label("aa:bb"); got != "Apple TV" {
 		t.Fatalf("label = %q, want %q", got, "Apple TV")
+	}
+}
+
+func TestAPServingReportsBothEdgesAndNotThePowerButton(t *testing.T) {
+	// Issue #174: a radio came back from a power cut with no access point on
+	// it, warned once, recovered minutes later, and the warning stayed as the
+	// last word. The recovery edge is the half that was missing.
+	//
+	// Driven through setAPServing directly, which is the state machine
+	// noteAPServing runs on: the readings themselves come from hostapd and are
+	// not reproducible off the box, but which TRANSITIONS speak is the part
+	// that was wrong and it is pure logic.
+	e := &Engine{cfg: Config{WlanPorts: []string{"wlan-usb"}}}
+
+	// The four cases noteAPServing switches on, as (was, now) pairs.
+	warns := func(was, now string) bool { return was == "serving" && now == "down" }
+	recovers := func(was, now string) bool { return was == "down" && now == "serving" }
+
+	// A deliberate power cycle: serving -> off -> down -> serving. NONE of the
+	// first two steps may warn, or the power button raises an alarm every time
+	// it is used -- notePower has already said what happened in the operator's
+	// own words.
+	for _, step := range [][2]string{{"serving", "off"}, {"off", "down"}} {
+		if warns(step[0], step[1]) {
+			t.Errorf("%s → %s warned; a power cycle passes through here", step[0], step[1])
+		}
+	}
+	// The end of that cycle IS worth reporting: it is the recovery.
+	if !recovers("down", "serving") {
+		t.Error("down → serving did not report a recovery; that is the missing half")
+	}
+
+	// The fault this exists for: it was serving, and now it is not.
+	if !warns("serving", "down") {
+		t.Error("serving → down did not warn")
+	}
+	// A radio with no control socket has no BSS to have an opinion about, so it
+	// must not be reported as one that failed.
+	if warns("unmanaged", "down") || warns("serving", "unmanaged") {
+		t.Error("an unmanaged radio was reported as a fault")
+	}
+
+	// First reading never speaks: "" means the daemon has not looked before,
+	// which is not the same as a radio that changed. A restart would otherwise
+	// warn about every radio that happens to be down at that moment.
+	if was := e.setAPServing("wlan-usb", "down"); was != "" {
+		t.Errorf("first reading returned %q, want empty", was)
+	}
+	if was := e.setAPServing("wlan-usb", "serving"); was != "down" {
+		t.Errorf("second reading returned %q, want down", was)
+	}
+	// syncAPServing must overwrite without the caller having to log: it is what
+	// stops the tick reporting a recovery confirmAPBack already reported.
+	if was := e.setAPServing("wlan-usb", "serving"); was != "serving" {
+		t.Errorf("third reading returned %q, want serving", was)
+	}
+}
+
+func TestRadioCacheIsPerInterface(t *testing.T) {
+	// The cache held one timestamp for a map keyed by interface. Two radios
+	// therefore fought over it: whichever refreshed first stamped "now", the
+	// second still looked fresh and returned its stale entry, and did so again
+	// every tick after that. One radio's channel, width and serving state could
+	// never change again as far as the tick was concerned -- which is why a BSS
+	// that stopped serving was not noticed even once the tick was watching for
+	// it.
+	//
+	// Demo mode so no hostapd is needed: the point under test is the
+	// bookkeeping, not what a radio reports.
+	e := &Engine{cfg: Config{Demo: true, WlanPorts: []string{"wlan0", "wlan-usb"}}}
+
+	if r := e.radioOnFor("wlan0"); r == nil {
+		t.Fatal("wlan0 returned no radio")
+	}
+	if r := e.radioOnFor("wlan-usb"); r == nil {
+		t.Fatal("wlan-usb returned no radio")
+	}
+
+	// Both must now carry their OWN timestamp. Under the old single-timestamp
+	// version the second interface never got one of its own at all.
+	e.mu.RLock()
+	n := len(e.radioOnAt)
+	_, haveWlan0 := e.radioOnAt["wlan0"]
+	_, haveUSB := e.radioOnAt["wlan-usb"]
+	e.mu.RUnlock()
+	if n != 2 || !haveWlan0 || !haveUSB {
+		t.Errorf("radioOnAt holds %d entries (wlan0=%v wlan-usb=%v), want one each",
+			n, haveWlan0, haveUSB)
+	}
+
+	// Ageing ONE interface must not age the other, and must not leave the other
+	// looking stale either -- the two are independent readings.
+	e.mu.Lock()
+	e.radioOnAt["wlan-usb"] = time.Now().Add(-time.Hour)
+	e.mu.Unlock()
+	e.radioOnFor("wlan-usb")
+	e.mu.RLock()
+	usbAge := time.Since(e.radioOnAt["wlan-usb"])
+	e.mu.RUnlock()
+	if usbAge > time.Minute {
+		t.Errorf("a stale wlan-usb entry was not refreshed (age %s)", usbAge)
+	}
+
+	// forgetRadioOn drops both maps, so nothing survives a channel change with
+	// a timestamp that would keep it "fresh".
+	e.forgetRadioOn()
+	e.mu.RLock()
+	left := len(e.radioOnAt) + len(e.radioOn)
+	e.mu.RUnlock()
+	if left != 0 {
+		t.Errorf("%d cache entries survived forgetRadioOn", left)
 	}
 }

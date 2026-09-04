@@ -512,6 +512,14 @@ type RadioOn struct {
 	// Band is "2.4GHz" or "5GHz", derived from the channel. The single most
 	// useful fact about which radio a client is on.
 	Band string `json:"band,omitempty"`
+
+	// Serving is whether hostapd's BSS is actually ENABLED on this radio.
+	//
+	// Separate from the channel, and not derivable from it: a DISABLED BSS
+	// still answers STATUS with the channel it will use when it comes back, so
+	// a radio serving nobody looks identical here to one serving happily. That
+	// is exactly what let a radio stop serving without anything noticing.
+	Serving bool `json:"serving"`
 }
 
 type Notice struct {

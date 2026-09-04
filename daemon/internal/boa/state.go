@@ -112,13 +112,25 @@ type Engine struct {
 	events         eventLog
 	prevRadio      map[string]string
 	prevRadioState map[string]string
+	// prevAPServing is the previous tick's per-radio serving state. Separate
+	// from prevRadioState because a radio's channel and whether it is actually
+	// serving are independent facts, and the second one is invisible in the
+	// first -- see noteAPServing.
+	prevAPServing map[string]string
 
 	// radioOn caches each radio's channel/width/mode for the device list,
 	// refreshed on a slow timer: it changes only when something deliberately
 	// changes it, and asking hostapd per tick is a round-trip per radio for a
 	// value that is almost always unchanged.
-	radioOn   map[string]*RadioOn
-	radioOnAt time.Time
+	radioOn map[string]*RadioOn
+	// radioOnAt is PER INTERFACE. It was a single timestamp shared by every
+	// radio, which quietly disabled the cache for all but one of them: the
+	// first radio refreshed and stamped "now", so the second still looked fresh
+	// and returned its stale entry -- and did so again on the next tick, and
+	// for ever. One radio's channel, width and serving state could therefore
+	// never change again as far as the tick was concerned. Invisible with one
+	// radio; guaranteed with two.
+	radioOnAt map[string]time.Time
 
 	// scanSeen is the last band scan per radio, kept so the interface can
 	// colour its channel controls from a measurement rather than a guess. In
@@ -640,6 +652,7 @@ func (e *Engine) tick() {
 	}
 	e.noteClientChanges(stationRadio, labels)
 	e.noteRadioChanges()
+	e.noteAPServing()
 
 	sort.Slice(clients, func(i, j int) bool {
 		// Present devices first, then by label, so the list does not reshuffle

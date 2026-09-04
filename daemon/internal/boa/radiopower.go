@@ -130,10 +130,26 @@ func (e *Engine) confirmAPBack(iface string) {
 		// did my client take so long to come back", and it differs by an order
 		// of magnitude between the two radios on this box.
 		e.logEvent(EventRadio, iface, "", "%s access point back after %s", iface, took)
+		// Recorded so the tick does not report the same recovery a second time.
+		e.forgetRadioOn()
+		e.syncAPServing(iface)
 		return
 	}
+	// DELIBERATELY NOT synced.
+	//
+	// Leaving the serving state unrecorded is what hands the watch over to the
+	// tick: it will read "down" here, and when the access point does come back
+	// -- which it did, minutes later, in the case that produced issue #174 --
+	// the transition to "serving" is a change it can see and report. Syncing
+	// here would swallow that edge and leave this warning as the last word on a
+	// radio that had long since recovered.
+	//
+	// The cache is dropped so the tick reads the radio afresh rather than
+	// trusting a snapshot taken while it was down.
+	e.forgetRadioOn()
 	e.logEvent(EventWarning, iface, "",
-		"%s is powered on but its access point did not come back — it is serving nobody",
+		"%s is powered on but its access point did not come back — it is serving "+
+			"nobody. Still watching; a recovery will be reported.",
 		iface)
 }
 
@@ -143,9 +159,17 @@ func (e *Engine) confirmAPBack(iface string) {
 func (e *Engine) notePower(iface string, on bool) {
 	defer e.syncRadioState(iface)
 	if on {
+		// NOT synced on the way up. The access point is not back yet -- that is
+		// what confirmAPBack is about to wait for -- so recording anything here
+		// would record the gap rather than the outcome. confirmAPBack records
+		// "serving" if it succeeds, and deliberately records nothing if it does
+		// not, which is what leaves the recovery for the tick to report.
 		e.logEvent(EventRadio, iface, "", "%s switched back on", iface)
 		return
 	}
+	// Switched off: not serving is the CORRECT state, so record it as such and
+	// the tick will not read it as a radio that failed.
+	defer e.syncAPServing(iface)
 	e.logEvent(EventRadio, iface, "",
 		"%s switched OFF — clients are told nothing and must notice", iface)
 }
@@ -288,7 +312,7 @@ func (e *Engine) radioOnFor(iface string) *RadioOn {
 	}
 	e.mu.RLock()
 	r, ok := e.radioOn[iface]
-	fresh := time.Since(e.radioOnAt) < 15*time.Second
+	fresh := time.Since(e.radioOnAt[iface]) < 15*time.Second
 	e.mu.RUnlock()
 	if ok && fresh {
 		return r
@@ -297,12 +321,17 @@ func (e *Engine) radioOnFor(iface string) *RadioOn {
 	out := &RadioOn{Iface: iface}
 	if e.cfg.Demo {
 		out.Channel, out.WidthMHz, out.Mode, out.Band = 36, 80, "802.11ax", "5GHz"
+		out.Serving = true
 	} else if hostapdAvailable(iface) {
 		if st, err := hostapdCmd(iface, "STATUS"); err == nil {
 			kv := parseHostapdKV(st)
 			out.Channel = atoiSafe(kv["channel"])
 			out.WidthMHz = apWidth(kv)
 			out.Mode = apMode(kv)
+			// Taken from the SAME reply, not a second round trip. Whether the
+			// BSS is up is the one thing this call was throwing away, and it
+			// is the thing that decides whether the radio is serving anyone.
+			out.Serving = kv["state"] == "ENABLED"
 		}
 	}
 	if out.Channel > 0 {
@@ -316,7 +345,10 @@ func (e *Engine) radioOnFor(iface string) *RadioOn {
 		e.radioOn = map[string]*RadioOn{}
 	}
 	e.radioOn[iface] = out
-	e.radioOnAt = time.Now()
+	if e.radioOnAt == nil {
+		e.radioOnAt = map[string]time.Time{}
+	}
+	e.radioOnAt[iface] = time.Now()
 	e.mu.Unlock()
 	return out
 }
@@ -326,7 +358,7 @@ func (e *Engine) radioOnFor(iface string) *RadioOn {
 func (e *Engine) forgetRadioOn() {
 	e.mu.Lock()
 	e.radioOn = nil
-	e.radioOnAt = time.Time{}
+	e.radioOnAt = nil
 	e.mu.Unlock()
 }
 
