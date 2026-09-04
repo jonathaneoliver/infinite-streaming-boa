@@ -349,7 +349,7 @@ func btmCommand(mac, bssid string, channel, widthMHz int, disassocSec int) strin
 	// examples and means "preauth, spectrum management, QoS, APSD, radio
 	// measurement, reachable".
 	const bssidInfo = "0x0000040f"
-	op, phy := opClassAndPhy(channel, widthMHz)
+	op, reportCh, phy := opClassAndPhy(channel, widthMHz)
 	parts := []string{
 		"BSS_TM_REQ", mac,
 		"pref=1",
@@ -359,27 +359,80 @@ func btmCommand(mac, bssid string, channel, widthMHz int, disassocSec int) strin
 		"abridged=1",
 		"disassoc_imminent=1",
 		fmt.Sprintf("disassoc_timer=%d", disassocSec),
-		fmt.Sprintf("neighbor=%s,%s,%d,%d,%d", bssid, bssidInfo, op, channel, phy),
+		fmt.Sprintf("neighbor=%s,%s,%d,%d,%d", bssid, bssidInfo, op, reportCh, phy),
 	}
 	return strings.Join(parts, " ")
 }
 
-// opClassAndPhy maps a channel and width to the 802.11 global operating class
-// and PHY type a neighbour report carries.
-func opClassAndPhy(channel, widthMHz int) (opClass, phyType int) {
+// opClassAndPhy maps a channel and width to the 802.11 global operating class,
+// the channel number that class expects, and the PHY type a neighbour report
+// carries.
+//
+// The class is not a decoration. A client matches the neighbour report against
+// what its own scan can see, and a report naming a channel the class does not
+// contain describes a BSS that does not exist -- which the client ignores,
+// silently and indistinguishably from a refusal.
+//
+// MEASURED 2026-09-04. Steering to wlan-usb on 149 at 80MHz sent
+// `128,149`: class 128 is the 80MHz class, whose channel field is the channel
+// CENTRE index (155 for the 149-161 block), so this described an 80MHz block
+// centred on 149 -- 5735-5815 MHz, which is not a block that exists. No client
+// ever moved off the onboard radio, whose only destination is that 5GHz one.
+// Steering the other way sent `81,6`, which is correct, and is the one steer
+// observed to move a client here.
+//
+// The classes are fixed assignments from IEEE 802.11 Annex E. What decides
+// them is which 80MHz block a channel is in and which side its 40MHz secondary
+// sits -- both already in apChannels as Center80 and SecOffset, so they are
+// read from there rather than restated. Getting them from the same table
+// hostapd is configured from is what stops the neighbour report describing a
+// radio other than the one running.
+//
+//	 81  2.4GHz, 20MHz
+//	115  5GHz 20MHz, UNII-1 (36-48)
+//	116  5GHz 40MHz, UNII-1, primary lower (36, 44)
+//	117  5GHz 40MHz, UNII-1, primary upper (40, 48)
+//	124  5GHz 20MHz, UNII-3 (149-161)
+//	125  5GHz 20MHz, UNII-3 extended (149-169); 165 lives here
+//	126  5GHz 40MHz, UNII-3, primary lower (149, 157)
+//	127  5GHz 40MHz, UNII-3, primary upper (153, 161)
+//	128  80MHz, any band -- CHANNEL FIELD IS THE CENTRE INDEX
+func opClassAndPhy(channel, widthMHz int) (opClass, reportChannel, phyType int) {
 	if channel <= 14 {
 		// 2.4GHz: 81 is the 20MHz class. HT is the most a client will find
 		// there on this hardware.
-		return 81, 7
+		return 81, channel, 7
 	}
-	switch {
-	case widthMHz >= 80:
-		return 128, 9 // 80MHz, VHT
-	case widthMHz >= 40:
-		return 116, 9
-	default:
-		return 115, 9 // 20MHz, VHT
+	ch, known := apChannels[channel]
+	if widthMHz >= 80 && known && ch.Center80 != 0 {
+		// The one class whose channel field is not the primary. Naming the
+		// primary here is what made every 5GHz steer describe a block that
+		// does not exist.
+		return 128, channelForFreq(ch.Center80), 9
 	}
+	// 165 has no 40MHz partner and no 80MHz block, so it can only be 20MHz --
+	// and only class 125 contains it.
+	if channel == 165 {
+		return 125, channel, 9
+	}
+	unii3 := channel >= 149
+	if widthMHz >= 40 && known && ch.SecOffset != 0 {
+		lower := ch.SecOffset > 0 // the secondary sits above, so this is the lower half
+		switch {
+		case unii3 && lower:
+			return 126, channel, 9
+		case unii3:
+			return 127, channel, 9
+		case lower:
+			return 116, channel, 9
+		default:
+			return 117, channel, 9
+		}
+	}
+	if unii3 {
+		return 124, channel, 9
+	}
+	return 115, channel, 9
 }
 
 // SteerClient asks one client to move to another radio.

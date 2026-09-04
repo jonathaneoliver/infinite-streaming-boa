@@ -25,27 +25,74 @@ func TestBTMRequestNamesTheTargetCorrectly(t *testing.T) {
 	}
 }
 
-func TestOperatingClassEncodesBandAndWidth(t *testing.T) {
+// The class must CONTAIN the channel it is sent with, and at 80MHz the channel
+// field is the centre index rather than the primary. A report naming a channel
+// its class does not contain describes a BSS that does not exist, which a
+// client ignores -- silently, and indistinguishably from a refusal.
+//
+// The 80MHz row is the one that was wrong on the box: `128,149` said "an 80MHz
+// block centred on 149", spanning 5735-5815 MHz, which is not a block.
+func TestOperatingClassContainsTheChannelItIsSentWith(t *testing.T) {
 	tests := []struct {
-		name            string
-		channel, width  int
-		wantOp, wantPhy int
+		name                      string
+		channel, width            int
+		wantOp, wantChan, wantPhy int
 	}{
 		// 2.4GHz is always the 20MHz class on this hardware, and HT is the most
 		// a client will find there.
-		{"2.4GHz 20MHz", 6, 20, 81, 7},
-		{"2.4GHz ignores a wide request", 1, 80, 81, 7},
-		{"5GHz 20MHz", 36, 20, 115, 9},
-		{"5GHz 40MHz", 36, 40, 116, 9},
-		{"5GHz 80MHz", 36, 80, 128, 9},
+		{"2.4GHz 20MHz", 6, 20, 81, 6, 7},
+		{"2.4GHz ignores a wide request", 1, 80, 81, 1, 7},
+
+		{"UNII-1 20MHz", 36, 20, 115, 36, 9},
+		{"UNII-1 40MHz, primary lower", 36, 40, 116, 36, 9},
+		{"UNII-1 40MHz, primary upper", 40, 40, 117, 40, 9},
+		{"UNII-1 80MHz names the centre", 36, 80, 128, 42, 9},
+		{"UNII-1 80MHz, any member, same centre", 48, 80, 128, 42, 9},
+
+		{"UNII-3 20MHz is not class 115", 149, 20, 124, 149, 9},
+		{"UNII-3 40MHz, primary lower", 149, 40, 126, 149, 9},
+		{"UNII-3 40MHz, primary upper", 153, 40, 127, 153, 9},
+		{"UNII-3 80MHz names the centre", 149, 80, 128, 155, 9},
+		{"UNII-3 80MHz, any member, same centre", 161, 80, 128, 155, 9},
+
+		// 165 has no 40MHz partner and no 80MHz block, and only class 125
+		// contains it.
+		{"165 has its own class", 165, 20, 125, 165, 9},
+		{"165 cannot be widened into a block it has none of", 165, 80, 125, 165, 9},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			op, phy := opClassAndPhy(tc.channel, tc.width)
-			if op != tc.wantOp || phy != tc.wantPhy {
-				t.Errorf("got class %d phy %d, want %d/%d", op, phy, tc.wantOp, tc.wantPhy)
+			op, ch, phy := opClassAndPhy(tc.channel, tc.width)
+			if op != tc.wantOp || ch != tc.wantChan || phy != tc.wantPhy {
+				t.Errorf("got class %d chan %d phy %d, want %d/%d/%d",
+					op, ch, phy, tc.wantOp, tc.wantChan, tc.wantPhy)
 			}
 		})
+	}
+}
+
+// The report must describe the radio hostapd is actually running, so the class
+// is taken from the same table hostapd is configured from. Both members of a
+// 40MHz pair must name the side their secondary actually sits on.
+func TestThe40MHzSideComesFromTheChannelTable(t *testing.T) {
+	for ch, entry := range apChannels {
+		if entry.is24() || entry.SecOffset == 0 {
+			continue
+		}
+		op, _, _ := opClassAndPhy(ch, 40)
+		lower := entry.SecOffset > 0
+		switch op {
+		case 116, 126:
+			if !lower {
+				t.Errorf("channel %d has its secondary below but was sent as a primary-lower class %d", ch, op)
+			}
+		case 117, 127:
+			if lower {
+				t.Errorf("channel %d has its secondary above but was sent as a primary-upper class %d", ch, op)
+			}
+		default:
+			t.Errorf("channel %d at 40MHz got class %d, which is not a 40MHz class", ch, op)
+		}
 	}
 }
 
