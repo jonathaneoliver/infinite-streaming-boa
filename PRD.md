@@ -469,6 +469,24 @@ damages packets, never link state.
   thresholds, and the scan that acts on its own answer by moving to the
   quietest channel. Two copies of one action is a second place for the two to
   disagree, and the copy further from the thing it names is the one to lose.
+- **A radio switched off stays off until the operator switches it back on.**
+  Radio power is a test instrument here — the measurement IS "switch it off and
+  watch what the client does" — so an outage that ends itself early does not
+  merely surprise, it invalidates the run. Neither a radio hotplug nor the
+  daemon restart every deploy performs undoes the decision. A **reboot** does:
+  being off is bench state for the run in hand, not configuration, and a box
+  power-cycled back into service comes up serving on every radio it has.
+- A **fixed-length outage** is protected the same way and for the same reason: a
+  hotplug landing in the middle of one does not cut it short. What still ends it
+  is the box losing the process that owns it — a cut that outlives the daemon
+  that made it is not an impairment but a broken appliance, so a radio found off
+  at startup with no standing decision behind it is switched back on.
+- **Where the box does put a radio back on anyway, it says so.** A USB adapter
+  that re-enumerates returns as a fresh device with its transmitter enabled, and
+  no record the box keeps can stop the kernel handing it back that way. The
+  activity log names the radio and says that anything measured across that point
+  was not measured through an outage — the alternative is a result that is
+  quietly wrong and cannot be questioned afterwards.
 - Where a radio exposes no hostapd control socket, its controls are **shown
   disabled with the reason**, never offered and silently ignored. Where a radio
   refuses an action its driver claims to support — an 802.11h channel switch on
