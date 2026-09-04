@@ -46,10 +46,15 @@ netem parameters, not the class ceiling.
 
 ## The read-back
 
-Reading the kernel's state needs no root — and `tc` must be called by its full
-path, because `/usr/sbin` is not on a non-root PATH on Debian and a bare `tc`
-fails with `command not found`, which reads like a missing package rather than
-a PATH problem:
+Reading the kernel's state needs no root — and `tc`, `bridge` and `iw` must all
+be called by their full path, because `/usr/sbin` is not on a non-root PATH on
+Debian and a bare name fails with `command not found`, which reads like a
+missing package rather than a PATH problem. All three are installed.
+
+Never pair one of these probes with `2>/dev/null`. It hides the
+`command not found` and hands back an empty result that is indistinguishable
+from a real, empty answer — no forwarding entries, no qdiscs, no stations —
+which is how a missing binary becomes a confident wrong conclusion:
 
 ```sh
 BOX=boa@infinite-streaming-boa.local
@@ -86,6 +91,43 @@ What to check, in this order:
    constantly. A cap with zero overlimits under load is not capping.
 4. **Class ids are hexadecimal.** `1:10` is class 16. Comparing a decimal id
    from code against `tc` output is a false mismatch.
+
+## Reading the radio back
+
+The radio has its own set of traps, and each returns something that looks like
+an answer rather than an error.
+
+```sh
+BOX=boa@infinite-streaming-boa.local
+# hostapd runs as TEMPLATED units, one per radio. The bare
+# infinite-streaming-boa-hostapd.service is a legacy leftover, permanently
+# inactive -- checking it reports "no AP" while both APs serve clients.
+ssh $BOX 'systemctl is-active infinite-streaming-boa-hostapd@usb \
+                              infinite-streaming-boa-hostapd@onboard24'
+
+# hostapd_cli needs -p; its built-in default path misses and it reports
+# "Failed to connect to hostapd" as though nothing were running.
+ssh $BOX 'sudo hostapd_cli -p /var/run/hostapd -i wlan-usb status'
+ssh $BOX 'sudo hostapd_cli -p /var/run/hostapd -i wlan-usb all_sta'
+
+ssh $BOX '/usr/sbin/iw dev wlan-usb info'
+ssh $BOX '/usr/sbin/bridge link show; /usr/sbin/bridge fdb show'
+```
+
+**`systemctl is-active` is not evidence the radio works.** hostapd stays running
+and retries after a failed `ENABLE`, so the unit reads `active` while the
+interface is DOWN and every client has been kicked — see issue #164. The
+authority is `state=` from `hostapd_cli status`, cross-checked against
+`ip -br link`. `ENABLED` plus `UP` is working; anything else is not, whatever
+systemd says.
+
+Two more that read as data rather than error:
+
+- `rx_rate_info` / `tx_rate_info` are in units of **100 kbps**, so `9607` is
+  960.7 Mbit/s — and they are the negotiated PHY rate, not throughput. Measured
+  here: a 1200 Mbit/s PHY carried 551 Mbit/s of TCP.
+- `iw survey dump` mislabels its blocks on `mt7921u`. The airtime is real; the
+  frequency on it is not. See Source L in `docs/DATA-CONTRACT.md`.
 
 ## Measuring through the box
 
