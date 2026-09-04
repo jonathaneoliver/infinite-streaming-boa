@@ -72,10 +72,28 @@ type eventLog struct {
 }
 
 func (l *eventLog) add(kind, iface, mac, text string) {
+	l.addAt(time.Now(), kind, iface, mac, text)
+}
+
+// addAt records an event that happened at a KNOWN time rather than at the
+// moment it was noticed.
+//
+// The two differ by up to a tick. Associations are raised by comparing one
+// tick's station table with the last, so "when boa noticed" is quantised to the
+// poll interval -- a second by default. That is the same order as the thing
+// worth measuring: two clients thrown off by one broadcast frame typically
+// reassociate 1-2s later, and if both land in the same tick they read as
+// identical when they differed by hundreds of milliseconds.
+//
+// hostapd reports the transition itself, unsolicited and immediately, so when
+// the monitor saw one its timestamp is used instead. See noteAssoc. Seq still
+// orders by arrival, so a reader paging on it never misses an event; At is what
+// a measurement should be taken against.
+func (l *eventLog) addAt(at time.Time, kind, iface, mac, text string) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	l.seq++
-	e := Event{Seq: l.seq, At: time.Now().UnixMilli(), Kind: kind, Text: text,
+	e := Event{Seq: l.seq, At: at.UnixMilli(), Kind: kind, Text: text,
 		MAC: mac, Iface: iface}
 	if len(l.ring) < eventRing {
 		l.ring = append(l.ring, e)
@@ -147,6 +165,11 @@ func (e *Engine) LatestEventSeq() uint64 { return e.events.latest() }
 // and never fails: a log that can refuse is one more thing to check.
 func (e *Engine) logEvent(kind, iface, mac, format string, args ...any) {
 	e.events.add(kind, iface, mac, fmt.Sprintf(format, args...))
+}
+
+// logEventAt is logEvent for something whose real time is known. See addAt.
+func (e *Engine) logEventAt(at time.Time, kind, iface, mac, format string, args ...any) {
+	e.events.addAt(at, kind, iface, mac, fmt.Sprintf(format, args...))
 }
 
 // labelFor names a device the way the interface does, falling back to its MAC.
@@ -336,22 +359,26 @@ func (e *Engine) noteClientChanges(now map[string]string, labels map[string]stri
 		}
 		return mac
 	}
+	// Times come from hostapd where it saw the transition, so a comparison
+	// between two clients is not quantised to the poll interval. See addAt.
 	for mac, iface := range now {
 		was, seen := e.prevRadio[mac]
 		switch {
 		case !seen:
-			e.logEvent(EventJoin, iface, mac, "%s joined %s",
-				name(mac), e.describeRadio(iface))
+			e.logEventAt(e.assocTime(mac, true), EventJoin, iface, mac,
+				"%s joined %s", name(mac), e.describeRadio(iface))
 		case was != iface:
-			// The event the whole log is for.
-			e.logEvent(EventRoam, iface, mac, "%s moved %s → %s",
+			// The event the whole log is for. Timed by the arrival rather than
+			// the departure: what is being measured is when it got there.
+			e.logEventAt(e.assocTime(mac, true), EventRoam, iface, mac,
+				"%s moved %s → %s",
 				name(mac), e.describeRadio(was), e.describeRadio(iface))
 		}
 	}
 	for mac, was := range e.prevRadio {
 		if _, still := now[mac]; !still {
-			e.logEvent(EventLeave, was, mac, "%s left %s",
-				name(mac), e.describeRadio(was))
+			e.logEventAt(e.assocTime(mac, false), EventLeave, was, mac,
+				"%s left %s", name(mac), e.describeRadio(was))
 		}
 	}
 	e.prevRadio = now
