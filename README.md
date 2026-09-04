@@ -602,6 +602,29 @@ exempt from shaping, so a cap can never throttle the dashboard needed to undo
 it.
 Everything else the box sends is conditioned like any other traffic.
 
+**Capture a run before the ring eats it.** The activity log is 500 events in
+memory, cleared by every restart, and its own sizing note reckons a few hundred
+covers "several minutes of a device flapping" — which is exactly what a drop or
+bounce experiment is, times however many clients are in it. Stream it to a file
+for the duration instead:
+
+```sh
+curl -sN http://infinite-streaming-boa.local/api/events/stream > run.ndjson
+```
+
+One JSON object per line, so `jq` reads it directly. Every event carries `at` as
+unix milliseconds, timed by hostapd where it saw the transition rather than by
+the poll that noticed it, so two clients reacting to the same stimulus can be
+told apart. Marker lines (`{"marker":…}`) record the things a file cannot
+otherwise show: the capture opening, a heartbeat while nothing happens, a daemon
+restart, and any gap where the ring outran the reader.
+
+The box is NTP-synced, so those timestamps line up with client-side logs. Two
+cautions if you correlate at sub-second resolution: NTP is good to tens of
+milliseconds, not better; and a device in a total outage loses NTP too, so record
+each client's offset against the box at the start of a run rather than assuming
+zero.
+
 **Bind the test to the path you mean.** A laptop on both Wi-Fi and ethernet has
 two addresses, and only the one boa lists as a client is conditioned by that
 client's policy: `iperf3 -c <pi> -R -B <the address on that card>`.
