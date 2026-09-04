@@ -1034,3 +1034,42 @@ export interface ChartPrefs {
   showDown: boolean;
   showUp: boolean;
 }
+
+/**
+ * The PHY rate a radio's configuration can reach, in Mbit/s.
+ *
+ * "80 MHz · 802.11ax" is a statement about a ceiling, and it is the number the
+ * best case follows from: measured on this box, downlink lands at about 85% of
+ * the negotiated PHY on a channel that is not busy. Printing the width and the
+ * mode without it leaves the reader to know the standard's rate tables by
+ * heart.
+ *
+ * ASSUMES TWO SPATIAL STREAMS and the shortest guard interval, which is what
+ * both radios here and every client measured on them have negotiated. Streams
+ * are a property of the client as much as the radio, so this is the ceiling for
+ * a capable client rather than a promise about any particular one -- hence
+ * "up to" wherever it is shown.
+ *
+ * The 802.11ax figures are not from a datasheet: they are exactly what this
+ * box's clients report at MCS 11 (286.7 / 573.5 / 1200.9), which is the
+ * arithmetic checking itself against the hardware.
+ */
+export function phyCeilingMbps(mode: string, widthMHz: number): number {
+  const table: Record<string, Record<number, number>> = {
+    // HE, MCS 11, 2 streams, 0.8µs GI
+    ax: { 20: 286.8, 40: 573.5, 80: 1200.9, 160: 2401.9 },
+    // VHT, MCS 9, 2 streams, short GI
+    ac: { 20: 173.3, 40: 400, 80: 866.7, 160: 1733.3 },
+    // HT, MCS 15, 2 streams, short GI. No 80MHz exists here.
+    n: { 20: 144.4, 40: 300 },
+  };
+  const key = /ax$/.test(mode) ? 'ax' : /ac$/.test(mode) ? 'ac' : /n$/.test(mode) ? 'n' : '';
+  return (key && table[key]?.[widthMHz]) || 0;
+}
+
+/** The ceiling as it is shown beside a channel and width, or '' when the mode
+ *  or width is one there is no figure for. */
+export function phyCeilingLabel(mode: string, widthMHz: number): string {
+  const n = phyCeilingMbps(mode, widthMHz);
+  return n ? `up to ${Math.round(n)} Mb/s` : '';
+}
