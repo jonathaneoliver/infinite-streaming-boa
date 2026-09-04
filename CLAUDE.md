@@ -80,6 +80,14 @@ be developed without the hardware.
   delivery; a protocol-specific packet socket never sees forwarded frames;
   `ProtectSystem=strict` makes `/run` read-only. Each was cheap to test and
   expensive to assume. Test it in a container or on the Pi first.
+- **`/usr/sbin` is not on the PATH of a non-login SSH shell.** `tc`, `bridge`
+  and `iw` all live there, so a bare invocation returns `command not found` —
+  which reads as a missing package rather than a PATH problem. All three ARE
+  installed; `iw` is in `packages.txt`. Worse with `2>/dev/null`, which hides
+  the error and leaves an empty result that passes for a real answer: no
+  forwarding-table entries, no qdiscs, no stations. Use the absolute path. The
+  daemon itself is unaffected — systemd's PATH includes `/usr/sbin`, so its
+  `exec.Command("iw", ...)` resolves.
 - **A silent failure is worse than a loud one.** Best-effort code must still
   report. Several bugs here were invisible precisely because the failure path
   was quiet — shaping applied to nothing, counters reading zero, history never
