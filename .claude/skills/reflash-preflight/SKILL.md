@@ -126,3 +126,33 @@ print('ladder  :', 'NONE' if not l else f\"{l.get('service')} {len(l.get('rungs'
 The pattern names and rung count must match step 1. Report the comparison
 explicitly rather than saying "restored" — a silent partial restore looks
 identical to a working box until someone runs a sweep.
+
+## 6. Check what the new kernel changed underneath you
+
+A reflash is the only moment the kernel and its wireless drivers move, so it is
+the moment to re-test the things that are currently blocked on them. Otherwise
+a limitation gets written down once and quietly outlives the reason for it.
+
+```sh
+ssh boa@infinite-streaming-boa.local '
+  uname -r
+  /usr/sbin/iw dev wlan-usb info | grep txpower
+  /usr/sbin/iw phy phy2 info | grep -E "\[(149|36)\]"
+'
+```
+
+**`txpower 3.00 dBm`** means the `mt7921` driver is still unpatched: transmit
+power cannot be set, and the non-goal in `PRD.md` still holds. **Anything near
+`26.00 dBm`** on 5GHz means the fix has landed — re-run the sweep in
+`docs/DATA-CONTRACT.md` Source Q, and if the signal moves, attenuation has
+become an impairment this box can offer and the PRD non-goal has stopped being
+true. See issue #202, which carries the method and the traps.
+
+The channel list is worth a glance for the same reason: the allowlist in
+`apChannels` was verified against a specific regulatory domain on specific
+hardware, and a kernel that changes what a radio may do makes that a claim
+worth re-checking rather than an assumption to inherit.
+
+More generally: **anything the project records as "the hardware cannot do this"
+is a candidate for re-testing here**, and nowhere else. A limitation is a
+measurement with a date on it, not a permanent property.

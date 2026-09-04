@@ -1098,3 +1098,71 @@ airtime, not a bug fix.
 - **2.4GHz is deliberately excluded from width-derived coverage.** That band is
   already counted with a ±4-channel overlap window, and layering a second
   coverage set on top would count the same interference twice.
+
+## Source Q — `iw ... set txpower` · a control that validates and then ignores
+
+**VERIFIED** on hardware 2026-09-04, mt7921u on channel 149 at 80MHz, with the
+measuring client a few inches from the box.
+
+| Field | Meaning | Confidence |
+|---|---|---|
+| `iw dev <if> info` → `txpower` | **Not usable.** Reports `3.00 dBm` regardless | certain |
+| `iw ... set txpower fixed <mBm>` | Accepted, and has no effect | certain |
+| `iw phy <phy> info` → per-frequency dBm | The regulatory ceiling, e.g. `30.0 dBm` on 5745 | certain |
+| Client-side RSSI | The only instrument that answers the question | certain |
+
+**The measurement**
+
+Anchored at both ends and returned to the start, so drift cannot be mistaken
+for an effect:
+
+| Setting | client RSSI | 8s downlink |
+|---|---|---|
+| `fixed 3000` (30 dBm, the phy's own ceiling) | −22 dBm | 612 Mbit/s |
+| `fixed 0` (0 dBm) | −22 dBm | 604 Mbit/s |
+| `fixed 3000` again | −22 dBm | 587 Mbit/s |
+
+Also covered: a descending sweep `auto → 1500 → 1000 → 500 → 100 → 0` mBm
+(RSSI −24 to −25 throughout), and the **phy path** `iw phy phy2 set txpower`
+(no change either) — hostapd owns the interface, so that is a genuinely
+different route and is the first thing a reader will ask about.
+
+**Semantics that bite**
+
+- **The units are mBm, not dBm.** `fixed 100` is 1 dBm, not 100. A table
+  labelled in dBm must say so, because the argument and the label differ by
+  100x and nothing in the output reveals which was meant.
+- **It validates and then ignores.** Negative values are refused outright —
+  `rc=161`, `Operation not supported` — while every legal value returns `rc=0`.
+  So something in the path parses the argument and enforces a bound before
+  discarding it. That is a sharper statement than "accepted and ignored": it
+  rules out the reading that the call is being dropped somewhere generic, and it
+  establishes 0 mBm as a **real** floor rather than an assumed one, which is
+  what makes "the entire legal range produces no change" a closed claim.
+- **The adapter's own `txpower` field cannot answer this question**, so it must
+  not be the instrument. It reads `3.00 dBm` before, during and after. This is a
+  known upstream driver bug with patches in flight for `mt7921`/`mt7925`; the
+  *control* being inert is a separate finding and is measured here rather than
+  inferred from those reports, which are about the readout.
+- **Rate is not evidence, and it will look like it is.** Across one sweep the
+  AP's tx rate to the client read 960.7 → 960.7 → 286.7 → 1200.9 as power was
+  lowered — the *lowest* setting producing the *highest* rate. That is ordinary
+  rate-control noise, uncorrelated with the setting, and quoting it as an effect
+  is the mistake this note exists to prevent. Sample RSSI alongside, repeatedly.
+- **A dropped connection was never the available outcome, at this range.** A few
+  inches is roughly 28 dB of free-space loss, so even a working control at its
+  floor leaves about −54 dBm at the client — a comfortable signal. Roughly 66 dB
+  of attenuation would be needed to break the link and only 30 dB exists. The
+  test is therefore "does RSSI move by 30 dB", not "does the client drop", and a
+  test that can only fail in one direction should say so before it is run.
+- **Check the shaper before trusting a throughput number.** An earlier run of
+  this test read 7.02 Mbit/s at every power level and looked like a flat result;
+  the client had a 7.4 Mbps cap left on it from unrelated slider testing, so the
+  figure was the cap and not the link. A restored display is not a restored
+  value — confirm against `/api/state`, not the interface.
+
+**Conclusion for the product:** transmit power cannot be set from this box, so
+attenuation is not an impairment boa can offer. Weak-signal testing means
+physical distance or obstruction. The per-client controls condition the link
+above the radio; `legacy`, `narrow` and `dozy` impose real MAC-layer cost; none
+of them changes how loudly the radio talks.

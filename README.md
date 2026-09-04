@@ -437,9 +437,22 @@ Two more things that will mislead you here:
   717 Mbit/s while transferring 4 KB of its own — it holds the channel roughly
   18× longer per byte than an 802.11ax client. Check `iw dev <iface> station
   dump` before trusting a number, and quote a range with conditions.
-- **`txpower` from `iw` is not reliable on every adapter.** The mt7921u reports
-  `3.00 dBm` whatever it is set to, while clients see −27 to −38 dBm and
-  negotiate full rates. Trust the client-side signal.
+- **`txpower` on the mt7921u is inert, not merely misreported.** The adapter
+  reports `3.00 dBm` whatever it is set to — a known driver bug with patches in
+  flight upstream — but the *control* does not work either. Measured
+  2026-09-04 against the phy's own 30 dBm ceiling on channel 149, with a client
+  a few inches away:
+
+  | `iw ... set txpower` | client-side RSSI | 8s downlink |
+  |---|---|---|
+  | `fixed 3000` (30 dBm, the ceiling) | −22 dBm | 612 Mbit/s |
+  | `fixed 0` (0 dBm, the floor) | −22 dBm | 604 Mbit/s |
+  | `fixed 3000` again | −22 dBm | 587 Mbit/s |
+
+  A 30 dB request across the adapter's whole legal range moves the received
+  signal by nothing at all. **So attenuation is not an available impairment on
+  this box**: to test a weak link, move the device or put something in the way.
+  See [Source Q](docs/DATA-CONTRACT.md) for the full method and the trap in it.
 
 ## Wired downstream performance
 
@@ -678,6 +691,11 @@ One thing that will mislead you: `iw dev wlan-usb info` reports
 `txpower 3.00 dBm` on this adapter no matter what it is set to. It is a driver
 misreport, not the radio — clients see −27 to −38 dBm and negotiate full rates.
 Trust the client-side signal, not that field.
+
+And do not reach for that field to *change* the power either: setting it does
+nothing on this adapter, measured across its entire legal range. The readout bug
+is documented upstream and being fixed; the control being inert is a separate
+finding and is measured here rather than reported.
 
 ### Logging in, and why sudo has no password
 
