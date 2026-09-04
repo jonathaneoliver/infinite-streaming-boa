@@ -322,18 +322,15 @@ const legend = computed(() => charts.value[0].bands);
 
 <template>
   <div class="stack">
-    <!-- "in the last 5m", not "yet". Both states reach here and they are
-         different facts: a page just opened has no record, and an adapter that
-         has gone quiet has had its record age out of the window. Saying "yet"
-         claimed the first in both cases, which on an adapter you had been
-         watching a minute earlier reads as the chart having lost the data
-         rather than the traffic having stopped. -->
-    <p v-if="empty" class="none">
-      No traffic on {{ iface }} in the last {{ span }} — either nothing has been
-      on it, or whatever was has gone quiet long enough to scroll off.
-    </p>
-
-    <template v-else>
+    <!-- The pane is drawn whether or not there is anything in it, and that is
+         a LAYOUT rule before it is an aesthetic one.
+         Collapsing to a one-line message when an adapter went quiet made the
+         fold change height by 448px, measured -- so a device roaming onto an
+         empty radio shoved everything below it down the page, while someone
+         was reading it. A radio going quiet and coming back is routine, so
+         that jump was routine too. An empty chart with its axis still drawn is
+         also the more honest picture: it says "nothing is crossing this
+         adapter", where a vanished chart says nothing at all. -->
       <div class="pair">
         <div
           v-for="(c, i) in charts" :key="c.dir" class="one"
@@ -378,15 +375,25 @@ const legend = computed(() => charts.value[0].bands);
         </div>
       </div>
 
-      <!-- The legend is not optional here. Colour is doing identity work, and a
-           band nobody can name is a colour with no meaning attached. -->
+      <!-- The legend is not optional here: colour is doing identity work, and a
+           band nobody can name is a colour with no meaning attached. It also
+           holds the empty note, so the row occupies the same height with or
+           without devices in it and nothing below moves when one arrives.
+           "in the last 5m", not "yet" -- a page just opened has no record, and
+           an adapter that has gone quiet has had its record age out of the
+           window, and saying "yet" claimed the first in both cases. -->
       <div class="legend">
+        <template v-if="empty">
+          <span class="none">
+            No traffic on {{ iface }} in the last {{ span }} — either nothing has
+            been on it, or whatever was has gone quiet long enough to scroll off.
+          </span>
+        </template>
         <span v-for="b in legend" :key="b.mac" class="key">
           <span class="chip" :style="{ background: b.colour }" />
           {{ b.label }}
         </span>
       </div>
-    </template>
   </div>
 </template>
 

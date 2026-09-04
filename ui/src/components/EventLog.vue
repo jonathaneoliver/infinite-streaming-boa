@@ -49,6 +49,30 @@ const hidden = computed(() => log.events.value.length - shown.value.length);
 const unseenHidden = computed(() => Math.max(0, log.unseen.value - PREVIEW));
 
 /**
+ * How many blank rows to add so a collapsed log is ALWAYS PREVIEW rows tall.
+ *
+ * The CSS below has claimed since it was written that "collapsed it is a fixed
+ * handful of rows, so the page below it sits at the same height whatever has
+ * just happened". That was the intent and not the behaviour: with fewer than
+ * PREVIEW events only that many rows render, so the log grew a row at a time as
+ * things happened -- measured at 131 -> 153 -> 252px -- and because it sits
+ * above everything, the whole page stepped down each time.
+ *
+ * Padding with empty rows rather than setting a min-height in CSS keeps the
+ * reserved space exactly one row per row: a min-height would have to guess the
+ * line box from the font metrics and would drift the moment either changed.
+ *
+ * The error and "nothing yet" lines occupy a row each and are counted, so every
+ * state of this panel is the same height as every other.
+ */
+const rowsShown = computed(() => {
+  if (log.err.value) return 1;
+  return log.events.value.length ? shown.value.length : 1;
+});
+const padRows = computed(() =>
+  open.value ? 0 : Math.max(0, PREVIEW - rowsShown.value));
+
+/**
  * Clock time, not "3m ago". These events are read against a bench test that is
  * being watched live, so what matters is lining an event up with something on a
  * chart, and a chart is labelled in clock time.
@@ -86,14 +110,24 @@ function clock(ms: number): string {
            panel that has silently stopped polling looks exactly like a quiet
            box, and that is the one lie it must not tell. -->
       <p v-if="log.err.value" class="row bad">{{ log.err.value }}</p>
-      <p v-else-if="!log.events.value.length" class="row quiet">
-        Nothing has happened since the daemon started. Joins, roams between
-        radios, channel changes and anything pressed here land in this list.
+      <!-- One line, with the rest in the tooltip: this row is counted in the
+           reserved height like any other, and a wrapping paragraph would make
+           the empty state a different height from every other state. -->
+      <p
+        v-else-if="!log.events.value.length" class="row quiet"
+        title="Joins, roams between radios, channel changes and anything pressed here land in this list."
+      >
+        <span class="text">Nothing has happened since the daemon started.</span>
       </p>
       <p v-for="e in shown" :key="e.seq" class="row">
         <span class="t">{{ clock(e.at) }}</span>
         <span class="dot" :class="e.kind" />
         <span class="text">{{ e.text }}</span>
+      </p>
+      <!-- Reserved space, so nothing below this panel moves when an event
+           arrives. Hidden from assistive tech: they are spacing, not content. -->
+      <p v-for="n in padRows" :key="`pad${n}`" class="row pad" aria-hidden="true">
+        <span class="text">&nbsp;</span>
       </p>
     </div>
   </section>
@@ -172,6 +206,9 @@ function clock(ms: number): string {
   white-space: nowrap;
 }
 .row.bad { color: var(--bad); }
+/* Empty by design. It holds a line box open and must never look like a row
+   that failed to load. */
+.row.pad { visibility: hidden; }
 .t {
   font-family: var(--mono);
   font-size: 11px;
