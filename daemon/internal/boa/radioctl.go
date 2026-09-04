@@ -99,7 +99,10 @@ func chanSwitchCommand(ch apChannel, widthMHz int) (string, error) {
 			fmt.Sprintf("sec_channel_offset=%d", ch.SecOffset),
 			"ht")
 	case 20:
-		parts = append(parts, "bandwidth=20", "ht")
+		// sec_channel_offset=0 is explicit for the same reason the SET path
+		// clears ht_capab: hostapd keeps the previous offset otherwise, and a
+		// secondary left pointing below channel 36 fails the whole setup.
+		parts = append(parts, "bandwidth=20", "sec_channel_offset=0", "ht")
 	}
 	return strings.Join(parts, " "), nil
 }

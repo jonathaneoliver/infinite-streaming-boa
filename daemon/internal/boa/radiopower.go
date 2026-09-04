@@ -987,11 +987,44 @@ func pickBestChannel(chans []ScanChannel, band string) int {
 func setChannelCommands(ch apChannel, widthMHz int) []string {
 	cmds := []string{"SET channel " + strconv.Itoa(ch.Channel)}
 	if ch.is24() || widthMHz < 40 {
-		// 20MHz: no secondary, no centre.
-		return append(cmds,
+		// 20MHz: no secondary, no 80MHz centre -- but both have to be cleared
+		// EXPLICITLY, because every one of these parameters is sticky and the
+		// leftovers fail the ENABLE rather than being ignored.
+		//
+		// Measured 2026-09-04, moving 40MHz ch40 -> 20MHz ch36. Clearing only
+		// the chwidths, as this branch used to, failed twice over. First the
+		// [HT40-] left behind by channel 40 still derived a secondary below
+		// channel 36, which does not exist:
+		//
+		//	Configured channel (36) or frequency (5180) (secondary_channel=-1)
+		//	not found from the channel list of the current mode (2) IEEE 802.11a
+		//
+		// Clearing ht_capab fixed that and exposed the next leftover, the
+		// 80MHz centre index still reading 42:
+		//
+		//	20/40 MHz: center segment 0 (=42) and center freq 1 (=5180) not in sync
+		//
+		// Both left the access point DOWN with systemd still reporting the
+		// unit active. At 20MHz the centre is the primary channel itself.
+		//
+		// Clearing ht_capab outright is safe: the onboard 2.4GHz config sets
+		// no ht_capab at all, and the 5GHz one uses it solely for the HT40
+		// side, which is exactly what must not survive here.
+		cmds = append(cmds,
+			"SET ht_capab ",
 			"SET vht_oper_chwidth 0",
 			"SET he_oper_chwidth 0",
 		)
+		if !ch.is24() {
+			// Only 5GHz ever carries a centre index, so only 5GHz can have a
+			// stale one. At 20MHz it must name the primary channel itself.
+			centre := strconv.Itoa(ch.Channel)
+			cmds = append(cmds,
+				"SET vht_oper_centr_freq_seg0_idx "+centre,
+				"SET he_oper_centr_freq_seg0_idx "+centre,
+			)
+		}
+		return cmds
 	}
 	// The secondary offset is set through ht_capab, NOT through
 	// secondary_channel. Measured 2026-09-03: `SET secondary_channel 0` is the

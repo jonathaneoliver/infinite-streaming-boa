@@ -212,6 +212,46 @@ func TestMovingDownTo20MHzClearsTheWideSettings(t *testing.T) {
 	}
 }
 
+func TestMovingDownTo20MHzOn5GHzClearsTheStaleSecondaryAndCentre(t *testing.T) {
+	// Measured 2026-09-04 on wlan-usb (mt7921u): moving 40MHz ch40 -> 20MHz
+	// ch36 left the AP DOWN, twice, because each leftover fails the ENABLE
+	// rather than being ignored.
+	//
+	// The [HT40-] belonging to channel 40 still derived a secondary BELOW
+	// channel 36, which does not exist:
+	//
+	//	Configured channel (36) or frequency (5180) (secondary_channel=-1)
+	//	not found from the channel list of the current mode (2) IEEE 802.11a
+	//
+	// and with that cleared, the 80MHz centre index still read 42:
+	//
+	//	20/40 MHz: center segment 0 (=42) and center freq 1 (=5180) not in sync
+	//
+	// Channel 36 is the case that bites: its secondary sits ABOVE it, so a
+	// leftover [HT40-] names a channel below the bottom of the band.
+	got := strings.Join(setChannelCommands(apChannels[36], 20), " | ")
+	for _, want := range []string{
+		"SET channel 36",
+		"SET ht_capab ", // cleared, or the old HT40 side still derives a secondary
+		"SET vht_oper_chwidth 0",
+		"SET he_oper_chwidth 0",
+		"SET vht_oper_centr_freq_seg0_idx 36", // the primary itself, not 42
+		"SET he_oper_centr_freq_seg0_idx 36",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("missing %q in: %s", want, got)
+		}
+	}
+	// The stale 80MHz centre is the specific value that failed.
+	if strings.Contains(got, "seg0_idx 42") {
+		t.Errorf("20MHz must not keep the 80MHz centre: %s", got)
+	}
+	// secondary_channel stays derived state -- hostapd refuses SET on it.
+	if strings.Contains(got, "SET secondary_channel") {
+		t.Errorf("hostapd refuses SET secondary_channel: %s", got)
+	}
+}
+
 func TestParseScanSurvivesEmptyAndTruncatedOutput(t *testing.T) {
 	for _, raw := range []string{
 		"",

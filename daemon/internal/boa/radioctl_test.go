@@ -33,12 +33,15 @@ func TestChanSwitchCommandBuildsTheArgumentsHostapdNeeds(t *testing.T) {
 			"CHAN_SWITCH 5 5220 bandwidth=40 sec_channel_offset=1 ht",
 		},
 		{
-			"5GHz 20MHz names neither", 48, 20,
-			"CHAN_SWITCH 5 5240 bandwidth=20 ht",
+			// The offset is named as 0 rather than omitted: hostapd keeps
+			// the previous one otherwise, and a secondary left below
+			// channel 36 fails the whole setup.
+			"5GHz 20MHz names the offset as zero", 48, 20,
+			"CHAN_SWITCH 5 5240 bandwidth=20 sec_channel_offset=0 ht",
 		},
 		{
 			"2.4GHz is 20MHz only", 6, 20,
-			"CHAN_SWITCH 5 2437 bandwidth=20 ht",
+			"CHAN_SWITCH 5 2437 bandwidth=20 sec_channel_offset=0 ht",
 		},
 	}
 	for _, tc := range tests {
