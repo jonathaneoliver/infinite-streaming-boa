@@ -221,7 +221,7 @@ every number in this document.
 | Power | [Official Raspberry Pi 27 W USB-C PSU](https://www.amazon.com/dp/B0CW7XCY75?tag=jonathaneoliv-20) | A SuperSpeed Wi-Fi adapter is a real load. Check `vcgencmd get_throttled` reads `0x0` |
 | Storage | [SanDisk Ultra 16 GB microSDHC](https://www.amazon.com/dp/B074B4P7KD?tag=jonathaneoliv-20) | What was used, and enough — the finished image is ~4.6 GB. A 32 GB card costs little more and leaves room for `ntopng` data |
 | Wi-Fi adapter | [Panda Wireless PAU0F AXE3000 (mt7921u)](https://www.amazon.com/dp/B0D972VY9B?tag=jonathaneoliv-20) | Optional, and the single biggest change to what the box can test — see below |
-| Wired downstream | Any USB ethernet adapter | Becomes `lan0`. Optional |
+| Wired downstream | Any USB ethernet adapter; a Realtek RTL8156 (2.5 GbE) for the figures below | Becomes `lan0`. Optional. 2.5 GbE needs a SuperSpeed cable — see [Wired downstream performance](#wired-downstream-performance) |
 
 The product links above are Amazon affiliate links. **As an Amazon Associate I
 earn from qualifying purchases.** No part was chosen for that reason — each one
@@ -268,9 +268,12 @@ that a cap is working.
 | Onboard (brcmfmac) | 55 Mbit/s | 57 Mbit/s | 20 MHz | 60s, sole client |
 | PAU0F on **USB 2.0** | 162 Mbit/s | 146 Mbit/s | 80 MHz, 802.11ax | 15s, 2 clients |
 | PAU0F on **USB 3.0** | **~540 Mbit/s** | ~156 Mbit/s | 80 MHz, 802.11ax | 15s, 2 clients |
-| Wired, for reference | 924 Mbit/s | — | — | 8s |
+| PAU0F on **USB 3.0** | **544–552 Mbit/s** | — | 80 MHz, 802.11ax, ch 40 | 20–30s, 2–3 clients, 2026-09-03 |
+| Wired 1 GbE, for reference | 924 Mbit/s | — | — | 8s |
+| Wired 2.5 GbE, for reference | **1.91 Gbit/s** | **2.35 Gbit/s** | — | 30s, 2026-09-03 |
 
-Same MacBook, same afternoon. The adapter on a SuperSpeed port is **~10x the
+The first four rows are the same MacBook on the same afternoon; the dated rows
+are later runs on the same box. The adapter on a SuperSpeed port is **~10x the
 onboard radio downlink** — the difference between a ladder whose top rung means
 "uncapped" and one that can be measured.
 
@@ -282,6 +285,22 @@ What costs you is not the NUMBER of associated clients but how *active* and how
 *slow* they are: dropping from two clients to one moved downlink 54.4 -> 54.9,
 because the second was idle. A single station linked at 65 Mbit/s, or one
 actually transferring, is worth far more than a headcount.
+
+**An idle slow client costs the PHY rate, not the throughput.** Removing that
+same 65 Mbit/s 802.11n station while it was idle lifted the MacBook from
+`HE-MCS 9` to `HE-MCS 11` (960.7 to 1200.9 Mbit/s) and cleared HT protection
+(`num_sta_ht_20_mhz` 1 → 0) — and moved measured downlink from 551 to
+552 Mbit/s. A 25% PHY increase bought 0.2%. Where airtime is the binding
+constraint, as on the onboard radio at 55 Mbit/s, a slow client costs real
+throughput; at ~550 Mbit/s on the USB adapter something else binds first. Both
+are true, and which applies depends on where the bottleneck already sits.
+
+That "something else" is not the Pi's CPU. Sampling per-core utilisation during
+a Wi-Fi run leaves CPU0 at 54% idle with softirq peaking at 27.8%, against the
+same core saturating at 1.6% idle on the wired path — the box pushes 3.5× more
+traffic through that core over ethernet. The ~550 Mbit/s ceiling is in the
+`mt7921u` USB transmit path, and it holds across 20s and 30s runs with zero
+retransmits.
 
 The daemon's own numbers agree with iperf3, which is worth knowing given how
 much rests on them: sampling `station dump` counters during a run gave a mean of
@@ -337,6 +356,74 @@ Two more things that will mislead you here:
 - **`txpower` from `iw` is not reliable on every adapter.** The mt7921u reports
   `3.00 dBm` whatever it is set to, while clients see −27 to −38 dBm and
   negotiate full rates. Trust the client-side signal.
+
+## Wired downstream performance
+
+A USB ethernet adapter becomes `lan0` and is conditioned exactly like a wireless
+client. With a 2.5 GbE adapter at both ends the cable stops being the limit and
+the box's own transmit path becomes it.
+
+| Direction | Command | Result | Limited by |
+|---|---|---|---|
+| Uplink, device → box | `iperf3 -c <pi> -B <addr>` | **2.35 Gbit/s** | ~94% of 2.5 GbE line rate |
+| Downlink, box → device | `iperf3 -c <pi> -B <addr> -R` | **1.91 Gbit/s** | one saturated CPU core |
+
+Realtek RTL8156 (`0bda:8156`) at both ends, direct cable, SuperSpeed both ends,
+30s runs, 2026-09-03. Repeatable to within 1% across four runs.
+
+**The box sends more slowly than it receives, and the asymmetry is structural.**
+Per-core sampling during the downlink run shows CPU0 saturated — idle bottoming
+at 1.6%, softirq peaking at 93.6% — while the other three cores sit 65–100%
+idle. The uplink direction, where the box only receives, reaches line rate. Note
+this is the opposite shape to Wi-Fi, where uplink is the weaker direction.
+
+It cannot be tuned away. A USB NIC exposes a single rx/tx queue pair, and USB
+transfer completions run on the core servicing the xHCI interrupt — CPU0 for
+every USB device on the box:
+
+```
+131:  1436513  0  0  0   xhci-hcd:usb1
+136:  8267195  0  0  0   xhci-hcd:usb3
+```
+
+RPS was tried and changes nothing here, for three compounding reasons: it steers
+receive only and this is the transmit path; it hashes by flow, so one TCP
+connection lands wholly on one core; and there is no second queue to steer to.
+Measured 1.91 Gbit/s plain, 1.92 Gbit/s with `rps_cpus=e`, and 1.91 Gbit/s with
+four parallel flows and RPS on. With four flows `NET_RX` did spread across all
+four cores while `NET_TX` stayed on CPU0 — receive was never the constraint.
+
+**What this means for a ladder.** Any rung above ~1.9 Gbit/s measured with `-R`
+is measuring CPU0, not the shaper. That is the wired equivalent of mistaking a
+PHY rate for throughput, and it fails the same way: a plausible number from the
+wrong instrument.
+
+### The cable decides whether you get 2.5 GbE at all
+
+An RTL8156 on a USB 2.0 link does not advertise 2.5 Gbit/s — it cannot fit
+through a 480 Mbit/s bus — so it negotiates 1000 Mbit/s and looks like an
+ordinary gigabit adapter. Both ends read `1000baseT`, nothing errors, and the
+only trace is the enumeration speed.
+
+The same adapter here was moved through two different USB 3.0 ports and
+enumerated at 480 Mbit/s in both, so the port was never at fault; a cable change
+fixed it. What separates a bad cable from a bad port:
+
+```sh
+cat /sys/bus/usb/devices/<dev>/speed   # 5000 good, 480 means High-Speed only
+sudo ethtool lan0 | grep Speed         # 2500Mb/s once the bus is right
+dmesg | grep -i "new .* USB device"    # "new SuperSpeed USB device" is the one you want
+```
+
+The **absence** of `Cannot enable. Maybe the USB cable is bad?` in `dmesg` is
+itself the signal. The kernel logs that when a device attempts SuperSpeed and
+fails to train. Nothing at all means the SuperSpeed pins were never present — a
+USB 2.0 cable, not a marginal one.
+
+`ethtool` is not trustworthy as a capability report here. On this adapter in
+USB 2.0 mode it printed `Supported link modes: 10baseT/Half 10baseT/Full` while
+simultaneously reporting `Speed: 1000Mb/s`. Trust the speed line and the USB
+descriptor, not the mode table.
 
 ## Build an image
 
