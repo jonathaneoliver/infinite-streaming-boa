@@ -1408,6 +1408,39 @@ func setChannelCommands(ch apChannel, widthMHz int) []string {
 			"SET vht_oper_centr_freq_seg0_idx "+centre,
 			"SET he_oper_centr_freq_seg0_idx "+centre,
 		)
+		return cmds
+	}
+	// 40MHz has to clear the 80MHz settings for exactly the reason 20MHz does,
+	// and for a while it did not.
+	//
+	// MEASURED on the box 2026-09-04. Moving from 149 at 80MHz to channel 40
+	// sent only `SET channel 40` and `SET ht_capab [HT40-]`, leaving
+	// vht_oper_chwidth at 1 and the centre index at 155 -- an 80MHz block in
+	// UNII-3 named as the centre of a channel in UNII-1. Every SET was
+	// acknowledged and the ENABLE then failed:
+	//
+	//	Wrong coupling between HT and VHT/HE channel setting
+	//	Could not set channel for kernel driver
+	//	Interface initialization failed
+	//
+	// leaving the radio with no access point on it. This is #166 one width up:
+	// the same sticky parameters, the same silent acceptance, the same dead
+	// AP at the end of it.
+	//
+	// At 40MHz the centre is the middle of the PAIR, not the primary: 36+40
+	// and 40+36 are both centred on 38, which is primary + 2 on the side the
+	// secondary sits. Taking it from SecOffset keeps it agreeing with the
+	// ht_capab written just above, which is the agreement hostapd checks.
+	cmds = append(cmds,
+		"SET vht_oper_chwidth 0",
+		"SET he_oper_chwidth 0",
+	)
+	if !ch.is24() {
+		centre := strconv.Itoa(ch.Channel + 2*ch.SecOffset)
+		cmds = append(cmds,
+			"SET vht_oper_centr_freq_seg0_idx "+centre,
+			"SET he_oper_centr_freq_seg0_idx "+centre,
+		)
 	}
 	return cmds
 }
