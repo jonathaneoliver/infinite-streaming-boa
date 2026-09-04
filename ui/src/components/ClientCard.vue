@@ -8,6 +8,8 @@ import SubClasses from './SubClasses.vue';
 import LadderPanel from './LadderPanel.vue';
 import PatternPanel from './PatternPanel.vue';
 import TrafficChart from './TrafficChart.vue';
+import OnAdapterStrip from './OnAdapterStrip.vue';
+import AdapterToken from './AdapterToken.vue';
 import { useViewportWidth } from '@/composables/useViewport';
 
 const props = defineProps<{
@@ -567,16 +569,29 @@ function fmtBytes(n: number): string {
            behaves nothing like one on 5GHz at 80MHz -- so "wifi" alone stopped
            being an answer the moment the second radio came up. -->
       <span class="cell">
-        <!-- The BAND, not the interface name. "5 GHz" is the fact that means
-             something about how this client will behave; "wlan-usb" is an
-             implementation detail of which adapter happens to serve it, and it
-             is one hover away in the tooltip. -->
-        <span
-          v-if="client.medium" class="badge" :class="[client.medium, bandClass]"
+        <!-- The shared adapter token, the same one the rack fold and the
+             activity log use.
+
+             This cell used to show the BAND and keep the interface name in a
+             tooltip, on the reasoning that "5 GHz" says something about how a
+             client behaves while "wlan-usb" is an implementation detail. That
+             was right when the adapter was not a thing you could act on. It is
+             now: the rack above has a fold per adapter, and the name is what
+             names it -- so the token carries identity and the arrow goes
+             straight to the controls for the radio this client is on. The band
+             stays one hover away, which is the trade the old comment made in
+             the other direction. -->
+        <AdapterToken
+          v-if="client.present && client.port"
+          :name="client.port" jump
           :title="client.radio_on
-            ? `On ${client.radio_on.iface}, channel ${client.radio_on.channel}`
-            : (client.port ? `On ${client.port}` : '')"
-        >{{ client.radio_on?.band || client.port || client.medium }}</span>
+            ? `${client.radio_on.band}, channel ${client.radio_on.channel}`
+            : client.medium"
+        />
+        <span
+          v-else-if="client.medium" class="badge" :class="[client.medium, bandClass]"
+          title="Not attached to any adapter"
+        >{{ client.medium }}</span>
       </span>
 
       <!-- What that radio is doing, in the same words the diagram uses. Its own
@@ -815,6 +830,17 @@ function fmtBytes(n: number): string {
         />
       </div>
     </div>
+
+    <!-- ON ADAPTER, under BOTH charts rather than one per direction: the two
+         share an x-axis and the client was on one adapter, not one per
+         direction. Drawing it twice would invite reading them as separate
+         facts. Wi-Fi only in effect -- a wired client has one segment and no
+         channel, which the strip renders honestly but which says nothing. -->
+    <OnAdapterStrip
+      v-if="!collapsed && series"
+      :t="series.t" :iface="series.iface" :chan="series.chan"
+      :window-ms="chartProps.windowMs" :now="chartProps.now"
+    />
 
     <!-- Group A link events: an impairment on the ASSOCIATION, not the packets,
          and not tied to a direction -- so they get their own section under both

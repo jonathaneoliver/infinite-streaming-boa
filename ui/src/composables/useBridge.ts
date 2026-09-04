@@ -140,6 +140,14 @@ export function useBridge(active: Ref<boolean>) {
    * evaporates when you press F5 is one nobody comes to trust.
    */
   const scanSummaries = computed(() => info.value?.scans ?? {});
+  /**
+   * Busy airtime per radio, as a percentage, ONLY for radios that report one.
+   *
+   * An absent entry is not zero and must not be rendered as zero: brcmfmac
+   * returns no survey data at all, so a 0% there would describe an idle channel
+   * on a radio nobody can ask. Callers render absence as an em dash.
+   */
+  const airtimePct = computed(() => info.value?.airtime ?? {});
   /** Which radio was scanned most recently, for the panel's single readout. */
   const lastScanned = ref('');
   const scan = computed<ScanResult | null>(() =>
@@ -262,7 +270,7 @@ export function useBridge(active: Ref<boolean>) {
 
   return {
     info, survey, scan, error, actionMsg, busy,
-    scans, scanSummaries,
+    scans, scanSummaries, airtimePct,
     load, loadSurvey, deauthAll, setPower, powerOutage, scanBand,
     applyProfile, setThreshold, steerAll, linkAll, moveChannel,
   };

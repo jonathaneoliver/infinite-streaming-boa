@@ -98,6 +98,11 @@ type Engine struct {
 	radioMu    sync.Mutex
 	radioLocks map[string]*sync.Mutex
 
+	// airtime holds the last survey read per radio and the busy fraction
+	// derived from the delta. Sampled on its own slow timer, never on the tick:
+	// see airtime.go for why fifteen seconds is the floor.
+	airtime airtimeWatch
+
 	// pendingSteers is every 802.11v transition request still waiting for the
 	// client's answer, keyed by MAC. The answer arrives asynchronously on the
 	// monitor connection, so it has to be matched against something; and a
@@ -291,6 +296,9 @@ func (e *Engine) Start() {
 	// Everything else here talks to hostapd in request/reply, which cannot see
 	// a client's answer to a steer -- see hostapdmonitor.go.
 	e.watchHostapdEvents()
+	// How busy each radio's channel is, sampled slowly. Its own goroutine
+	// because the interval that makes it meaningful is far longer than a tick.
+	go e.watchAirtime()
 	// Devices announce only occasionally -- on join, on wake, when services
 	// change -- so an in-memory-only name table means every daemon restart
 	// drops every client back to a bare MAC until the next announcement,

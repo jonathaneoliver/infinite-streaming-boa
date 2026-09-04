@@ -443,6 +443,14 @@ export interface BridgeInfo {
   /** The last band scan per radio, kept by the daemon so the channel plan's
    *  colours survive a reload and are the same for everyone looking. */
   scans?: Record<string, ScanSummary>;
+  /**
+   * Busy airtime per radio, percent, for radios whose driver measures it.
+   *
+   * Entries are MISSING rather than zero where the driver reports nothing --
+   * brcmfmac returns no survey blocks at all. Rendering a missing entry as 0%
+   * would claim an idle channel on a radio that has never been asked.
+   */
+  airtime?: Record<string, number>;
 }
 
 export interface SurveyChannel {
@@ -663,6 +671,22 @@ export interface Series {
    */
   phyDown: number[];
   phyUp: number[];
+  /**
+   * Which adapter carried this client at each sample, and on what channel.
+   *
+   * Parallel to `t` like everything else here, and for the strongest version of
+   * the same reason: a client's CURRENT adapter is not where it was. On a
+   * two-radio box a device moves between radios routinely, and a trace read
+   * against the wrong radio is read against the wrong link entirely — a
+   * different band, width, and set of neighbours.
+   *
+   * `iface` is EMPTY while the client was not attached. That is a fact worth
+   * drawing rather than a gap to interpolate across: a listed device that has
+   * gone away keeps its policy and its history, and joining the segments either
+   * side would claim it stayed on a radio it had left.
+   */
+  iface: string[];
+  chan: number[];
 }
 
 /**

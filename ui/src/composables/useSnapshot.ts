@@ -1,5 +1,6 @@
 import { ref, shallowRef, onUnmounted } from 'vue';
 import type { Snapshot, Client, Series } from '@/types';
+import { adapterChannel } from '@/composables/useAdapters';
 
 /**
  * Live server state.
@@ -38,7 +39,8 @@ export function useSnapshot() {
     const now = Date.now();
     const next = { ...series.value };
     for (const c of clients) {
-      const s = next[c.mac] ?? { t: [], down: [], up: [], cap: [], phyDown: [], phyUp: [] };
+      const s = next[c.mac] ??
+        { t: [], down: [], up: [], cap: [], phyDown: [], phyUp: [], iface: [], chan: [] };
       next[c.mac] = {
         t: [...s.t, now].slice(-HISTORY),
         down: [...s.down, c.down_counters.throughput_mbps].slice(-HISTORY),
@@ -50,6 +52,17 @@ export function useSnapshot() {
         // which the chart draws as a gap rather than as a floor.
         phyDown: [...s.phyDown, c.station?.tx_phy_mbps ?? 0].slice(-HISTORY),
         phyUp: [...s.phyUp, c.station?.rx_phy_mbps ?? 0].slice(-HISTORY),
+        // Where it was attached, and on what channel. Empty while it is not
+        // present: a device that has gone away keeps its port for display, and
+        // recording that would draw an unbroken band under a client that was
+        // not there.
+        //
+        // The channel comes from the adapter store rather than from the client,
+        // because the client does not carry one -- and the store is the same
+        // one the rack and the tokens read, so the band cannot disagree with
+        // the fold above it.
+        iface: [...s.iface, c.present ? c.port ?? '' : ''].slice(-HISTORY),
+        chan: [...s.chan, c.present ? adapterChannel(c.port ?? '') : 0].slice(-HISTORY),
       };
     }
     series.value = next;
@@ -88,7 +101,10 @@ export function useSnapshot() {
       for (const [mac, samples] of Object.entries(
         (body.clients ?? {}) as Record<
           string,
-          { t: number; down: number; up: number; cap?: number; phy_down?: number; phy_up?: number }[]
+          {
+            t: number; down: number; up: number; cap?: number;
+            phy_down?: number; phy_up?: number; iface?: string; channel?: number;
+          }[]
         >,
       )) {
         next[mac] = {
@@ -101,6 +117,11 @@ export function useSnapshot() {
           // Absent on history written before PHY was recorded; 0 draws no line.
           phyDown: samples.map((x) => x.phy_down ?? 0),
           phyUp: samples.map((x) => x.phy_up ?? 0),
+          // Absent on history written before the adapter was recorded. An
+          // empty interface reads as "not attached", which draws a gap — the
+          // honest rendering of "this box does not know".
+          iface: samples.map((x) => x.iface ?? ''),
+          chan: samples.map((x) => x.channel ?? 0),
         };
       }
 
@@ -130,6 +151,8 @@ export function useSnapshot() {
                 cap: [...seed.cap, ...live.cap.slice(from)],
                 phyDown: [...seed.phyDown, ...live.phyDown.slice(from)],
                 phyUp: [...seed.phyUp, ...live.phyUp.slice(from)],
+                iface: [...seed.iface, ...live.iface.slice(from)],
+                chan: [...seed.chan, ...live.chan.slice(from)],
               };
       }
       series.value = merged;
