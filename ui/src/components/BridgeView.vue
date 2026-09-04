@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, type Ref } from 'vue';
 import { DEVELOPER } from '@/types';
-import { describeChannel, rateFor } from '@/composables/channelQuality';
 import type { IfaceInfo } from '@/types';
 import { useBridge } from '@/composables/useBridge';
 import InterfaceDiagram from '@/components/InterfaceDiagram.vue';
@@ -28,42 +27,10 @@ const wired = computed(
   () => bridge.info.value?.ifaces.filter((i) => !i.wireless) ?? [],
 );
 
-/** Channels the box will accept, mirroring apChannels in radioctl.go. DFS is
- *  excluded because the Pi cannot serve an access point on one; the 5GHz list
- *  is two blocks with the whole DFS range between them, so that two 5GHz
- *  radios have somewhere to go that is not inside each other's spectrum. */
-const CHANNELS_24 = [1, 6, 11];
-const CHANNELS_5 = [36, 40, 44, 48, 149, 153, 157, 161, 165];
-
-const target = ref<Record<string, { channel: number; width: number }>>({});
 /** Chosen outage length per radio; 10s is long enough to drain a player's
  *  buffer without being long enough for a phone to give up and leave for
  *  another network. */
 const outage = ref<Record<string, number>>({});
-function pick(i: IfaceInfo) {
-  if (!target.value[i.name]) {
-    target.value = {
-      ...target.value,
-      [i.name]: { channel: i.ap?.channel ?? 36, width: i.ap?.width_mhz ?? 80 },
-    };
-  }
-  return target.value[i.name];
-}
-/** 2.4GHz is 20MHz only: 80 does not exist there and 40 is antisocial.
- *
- *  So is 165, for a different reason -- the channel above it may not be
- *  radiated on ("no IR" in `iw phy`), so it has no 40MHz partner. The daemon
- *  refuses both combinations too; this keeps them from being offered. */
-const widthsFor = (ch: number) => (ch < 15 || ch === 165 ? [20] : [20, 40, 80]);
-
-function setChannel(name: string, ch: number) {
-  const cur = target.value[name];
-  const widths = widthsFor(ch);
-  target.value = {
-    ...target.value,
-    [name]: { channel: ch, width: widths.includes(cur.width) ? cur.width : widths[0] },
-  };
-}
 
 function addrs(i: IfaceInfo) {
   return [...(i.ipv4 ?? []), ...(i.ipv6 ?? [])];
@@ -141,11 +108,9 @@ function onDiagramAction(
   else bridge.scanBand(iface, false);
 }
 
-/** The radio a client could be steered to: another one that is serving. Empty
- *  on a single-radio box, where the control is absent rather than dead. */
-function otherRadio(r: IfaceInfo): string {
-  return radios.value.find((o) => o.name !== r.name && o.ap?.enabled)?.name ?? '';
-}
+/* The steer target is worked out in InterfaceDiagram now, which is where the
+ * only steer button lives. Two copies of the same "another radio that is
+ * serving" rule was one copy too many. */
 </script>
 
 <template>
@@ -234,69 +199,33 @@ function otherRadio(r: IfaceInfo): string {
                like a sibling of an RTS threshold when they answer completely
                different questions. -->
           <h4>Who is connected</h4>
+          <!-- Drop, nudge, steer and the latching switch are on the radio in
+               the picture above and ONLY there. Every one of them acts on a
+               radio as a whole, which is exactly what a node in that picture
+               is, so a second copy down here was two controls for one action --
+               and the copy that is further from the thing it names is the one
+               to lose. What stays is what a node cannot draw. -->
           <p class="meta group-note">
-            The association itself. Nothing is degraded — it exists or it does not.
+            The association itself. Nothing is degraded — it exists or it does
+            not. Drop, nudge, steer and the switch are on the radio in the
+            picture above.
           </p>
 
-          <!-- The announced events, in the same words the device cards use.
-               Whatever can be done to one client can be done to every client on
-               a radio; only the blast radius differs. -->
-          <div class="action-row">
-            <label class="k">all {{ r.ap.stations }} clients</label>
-            <button
-              :disabled="bridge.busy.value || !r.ap.stations"
-              title="Deauthenticate every client. The link goes down and they reconnect — they are TOLD, so it is quick."
-              @click="bridge.linkAll(r.name, 'drop')"
-            >drop all</button>
-            <button
-              :disabled="bridge.busy.value || !r.ap.stations"
-              title="Disassociate every client — a softer 802.11 transition some clients ride out without a full reconnect."
-              @click="bridge.linkAll(r.name, 'nudge')"
-            >nudge all</button>
-            <button
-              v-if="otherRadio(r)"
-              :disabled="bridge.busy.value || !r.ap.stations"
-              :title="`Ask every client to move to ${otherRadio(r)} (802.11v). They may refuse.`"
-              @click="bridge.steerAll(r.name)"
-            >steer all to {{ otherRadio(r) }}</button>
-          </div>
-
-          <!-- Still connection control, but the SILENT member of it: every
-               action above announces itself, this one does not. That difference
-               is the whole reason it exists, so it keeps its own paragraph. -->
+          <!-- The SILENT member of connection control: the announced actions in
+               the picture all tell the client what happened, and this one does
+               not. That difference is the whole reason it exists, so it keeps
+               its own paragraph. -->
           <p class="warn-line">
             <strong>Silent.</strong> Clients are told nothing and must time out —
             a tripped breaker, not a disconnection.
           </p>
-          <!-- A latching toggle, not a timed pulse. The radio stays off until
-               it is switched back on, the way a power switch behaves -- which
-               is what makes it usable for "leave it down and watch what the
-               player does for the next ten minutes". -->
+          <!-- The timed form, which the switch in the picture cannot express: a
+               fixed-length outage that ends itself. The latch up there is for
+               "leave it down and watch the player"; this is for "take it away
+               for ten seconds and see what happens", where remembering to end
+               it is part of what you are trying not to think about. -->
           <div class="action-row">
-            <button
-              class="power-toggle"
-              :class="{ accent: r.power_known && !r.powered, off: r.power_known && !r.powered }"
-              :disabled="bridge.busy.value || !r.power_known"
-              :title="r.powered
-                ? `Switch ${r.name} off. It stays off until switched back on. No client is told.`
-                : `Switch ${r.name} back on.`"
-              @click="bridge.setPower(r.name, !r.powered)"
-            >{{ r.powered ? `switch ${r.name} off` : `switch ${r.name} on` }}</button>
-
-            <span v-if="!r.power_known" class="meta">
-              power state unreadable on this radio
-            </span>
-            <span v-else-if="!r.powered" class="meta warn-line">
-              <strong>OFF</strong> — silent, and staying off until you switch it back
-            </span>
-            <span v-else class="meta">on</span>
-          </div>
-
-          <!-- The timed form is a convenience on top of the toggle, for the
-               common case of a fixed-length outage you do not want to have to
-               remember to end. -->
-          <div class="action-row">
-            <label class="k">or cut it for</label>
+            <label class="k">cut it for</label>
             <div class="seg" role="group" aria-label="outage length">
               <button
                 v-for="s in [5, 10, 30, 60]" :key="s"
@@ -308,6 +237,18 @@ function otherRadio(r: IfaceInfo): string {
               :disabled="bridge.busy.value || !r.powered"
               @click="bridge.powerOutage(r.name, outage[r.name] ?? 10)"
             >cut and restore automatically</button>
+
+            <!-- Why the button is dead, said next to the button. A radio that
+                 is already off cannot be cut, and the switch that ends that
+                 state is now in the picture above -- so the disabled control
+                 has to say where to go, or it is just a control that does
+                 nothing. -->
+            <span v-if="!r.power_known" class="meta">
+              power state unreadable on this radio
+            </span>
+            <span v-else-if="!r.powered" class="meta warn-line">
+              <strong>OFF</strong> — switch it back on in the picture above
+            </span>
           </div>
 
           <!-- Measured, not theorised: a deauthenticated iPhone came back under
@@ -318,68 +259,16 @@ function otherRadio(r: IfaceInfo): string {
             device</strong>, leaving its policy behind on the old address (#45).
           </p>
 
-          <h5>Move to another channel</h5>
-          <!-- The colours are a measurement, not advice: they come from that
-               radio's last scan and describe the moment it ran. No scan, no
-               colour -- a box nobody has scanned must not show a wall of
-               green. -->
-          <p v-if="bridge.scanSummaries.value[r.name]" class="meta">
-            Coloured from the last scan:
-            <span class="q q-clear">clear</span>
-            <span class="q q-busy">busy</span>
-            <span class="q q-crowded">crowded</span>
-          </p>
-          <p class="warn-line">
-            Down and back up on the new channel. All {{ r.ap.stations }} client(s)
-            dropped, and not told.
-          </p>
-          <div class="action-row">
-            <div class="seg" role="group" aria-label="channel">
-              <button
-                v-for="c in (r.ap.channel && r.ap.channel < 15 ? CHANNELS_24 : CHANNELS_5)" :key="c"
-                class="seg-btn"
-                :class="[{ on: pick(r).channel === c }, `q-${rateFor(bridge.scanSummaries.value[r.name], c)}`]"
-                :title="`Channel ${c}: ${describeChannel(bridge.scanSummaries.value[r.name], c)}`"
-                @click="setChannel(r.name, c)"
-              >{{ c }}</button>
-            </div>
-            <div class="seg" role="group" aria-label="width">
-              <button
-                v-for="wd in widthsFor(pick(r).channel)" :key="wd"
-                class="seg-btn" :class="{ on: pick(r).width === wd }"
-                @click="target = { ...target, [r.name]: { ...pick(r), width: wd } }"
-              >{{ wd }}&#8239;MHz</button>
-            </div>
-            <button
-              class="accent"
-              :disabled="bridge.busy.value || pick(r).channel === r.ap.channel"
-              @click="bridge.moveChannel(r.name, pick(r).channel, pick(r).width)"
-            >move to {{ pick(r).channel }}</button>
-          </div>
+          <!-- The channel plan under this radio in the picture above is the
+               whole of "move to another channel": it picks a channel and a
+               width together, which is the choice that actually exists, and it
+               does it on the radio being moved. The duplicate segmented control
+               that stood here offered the same two lists a second time.
 
-          <!-- The other way to change channel, and why it is not a button.
-               802.11h CSA counts the switch down in the beacons and clients
-               follow WITHOUT dropping -- which is strictly better, and which
-               both chips on this box refuse (measured on brcmfmac and mt7921u,
-               #154). A control that can only ever report a refusal is worse
-               than a sentence saying so, so this is the sentence. POST
-               .../channel still exists and still works the day a driver gains
-               support. -->
-          <p class="meta">
-            802.11h would move them without dropping anyone, but
-            <strong>both radios here refuse it</strong> (#154).
-          </p>
-          <!-- Measured on hardware: hostapd's 20/40MHz coexistence scan swaps
-               primary and secondary when it finds neighbours on the secondary,
-               so a 40/80MHz move lands on whichever of the pair that scan
-               picks. This box has been on 40 all along with its config saying
-               36 for exactly that reason. -->
-          <p v-if="pick(r).width >= 40" class="meta">
-            At {{ pick(r).width }}&#8239;MHz the radio can come back on the
-            <strong>adjacent channel</strong>: hostapd swaps primary and
-            secondary if it hears neighbours on the secondary. Move at
-            20&#8239;MHz to choose exactly.
-          </p>
+               The two findings it carried moved with it: the 802.11h refusal
+               (#154) and hostapd's adjacent-channel swap are on the diagram's
+               caption and its per-cell tooltips, because that is now where the
+               channel is chosen. -->
 
           <h4>Conditioning the link</h4>
           <p class="meta group-note">Clients stay associated; the link they are on gets worse.</p>
@@ -423,14 +312,18 @@ function otherRadio(r: IfaceInfo): string {
                reported afterwards as the measured out-of-service time. -->
           <h5>Channel scan</h5>
 
+          <!-- Measure-only scanning is the `scan` button on this radio in the
+               picture, where its result lands: the colours it produces are on
+               the channel plan up there, not here. What is left is the variant
+               that ACTS on the answer, which is a different thing to press and
+               belongs with the other controls that change something. -->
           <div class="action-row">
-            <button :disabled="bridge.busy.value" @click="bridge.scanBand(r.name, false)">
-              scan {{ r.ap.channel && r.ap.channel < 15 ? '2.4GHz' : '5GHz' }}
-            </button>
             <button
               class="accent" :disabled="bridge.busy.value"
+              :title="`Scan ${r.name}'s band and move it to the quietest channel found. Takes the radio down and back up, so all ${r.ap.stations} client(s) are dropped and not told.`"
               @click="bridge.scanBand(r.name, true)"
             >scan and move to the quietest</button>
+            <span class="meta">— to only look, press <em>scan</em> on the radio above</span>
           </div>
 
 
@@ -604,12 +497,6 @@ function otherRadio(r: IfaceInfo): string {
 .survey { border-top: 1px solid var(--line-soft); margin-top: 10px; }
 .survey .facts { padding-left: 0; padding-right: 0; }
 
-/* The power switch reads as a switch: when the radio is off it is the loud
-   thing on the card, because an access point that is deliberately silent must
-   not be mistaken for one that is merely quiet. */
-.power-toggle { min-width: 170px; }
-.power-toggle.off { border-color: var(--warn); color: var(--bg); background: var(--warn); }
-
 .badge.warn-badge {
   color: var(--warn);
   border-color: color-mix(in srgb, var(--warn) 45%, var(--line));
@@ -629,21 +516,7 @@ function otherRadio(r: IfaceInfo): string {
 
 .counters { width: 100%; }
 
-/* Channel quality, shared with the diagram's buttons so the two cannot show
-   different colours for the same channel. Text only -- the segmented control
-   already uses background to mean "selected", and a second background would
-   make a crowded channel look picked. */
-.q-clear { color: var(--ok); }
-.q-busy { color: var(--warn); }
-.q-crowded { color: var(--bad); }
-.seg-btn.q-clear.on,
-.seg-btn.q-busy.on,
-.seg-btn.q-crowded.on { color: var(--ink); }
-.q {
-  border: 1px solid currentColor;
-  border-radius: 4px;
-  padding: 0 4px;
-  margin-left: 4px;
-  font-size: 10px;
-}
+/* Channel quality lives with the channel plan now, in the diagram: the cells
+   it colours and the legend that reads them are both up there, so a copy of
+   the palette down here could only ever drift away from it. */
 </style>

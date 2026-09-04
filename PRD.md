@@ -430,6 +430,16 @@ damages packets, never link state.
   because the box is a single-operator instrument and because these impairments
   are unreachable any other way — not a general licence for AP-wide controls to
   appear beside per-device ones.
+- **Each box-wide control appears exactly once, on whichever of the two
+  surfaces names its subject.** A control whose subject is the radio as a thing
+  in the topology — cut it, empty it, move it, survey it — is on that radio in
+  the diagram, where the reader is already pointing at it: switching it off,
+  dropping, nudging or steering its clients, scanning, and picking a channel
+  from the band plan. What is left below is what a node cannot draw: a
+  fixed-length outage that ends itself, the link-conditioning profiles and
+  thresholds, and the scan that acts on its own answer by moving to the
+  quietest channel. Two copies of one action is a second place for the two to
+  disagree, and the copy further from the thing it names is the one to lose.
 - Where a radio exposes no hostapd control socket, its controls are **shown
   disabled with the reason**, never offered and silently ignored. Where a radio
   refuses an action its driver claims to support — an 802.11h channel switch on
