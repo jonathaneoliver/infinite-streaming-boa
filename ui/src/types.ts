@@ -156,6 +156,13 @@ export interface LinkEvent {
   at_sec: number;
   kind: 'drop' | 'nudge' | 'deadzone';
   dur_sec?: number;
+  /** deadzone only. Which radios the ban covers:
+   *  - `current` (the default when absent) denies on the radio the client is
+   *    on. With two radios serving one SSID the client lands on the other in
+   *    under a second, so this is a forced ROAM it cannot decline.
+   *  - `all` denies on every radio: a real outage, long enough to drain a
+   *    buffer. Refused rather than half-applied if a radio cannot be covered. */
+  scope?: 'current' | 'all';
 }
 
 export interface Pattern {

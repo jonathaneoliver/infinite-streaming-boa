@@ -1750,11 +1750,34 @@ func (a *API) linkDeadzone(w http.ResponseWriter, r *http.Request) {
 		}
 		dur = f
 	}
-	if err := a.e.LinkDeadzone(mac, dur); err != nil {
-		writeErr(w, http.StatusBadGateway, err.Error())
+	// Which radios the ban covers. Default is the client's own radio, which is
+	// what this endpoint has always done -- so an existing caller is unchanged.
+	// "all" is the sustained outage; see LinkDeadzone and issue #206.
+	scope := strings.TrimSpace(r.URL.Query().Get("scope"))
+	switch scope {
+	case "", ScopeCurrent, ScopeAll:
+	default:
+		writeErr(w, http.StatusBadRequest,
+			fmt.Sprintf("scope must be %q or %q (got %q)", ScopeCurrent, ScopeAll, scope))
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"mac": mac, "action": "deadzone", "dur_sec": dur})
+	if scope == "" {
+		scope = ScopeCurrent
+	}
+	if err := a.e.LinkDeadzone(mac, dur, scope); err != nil {
+		// A refused "all" is a statement about the box, not a bad request: the
+		// caller asked for something coherent that this box cannot currently
+		// deliver, which is the same shape as steering with one radio.
+		code := http.StatusBadGateway
+		if scope == ScopeAll {
+			code = http.StatusServiceUnavailable
+		}
+		writeErr(w, code, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"mac": mac, "action": "deadzone", "dur_sec": dur, "scope": scope,
+	})
 }
 
 // linkEvent drives a Group A per-client link event (deauth or disassoc) through

@@ -38,8 +38,9 @@ const (
 	// Group A link-event patterns (#135). Like the overlays, they assert no
 	// rate -- they drive the LINK lane, not the rate lane -- so they layer over
 	// any pattern that owns the rate. drop_1m/nudge_1m fire one pulse a minute;
-	// deadzone_1m runs clear for 50s then holds a 10s outage, the link-level
-	// sibling of blackhole (which does the same shape with netem loss).
+	// deadzone_1m runs clear for 50s then holds a 10s outage across EVERY radio
+	// (#206), the link-level sibling of blackhole (which does the same shape
+	// with netem loss).
 	PatternDropEveryMin     = "drop_1m"
 	PatternNudgeEveryMin    = "nudge_1m"
 	PatternDeadzoneEveryMin = "deadzone_1m"
@@ -299,7 +300,14 @@ func LadderPattern(name string, l Ladder, dwellSec float64) (Pattern, error) {
 	case PatternNudgeEveryMin:
 		return linkPattern(name, LinkEvent{AtSec: 30, Kind: LinkNudge}), nil
 	case PatternDeadzoneEveryMin:
-		return linkPattern(name, LinkEvent{AtSec: 50, Kind: LinkDeadzone, DurSec: 10}), nil
+		// ScopeAll, explicitly: this is described below as the link-level
+		// sibling of blackhole, and blackhole is a blackout. Left at the
+		// default it would deny on one radio, the client would land on the
+		// other in under a second, and the "outage" would be a roam -- which
+		// is what it silently was until #206.
+		return linkPattern(name, LinkEvent{
+			AtSec: 50, Kind: LinkDeadzone, DurSec: 10, Scope: ScopeAll,
+		}), nil
 	case PatternDelayClimb:
 		return impairmentClimb(name, delayClimbSteps, dwellSec), nil
 	case PatternLossClimb:
