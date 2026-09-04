@@ -771,11 +771,20 @@ func (e *Engine) tick() {
 			e.lastActive[c.MAC] = now.UnixMilli()
 		}
 		c.LastActiveMs = e.lastActive[c.MAC]
+		// The link's ceiling alongside what actually crossed it. Taken from the
+		// station table, so it is zero for a wired client and for a wireless one
+		// that has gone -- which the chart draws as a gap rather than as a floor.
+		var phyDown, phyUp float64
+		if c.Station != nil {
+			phyDown, phyUp = c.Station.TxPhyMbps, c.Station.RxPhyMbps
+		}
 		e.hist.Add(c.MAC, Sample{
-			T:    now.UnixMilli(),
-			Down: c.DownCounters.ThroughputMbps,
-			Up:   c.UpCounters.ThroughputMbps,
-			Cap:  c.DownCounters.CapMbps,
+			T:       now.UnixMilli(),
+			Down:    c.DownCounters.ThroughputMbps,
+			Up:      c.UpCounters.ThroughputMbps,
+			Cap:     c.DownCounters.CapMbps,
+			PhyDown: phyDown,
+			PhyUp:   phyUp,
 		})
 	}
 	if e.rev%60 == 0 {

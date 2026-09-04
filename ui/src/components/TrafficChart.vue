@@ -56,11 +56,16 @@ const props = withDefaults(
     now?: number;
     yMode?: YMode;
     yManual?: number;
-    /** The client's negotiated PHY rate, Mbit/s, for the "to PHY" axis. Zero
+    /** The client's CURRENT negotiated PHY rate, for the "to PHY" axis. Zero
      *  for a wired client or one whose radio could not be read, which is why
      *  that mode falls back rather than drawing an empty axis. */
     phy?: number;
-    /** Draw that ceiling as a rule across the plot. */
+    /** The PHY rate at each sample, parallel to `t`. Drawn as a trace, not as
+     *  a rule: the ceiling moves, and watching it move beside the throughput is
+     *  the point -- a trace that fell because the link's ceiling fell is a
+     *  different finding from one that fell while the ceiling held. */
+    phys?: number[];
+    /** Draw that series. */
     showPhy?: boolean;
     height?: number;
     /** Render the heading. Off when the surrounding card already names it. */
@@ -84,7 +89,7 @@ const props = withDefaults(
     sustainedSec?: number;
   }>(),
   {
-    cap: 0, caps: () => [], windowMs: 300_000, now: 0, yMode: 'auto', yManual: 10, phy: 0, showPhy: false,
+    cap: 0, caps: () => [], windowMs: 300_000, now: 0, yMode: 'auto', yManual: 10, phy: 0, phys: () => [], showPhy: false,
     height: 132, titled: false, compact: false,
     showLive: true, showSustained: false, sustainedSec: 30,
   },
@@ -437,16 +442,42 @@ const sustainedPaths = computed(() =>
 const capY = computed(() => (props.cap > 0 ? yAt(props.cap) : null));
 
 /**
- * Where the PHY rule sits, or null when it is off the top of the axis.
+ * The link's ceiling over time.
  *
- * Null rather than clamped: on "auto" the ceiling is usually far above the
- * traffic, and a rule pinned to the frame would claim the link is saturated
- * when the truth is that the axis cannot show how much headroom there is. The
- * "to PHY" y-mode exists to bring it into view; until then its absence is the
- * honest answer -- and the same trap the cap line documents two comments down.
+ * A SERIES, not a rule at the current value. The PHY rate is the most volatile
+ * number this box reports -- rate control re-picks an MCS per frame, and a
+ * client that re-associates can sit hundreds of Mbit/s lower for minutes -- so
+ * a single flat line would describe only the instant the chart was read, and
+ * would be wrong about every earlier point on it.
+ *
+ * Watching it move beside the throughput is the whole value: a trace that fell
+ * because the ceiling fell is a completely different finding from one that fell
+ * while the ceiling held, and only these two lines together tell them apart.
+ *
+ * Zero means "no ceiling recorded" -- a wired client, or a wireless one the
+ * station table had lost at that moment -- and becomes null so segmentsOf
+ * breaks the line there rather than drawing it along the floor, which would
+ * read as a link that had collapsed.
  */
-const phyY = computed(() =>
-  props.phy > 0 && props.phy <= yMax.value ? yAt(props.phy) : null,
+const phyPaths = computed(() =>
+  props.showPhy && props.phys.length
+    ? pathsOf(segmentsOf(viewOf(props.phys).map((p) => ({
+        t: p.t,
+        v: p.v && p.v > 0 ? p.v : null,
+      }))))
+    : [],
+);
+
+/** The ceiling at the right-hand edge, for the label. */
+const phyNow = computed(() => {
+  const v = props.phys;
+  for (let i = v.length - 1; i >= 0; i--) if (v[i] > 0) return v[i];
+  return 0;
+});
+
+/** Where to put that label: at the last drawn point, clamped into the pane. */
+const phyLabelY = computed(() =>
+  phyNow.value > 0 && phyNow.value <= yMax.value ? yAt(phyNow.value) : null,
 );
 
 /*
@@ -690,11 +721,15 @@ const gid = `g${Math.random().toString(36).slice(2, 8)}`;
            and skipped when it is off the top of the axis rather than clamped:
            a ceiling pinned to the frame would read as a plateau in the data,
            which is the same trap the cap line documents. -->
-      <g v-if="showPhy && phyY !== null && !compact" class="phy-rule">
-        <line :x1="PAD.l" :x2="PAD.l + plotW" :y1="phyY" :y2="phyY" :stroke="color" />
-        <text :x="PAD.l + plotW + 6" :y="phyY + 3" class="cap-text num">
-          PHY {{ fmt(phy) }}
-        </text>
+      <g v-if="showPhy && phyPaths.length && !compact" class="phy-rule">
+        <polyline
+          v-for="(d, i) in phyPaths" :key="i" :points="d.line" fill="none"
+          :stroke="color" stroke-linejoin="round" stroke-linecap="round"
+        />
+        <text
+          v-if="phyLabelY !== null"
+          :x="PAD.l + plotW + 6" :y="phyLabelY + 3" class="cap-text num"
+        >PHY {{ fmt(phyNow) }}</text>
       </g>
 
       <!-- Endpoint marker, with a 2px surface ring so it stays legible where it
@@ -754,7 +789,7 @@ const gid = `g${Math.random().toString(36).slice(2, 8)}`;
               <line x1="0" y1="4" x2="16" y2="4" :stroke="color" stroke-width="2.25" />
             </svg>{{ sustainedSec }}s mean
           </span>
-          <span v-if="showPhy && phyY !== null" class="key-item"
+          <span v-if="showPhy && phyPaths.length" class="key-item"
                 title="The client's negotiated PHY rate — what the link could carry, not what it is being allowed. The gap below it is what airtime costs.">
             <svg width="16" height="8" aria-hidden="true">
               <line x1="0" y1="4" x2="16" y2="4" :stroke="color"
@@ -842,7 +877,7 @@ const gid = `g${Math.random().toString(36).slice(2, 8)}`;
    cap is imposed by this box and can be moved from the sliders below, while
    the PHY ceiling belongs to the medium and cannot. Dashes for the one you
    set, dots for the one you are given. */
-.phy-rule line { stroke-width: 1; stroke-dasharray: 1 3; opacity: 0.7; }
+.phy-rule polyline { stroke-width: 1; stroke-dasharray: 1 3; opacity: 0.7; fill: none; }
 .crosshair line { stroke: var(--ink-faint); stroke-width: 1; opacity: 0.6; }
 
 .tip {

@@ -635,6 +635,19 @@ export interface Series {
    * point of the box.
    */
   cap: number[];
+  /**
+   * The negotiated PHY rate at each sample, per direction, 0 when there is
+   * none (a wired client, or a wireless one that has gone).
+   *
+   * Parallel to `t` for the same reason `cap` is, and more urgently: the PHY
+   * rate is the most volatile figure the box reports. Rate control re-picks an
+   * MCS per frame, and a client that re-associates can sit hundreds of Mbit/s
+   * lower for minutes. A throughput trace that fell means something quite
+   * different depending on whether the link's ceiling fell with it, and only a
+   * recorded series can answer that.
+   */
+  phyDown: number[];
+  phyUp: number[];
 }
 
 /**
