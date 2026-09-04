@@ -1224,3 +1224,67 @@ attenuation is not an impairment boa can offer. Weak-signal testing means
 physical distance or obstruction. The per-client controls condition the link
 above the radio; `legacy`, `narrow` and `dozy` impose real MAC-layer cost; none
 of them changes how loudly the radio talks.
+
+---
+
+## Source R — `Sample.Iface` / `Sample.Channel` · which radio carried each moment
+
+**What it is.** Two fields added to the history sample so a throughput chart can
+say *where* the traffic was, not just how much of it there was. Written in
+`state.go`'s tick from the client's current `Port` and the channel of whichever
+radio is on for that port, and stored alongside the byte counters in
+`history.go`.
+
+```go
+Iface   string `json:"iface,omitempty"`
+Channel int    `json:"channel,omitempty"`
+```
+
+**Units and meaning.** `Iface` is a kernel interface name — `wlan0`, `wlan-usb`,
+`lan0` — and is the empty string when the client was **not present** in that
+second. `Channel` is an 802.11 channel *number*, not a frequency and not an
+operating-class centre index: it is whatever `radioOnFor(port).Channel` reports,
+which comes from Source K. Zero means unknown, which for a wired port is the
+normal case rather than a fault.
+
+**How a bucket carries them.** Every other field in a downsampled bucket is a
+mean or a max. These two are **first-in-bucket**, taken when `n == 0` and never
+touched again:
+
+```go
+if n == 0 {
+    ifaceFirst, chanFirst = sm.Iface, sm.Channel
+}
+```
+
+There is no mean of two interface names, and the alternatives are both worse
+than picking one: last-in-bucket makes a roam appear to have happened at the end
+of a window it happened at the start of, and most-common silently deletes a
+short visit to the other radio — exactly the event the field exists to show. At
+1h range a bucket is tens of seconds, so a roam is placed within a bucket-width
+of the truth and the interface does not claim better.
+
+**Edge cases, and what they look like on screen.**
+
+- **A gap is not a roam.** `Iface == ""` draws as an absence in the ON ADAPTER
+  strip, not as a segment. A client that was off the network for a minute must
+  not appear to have been on some third adapter.
+- **A channel change inside one run** is a break drawn *within* the segment, not
+  a new segment. The client did not move; the radio did, and those are different
+  events with different causes.
+- **The strip's x-axis is the chart's x-axis, and this was measured rather than
+  arranged.** `OnAdapterStrip` repeats `TrafficChart`'s padding exactly
+  (`PAD_L = 40`, `PAD_R = 68`) and the two were compared in the browser: track
+  71→660 against plot 71→660. A strip a few pixels out would misattribute the
+  moment of a roam, which is the one thing it is for.
+
+**Confidence.** High for `Iface` — it is the same station-table membership the
+device list is built from (Source C), read in the same tick. Medium for
+`Channel`: it is correct at the moment of sampling, but the daemon learns a
+channel change from Source K on its own cadence, so a break in the strip is
+accurate to within one poll rather than to the beacon that carried the change.
+
+**What it is not.** Not a roam *log*. The activity log (Source N) records the
+roam as an event with a time; this field records the state each second and lets
+a roam be *seen against the traffic*. They disagree by up to a poll interval and
+neither is wrong — one is an event, the other a sampled state.

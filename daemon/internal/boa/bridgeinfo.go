@@ -119,6 +119,19 @@ type BridgeInfo struct {
 	// per-channel summary travels here, never the access point list -- that is
 	// hundreds of entries on a busy band, and this payload is polled.
 	Scans map[string]ScanSummary `json:"scans,omitempty"`
+	// Airtime is the busy fraction of each radio's operating channel, as a
+	// percentage, for the radios whose driver reports one.
+	//
+	// A map with entries MISSING rather than zeroed, and that is the whole
+	// contract: measured 2026-09-04, brcmfmac returns no survey data at all, so
+	// a zero here would report an idle channel on a radio nobody can ask. The
+	// interface renders an absent entry as an em dash.
+	//
+	// Busy INCLUDING this box's own transmissions. Foreign airtime would be
+	// more useful and is not reliably computable on this driver -- receive plus
+	// transmit can exceed busy -- so the simpler figure is reported honestly
+	// rather than a better one that is sometimes negative. See airtime.go.
+	Airtime map[string]float64 `json:"airtime,omitempty"`
 }
 
 // ScanSummary is what a scan concluded, small enough to carry in every poll.
@@ -176,6 +189,7 @@ func (e *Engine) BridgeState() BridgeInfo {
 	})
 	bi.Notes = bridgeNotes(bi, e.cfg)
 	bi.Scans = e.lastScans()
+	bi.Airtime = e.AirtimePct()
 	return bi
 }
 

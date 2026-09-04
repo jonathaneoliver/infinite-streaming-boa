@@ -21,33 +21,21 @@ const dev = useDevice();
 provide('dev', dev);
 
 /*
- * Which view is showing.
+ * There is no view switch any more.
  *
- * Two tabs, because the page answers two different questions: what are the
- * client devices doing, and what is this box. Everything in the first is
- * per-device; everything in the second acts on a whole radio at once, and
- * issue #122 is explicit that the two do not belong in the same place.
+ * This used to be two tabs -- devices, and the box -- on the reasoning that
+ * those are two different questions, with issue #122 cited for keeping
+ * per-device controls away from ones that hit a whole radio. That separation is
+ * still real and is now expressed by LAYOUT rather than by hiding half the page:
+ * the adapters are a rack at the top whose every control says how many clients
+ * it affects, and the devices are below it. Nothing box-wide has drifted in
+ * among the per-device controls.
  *
- * Persisted like every other view preference, and defaulting to the devices --
- * that is what the box is for, and the bridge is what you go and look at.
+ * What the tabs actually cost was the common case. Almost every question here
+ * spans both halves -- which radio is this phone on, why did its throughput
+ * fall when the channel moved -- and answering one meant remembering one tab
+ * while looking at the other.
  */
-type Tab = 'clients' | 'bridge';
-const TAB_KEY = 'boa.tab';
-function loadTab(): Tab {
-  try {
-    return localStorage.getItem(TAB_KEY) === 'bridge' ? 'bridge' : 'clients';
-  } catch {
-    return 'clients';
-  }
-}
-const tab = ref<Tab>(loadTab());
-watch(tab, (v) => {
-  try {
-    localStorage.setItem(TAB_KEY, v);
-  } catch {
-    /* private windows and blocked storage must not break the page */
-  }
-});
 
 const caps = computed(() => snap.value?.caps);
 // The running build's version, stamped into the daemon at build time and shown
@@ -239,25 +227,9 @@ appliance watching itself."
       >glances ↗</a>
     </header>
 
-    <div class="tabs" role="tablist" aria-label="views">
-      <div class="seg">
-        <button
-          class="seg-btn" :class="{ on: tab === 'clients' }"
-          role="tab" :aria-selected="tab === 'clients'"
-          @click="tab = 'clients'"
-        >Clients<span class="tab-count">{{ presentCount }}</span></button>
-        <button
-          class="seg-btn" :class="{ on: tab === 'bridge' }"
-          role="tab" :aria-selected="tab === 'bridge'"
-          @click="tab = 'bridge'"
-        >Bridge</button>
-      </div>
-    </div>
-
-    <!-- Under the tabs and above everything else, because it belongs to the
-         box rather than to either view: a client roaming between radios is a
-         Clients-tab fact and a Bridge-tab fact at the same time. One line high
-         until it is opened. -->
+    <!-- Above everything, because it belongs to the box rather than to any one
+         part of it: a client roaming between radios is a fact about the radio
+         and about the device at the same time. -->
     <EventLog />
 
     <div v-if="cfgErr" class="notice bad">{{ cfgErr }}</div>
@@ -272,16 +244,23 @@ appliance watching itself."
       {{ n.text }}
     </div>
 
-    <!-- v-show, not v-if: the charts keep their DOM and the accumulated series
-         stays drawn, so coming back from the Bridge tab does not repaint every
-         plot from scratch. BridgeView polls only while it is the visible tab,
-         which is what the `active` prop is for. -->
+    <!-- ONE scrolling view: the fabric, the adapters, then the devices.
+
+         This was two tabs, on the reasoning that the page answered two
+         different questions. It does not. Nearly every question here spans
+         both -- which radio is this phone on, why did its throughput fall when
+         the channel moved, is that adapter the busy one -- and answering them
+         meant holding one tab in your head while reading the other.
+
+         The order is the point. The fabric is one line because it is almost
+         never the answer. The adapters are folded because their detail is
+         occasional and their summary is not. The devices are open, because
+         they are what the page is for. -->
+    <BridgeView :active="true" :clients="snap?.clients" />
     <ClientsView
-      v-show="tab === 'clients'"
       :snap="snap" :series="series" :bucket-ms="bucketMs" :caps="caps"
       @range="setRange"
     />
-    <BridgeView v-show="tab === 'bridge'" :active="tab === 'bridge'" />
 
     <!-- Standing truths about how the box behaves. They never change and never
          need acting on, so they read as footnotes rather than pushing the

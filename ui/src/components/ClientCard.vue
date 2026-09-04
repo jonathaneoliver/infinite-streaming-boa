@@ -8,6 +8,8 @@ import SubClasses from './SubClasses.vue';
 import LadderPanel from './LadderPanel.vue';
 import PatternPanel from './PatternPanel.vue';
 import TrafficChart from './TrafficChart.vue';
+import OnAdapterStrip from './OnAdapterStrip.vue';
+import AdapterToken from './AdapterToken.vue';
 import { useViewportWidth } from '@/composables/useViewport';
 
 const props = defineProps<{
@@ -148,10 +150,15 @@ const IDENTITY_COLS = computed(() => [
   '30px',                 // fold toggle -- first, so it never moves
   '14px',                 // presence dot
   '170px',                // name -- fixed, so what follows holds its x
-  // 84px, not 58: the badge carries the radio name ("wlan-usb"), not the word
-  // "wifi", because which radio a client is on is the fact that matters once
-  // the box serves two bands.
-  'minmax(0, 84px)',      // medium / radio badge
+  // 152px: the cell holds the adapter TOKEN now -- a swatch, the interface
+  // name, its channel and the jump arrow -- not a one-word badge. At the old
+  // 84px it clipped to "wlan·", which is the identity this token exists to
+  // carry being the first thing thrown away.
+  // A FLOOR, like the address track has: this identifies which radio the client
+  // is on, and "wlan·" identifies nothing. 128px holds the swatch, the longest
+  // interface name the box has and the arrow; the channel is what gives way
+  // first, and it is repeated in the summary beside it.
+  'minmax(128px, 152px)', // adapter token
   // The radio summary is never dropped: which radio a client is on, and what
   // that radio is doing, is the reason this row exists on a two-band box.
   //
@@ -163,7 +170,7 @@ const IDENTITY_COLS = computed(() => [
   // moved as the card toggled -- 99px at a 1200px window, 146px at 1100px,
   // measured. The radio summary meanwhile sat in a 268px track it did not need,
   // empty on every wired client.
-  'minmax(0, 168px)',     // "ch 40 · 80 MHz · 802.11ax"
+  'minmax(0, 128px)',     // "80 MHz · 802.11ax" -- the channel is on the token
   // 268px fits a full IPv4 with room to spare and most of an IPv6; longer
   // addresses ellipsise and carry the full value in a tooltip.
   'minmax(96px, 268px)',  // address
@@ -245,8 +252,10 @@ const open = ref(false);
 const radioSummary = computed(() => {
   const r = props.client.radio_on;
   if (!r) return '';
+  // NOT the channel: the adapter token beside this carries it, and the same
+  // number twice in one row reads as two facts about the same radio. What is
+  // left is what the token leaves out, and what says how the link behaves.
   return [
-    r.channel ? `ch ${r.channel}` : '',
     r.width_mhz ? `${r.width_mhz} MHz` : '',
     r.mode || '',
   ].filter(Boolean).join(' · ');
@@ -567,16 +576,29 @@ function fmtBytes(n: number): string {
            behaves nothing like one on 5GHz at 80MHz -- so "wifi" alone stopped
            being an answer the moment the second radio came up. -->
       <span class="cell">
-        <!-- The BAND, not the interface name. "5 GHz" is the fact that means
-             something about how this client will behave; "wlan-usb" is an
-             implementation detail of which adapter happens to serve it, and it
-             is one hover away in the tooltip. -->
-        <span
-          v-if="client.medium" class="badge" :class="[client.medium, bandClass]"
+        <!-- The shared adapter token, the same one the rack fold and the
+             activity log use.
+
+             This cell used to show the BAND and keep the interface name in a
+             tooltip, on the reasoning that "5 GHz" says something about how a
+             client behaves while "wlan-usb" is an implementation detail. That
+             was right when the adapter was not a thing you could act on. It is
+             now: the rack above has a fold per adapter, and the name is what
+             names it -- so the token carries identity and the arrow goes
+             straight to the controls for the radio this client is on. The band
+             stays one hover away, which is the trade the old comment made in
+             the other direction. -->
+        <AdapterToken
+          v-if="client.present && client.port"
+          :name="client.port" jump
           :title="client.radio_on
-            ? `On ${client.radio_on.iface}, channel ${client.radio_on.channel}`
-            : (client.port ? `On ${client.port}` : '')"
-        >{{ client.radio_on?.band || client.port || client.medium }}</span>
+            ? `${client.radio_on.band}, channel ${client.radio_on.channel}`
+            : client.medium"
+        />
+        <span
+          v-else-if="client.medium" class="badge" :class="[client.medium, bandClass]"
+          title="Not attached to any adapter"
+        >{{ client.medium }}</span>
       </span>
 
       <!-- What that radio is doing, in the same words the diagram uses. Its own
@@ -778,6 +800,17 @@ function fmtBytes(n: number): string {
           :cap="downCap" :height="expandedH"
           @hovering="(v: boolean) => emit('hovering', v)"
         />
+        <!-- ON ADAPTER, inside the direction column rather than spanning both.
+             The two charts sit SIDE BY SIDE, each with its own plot area, so a
+             band across the whole card lines up with neither of them -- and a
+             band a few pixels out is worse than none, because it puts a roam
+             beside the wrong part of the trace. Alignment is the entire claim
+             this makes, so it is drawn where it can be true. -->
+        <OnAdapterStrip
+          v-if="series"
+          :t="series.t" :iface="series.iface" :chan="series.chan"
+          :window-ms="chartProps.windowMs" :now="chartProps.now"
+        />
         <p v-if="sweeping" class="meta swept-note">
           These controls are showing what the sweep is enforcing, not your saved
           settings — those are untouched and return when it ends.
@@ -807,6 +840,11 @@ function fmtBytes(n: number): string {
           :cap="playing ? (patRun?.up.rate_mbps ?? 0) : client.policy.up.rate_mbps"
           :height="expandedH"
           @hovering="(v: boolean) => emit('hovering', v)"
+        />
+        <OnAdapterStrip
+          v-if="series"
+          :t="series.t" :iface="series.iface" :chan="series.chan"
+          :window-ms="chartProps.windowMs" :now="chartProps.now"
         />
         <ShapeSliders
           :shape="upShape" dir="up"

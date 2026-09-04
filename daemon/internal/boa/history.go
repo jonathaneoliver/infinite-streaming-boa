@@ -69,6 +69,29 @@ type Sample struct {
 	// for a wireless one the station table has lost.
 	PhyDown float64 `json:"phy_down,omitempty"`
 	PhyUp   float64 `json:"phy_up,omitempty"`
+
+	// Iface is the bridge port this client was attached to at this instant,
+	// and Channel is the channel that radio was on.
+	//
+	// Recorded per sample for the same reason Cap and the PHY rates are: the
+	// client's CURRENT adapter says nothing about which one carried the
+	// traffic being looked at. A trace that fell at 14:32 means something
+	// entirely different if the client moved from 5GHz to 2.4GHz at 14:31, and
+	// on a two-radio box that is a routine thing to have happened. The
+	// interface draws these as a band under the chart on the same x-axis, so
+	// the move and its consequence are read together rather than inferred.
+	//
+	// Channel travels alongside because the adapter alone is not the whole
+	// story: a radio moved from 149 to 40 mid-trace is the same interface and
+	// a different link, and #195 is a reminder of how easily those two are
+	// conflated.
+	//
+	// EMPTY when the client is not attached -- a listed device that has gone
+	// away keeps its policy and its history, and the gap is the fact. Drawing
+	// it as a gap rather than as a continuation of the last adapter is what
+	// stops a chart implying a client was on a radio it had left.
+	Iface   string `json:"iface,omitempty"`
+	Channel int    `json:"channel,omitempty"`
 }
 
 const (
@@ -225,6 +248,8 @@ func (h *History) Window(dur time.Duration, maxPoints int) (series map[string][]
 		// first sample's value is taken instead, which matches the bucket's
 		// timestamp: buckets are stamped at their start.
 		var capFirst float64
+		var ifaceFirst string
+		var chanFirst int
 		var sumPD, sumPU float64
 
 		flush := func() {
@@ -242,6 +267,14 @@ func (h *History) Window(dur time.Duration, maxPoints int) (series map[string][]
 				// a bucket, and its mean is the honest summary of that span.
 				PhyDown: sumPD / float64(n),
 				PhyUp:   sumPU / float64(n),
+				// FIRST, for the same reason the cap is: these are categorical.
+				// There is no mean of "wlan0" and "wlan-usb", and a bucket
+				// spanning a roam has to name one of them. Taking the first
+				// matches the bucket's timestamp, which is its start -- so on a
+				// long range a roam appears at the boundary of the bucket it
+				// happened in rather than a bucket early.
+				Iface:   ifaceFirst,
+				Channel: chanFirst,
 			})
 			sumD, sumU, sumPD, sumPU, n = 0, 0, 0, 0, 0
 		}
@@ -256,6 +289,7 @@ func (h *History) Window(dur time.Duration, maxPoints int) (series map[string][]
 			}
 			if n == 0 {
 				capFirst = sm.Cap
+				ifaceFirst, chanFirst = sm.Iface, sm.Channel
 			}
 			sumD += sm.Down
 			sumU += sm.Up

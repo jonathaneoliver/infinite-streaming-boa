@@ -98,6 +98,11 @@ type Engine struct {
 	radioMu    sync.Mutex
 	radioLocks map[string]*sync.Mutex
 
+	// airtime holds the last survey read per radio and the busy fraction
+	// derived from the delta. Sampled on its own slow timer, never on the tick:
+	// see airtime.go for why fifteen seconds is the floor.
+	airtime airtimeWatch
+
 	// pendingSteers is every 802.11v transition request still waiting for the
 	// client's answer, keyed by MAC. The answer arrives asynchronously on the
 	// monitor connection, so it has to be matched against something; and a
@@ -291,6 +296,9 @@ func (e *Engine) Start() {
 	// Everything else here talks to hostapd in request/reply, which cannot see
 	// a client's answer to a steer -- see hostapdmonitor.go.
 	e.watchHostapdEvents()
+	// How busy each radio's channel is, sampled slowly. Its own goroutine
+	// because the interval that makes it meaningful is far longer than a tick.
+	go e.watchAirtime()
 	// Devices announce only occasionally -- on join, on wake, when services
 	// change -- so an in-memory-only name table means every daemon restart
 	// drops every client back to a bare MAC until the next announcement,
@@ -753,6 +761,21 @@ func (e *Engine) tick() {
 		return c
 	}
 
+	// Each radio's channel, read BEFORE the lock below and looked up inside it.
+	//
+	// radioOnFor takes e.mu itself, and the section that follows HOLDS it.
+	// Calling it in there deadlocks the tick against its own non-reentrant
+	// mutex, and every HTTP handler then blocks behind the tick: measured
+	// 2026-09-04, the box went on listening on :80 and answered nothing, from
+	// localhost included. It also does a hostapd round trip on a cache miss,
+	// which has no business happening once per client inside a lock.
+	chanByIface := map[string]int{}
+	for _, w := range e.cfg.WlanPorts {
+		if r := e.radioOnFor(w); r != nil {
+			chanByIface[w] = r.Channel
+		}
+	}
+
 	e.mu.Lock()
 	for i := range clients {
 		c := &clients[i]
@@ -796,6 +819,16 @@ func (e *Engine) tick() {
 		if c.Station != nil {
 			phyDown, phyUp = c.Station.TxPhyMbps, c.Station.RxPhyMbps
 		}
+		// Where it was attached, and on what channel. Only while PRESENT: a
+		// listed device that has gone away keeps its port for display, and
+		// recording that as the sample's adapter would draw an unbroken band
+		// under a chart of a client that was not there.
+		var sIface string
+		var sChan int
+		if c.Present {
+			sIface = c.Port
+			sChan = chanByIface[c.Port] // zero for a wired port, which has none
+		}
 		e.hist.Add(c.MAC, Sample{
 			T:       now.UnixMilli(),
 			Down:    c.DownCounters.ThroughputMbps,
@@ -803,6 +836,8 @@ func (e *Engine) tick() {
 			Cap:     c.DownCounters.CapMbps,
 			PhyDown: phyDown,
 			PhyUp:   phyUp,
+			Iface:   sIface,
+			Channel: sChan,
 		})
 	}
 	if e.rev%60 == 0 {
