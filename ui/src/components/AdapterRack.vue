@@ -31,8 +31,6 @@ const props = defineProps<{
   /** Per-device history, keyed by MAC -- the same object the client cards read,
    *  so a band in the fold and the line on the card cannot disagree. */
   series?: Record<string, Series>;
-  /** The window the client charts are showing, so the two spans compare. */
-  rangeSec?: number;
 }>();
 
 const PROFILES = [
@@ -245,13 +243,15 @@ function degraded(i: IfaceInfo): boolean {
         <!-- WHAT IT IS CARRYING, with the facts rather than with the
              controls: this is status, and MOVE IT still leads the controls
              below it. It answers the question that sits between the row above
-             and the client cards below -- how the radio's capacity is being
+             and the client cards below -- how the adapter's capacity is being
              divided right now. A stream that halved because the radio halved
-             looks identical, on its own card, to one that halved by itself. -->
+             looks identical, on its own card, to one that halved by itself.
+             Gated on having DEVICES, not on being a radio: lan0 carries traffic
+             and divides it between devices exactly as a radio does, and gating
+             on `r.ap` silently left the wired port with no chart at all. -->
         <AdapterStack
-          v-if="series && r.ap"
+          v-if="series && on(r).length"
           :iface="r.name" :clients="on(r)" :series="series"
-          :range-sec="rangeSec ?? 300"
         />
 
         <p v-if="degraded(r)" class="notice bad inline">

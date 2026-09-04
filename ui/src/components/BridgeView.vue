@@ -23,9 +23,10 @@ import { setAdapterIfaces } from '@/composables/useAdapters';
 const props = defineProps<{
   active: boolean;
   clients?: Client[];
-  /** Passed straight through to the rack's per-adapter charts. */
+  /** Passed straight through to the rack's per-adapter charts. The chart
+   *  SETTINGS are not passed: those live in the shared prefs store, so the fold
+   *  and the client cards cannot be looking at different ranges. */
   series?: Record<string, Series>;
-  rangeSec?: number;
 }>();
 const activeRef = computed(() => props.active) as Ref<boolean>;
 const bridge = useBridge(activeRef);
@@ -154,7 +155,7 @@ const pending = ref('');
 
       <AdapterRack
         :bridge="bridge" :on-adapter="onAdapter"
-        :series="series" :range-sec="rangeSec"
+        :series="series"
         v-model:outage="outage"
       >
         <template #plan="{ radio }">

@@ -4,6 +4,7 @@ import type {
   Capabilities, ChartPrefs, Client, Pattern, Series, Shape, Snapshot, SortMode, YMode,
 } from '@/types';
 import { SUSTAINED_SEC, sortClients } from '@/types';
+import { chartPrefs } from '@/composables/useChartPrefs';
 import type { useDevice } from '@/composables/useDevice';
 import ClientCard from '@/components/ClientCard.vue';
 import ChartToolbar from '@/components/ChartToolbar.vue';
@@ -161,41 +162,8 @@ const anyExpanded = computed(() => clients.value.some((c) => !isFolded(c.mac)));
  * working setup, and having it reset on every reload makes the page feel like
  * it forgets what you were doing.
  */
-const CHART_KEY = 'boa.chart';
-const CHART_DEFAULTS: ChartPrefs = {
-  rangeSec: 300, yMode: 'auto', yManual: 10, showPhy: false,
-  // Both on by default: the live trace is the record, and the mean is the
-  // answer to the question most often being asked of it.
-  showLive: true, showSustained: true, sustainedSec: SUSTAINED_SEC,
-  // Off by default: the taller plot costs how many devices are visible at once,
-  // which is the more common need.
-  tallCharts: false,
-  // Both on: hiding a direction is a deliberate act, and a card that silently
-  // omitted one would be a card lying about what it is conditioning.
-  showDown: true, showUp: true,
-};
+const chart = chartPrefs;
 
-function loadChart(): ChartPrefs {
-  try {
-    // Merged over the defaults, so a stored object written by an older build
-    // (or a hand-edited one) cannot leave a field undefined.
-    return { ...CHART_DEFAULTS, ...JSON.parse(localStorage.getItem(CHART_KEY) ?? '{}') };
-  } catch {
-    return { ...CHART_DEFAULTS };
-  }
-}
-const chart = ref<ChartPrefs>(loadChart());
-watch(
-  chart,
-  (v) => {
-    try {
-      localStorage.setItem(CHART_KEY, JSON.stringify(v));
-    } catch {
-      /* private windows and blocked storage must not break the page */
-    }
-  },
-  { deep: true },
-);
 // A longer range needs history the page has not fetched yet; a shorter one is
 // already in memory. useSnapshot decides which, so this can just say what is
 // wanted.

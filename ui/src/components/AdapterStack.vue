@@ -3,6 +3,7 @@ import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
 import type { Series } from '@/types';
 import { clientColour } from '@/composables/useClientColours';
 import { axisDecimals, axisTicks, niceMax, spanLabel } from '@/composables/chartAxis';
+import { chartHeight, chartPrefs } from '@/composables/useChartPrefs';
 
 /**
  * What one adapter is carrying, stacked by device.
@@ -36,14 +37,21 @@ const props = defineProps<{
   clients: { mac: string; label: string }[];
   /** Per-device history, keyed by MAC -- the same object the client cards read. */
   series: Record<string, Series>;
-  /** The window on screen, shared with the client charts so the two compare. */
-  rangeSec: number;
 }>();
 
-/* TrafficChart's own non-compact values, so a fold and a card line up. */
-const H = 132;
+/*
+ * Padding and HEIGHT both come from the client charts, the height through the
+ * shared prefs rather than as a constant here.
+ *
+ * Hard-coding it was a real bug and not a cosmetic one: the fold drew at the
+ * default 196 while the cards below were set to tall, so the very same ceiling
+ * of 1000 Mbit/s came out as three gridlines up here and eleven down there.
+ * Same rule, same data, two axes that did not look like each other -- which is
+ * exactly the impression a shared axis module was meant to prevent.
+ */
 const PAD = { l: 40, r: 68, t: 10, b: 20 };
-const PLOT_H = H - PAD.t - PAD.b;
+const H = computed(() => chartHeight(chartPrefs.value));
+const PLOT_H = computed(() => H.value - PAD.t - PAD.b);
 
 const wrap = ref<HTMLElement | null>(null);
 const w = ref(320);
@@ -67,7 +75,7 @@ const chartW = computed(() =>
 );
 const plotW = computed(() => Math.max(40, chartW.value - PAD.l - PAD.r));
 
-const windowMs = computed(() => props.rangeSec * 1000);
+const windowMs = computed(() => chartPrefs.value.rangeSec * 1000);
 const span = computed(() => spanLabel(windowMs.value));
 
 interface Band {
@@ -166,7 +174,7 @@ function totals(bands: Band[]): number[] {
 const xAt = (t: number) =>
   PAD.l + ((t - start.value) / windowMs.value) * plotW.value;
 const yAt = (v: number, max: number) =>
-  PAD.t + PLOT_H - Math.max(0, Math.min(1, v / max)) * PLOT_H;
+  PAD.t + PLOT_H.value - Math.max(0, Math.min(1, v / max)) * PLOT_H.value;
 
 /**
  * One band's filled area: along its own top edge, back along the top edge of
@@ -211,7 +219,7 @@ const charts = computed(() =>
     // downlink, and one ceiling for both would flatten upload into the axis.
     // The two axes are what stop side-by-side from reading as same-scale.
     const max = niceMax(Math.max(peak * 1.15, 1));
-    const dp = axisDecimals(max, PLOT_H);
+    const dp = axisDecimals(max, PLOT_H.value);
     return {
       dir,
       title: dir === 'down' ? 'download' : 'upload',
@@ -219,9 +227,9 @@ const charts = computed(() =>
       max,
       peak,
       avg: tot.length ? tot.reduce((a, b) => a + b, 0) / tot.length : 0,
-      ticks: axisTicks(max, PLOT_H).map((t) => ({
+      ticks: axisTicks(max, PLOT_H.value).map((t) => ({
         key: t.v,
-        y: PAD.t + PLOT_H - t.frac * PLOT_H,
+        y: PAD.t + PLOT_H.value - t.frac * PLOT_H.value,
         label: t.v.toFixed(dp),
       })),
       // The LAST recorded total, not a separate live reading: the figure and

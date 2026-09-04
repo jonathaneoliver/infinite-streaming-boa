@@ -8,7 +8,7 @@ import ClientsView from '@/components/ClientsView.vue';
 import BridgeView from '@/components/BridgeView.vue';
 import EventLog from '@/components/EventLog.vue';
 
-const { snap, connected, transport, series, bucketMs, rangeSec, setRange } = useSnapshot();
+const { snap, connected, transport, series, bucketMs, setRange } = useSnapshot();
 const dev = useDevice();
 
 /*
@@ -258,7 +258,7 @@ appliance watching itself."
          they are what the page is for. -->
     <BridgeView
       :active="true" :clients="snap?.clients"
-      :series="series" :range-sec="rangeSec"
+      :series="series"
     />
     <ClientsView
       :snap="snap" :series="series" :bucket-ms="bucketMs" :caps="caps"
