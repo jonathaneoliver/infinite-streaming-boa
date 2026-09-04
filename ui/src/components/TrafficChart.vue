@@ -485,7 +485,18 @@ const phyPaths = computed(() =>
   props.showPhy && props.phys.length
     ? pathsOf(segmentsOf(viewOf(props.phys).map((p) => ({
         t: p.t,
-        v: p.v && p.v > 0 ? p.v : null,
+        // ABOVE THE AXIS IS ABSENT, NOT PINNED TO THE TOP.
+        //
+        // yAt clamps, so a 1200 Mbit/s ceiling on a 120 Mbit/s axis would draw
+        // as a flat line along the top of the pane -- which reads as a link
+        // running at exactly its limit for the whole window, the opposite of
+        // what it means. On "auto" the axis follows the traffic and the ceiling
+        // is usually far above it, so that is the common case, not an edge one.
+        //
+        // Nulled instead, so segmentsOf breaks the line and the key disappears
+        // with it. "to PHY" is the mode that brings it into view; here its
+        // absence is the honest answer.
+        v: p.v && p.v > 0 && p.v <= yMax.value ? p.v : null,
       }))))
     : [],
 );
