@@ -678,7 +678,46 @@ func MergePatterns(name string, pats []Pattern) (Pattern, error) {
 		}
 		keys = append(keys, Keyframe{AtSec: t, Down: down, Up: up, Ease: EaseHold})
 	}
-	return Pattern{Name: name, Keys: keys, Loop: true}, nil
+
+	// The link lane, carried through the same repeat and stretch as the
+	// keyframes above.
+	//
+	// Leaving it behind was issue #207, and it was worse than a partial merge:
+	// linkPattern gives the Group A patterns two CLEAN keyframes on purpose, so
+	// they can layer over whatever owns the rate. A merge that kept only
+	// keyframes therefore took drop_1m, contributed nothing from it in either
+	// lane, and handed back the other pattern unchanged while calling it a
+	// merge. Silent, and it looked like it worked.
+	//
+	// DurSec stretches with everything else. A deadzone that stays 10s while
+	// the pattern around it grows by 9% is not the effect that was merged, and
+	// enlarging is the safe direction for exactly the reason the length note
+	// above gives: these effects have minimum durations, not maximum ones.
+	var links []LinkEvent
+	for i, p := range pats {
+		if len(p.Links) == 0 {
+			continue
+		}
+		f := total / (float64(reps[i]) * durs[i])
+		for r := 0; r < reps[i]; r++ {
+			for _, ev := range p.Links {
+				at := round2((float64(r)*durs[i] + ev.AtSec) * f)
+				// The seam repeats the start, as every pattern does, so an
+				// event landing exactly on it would fire twice a lap.
+				if at < 0 || at >= total {
+					continue
+				}
+				ev.AtSec = at
+				if ev.DurSec > 0 {
+					ev.DurSec = round2(ev.DurSec * f)
+				}
+				links = append(links, ev)
+			}
+		}
+	}
+	sort.Slice(links, func(a, b int) bool { return links[a].AtSec < links[b].AtSec })
+
+	return Pattern{Name: name, Keys: keys, Links: links, Loop: true}, nil
 }
 
 // maxMergeRun bounds how much longer a merge may run than its longest source.
