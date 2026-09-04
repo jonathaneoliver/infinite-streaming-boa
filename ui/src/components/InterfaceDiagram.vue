@@ -58,9 +58,18 @@ const downstream = computed(() =>
 const NODE_W = 190;
 const NODE_H = 74;
 // Sized for the CONTROLS, not the boxes. Each downstream node's buttons and
-// channel plan overhang its rectangle by 20 either side, so a gap chosen for
-// bare rectangles put one radio's channel plan underneath the next radio's.
-const GAP = 64;
+// channel plan overhang its rectangle by PLAN_BLEED either side, so a gap
+// chosen for bare rectangles put one radio's channel plan underneath the next
+// radio's.
+//
+// Wide enough for the WIDEST plan, which is a 5GHz radio's: nine 20MHz channels
+// across two blocks, where 2.4GHz has three. At the old 64 the columns came to
+// ~26px and "149" did not fit in one -- it ellipsised to "1…". This costs
+// nothing at three downstream nodes: the row is still narrower than the 940
+// minimum canvas, so the picture does not grow, the nodes just sit further
+// apart.
+const PLAN_BLEED = 65;
+const GAP = 2 * PLAN_BLEED + 20; // 20px of clear air between adjacent plans
 
 // Downstream nodes are centred as a row under the bridge, so the picture stays
 // balanced whether there is one radio or three.
@@ -70,7 +79,14 @@ const rowWidth = computed(() => {
 });
 // The canvas grows to hold the row rather than the row being squeezed into a
 // fixed canvas: a third radio must push the picture wider, not overlap it.
-const W = computed(() => Math.max(940, rowWidth.value + 60));
+//
+// It must hold the PLANS, not the rectangles: the outermost nodes' plans bleed
+// PLAN_BLEED past their boxes on the outward side, and a canvas sized to the
+// boxes alone clips them. Measured after widening the bleed for the 5GHz plan,
+// the left edge of "36" and the whole 20/40/80 label column fell off the
+// canvas, because the row was centred inside a width that never accounted for
+// the overhang.
+const W = computed(() => Math.max(940, rowWidth.value + 2 * PLAN_BLEED + 20));
 const rowX = computed(() => (W.value - rowWidth.value) / 2);
 const nodeX = (i: number) => rowX.value + i * (NODE_W + GAP);
 
@@ -220,7 +236,29 @@ interface PlanRow {
   cells: PlanCell[];
 }
 
-const BREAK: PlanCell = { channels: [], label: '', span: 0, gap: true };
+const BREAK: PlanCell = { channels: [], label: '', span: 1, gap: true };
+
+/**
+ * The column track set, shared by every row of one radio's plan.
+ *
+ * A GRID rather than a flex row per width, because the whole claim the picture
+ * makes is that an 80MHz cell is exactly the four 20MHz cells above it. Under
+ * flex it was not: the rows hold different numbers of children, so the 2px gaps
+ * between them came to 22px on the 20MHz row and 10px on the 80MHz row, and
+ * every row divided a different amount of space. The drift was small enough to
+ * look like rounding and is the reason a cell could be a few px narrower than
+ * the one beside it.
+ *
+ * One track per 20MHz channel, a fixed one for each break, and one shared
+ * definition for all three rows -- so a cell spanning two tracks also spans the
+ * gap between them and lands exactly on the pair it is made of.
+ */
+function planCols(groups: number[][]): string {
+  const blocks = groups
+    .map((g) => `repeat(${g.length}, minmax(0, 1fr))`)
+    .join(' 7px '); // 7px: the break between blocks, one track wide
+  return `14px ${blocks}`; // 14px: the width label down the left
+}
 
 /** A row of cells at one width, laid out group by group with a break between
  *  groups so every row breaks in the same place and the columns stay aligned. */
@@ -239,35 +277,49 @@ function planRow(groups: number[][], width: number,
  *  cells it is supposed to sit beneath. */
 const filler = (g: number[]): PlanCell[] => [{ channels: [], label: '', span: g.length }];
 
-function planRows(i: IfaceInfo): PlanRow[] {
+/** The blocks a radio's band is drawn in, in order. 2.4GHz is a single block:
+ *  1/6/11 are one contiguous set of choices with no break in them. */
+function planGroups(i: IfaceInfo): number[][] {
   const chans = channelsFor(i);
   if (!chans.length) return [];
+  return chans[0] <= 14 ? [chans] : [...BLOCKS_5, SOLO_5];
+}
+
+/** The rows and the track set together, so the template cannot pair a row with
+ *  a grid definition built from different groups. */
+function plan(i: IfaceInfo): { cols: string; rows: PlanRow[] } | null {
+  const groups = planGroups(i);
+  if (!groups.length) return null;
+  const cols = planCols(groups);
   // 2.4GHz is offered at 20MHz only: 1/6/11 are the only non-overlapping
   // choices, 40MHz eats two of the three, and 80MHz does not exist there.
-  if (chans[0] <= 14) {
-    return [{
-      width: 20,
-      cells: chans.map((c) => ({ channels: [c], label: String(c), span: 1 })),
-    }];
+  if (groups[0][0] <= 14) {
+    return {
+      cols,
+      rows: [planRow(groups, 20, (g) =>
+        g.map((c) => ({ channels: [c], label: String(c), span: 1 })))],
+    };
   }
-  const groups = [...BLOCKS_5, SOLO_5];
-  return [
-    planRow(groups, 20, (g) =>
-      g.map((c) => ({ channels: [c], label: String(c), span: 1 }))),
-    planRow(groups, 40, (g) => {
-      if (g.length < 2) return filler(g);
-      const pairs: PlanCell[] = [];
-      for (let n = 0; n < g.length; n += 2) {
-        const p = g.slice(n, n + 2);
-        pairs.push({ channels: p, label: `${p[0]}–${p[p.length - 1]}`, span: p.length });
-      }
-      return pairs;
-    }),
-    planRow(groups, 80, (g) =>
-      g.length < 4
-        ? filler(g)
-        : [{ channels: g, label: `${g[0]}–${g[g.length - 1]}`, span: g.length }]),
-  ];
+  return {
+    cols,
+    rows: [
+      planRow(groups, 20, (g) =>
+        g.map((c) => ({ channels: [c], label: String(c), span: 1 }))),
+      planRow(groups, 40, (g) => {
+        if (g.length < 2) return filler(g);
+        const pairs: PlanCell[] = [];
+        for (let n = 0; n < g.length; n += 2) {
+          const p = g.slice(n, n + 2);
+          pairs.push({ channels: p, label: `${p[0]}–${p[p.length - 1]}`, span: p.length });
+        }
+        return pairs;
+      }),
+      planRow(groups, 80, (g) =>
+        g.length < 4
+          ? filler(g)
+          : [{ channels: g, label: `${g[0]}–${g[g.length - 1]}`, span: g.length }]),
+    ],
+  };
 }
 
 /** The cell the radio is running right now: same width, and holding its channel. */
@@ -380,7 +432,8 @@ function otherRadio(i: IfaceInfo): string {
              keyboard-reachable, and styled like every other button here. -->
         <foreignObject
           v-if="i.wireless && i.ap"
-          :x="nodeX(n) - 20" :y="DOWN_Y + NODE_H + 6" :width="NODE_W + 40" height="128"
+          :x="nodeX(n) - PLAN_BLEED" :y="DOWN_Y + NODE_H + 6"
+          :width="NODE_W + 2 * PLAN_BLEED" height="128"
         >
           <!-- Two rows, grouped as the panel below is: what changes WHO IS
                CONNECTED on top, the rest under it. The picture is where you are
@@ -425,9 +478,12 @@ function otherRadio(i: IfaceInfo): string {
                proportion to its bandwidth. Picking a cell picks a channel AND a
                width, which is the choice that actually exists. -->
           <div
-            v-if="planRows(i).length" class="plan" :class="{ working: busy }"
+            v-if="plan(i)" class="plan" :class="{ working: busy }"
           >
-            <div v-for="row in planRows(i)" :key="row.width" class="plan-row">
+            <div
+              v-for="row in plan(i)!.rows" :key="row.width"
+              class="plan-row" :style="{ gridTemplateColumns: plan(i)!.cols }"
+            >
               <span class="lbl">{{ row.width }}</span>
               <template v-for="(cell, n) in row.cells" :key="`${row.width}-${n}`">
                 <!-- The break between the two 5GHz blocks. The DFS range it
@@ -438,13 +494,13 @@ function otherRadio(i: IfaceInfo): string {
                      cells above and below still line up. -->
                 <span
                   v-else-if="!cell.channels.length"
-                  class="plan-filler" :style="{ flexGrow: cell.span }"
+                  class="plan-filler" :style="{ gridColumn: `span ${cell.span}` }"
                   aria-hidden="true"
                 />
                 <button
                   v-else
                   class="cell" :class="[cellClass(i, cell), { here: isCurrent(i, row, cell) }]"
-                  :style="{ flexGrow: cell.span }"
+                  :style="{ gridColumn: `span ${cell.span}` }"
                   :disabled="busy || isCurrent(i, row, cell)"
                   :title="cellNote(i, row, cell)"
                   @click="emit('action', 'channel', i.name,
@@ -527,15 +583,23 @@ svg { width: 100%; height: auto; display: block; }
    the meaning. Nothing is centred and nothing is padded to fit: an 80MHz cell
    is exactly as wide as the four 20MHz cells above it because it is them. */
 .plan { font-family: var(--sans); margin-top: 2px; }
-.plan-row { display: flex; align-items: stretch; gap: 2px; margin-bottom: 2px; }
-/* Fixed, not proportional, and the same in every row: the two 5GHz blocks are
-   ~500MHz apart with the whole DFS range between them, so this stands for a
-   discontinuity rather than measuring one. Every row breaks in the same place,
-   which is what keeps the widths stacked. */
-.plan-gap { flex: none; width: 7px; }
+/* Grid, not flex: every row shares one track set, so a cell spanning two tracks
+   spans the gap between them too and lands exactly on the pair it is made of.
+   Under flex each row divided a different amount of space, because the rows
+   hold different numbers of children and so a different number of 2px gaps. */
+.plan-row {
+  display: grid;
+  align-items: stretch;
+  gap: 2px;
+  margin-bottom: 2px;
+}
+/* The break between the two 5GHz blocks: its own fixed track, the same in every
+   row. They are ~500MHz apart with the whole DFS range between them, so this
+   stands for a discontinuity rather than measuring one. */
+.plan-gap { }
 /* Holds a column open where a block has no cell at this width -- 165 has no
    40MHz partner. Invisible, but it occupies the track. */
-.plan-filler { flex-basis: 0; min-width: 0; }
+.plan-filler { min-width: 0; }
 .plan .lbl {
   font-size: 9px;
   color: var(--ink-faint);
@@ -545,12 +609,19 @@ svg { width: 100%; height: auto; display: block; }
   line-height: 16px;
 }
 .cell {
-  flex-basis: 0;
   min-width: 0;
   height: 16px;
-  padding: 0;
+  padding: 0 1px;
   font-size: 10px;
   line-height: 1;
+  /* One line, always. The cell is 16px tall, so a label that wraps loses its
+     second line behind `overflow: hidden` -- "149–153" did exactly that, being
+     a couple of px wider than "157–161" beside it because proportional figures
+     make "1" narrow and it has one fewer of them. Ellipsis is the fallback if a
+     label ever genuinely cannot fit; wrapping is not a fallback at this height,
+     it is a label with its middle cut out. */
+  white-space: nowrap;
+  text-overflow: ellipsis;
   border: 1px solid var(--line);
   border-radius: 3px;
   background: var(--panel-2);
