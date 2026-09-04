@@ -196,7 +196,13 @@ func (a *API) postMoveChannel(w http.ResponseWriter, r *http.Request) {
 	dropped := len(StationDump(iface))
 	now, err := a.e.MoveChannel(iface, ch, width)
 	if err != nil {
-		if _, known := apChannels[ch]; !known {
+		// 400 for an argument this box will never accept, 502 for hostapd
+		// declining one it might have -- the same split postChannel makes.
+		// A width the channel cannot carry belongs on the 400 side: 165 at
+		// 80MHz is refused here every time, never attempted, so reporting it
+		// as an upstream failure would point at the wrong thing.
+		known, ok := apChannels[ch]
+		if !ok || width > known.maxWidth() {
 			writeErr(w, http.StatusBadRequest, err.Error())
 			return
 		}
@@ -241,9 +247,12 @@ func (a *API) postChannel(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := a.e.ChanSwitch(iface, ch, width); err != nil {
 		// 400 for an argument this box will never accept, 502 for hostapd
-		// declining one it might have.
+		// declining one it might have. A width wider than the channel allows
+		// is the first kind: 165 at 80MHz is refused here every time, not by
+		// hostapd on the day.
 		code := http.StatusBadGateway
-		if _, ok := apChannels[ch]; !ok || width != 20 && width != 40 && width != 80 {
+		known, ok := apChannels[ch]
+		if !ok || width != 20 && width != 40 && width != 80 || width > known.maxWidth() {
 			code = http.StatusBadRequest
 		}
 		writeErr(w, code, err.Error())

@@ -412,6 +412,19 @@ damages packets, never link state.
   counters are zero, and one driver measured here mislabels the frequency
   outright. Choosing a quieter channel needs a radio that is not serving, and
   that is left unbuilt rather than approximated.
+- A radio is moved by **picking a cell from its band plan**, not from two
+  independent dropdowns — a cell is a channel and a width together, which is
+  the choice that actually exists. Only channels the box will accept are drawn:
+  2.4GHz 1/6/11, and the non-DFS 5GHz channels 36/40/44/48 and
+  149/153/157/161/165. DFS is excluded because neither radio can serve an
+  access point on one.
+- The two 5GHz blocks are drawn **with a break between them**, because they are
+  not adjacent: the whole DFS range sits in the gap. Offering both is what lets
+  two 5GHz radios sit somewhere they are not inside each other's spectrum.
+  Widths a channel cannot do are **not offered** rather than silently narrowed —
+  165 has no channel above it that may be radiated on, so it appears at 20MHz
+  only. Where an automatic move must narrow a radio to fit the channel it chose,
+  it says so.
 
 ### 6.7 Measuring
 

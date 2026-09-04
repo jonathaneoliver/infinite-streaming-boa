@@ -160,14 +160,26 @@ const unwatched = (i: IfaceInfo) => i.wireless && !i.serving;
 /**
  * The channels this radio can be moved to: its own band's, and only those.
  *
- * The daemon's allowlist, mirrored -- 2.4GHz 1/6/11 and 5GHz 36/40/44/48, with
- * DFS excluded because the Pi cannot serve an access point on one. Filtered to
- * the band the radio is already on: a move is a down-and-up on the same phy,
- * not a band change, and offering 5GHz channels on a 2.4GHz radio would be
- * offering something the daemon then refuses.
+ * The daemon's allowlist, mirrored -- 2.4GHz 1/6/11 and 5GHz 36/40/44/48 plus
+ * 149/153/157/161/165, with DFS excluded because the Pi cannot serve an access
+ * point on one. Filtered to the band the radio is already on: a move is a
+ * down-and-up on the same phy, not a band change, and offering 5GHz channels
+ * on a 2.4GHz radio would be offering something the daemon then refuses.
+ *
+ * The 5GHz set is kept as the BLOCKS it physically is, not as one flat list.
+ * 36-48 and 149-161 are each a single 80MHz block, and the entire DFS range
+ * sits between them -- so the two cannot be paired across, and drawing them as
+ * one ruler would claim a 40MHz cell spanning 48 and 149 exists.
  */
 const CHANNELS_24 = [1, 6, 11];
-const CHANNELS_5 = [36, 40, 44, 48];
+const BLOCKS_5 = [
+  [36, 40, 44, 48],
+  [149, 153, 157, 161],
+];
+/** 165 is offered, but alone: `iw phy` marks the channel above it "no IR", so
+ *  it has no 40MHz partner and therefore no wider cell of any kind. */
+const SOLO_5 = [165];
+const CHANNELS_5 = [...BLOCKS_5.flat(), ...SOLO_5];
 function channelsFor(i: IfaceInfo): number[] {
   const ch = i.ap?.channel ?? 0;
   if (!ch) return [];
@@ -191,34 +203,71 @@ function channelsFor(i: IfaceInfo): number[] {
  * were always one decision wearing a disguise.
  */
 interface PlanCell {
+  /** Empty means this is not a choice: either a filler holding a column open,
+   *  or the break between the two 5GHz blocks. */
   channels: number[];
   label: string;
+  /** How many 20MHz slots wide, so a cell sits under exactly the cells it is
+   *  made of. Taken from the cell rather than from channels.length, because a
+   *  filler has no channels and must still hold its width. */
+  span: number;
+  /** The gap between blocks: fixed width, not proportional, since the spectrum
+   *  it stands for is not to scale with anything else here. */
+  gap?: boolean;
 }
 interface PlanRow {
   width: number;
   cells: PlanCell[];
 }
 
+const BREAK: PlanCell = { channels: [], label: '', span: 0, gap: true };
+
+/** A row of cells at one width, laid out group by group with a break between
+ *  groups so every row breaks in the same place and the columns stay aligned. */
+function planRow(groups: number[][], width: number,
+                 cellsFor: (g: number[]) => PlanCell[]): PlanRow {
+  const cells: PlanCell[] = [];
+  groups.forEach((g, n) => {
+    if (n) cells.push(BREAK);
+    cells.push(...cellsFor(g));
+  });
+  return { width, cells };
+}
+
+/** A group too small for this width contributes a filler, not nothing: drop the
+ *  cell entirely and every cell after it slides left out from under the 20MHz
+ *  cells it is supposed to sit beneath. */
+const filler = (g: number[]): PlanCell[] => [{ channels: [], label: '', span: g.length }];
+
 function planRows(i: IfaceInfo): PlanRow[] {
   const chans = channelsFor(i);
   if (!chans.length) return [];
   // 2.4GHz is offered at 20MHz only: 1/6/11 are the only non-overlapping
   // choices, 40MHz eats two of the three, and 80MHz does not exist there.
-  const rows: PlanRow[] = [
-    { width: 20, cells: chans.map((c) => ({ channels: [c], label: String(c) })) },
-  ];
-  if (chans[0] <= 14) return rows;
-  const pairs: PlanCell[] = [];
-  for (let n = 0; n < chans.length; n += 2) {
-    const g = chans.slice(n, n + 2);
-    pairs.push({ channels: g, label: `${g[0]}–${g[g.length - 1]}` });
+  if (chans[0] <= 14) {
+    return [{
+      width: 20,
+      cells: chans.map((c) => ({ channels: [c], label: String(c), span: 1 })),
+    }];
   }
-  rows.push({ width: 40, cells: pairs });
-  rows.push({
-    width: 80,
-    cells: [{ channels: chans, label: `${chans[0]}–${chans[chans.length - 1]}` }],
-  });
-  return rows;
+  const groups = [...BLOCKS_5, SOLO_5];
+  return [
+    planRow(groups, 20, (g) =>
+      g.map((c) => ({ channels: [c], label: String(c), span: 1 }))),
+    planRow(groups, 40, (g) => {
+      if (g.length < 2) return filler(g);
+      const pairs: PlanCell[] = [];
+      for (let n = 0; n < g.length; n += 2) {
+        const p = g.slice(n, n + 2);
+        pairs.push({ channels: p, label: `${p[0]}–${p[p.length - 1]}`, span: p.length });
+      }
+      return pairs;
+    }),
+    planRow(groups, 80, (g) =>
+      g.length < 4
+        ? filler(g)
+        : [{ channels: g, label: `${g[0]}–${g[g.length - 1]}`, span: g.length }]),
+  ];
 }
 
 /** The cell the radio is running right now: same width, and holding its channel. */
@@ -380,15 +429,28 @@ function otherRadio(i: IfaceInfo): string {
           >
             <div v-for="row in planRows(i)" :key="row.width" class="plan-row">
               <span class="lbl">{{ row.width }}</span>
-              <button
-                v-for="cell in row.cells" :key="cell.label"
-                class="cell" :class="[cellClass(i, cell), { here: isCurrent(i, row, cell) }]"
-                :style="{ flexGrow: cell.channels.length }"
-                :disabled="busy || isCurrent(i, row, cell)"
-                :title="cellNote(i, row, cell)"
-                @click="emit('action', 'channel', i.name,
-                              { channel: cell.channels[0], width: row.width })"
-              >{{ cell.label }}</button>
+              <template v-for="(cell, n) in row.cells" :key="`${row.width}-${n}`">
+                <!-- The break between the two 5GHz blocks. The DFS range it
+                     stands for is 500MHz wide and not offered, so it is drawn
+                     as a break rather than to scale. -->
+                <span v-if="cell.gap" class="plan-gap" aria-hidden="true" />
+                <!-- A width this block cannot do: holds the column open so the
+                     cells above and below still line up. -->
+                <span
+                  v-else-if="!cell.channels.length"
+                  class="plan-filler" :style="{ flexGrow: cell.span }"
+                  aria-hidden="true"
+                />
+                <button
+                  v-else
+                  class="cell" :class="[cellClass(i, cell), { here: isCurrent(i, row, cell) }]"
+                  :style="{ flexGrow: cell.span }"
+                  :disabled="busy || isCurrent(i, row, cell)"
+                  :title="cellNote(i, row, cell)"
+                  @click="emit('action', 'channel', i.name,
+                                { channel: cell.channels[0], width: row.width })"
+                >{{ cell.label }}</button>
+              </template>
             </div>
           </div>
         </foreignObject>
@@ -466,6 +528,14 @@ svg { width: 100%; height: auto; display: block; }
    is exactly as wide as the four 20MHz cells above it because it is them. */
 .plan { font-family: var(--sans); margin-top: 2px; }
 .plan-row { display: flex; align-items: stretch; gap: 2px; margin-bottom: 2px; }
+/* Fixed, not proportional, and the same in every row: the two 5GHz blocks are
+   ~500MHz apart with the whole DFS range between them, so this stands for a
+   discontinuity rather than measuring one. Every row breaks in the same place,
+   which is what keeps the widths stacked. */
+.plan-gap { flex: none; width: 7px; }
+/* Holds a column open where a block has no cell at this width -- 165 has no
+   40MHz partner. Invisible, but it occupies the track. */
+.plan-filler { flex-basis: 0; min-width: 0; }
 .plan .lbl {
   font-size: 9px;
   color: var(--ink-faint);

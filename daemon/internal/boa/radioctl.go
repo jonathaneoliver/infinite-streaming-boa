@@ -39,26 +39,82 @@ type apChannel struct {
 	// says nothing about the cause.
 	SecOffset int
 	// Center80 is the centre frequency of the 80MHz block containing this
-	// channel. 5210 MHz (channel 42) covers all four permitted 5GHz channels.
-	// Zero on 2.4GHz, where 80MHz does not exist.
+	// channel. There are TWO such blocks: 5210 MHz (channel 42) over UNII-1's
+	// 36/40/44/48, and 5775 MHz (channel 155) over UNII-3's 149/153/157/161.
+	// Zero where no 80MHz block exists -- on 2.4GHz, and on channel 165.
 	Center80 int
 }
 
-// apChannels is every channel the AP may be moved to. 2.4GHz is 1/6/11 because
-// they are the only non-overlapping trio; 5GHz is the four non-DFS channels.
+// apChannels is every channel the AP may be moved to.
+//
+// 2.4GHz is 1/6/11, the only non-overlapping trio. 5GHz is the non-DFS
+// channels, which fall in two separate blocks with the whole DFS range between
+// them:
+//
+//	UNII-1  36/40/44/48       5180-5240   one 80MHz block centred on 5210
+//	UNII-3  149/153/157/161   5745-5805   one 80MHz block centred on 5775
+//	        165               5825        20MHz only, no partner above it
+//
+// UNII-3 is here so two 5GHz radios have somewhere to go (issue #162): 36 and
+// 149 are ~565 MHz apart, where any two of 36/40/44/48 are inside each other's
+// spectrum at 40 or 80MHz.
+//
+// VERIFIED on the box 2026-09-03, `iw reg get` and `iw phy <phy> info` under
+// country US: DFS-FCC. The regulatory range (5730 - 5850 @ 80) carries no DFS
+// flag, and both radios list 149-165 with neither "radar detection" nor
+// "no IR" -- phy0 (onboard) at 20 dBm, phy2 (mt7921u) at 30 dBm, which is
+// 7 dB MORE than the 23 dBm it is allowed on 36-48.
+//
+// 165 stops at 20MHz because the channel above it cannot be radiated on: the
+// same dump lists 169 as "no IR", so there is no legal 40MHz partner. Giving
+// it a SecOffset would build an ht_capab that fails the ENABLE outright, which
+// is the failure #166 was written to stop.
 var apChannels = map[int]apChannel{
-	1:  {Channel: 1, FreqMHz: 2412},
-	6:  {Channel: 6, FreqMHz: 2437},
-	11: {Channel: 11, FreqMHz: 2462},
-	36: {Channel: 36, FreqMHz: 5180, SecOffset: 1, Center80: 5210},
-	40: {Channel: 40, FreqMHz: 5200, SecOffset: -1, Center80: 5210},
-	44: {Channel: 44, FreqMHz: 5220, SecOffset: 1, Center80: 5210},
-	48: {Channel: 48, FreqMHz: 5240, SecOffset: -1, Center80: 5210},
+	1:   {Channel: 1, FreqMHz: 2412},
+	6:   {Channel: 6, FreqMHz: 2437},
+	11:  {Channel: 11, FreqMHz: 2462},
+	36:  {Channel: 36, FreqMHz: 5180, SecOffset: 1, Center80: 5210},
+	40:  {Channel: 40, FreqMHz: 5200, SecOffset: -1, Center80: 5210},
+	44:  {Channel: 44, FreqMHz: 5220, SecOffset: 1, Center80: 5210},
+	48:  {Channel: 48, FreqMHz: 5240, SecOffset: -1, Center80: 5210},
+	149: {Channel: 149, FreqMHz: 5745, SecOffset: 1, Center80: 5775},
+	153: {Channel: 153, FreqMHz: 5765, SecOffset: -1, Center80: 5775},
+	157: {Channel: 157, FreqMHz: 5785, SecOffset: 1, Center80: 5775},
+	161: {Channel: 161, FreqMHz: 5805, SecOffset: -1, Center80: 5775},
+	// No SecOffset and no Center80: both zero values mean "not available", and
+	// maxWidth reads them that way rather than any caller special-casing 165.
+	165: {Channel: 165, FreqMHz: 5825},
 }
+
+// offeredChannels is the allowlist as a sentence, for the errors that report a
+// channel is not on it. One source, so the two callers cannot drift apart or
+// go stale the next time the table changes.
+const offeredChannels = "2.4GHz 1/6/11, 5GHz 36/40/44/48 and 149/153/157/161/165"
 
 // is24 reports whether a channel is in the 2.4GHz band, where neither 40MHz
 // (antisocial in a crowded band) nor 80MHz (does not exist) is offered.
 func (c apChannel) is24() bool { return c.FreqMHz < 3000 }
+
+// maxWidth is the widest this channel may be run at, in MHz.
+//
+// Read from the table rather than from the band, because the band is no longer
+// the whole answer: 165 is 5GHz and still 20MHz only, having no channel above
+// it that may be radiated on. Deriving it from the zero values keeps the one
+// fact -- what partners exist -- in the one place it is written down.
+//
+// This is a REFUSAL, not a clamp. Quietly narrowing 80 to 20 would put a radio
+// somewhere nobody chose and report success, which is the failure mode the
+// whole of MoveChannel's read-back exists to catch.
+func (c apChannel) maxWidth() int {
+	switch {
+	case c.is24(), c.SecOffset == 0:
+		// 2.4GHz, or a 5GHz channel with no 40MHz partner.
+		return 20
+	case c.Center80 == 0:
+		return 40
+	}
+	return 80
+}
 
 // chanSwitchCount is how many beacons of warning clients get. Five is hostapd's
 // own common default: long enough that a client has seen the announcement in at
@@ -79,10 +135,18 @@ func chanSwitchCommand(ch apChannel, widthMHz int) (string, error) {
 	default:
 		return "", fmt.Errorf("width must be 20, 40 or 80 MHz (got %d)", widthMHz)
 	}
-	if ch.is24() && widthMHz != 20 {
+	if max := ch.maxWidth(); widthMHz > max {
+		if ch.is24() {
+			return "", fmt.Errorf(
+				"channel %d is 2.4GHz, where only 20MHz is offered (asked for %d)",
+				ch.Channel, widthMHz)
+		}
+		// Naming the reason matters: "165 is 20MHz only" invites the question
+		// this answers, and the answer is not a preference of ours.
 		return "", fmt.Errorf(
-			"channel %d is 2.4GHz, where only 20MHz is offered (asked for %d)",
-			ch.Channel, widthMHz)
+			"channel %d runs at %dMHz at most (asked for %d): the channel above "+
+				"it may not be radiated on, so it has no wider partner",
+			ch.Channel, max, widthMHz)
 	}
 
 	parts := []string{"CHAN_SWITCH", fmt.Sprint(chanSwitchCount), fmt.Sprint(ch.FreqMHz)}
@@ -120,9 +184,9 @@ func (e *Engine) ChanSwitch(iface string, channel, widthMHz int) error {
 	ch, ok := apChannels[channel]
 	if !ok {
 		return fmt.Errorf(
-			"channel %d is not offered: 2.4GHz 1/6/11, 5GHz 36/40/44/48 "+
+			"channel %d is not offered: %s "+
 				"(DFS channels are excluded -- the Pi cannot serve an AP on one)",
-			channel)
+			channel, offeredChannels)
 	}
 	cmd, err := chanSwitchCommand(ch, widthMHz)
 	if err != nil {

@@ -604,14 +604,38 @@ emit_hostapd_conf() {   # $1=name  $2=class(usb|onboard)  $3=interface  $4=ssid
     if [ "$_chan" = "0" ]; then
       _wide="acs_num_scans=5"
     elif [ "$_band" = "a" ]; then
-      # HT40 side: above the primary for 36/44, below for 40/48. Centre index 42
-      # covers the 80MHz block of all four channels build.sh permits.
-      case "$_chan" in 40|48) _ht="[HT40-]" ;; *) _ht="[HT40+]" ;; esac
-      _wide="ht_capab=$_ht
+      # HT40 side and 80MHz centre, both DERIVED from the channel.
+      #
+      # There are two 80MHz blocks, not one: 42 centres 36/40/44/48 and 155
+      # centres 149/153/157/161. A hardcoded 42 was correct while only the
+      # first block was permitted and becomes a config that names a centre
+      # 565MHz from its primary -- accepted by the parser, fatal at ENABLE:
+      #
+      #   20/40 MHz: center segment 0 (=42) and center freq 1 (=5745) not in sync
+      #
+      # 165 takes neither: the channel above it is "no IR", so it has no 40MHz
+      # partner and runs at 20MHz. Mirrors apChannels in radioctl.go.
+      case "$_chan" in
+        40|48|153|161) _ht="[HT40-]" ;;
+        165)           _ht="" ;;
+        *)             _ht="[HT40+]" ;;
+      esac
+      case "$_chan" in
+        36|40|44|48)     _c80=42 ;;
+        149|153|157|161) _c80=155 ;;
+        *)               _c80="" ;;
+      esac
+      if [ -n "$_c80" ]; then
+        _wide="ht_capab=$_ht
 vht_oper_chwidth=1
-vht_oper_centr_freq_seg0_idx=42
+vht_oper_centr_freq_seg0_idx=$_c80
 he_oper_chwidth=1
-he_oper_centr_freq_seg0_idx=42"
+he_oper_centr_freq_seg0_idx=$_c80"
+      else
+        # 20MHz: no secondary and no centre. Both omitted rather than set to a
+        # neutral-looking value, because a stale one is what fails the ENABLE.
+        _wide=""
+      fi
     else
       _wide=""
     fi
