@@ -56,6 +56,17 @@ const props = withDefaults(
     now?: number;
     yMode?: YMode;
     yManual?: number;
+    /** The client's CURRENT negotiated PHY rate, for the "to PHY" axis. Zero
+     *  for a wired client or one whose radio could not be read, which is why
+     *  that mode falls back rather than drawing an empty axis. */
+    phy?: number;
+    /** The PHY rate at each sample, parallel to `t`. Drawn as a trace, not as
+     *  a rule: the ceiling moves, and watching it move beside the throughput is
+     *  the point -- a trace that fell because the link's ceiling fell is a
+     *  different finding from one that fell while the ceiling held. */
+    phys?: number[];
+    /** Draw that series. */
+    showPhy?: boolean;
     height?: number;
     /** Render the heading. Off when the surrounding card already names it. */
     titled?: boolean;
@@ -78,7 +89,7 @@ const props = withDefaults(
     sustainedSec?: number;
   }>(),
   {
-    cap: 0, caps: () => [], windowMs: 300_000, now: 0, yMode: 'auto', yManual: 10,
+    cap: 0, caps: () => [], windowMs: 300_000, now: 0, yMode: 'auto', yManual: 10, phy: 0, phys: () => [], showPhy: false,
     height: 132, titled: false, compact: false,
     showLive: true, showSustained: false, sustainedSec: 30,
   },
@@ -139,6 +150,28 @@ function viewOf(values: (number | null)[]) {
   return out;
 }
 
+/**
+ * The HIGHEST ceiling in the window, not the current one.
+ *
+ * What "to PHY" scales to has to hold the whole PHY trace, and that trace moves:
+ * a client that was at 1200.9 and has since dropped to 960.7 would have the
+ * earlier half of its own ceiling clipped off the top if the axis followed the
+ * latest value. Peak over the visible window keeps every point on screen, and
+ * keeps the axis still while the line beneath it moves -- an axis that rescaled
+ * on every MCS change would make the throughput trace jump for a reason that has
+ * nothing to do with the throughput.
+ *
+ * Falls back to the current rate when no series has been recorded yet, so the
+ * mode still does something useful on a freshly started daemon.
+ */
+const phyPeak = computed(() => {
+  let peak = 0;
+  for (const p of viewOf(props.phys)) {
+    if (p.v && p.v > peak) peak = p.v;
+  }
+  return peak || props.phy;
+});
+
 const view = computed(() =>
   viewOf(props.data).map((p) => ({ t: p.t, v: p.v ?? 0 })),
 );
@@ -181,6 +214,14 @@ const yMax = computed(() => {
     // to compare two devices, and quietly moving it to 15 would break that.
     return props.yManual;
   }
+  // "To PHY" scales to what the LINK could carry rather than to what the box is
+  // allowing, so the gap on screen is the one between the radio's ceiling and
+  // what is arriving. Only 1.05 of headroom, not 1.15: unlike a cap, traffic
+  // cannot exceed the PHY rate, so the space above the line would never be used.
+  //
+  // Falls back to auto without a PHY -- a wired client has no such ceiling, and
+  // an axis locked to zero would draw nothing at all.
+  if (props.yMode === 'phy' && phyPeak.value > 0) return niceMax(phyPeak.value * 1.05);
   // "To cap" falls back to auto on an unconditioned device rather than drawing
   // an empty axis: a cap of zero means unlimited, which is not a ceiling.
   if (props.yMode === 'cap' && props.cap > 0) return niceMax(props.cap * 1.15);
@@ -422,6 +463,45 @@ const sustainedPaths = computed(() =>
 
 const capY = computed(() => (props.cap > 0 ? yAt(props.cap) : null));
 
+/**
+ * The link's ceiling over time.
+ *
+ * A SERIES, not a rule at the current value. The PHY rate is the most volatile
+ * number this box reports -- rate control re-picks an MCS per frame, and a
+ * client that re-associates can sit hundreds of Mbit/s lower for minutes -- so
+ * a single flat line would describe only the instant the chart was read, and
+ * would be wrong about every earlier point on it.
+ *
+ * Watching it move beside the throughput is the whole value: a trace that fell
+ * because the ceiling fell is a completely different finding from one that fell
+ * while the ceiling held, and only these two lines together tell them apart.
+ *
+ * Zero means "no ceiling recorded" -- a wired client, or a wireless one the
+ * station table had lost at that moment -- and becomes null so segmentsOf
+ * breaks the line there rather than drawing it along the floor, which would
+ * read as a link that had collapsed.
+ */
+const phyPaths = computed(() =>
+  props.showPhy && props.phys.length
+    ? pathsOf(segmentsOf(viewOf(props.phys).map((p) => ({
+        t: p.t,
+        v: p.v && p.v > 0 ? p.v : null,
+      }))))
+    : [],
+);
+
+/** The ceiling at the right-hand edge, for the label. */
+const phyNow = computed(() => {
+  const v = props.phys;
+  for (let i = v.length - 1; i >= 0; i--) if (v[i] > 0) return v[i];
+  return 0;
+});
+
+/** Where to put that label: at the last drawn point, clamped into the pane. */
+const phyLabelY = computed(() =>
+  phyNow.value > 0 && phyNow.value <= yMax.value ? yAt(phyNow.value) : null,
+);
+
 /*
  * The cap over time, as a step.
  *
@@ -655,6 +735,25 @@ const gid = `g${Math.random().toString(36).slice(2, 8)}`;
         </text>
       </g>
 
+      <!-- The link's ceiling: what the radio negotiated, not what the box is
+           allowing. Dotted rather than dashed, because a dashed rule already
+           means "cap" on this page and the two are different kinds of limit --
+           one is imposed here and one is the medium's.
+           Drawn last of the rules so it sits above the cap where they cross,
+           and skipped when it is off the top of the axis rather than clamped:
+           a ceiling pinned to the frame would read as a plateau in the data,
+           which is the same trap the cap line documents. -->
+      <g v-if="showPhy && phyPaths.length && !compact" class="phy-rule">
+        <polyline
+          v-for="(d, i) in phyPaths" :key="i" :points="d.line" fill="none"
+          :stroke="color" stroke-linejoin="round" stroke-linecap="round"
+        />
+        <text
+          v-if="phyLabelY !== null"
+          :x="PAD.l + plotW + 6" :y="phyLabelY + 3" class="cap-text num"
+        >PHY {{ fmt(phyNow) }}</text>
+      </g>
+
       <!-- Endpoint marker, with a 2px surface ring so it stays legible where it
            crosses the cap line. No text label here: the pane heading directly
            above is already the direct label for this value, and a second copy
@@ -711,6 +810,13 @@ const gid = `g${Math.random().toString(36).slice(2, 8)}`;
             <svg width="16" height="8" aria-hidden="true">
               <line x1="0" y1="4" x2="16" y2="4" :stroke="color" stroke-width="2.25" />
             </svg>{{ sustainedSec }}s mean
+          </span>
+          <span v-if="showPhy && phyPaths.length" class="key-item"
+                title="The client's negotiated PHY rate — what the link could carry, not what it is being allowed. The gap below it is what airtime costs.">
+            <svg width="16" height="8" aria-hidden="true">
+              <line x1="0" y1="4" x2="16" y2="4" :stroke="color"
+                    stroke-width="1" stroke-dasharray="1 3" opacity="0.7" />
+            </svg>PHY
           </span>
           <span v-if="capY !== null && cap <= yMax" class="key-item"
                 title="The rate being enforced right now, which is not always the rate you saved: a ladder sweep drives the cap itself while it runs.">
@@ -788,6 +894,12 @@ const gid = `g${Math.random().toString(36).slice(2, 8)}`;
 .cap line,
 .cap polyline { stroke-width: 1; stroke-dasharray: 4 3; opacity: 0.8; fill: none; }
 .cap-text { fill: var(--ink-dim); font-size: 10px; }
+/* Dotted, and fainter than the cap. Both are thresholds, so both are broken
+   rules rather than solid ones -- but they are different KINDS of limit: the
+   cap is imposed by this box and can be moved from the sliders below, while
+   the PHY ceiling belongs to the medium and cannot. Dashes for the one you
+   set, dots for the one you are given. */
+.phy-rule polyline { stroke-width: 1; stroke-dasharray: 1 3; opacity: 0.7; fill: none; }
 .crosshair line { stroke: var(--ink-faint); stroke-width: 1; opacity: 0.6; }
 
 .tip {

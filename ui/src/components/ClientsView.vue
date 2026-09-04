@@ -163,7 +163,7 @@ const anyExpanded = computed(() => clients.value.some((c) => !isFolded(c.mac)));
  */
 const CHART_KEY = 'boa.chart';
 const CHART_DEFAULTS: ChartPrefs = {
-  rangeSec: 300, yMode: 'auto', yManual: 10,
+  rangeSec: 300, yMode: 'auto', yManual: 10, showPhy: false,
   // Both on by default: the live trace is the record, and the mean is the
   // answer to the question most often being asked of it.
   showLive: true, showSustained: true, sustainedSec: SUSTAINED_SEC,
@@ -244,6 +244,7 @@ onUnmounted(() => window.clearInterval(ticker));
       :bucket-ms="bucketMs" :sort-mode="sortMode"
       @sort-mode="(v: SortMode) => (sortMode = v)"
       :show-live="chart.showLive" :show-sustained="chart.showSustained"
+      :show-phy="chart.showPhy"
       :tall-charts="chart.tallCharts" :sustained-sec="chart.sustainedSec"
       :show-down="chart.showDown" :show-up="chart.showUp"
       @show-down="(v: boolean) => (chart = { ...chart, showDown: v })"
@@ -255,6 +256,7 @@ onUnmounted(() => window.clearInterval(ticker));
       @y-manual="(v: number) => (chart = { ...chart, yManual: v })"
       @show-live="(v: boolean) => (chart = { ...chart, showLive: v })"
       @show-sustained="(v: boolean) => (chart = { ...chart, showSustained: v })"
+      @show-phy="(v: boolean) => (chart = { ...chart, showPhy: v })"
     />
 
     <ClientCard

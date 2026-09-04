@@ -52,12 +52,19 @@ const emit = defineEmits<{
 // four times, so the sparkline on a folded row can never drift out of step with
 // the full chart it summarises.
 const chartProps = computed(() => ({
+  // The client's own ceiling, for the "to PHY" axis. Per client rather than per
+  // card setting, because two devices on the same radio can negotiate very
+  // different rates -- an 802.11n phone and an ax laptop on one AP differ by
+  // several times, and scaling both to the same number would flatter one and
+  // crush the other.
+  phy: props.client.station?.tx_phy_mbps ?? 0,
   windowMs: props.chart.rangeSec * 1000,
   now: props.now,
   yMode: props.chart.yMode,
   yManual: props.chart.yManual,
   showLive: props.chart.showLive,
   showSustained: props.chart.showSustained,
+  showPhy: props.chart.showPhy,
   sustainedSec: props.chart.sustainedSec,
 }));
 
@@ -651,6 +658,7 @@ function fmtBytes(n: number): string {
           <TrafficChart
             v-bind="chartProps"
             :t="series?.t ?? []" :data="series?.down ?? []" :caps="series?.cap ?? []"
+            :phys="series?.phyDown ?? []"
             color="var(--down)" label="Downlink"
             :cap="downCap" :height="24" compact
           />
@@ -664,7 +672,7 @@ function fmtBytes(n: number): string {
         <span class="cell spark">
           <TrafficChart
             v-bind="chartProps"
-            :t="series?.t ?? []" :data="series?.up ?? []"
+            :t="series?.t ?? []" :data="series?.up ?? []" :phys="series?.phyUp ?? []"
             color="var(--up)" label="Uplink"
             :cap="client.policy.up.rate_mbps" :height="24" compact
           />
@@ -765,6 +773,7 @@ function fmtBytes(n: number): string {
         <TrafficChart
           v-bind="chartProps"
           :t="series?.t ?? []" :data="series?.down ?? []" :caps="series?.cap ?? []"
+            :phys="series?.phyDown ?? []"
           color="var(--down)" label="Downlink"
           :cap="downCap" :height="expandedH"
           @hovering="(v: boolean) => emit('hovering', v)"
@@ -793,7 +802,7 @@ function fmtBytes(n: number): string {
         </h3>
         <TrafficChart
           v-bind="chartProps"
-          :t="series?.t ?? []" :data="series?.up ?? []"
+          :t="series?.t ?? []" :data="series?.up ?? []" :phys="series?.phyUp ?? []"
           color="var(--up)" label="Uplink"
           :cap="playing ? (patRun?.up.rate_mbps ?? 0) : client.policy.up.rate_mbps"
           :height="expandedH"

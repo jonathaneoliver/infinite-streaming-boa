@@ -52,6 +52,23 @@ type Sample struct {
 	// kernel believed, so a shaping failure appears as a flat line at the old
 	// value rather than being papered over by the value we asked for.
 	Cap float64 `json:"cap"`
+
+	// PhyDown and PhyUp are the negotiated PHY rates at this instant, Mbit/s:
+	// the rate the radio was sending to this client and receiving from it.
+	//
+	// Recorded per sample for the same reason Cap is. The PHY rate is the most
+	// volatile number this box reports -- rate control re-picks an MCS per
+	// frame, and a client that re-associates can sit several hundred Mbit/s
+	// lower for minutes afterwards -- so the current value says nothing about
+	// the ceiling that applied when a player made a decision. A throughput
+	// trace that fell at 14:32 means something quite different depending on
+	// whether the link's ceiling fell with it.
+	//
+	// Per DIRECTION, because they differ: measured here, one client reported
+	// 1200.9 down and 1020.6 up at the same moment. Zero for a wired client and
+	// for a wireless one the station table has lost.
+	PhyDown float64 `json:"phy_down,omitempty"`
+	PhyUp   float64 `json:"phy_up,omitempty"`
 }
 
 const (
@@ -208,6 +225,7 @@ func (h *History) Window(dur time.Duration, maxPoints int) (series map[string][]
 		// first sample's value is taken instead, which matches the bucket's
 		// timestamp: buckets are stamped at their start.
 		var capFirst float64
+		var sumPD, sumPU float64
 
 		flush := func() {
 			if n == 0 {
@@ -218,8 +236,14 @@ func (h *History) Window(dur time.Duration, maxPoints int) (series map[string][]
 				Down: sumD / float64(n),
 				Up:   sumU / float64(n),
 				Cap:  capFirst,
+				// MEANED, unlike the cap. A cap is a value someone set and held,
+				// so averaging across a change invents one that was never in
+				// force; a PHY rate is a measurement that genuinely moves within
+				// a bucket, and its mean is the honest summary of that span.
+				PhyDown: sumPD / float64(n),
+				PhyUp:   sumPU / float64(n),
 			})
-			sumD, sumU, n = 0, 0, 0
+			sumD, sumU, sumPD, sumPU, n = 0, 0, 0, 0, 0
 		}
 
 		for _, sm := range all {
@@ -235,6 +259,8 @@ func (h *History) Window(dur time.Duration, maxPoints int) (series map[string][]
 			}
 			sumD += sm.Down
 			sumU += sm.Up
+			sumPD += sm.PhyDown
+			sumPU += sm.PhyUp
 			n++
 		}
 		flush()

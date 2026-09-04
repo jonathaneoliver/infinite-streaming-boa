@@ -271,6 +271,88 @@ that a cap is working.
 | PAU0F on **USB 3.0** | **544–552 Mbit/s** | — | 80 MHz, 802.11ax, ch 40 | 20–30s, 2–3 clients, 2026-09-03 |
 | Wired 1 GbE, for reference | 924 Mbit/s | — | — | 8s |
 | Wired 2.5 GbE, for reference | **1.91 Gbit/s** | **2.35 Gbit/s** | — | 30s, 2026-09-03 |
+| PAU0F on **USB 3.0** | **677 Mbit/s** | — | 80 MHz, 802.11ax, **ch 149** | 12s, sole client, 2026-09-04 |
+
+### Channel width, and what it is worth
+
+Measured 2026-09-04 on `wlan-usb` (mt7921u), one MacBook as the only client,
+`iperf3` downlink, moving the same radio between widths on the same channel.
+Run twice: once on **ch 40**, inside the UNII-1 block where six 80 MHz
+neighbours sit at 18% measured airtime, and once on **ch 149**, where the scan
+found 1.2%.
+
+| Width | ch 149 (quiet) | ch 40 (busy) | What the busy channel cost |
+|---|---|---|---|
+| 20 MHz | **194 Mbit/s** | **110 Mbit/s** | −43% |
+| 40 MHz | **378 Mbit/s** | 289 / 230 Mbit/s | −24 … −39% |
+| 80 MHz | **677 Mbit/s** | **399 Mbit/s** | −41% |
+
+**On quiet air, width scales almost exactly as the subcarrier counts predict.**
+20 → 40 measured 1.95× against a theoretical 2.00, and 40 → 80 measured 1.79×
+against 2.09. Doubling the channel really does roughly double the throughput.
+
+**On busy air, the top step largely evaporates.** 40 → 80 bought only 1.38× on
+ch 40 against 1.79× on ch 149, because a wider channel spans more interferers:
+at 80 MHz on ch 40 the box overlaps all six of those neighbours, where at 40 MHz
+it overlaps fewer. Widening into a crowded block gives back most of what it
+gains, which is the argument for choosing the emptier block over the wider
+channel when both are on offer.
+
+The 289 / 230 pair at 40 MHz on ch 40 is not an error — it is two runs of the
+same configuration, and the spread is what run-to-run variance looks like on a
+contended channel. The quiet-channel figures repeated to within 2 Mbit/s
+(677 and 679 across two runs).
+
+### Predicting the best case from one number
+
+The negotiated **PHY rate** — the `tx bitrate` a client reports, shown on its
+row — predicts the best case to within a few percent, on a channel that is not
+busy:
+
+> **best case ≈ 85% of PHY, capped at ~680 Mbit/s**
+
+| Width | PHY | 85% of PHY | Measured (ch 149) |
+|---|---|---|---|
+| 20 MHz | 229.4 | 195 | **194** |
+| 40 MHz | 458.8 | 390 | **378** |
+| 80 MHz | 1200.9 | 1021 → capped | **677** |
+
+It is a **ceiling, not a forecast**, and the distinction is the whole of it: the
+same PHY of 229.4 delivered 194 Mbit/s on ch 149 and 110 on ch 40. PHY cannot
+see congestion. It says what the link could carry, never what it will — which
+is also why removing an idle slow client above lifted the PHY 25% and moved
+throughput 0.2%: that run was nowhere near its ceiling, so raising the ceiling
+changed nothing.
+
+For the realised figure it takes two numbers: PHY for the ceiling, and the
+channel's **measured airtime** for how much of it survives. Congestion cost
+24–43% here at every width.
+
+### The ~550 Mbit/s figure was a congested channel, not a bus limit
+
+An earlier revision of this section concluded that the adapter's ceiling "is in
+the `mt7921u` USB transmit path". **That does not survive a quiet channel: the
+same adapter measured 677 Mbit/s on ch 149.**
+
+The reasoning that ruled out the CPU still holds — CPU0 was 54% idle with
+softirq peaking at 27.8% during a Wi-Fi run. What was missed is that every one
+of those runs was on **ch 40**, the box's default, which the scan now measures
+at 18% airtime with six 80 MHz neighbours covering the whole UNII-1 block. The
+~550 figure was reproducible because the congestion was constant, not because
+the bus was the constraint.
+
+Efficiency makes the same point. As a fraction of the negotiated PHY rate:
+
+| Width | ch 149 | ch 40 |
+|---|---|---|
+| 20 MHz | 85% | 48% |
+| 40 MHz | 82% | 63% |
+| 80 MHz | 56% | 33% |
+
+Only the 80 MHz quiet-channel case shows any sign of a limit that is not the
+air — and it sits **above 677 Mbit/s**, not at 550. Where that ceiling actually
+is has not been established; it needs a client that can pull harder than one
+MacBook.
 
 The first four rows are the same MacBook on the same afternoon; the dated rows
 are later runs on the same box. The adapter on a SuperSpeed port is **~10x the
@@ -298,9 +380,11 @@ are true, and which applies depends on where the bottleneck already sits.
 That "something else" is not the Pi's CPU. Sampling per-core utilisation during
 a Wi-Fi run leaves CPU0 at 54% idle with softirq peaking at 27.8%, against the
 same core saturating at 1.6% idle on the wired path — the box pushes 3.5× more
-traffic through that core over ethernet. The ~550 Mbit/s ceiling is in the
-`mt7921u` USB transmit path, and it holds across 20s and 30s runs with zero
-retransmits.
+traffic through that core over ethernet. It holds across 20s and 30s runs with zero
+retransmits, which is what made it look like a hardware ceiling — but see
+[the ~550 figure](#the-550-mbits-figure-was-a-congested-channel-not-a-bus-limit)
+below: every one of those runs was on ch 40, and the same adapter reaches
+677 Mbit/s on a quiet channel. The constant was the congestion, not the bus.
 
 The daemon's own numbers agree with iperf3, which is worth knowing given how
 much rests on them: sampling `station dump` counters during a run gave a mean of

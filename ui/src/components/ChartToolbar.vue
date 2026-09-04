@@ -23,6 +23,7 @@ const props = defineProps<{
   bucketMs: number;
   showLive: boolean;
   showSustained: boolean;
+  showPhy: boolean;
   /** How the device list below is ordered. */
   sortMode: SortMode;
   /** Expanded charts drawn at double height. */
@@ -40,6 +41,7 @@ const emit = defineEmits<{
   (e: 'y-manual', v: number): void;
   (e: 'show-live', v: boolean): void;
   (e: 'show-sustained', v: boolean): void;
+  (e: 'show-phy', v: boolean): void;
   (e: 'sort-mode', m: SortMode): void;
   (e: 'tall-charts', v: boolean): void;
   (e: 'sustained-sec', v: number): void;
@@ -72,20 +74,41 @@ const SERIES = [
     label: 'mean',
     title: 'Bytes delivered over the trailing window, divided by that time. What the device is actually sustaining across segment fetches.',
   },
+  // The link's ceiling, drawn as a rule. A MEASUREMENT rather than a
+  // prediction: it is the rate the client negotiated, not that rate scaled by
+  // some efficiency factor -- measured on this box, throughput lands near 85%
+  // of it on a quiet channel and about a third on a busy one, and a single
+  // derived line would be wrong on one of them. So the line is the ceiling and
+  // the gap beneath it is left to be read.
+  {
+    key: 'phy' as const,
+    label: 'PHY',
+    title: "The client's negotiated PHY rate — what the link could carry, not what it is being allowed. Traffic sits below it by whatever airtime costs.",
+  },
 ];
 
-function toggle(key: 'live' | 'sustained') {
+type SeriesKey = 'live' | 'sustained' | 'phy';
+
+function toggle(key: SeriesKey) {
   if (key === 'live') emit('show-live', !props.showLive);
+  else if (key === 'phy') emit('show-phy', !props.showPhy);
   else emit('show-sustained', !props.showSustained);
 }
-const on = (key: 'live' | 'sustained') =>
-  key === 'live' ? props.showLive : props.showSustained;
-const seriesLabel = (key: 'live' | 'sustained') =>
-  key === 'sustained' ? `${props.sustainedSec}s mean` : 'live';
+const on = (key: SeriesKey) =>
+  key === 'live' ? props.showLive : key === 'phy' ? props.showPhy : props.showSustained;
+const seriesLabel = (key: SeriesKey) =>
+  key === 'sustained' ? `${props.sustainedSec}s mean` : key === 'phy' ? 'PHY' : 'live';
 
 const MODES: { v: YMode; label: string; title: string }[] = [
   { v: 'auto', label: 'auto', title: 'Scale to the traffic, including the cap' },
   { v: 'cap', label: 'to cap', title: 'Lock the axis to the configured cap, so headroom stays constant' },
+  // The ceiling the LINK could carry, as opposed to the cap the box is
+  // imposing. Scaling to it answers a different question from either of the
+  // others: not "is the cap working" but "how much of what this radio could
+  // deliver is actually arriving". Measured here, throughput lands around 85%
+  // of PHY on a quiet channel and about a third of it on a busy one, so the
+  // gap this mode shows is mostly airtime.
+  { v: 'phy', label: 'to PHY', title: "Scale to the client's negotiated PHY rate — the link's ceiling, not the cap. Falls back to auto for a client with no radio." },
   { v: 'manual', label: 'fixed', title: 'A fixed ceiling, so devices can be compared on one scale' },
 ];
 
@@ -183,10 +206,15 @@ function onManual(e: Event) {
         @click="toggle(s.key)"
       >
         <svg class="swatch" width="18" height="8" aria-hidden="true">
+          <!-- The swatch is the stroke the plot actually uses, so the key can
+               be matched to the line without reading the label. PHY is dotted
+               and faint: it is a boundary rather than a series, and the cap --
+               the other boundary here -- already owns dashes. -->
           <line
             x1="1" x2="17" y1="4" y2="4"
             :stroke-width="s.key === 'sustained' ? 2.25 : 1.25"
             :opacity="s.key === 'sustained' ? 1 : 0.55"
+            :stroke-dasharray="s.key === 'phy' ? '1 3' : undefined"
           />
         </svg>
         {{ seriesLabel(s.key) }}

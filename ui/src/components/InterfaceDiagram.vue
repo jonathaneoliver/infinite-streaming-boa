@@ -6,6 +6,7 @@ import {
   rateFor,
   type Quality,
 } from '@/composables/channelQuality';
+import { phyCeilingLabel } from '@/types';
 
 /*
  * The bridge, drawn from live data.
@@ -56,7 +57,11 @@ const downstream = computed(() =>
 );
 
 const NODE_W = 190;
-const NODE_H = 74;
+// 84, not 74: an access point node carries a fourth line, the PHY ceiling its
+// width and mode imply. Uniform across every node so the row still reads as one
+// band of boxes -- a taller radio beside a shorter WAN port would look like a
+// difference in kind rather than in content.
+const NODE_H = 84;
 // Sized for the CONTROLS, not the boxes. Each downstream node's buttons and
 // channel plan overhang its rectangle by PLAN_BLEED either side, so a gap
 // chosen for bare rectangles put one radio's channel plan underneath the next
@@ -429,7 +434,20 @@ function otherRadio(i: IfaceInfo): string {
         <rect :x="nodeX(n)" :y="DOWN_Y" :width="NODE_W" :height="NODE_H" rx="8" />
         <text :x="nodeX(n) + NODE_W / 2" :y="DOWN_Y + 22" class="name">{{ i.name }}</text>
         <text :x="nodeX(n) + NODE_W / 2" :y="DOWN_Y + 39" class="sub">{{ subtitle(i) }}</text>
-        <text :x="nodeX(n) + NODE_W / 2" :y="DOWN_Y + 56" class="mono">{{ i.mac }}</text>
+        <!-- A SEPARATE line, not appended to the summary above.
+             The summary describes what the radio IS -- band, channel, width,
+             mode -- and changes only when someone changes it. A rate belongs
+             beside it rather than inside it: the negotiated PHY moves
+             constantly with the client's rate control, and a volatile number
+             spliced into a stable identity string makes the whole line churn.
+             What is shown here is the CEILING the configuration implies, which
+             is stable for that reason, and "up to" because the streams that
+             reach it are the client's to bring. -->
+        <text
+          v-if="i.ap && phyCeilingLabel(i.ap.mode ?? '', i.ap.width_mhz ?? 0)"
+          :x="nodeX(n) + NODE_W / 2" :y="DOWN_Y + 56" class="phy"
+        >{{ phyCeilingLabel(i.ap.mode ?? '', i.ap.width_mhz ?? 0) }}</text>
+        <text :x="nodeX(n) + NODE_W / 2" :y="DOWN_Y + 73" class="mono">{{ i.mac }}</text>
 
         <!-- Actions on the component they act on. A radio in this picture is
              the thing being cut or scanned, so the control belongs on it
@@ -578,6 +596,10 @@ svg { width: 100%; height: auto; display: block; }
 .node text { text-anchor: middle; }
 .node .name { fill: var(--ink); font-size: 14px; font-weight: 600; }
 .node .sub { fill: var(--ink-dim); font-size: 11px; }
+/* Quieter than the summary above it: this is a consequence of the line above,
+   not another fact about the radio. Same size as the MAC, which is the other
+   derived-detail line. */
+.node .phy { fill: var(--ink-faint); font-size: 11px; }
 .node .mono {
   fill: var(--ink-faint);
   font-size: 11px;
