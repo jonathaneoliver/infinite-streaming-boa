@@ -294,6 +294,11 @@ export interface Client {
   medium: string;
   port?: string;
   radio_on?: RadioOn;
+  /** The radio this client could be ASKED to move to (802.11v), or absent
+   *  when there is nowhere to send it: a wired client, one not currently
+   *  associated, or a box serving a single radio. Computed by the daemon so
+   *  the interface does not have to infer the box's radio topology. */
+  steer_to?: string;
   present: boolean;
   shapeable: boolean;
   station?: Station;

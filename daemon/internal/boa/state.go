@@ -629,6 +629,12 @@ func (e *Engine) tick() {
 		// one would be inventing a fact.
 		if w := stationRadio[mac]; w != "" {
 			c.RadioOn = e.radioOnFor(w)
+			// Where it could be steered, from the radio it is actually on --
+			// not from the primary. A client on the onboard radio and one on
+			// the adapter are steered in opposite directions, and naming the
+			// wrong source would build a neighbour report for the radio the
+			// client is already sitting on.
+			c.SteerTo = e.OtherRadio(w)
 		}
 		clients = append(clients, c)
 	}

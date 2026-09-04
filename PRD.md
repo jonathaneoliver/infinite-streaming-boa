@@ -236,12 +236,22 @@ thing a device reacts to: an iPhone's path monitor fires on a link drop, not on
 down rather than when packets are merely late. netem cannot express this — it
 damages packets, never link state.
 
-- Three per-client events, keyed by **MAC**: **drop** (deauthenticate), the
+- Four per-client events, keyed by **MAC**: **drop** (deauthenticate), the
   harder disconnect; **nudge** (disassociate), the softer one, usually a quicker
-  recovery; and **deadzone**, a held outage for a chosen duration — long enough
+  recovery; **deadzone**, a held outage for a chosen duration — long enough
   to drain a player's buffer and force a rebuffer, which a single drop is not. A
   deadzone denies the MAC for its length so the client cannot re-associate until
-  it lifts, rather than a repeated deauth it could slip between.
+  it lifts, rather than a repeated deauth it could slip between. And **steer**,
+  the only one that does not take the link away at all.
+- **Steer asks one client to move to the box's other radio** (802.11v BSS
+  transition), naming it as the destination. It is a **request**: the link stays
+  up, the client decides, and a device that ignores transition requests is a
+  finding rather than a failure — which is the whole reason to have the button
+  on a single device rather than only on a whole radio. The box resolves both
+  radios itself, from the one the client is actually associated to, so a client
+  on either band is steered the right way round. Offered **only when there is
+  somewhere to send it**: on a box serving one radio a transition request has no
+  destination to name, so the control is absent rather than present and failing.
 - They are driven from the device card as **one-shot** buttons, or scheduled on
   a **pattern lane** beside rate and loss — a deauth at t=120s is exactly
   reproducible, which no packet impairment is, and is the specific event this

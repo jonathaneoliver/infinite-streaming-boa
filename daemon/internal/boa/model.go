@@ -345,6 +345,17 @@ type Client struct {
 	// wired client, and for a wireless one whose radio could not be read.
 	RadioOn *RadioOn `json:"radio_on,omitempty"`
 
+	// SteerTo is the radio this client could be ASKED to move to, or empty when
+	// there is nowhere to send it.
+	//
+	// Computed here rather than left to the interface, which would otherwise
+	// have to work out the box's radio topology from the device list to decide
+	// whether to offer a button -- and would get it wrong for a client whose
+	// own radio is the only one serving. Empty is the honest answer in three
+	// cases that look different and are not: a wired client, a wireless client
+	// not currently associated, and a box with one radio.
+	SteerTo string `json:"steer_to,omitempty"`
+
 	// Present means currently associated to the radio. A DHCP lease alone does
 	// NOT set this: leases outlive the clients that held them.
 	Present bool `json:"present"`

@@ -71,6 +71,7 @@ func (a *API) Routes() *http.ServeMux {
 	mux.HandleFunc("POST /api/devices/{mac}/link/deauth", a.linkDeauth)
 	mux.HandleFunc("POST /api/devices/{mac}/link/disassoc", a.linkDisassoc)
 	mux.HandleFunc("POST /api/devices/{mac}/link/deadzone", a.linkDeadzone)
+	mux.HandleFunc("POST /api/devices/{mac}/link/steer", a.linkSteer)
 	mux.HandleFunc("DELETE /api/devices/{mac}", a.forgetDevice)
 	mux.Handle("/", cacheHeaders(http.FileServer(http.FS(a.ui))))
 	return mux
@@ -1665,6 +1666,59 @@ func (a *API) resetDevice(w http.ResponseWriter, r *http.Request) {
 
 func (a *API) linkDeauth(w http.ResponseWriter, r *http.Request)   { a.linkEvent(w, r, "deauth") }
 func (a *API) linkDisassoc(w http.ResponseWriter, r *http.Request) { a.linkEvent(w, r, "disassoc") }
+
+// linkSteer asks ONE client to move to the box's other radio (802.11v).
+//
+// The per-client counterpart to the radio-wide steer on the bridge diagram, and
+// the more useful of the two: moving every client at once changes the whole
+// box, where the question worth asking is usually "what does THIS phone do when
+// told to move".
+//
+// A REQUEST, not an instruction, exactly as the radio-wide one is: the client
+// decides, and whether a given device honours a transition request is the
+// behaviour under test. A refusal is therefore a RESULT, not an error -- what
+// this reports is whether the request was delivered.
+//
+// Both radios are resolved here rather than taken from the caller. The source
+// is the radio the client is actually associated to, so a client on either band
+// is steered the right way round, and the target is whatever else is serving.
+func (a *API) linkSteer(w http.ResponseWriter, r *http.Request) {
+	if !a.e.LinkControlAvailable() {
+		writeErr(w, http.StatusServiceUnavailable,
+			"link control unavailable: hostapd is not serving the AP (onboard radio, or ctrl_interface missing)")
+		return
+	}
+	mac := normMAC(r.PathValue("mac"))
+	if !validMAC(mac) {
+		writeErr(w, http.StatusBadRequest, "not a MAC address: "+mac)
+		return
+	}
+	from := a.e.radioFor(mac)
+	to := a.e.OtherRadio(from)
+	if to == "" {
+		// 503, not 400: the request is well formed and would work on a box with
+		// two radios serving. Nothing about the MAC is wrong.
+		writeErr(w, http.StatusServiceUnavailable,
+			"nowhere to steer to: this box is serving only one radio, and a "+
+				"transition request needs another access point to name")
+		return
+	}
+	if err := a.e.SteerClient(mac, from, to); err != nil {
+		writeErr(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	// Logged as an OPERATOR action, like deauth and disassoc, through the same
+	// helper SteerClient's demo path uses so both read identically in the log.
+	// The join on the other radio, if the client accepts, is recorded
+	// separately by the station watcher -- and the gap between the two, or the
+	// absence of a join at all, is exactly what this button is for.
+	if !a.e.cfg.Demo {
+		a.e.noteSteer(mac, from, to)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"mac": mac, "action": "steer", "from": from, "to": to,
+	})
+}
 
 // linkDeadzone holds a client off the AP for ?dur=<seconds> (default 10) --
 // a sustained outage, long enough to actually stall a stream, unlike a single
