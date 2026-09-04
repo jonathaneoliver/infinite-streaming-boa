@@ -190,3 +190,47 @@ func TestRadioCacheIsPerInterface(t *testing.T) {
 		t.Errorf("%d cache entries survived forgetRadioOn", left)
 	}
 }
+
+// The client detects a restart by comparing its cursor against `latest`, so
+// `latest` has to mean exactly one thing: the highest sequence THIS RUN has
+// issued. Within a run it only grows, which is what makes a lower value
+// unambiguous evidence that the ring began again (#196).
+func TestLatestGrowsWithinARunAndRestartsWithTheLog(t *testing.T) {
+	var l eventLog
+	if got := l.latest(); got != 0 {
+		t.Errorf("a log that has recorded nothing reports latest %d, want 0", got)
+	}
+	for i := 0; i < 5; i++ {
+		l.add(EventRadio, "wlan0", "", "something happened")
+	}
+	if got := l.latest(); got != 5 {
+		t.Errorf("latest = %d after 5 events, want 5", got)
+	}
+
+	// The ring dropping old events must NOT move latest backwards: a page whose
+	// cursor is inside the dropped range is behind, not restarted.
+	for i := 0; i < eventRing+10; i++ {
+		l.add(EventRadio, "wlan0", "", "more")
+	}
+	if got := l.latest(); got <= 5 {
+		t.Errorf("latest went backwards as the ring wrapped: %d", got)
+	}
+	if n := len(l.since(0, 0)); n > eventRing {
+		t.Errorf("the ring holds %d events, more than %d", n, eventRing)
+	}
+
+	// A restart is a fresh log. Its latest is BELOW the cursor a page from the
+	// previous run is holding, which is the signal the client acts on.
+	held := l.latest()
+	var afterRestart eventLog
+	afterRestart.add(EventRadio, "wlan0", "", "first event of the new run")
+	if afterRestart.latest() >= held {
+		t.Fatalf("a restarted log reports latest %d, not below the held cursor %d -- "+
+			"the client would have no way to notice", afterRestart.latest(), held)
+	}
+	// And the thing that made this invisible: asking with the stale cursor
+	// returns nothing, with no error to distinguish it from a quiet box.
+	if got := afterRestart.since(held, 0); len(got) != 0 {
+		t.Errorf("expected the stale cursor to return nothing, got %d events", len(got))
+	}
+}
