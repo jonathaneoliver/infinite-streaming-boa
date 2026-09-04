@@ -150,6 +150,28 @@ function viewOf(values: (number | null)[]) {
   return out;
 }
 
+/**
+ * The HIGHEST ceiling in the window, not the current one.
+ *
+ * What "to PHY" scales to has to hold the whole PHY trace, and that trace moves:
+ * a client that was at 1200.9 and has since dropped to 960.7 would have the
+ * earlier half of its own ceiling clipped off the top if the axis followed the
+ * latest value. Peak over the visible window keeps every point on screen, and
+ * keeps the axis still while the line beneath it moves -- an axis that rescaled
+ * on every MCS change would make the throughput trace jump for a reason that has
+ * nothing to do with the throughput.
+ *
+ * Falls back to the current rate when no series has been recorded yet, so the
+ * mode still does something useful on a freshly started daemon.
+ */
+const phyPeak = computed(() => {
+  let peak = 0;
+  for (const p of viewOf(props.phys)) {
+    if (p.v && p.v > peak) peak = p.v;
+  }
+  return peak || props.phy;
+});
+
 const view = computed(() =>
   viewOf(props.data).map((p) => ({ t: p.t, v: p.v ?? 0 })),
 );
@@ -199,7 +221,7 @@ const yMax = computed(() => {
   //
   // Falls back to auto without a PHY -- a wired client has no such ceiling, and
   // an axis locked to zero would draw nothing at all.
-  if (props.yMode === 'phy' && props.phy > 0) return niceMax(props.phy * 1.05);
+  if (props.yMode === 'phy' && phyPeak.value > 0) return niceMax(phyPeak.value * 1.05);
   // "To cap" falls back to auto on an unconditioned device rather than drawing
   // an empty axis: a cap of zero means unlimited, which is not a ceiling.
   if (props.yMode === 'cap' && props.cap > 0) return niceMax(props.cap * 1.15);
