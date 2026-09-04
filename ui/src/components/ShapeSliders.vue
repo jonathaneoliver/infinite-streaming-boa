@@ -2,10 +2,14 @@
 /**
  * Rate / delay / jitter / loss for one direction.
  *
- * Local state during a drag, debounced commit upstream. The slider reads from
+ * Local state during a drag, committed on RELEASE. The slider reads from
  * `local` while the operator is moving it and from the model otherwise, so a
  * telemetry frame arriving mid-drag cannot snatch the handle away. `local`
  * clears when the model catches up.
+ *
+ * Nothing is sent while the handle is moving: see `commit` below for why a
+ * drag that applied every value it passed over was changing the experiment it
+ * was being used to set up.
  */
 import { computed, inject, ref, watch } from 'vue';
 import type { ComputedRef } from 'vue';
@@ -59,7 +63,13 @@ watch(
 // uniform, which is what those stored policies were.
 const v = (k: keyof Shape): number => local.value[k] ?? props.shape[k] ?? 0;
 
-function set(k: keyof Shape, value: number) {
+/**
+ * Take the new value locally, without telling anyone.
+ *
+ * The handle and the readout follow the pointer from here, so the control feels
+ * live; nothing leaves the browser.
+ */
+function stage(k: keyof Shape, value: number) {
   const next: Partial<Shape> = { [k]: value };
   // Lowering delay past the current jitter would send jitter > delay, which the
   // daemon refuses -- so delay could not be reduced without first reducing
@@ -68,7 +78,28 @@ function set(k: keyof Shape, value: number) {
   // around delay and a width cannot outlive the thing it is a width of.
   if (k === 'delay_ms' && v('jitter_ms') > value) next.jitter_ms = value;
   local.value = { ...local.value, ...next };
-  emit('update', { ...props.shape, ...local.value, ...next });
+}
+
+/**
+ * A slider APPLIES on release, not while it moves.
+ *
+ * `input` fires once per pixel of a drag; `change` fires when the drag ends --
+ * and, for a keyboard user, once per arrow key, which is already one
+ * deliberate value per press. So `input` stages and `change` commits.
+ *
+ * Dragging rate from 100 to 3 Mbps used to enforce every value on the way past:
+ * each one a real tc reconfiguration on a live client and a new policy
+ * revision, so a player spent the drag reacting to a dozen caps nobody chose,
+ * and the run was polluted before the intended one arrived. The 200ms debounce
+ * upstream never prevented that -- it coalesced PAUSES in a drag, and a slow
+ * drag is mostly pauses.
+ *
+ * The staged value still shows while dragging, so this costs no feedback: what
+ * changes is only when the box is told.
+ */
+function commit(k: keyof Shape, value: number) {
+  stage(k, value);
+  emit('update', { ...props.shape, ...local.value });
 }
 
 // Rate uses an exponential slider; the scale itself lives in types.ts, shared
@@ -219,7 +250,8 @@ const burstNote = computed(() => {
       <input
         type="range" min="0" max="100" step="1"
         :value="ratePos" :disabled="disabled"
-        @input="set('rate_mbps', posToRate(+($event.target as HTMLInputElement).value))"
+        @input="stage('rate_mbps', posToRate(+($event.target as HTMLInputElement).value))"
+        @change="commit('rate_mbps', posToRate(+($event.target as HTMLInputElement).value))"
       />
       <span class="val num">{{ rateText }}</span>
     </div>
@@ -229,7 +261,8 @@ const burstNote = computed(() => {
       <input
         type="range" min="0" max="1000" step="1"
         :value="v('delay_ms')" :disabled="disabled"
-        @input="set('delay_ms', +($event.target as HTMLInputElement).value)"
+        @input="stage('delay_ms', +($event.target as HTMLInputElement).value)"
+        @change="commit('delay_ms', +($event.target as HTMLInputElement).value)"
       />
       <span class="val num">{{ v('delay_ms') }} ms</span>
     </div>
@@ -244,7 +277,8 @@ const burstNote = computed(() => {
         :title="jitterOff
           ? 'jitter varies the delay, so it needs a delay to vary'
           : 'each packet is delayed by a value drawn from this range'"
-        @input="set('jitter_ms', +($event.target as HTMLInputElement).value)"
+        @input="stage('jitter_ms', +($event.target as HTMLInputElement).value)"
+        @change="commit('jitter_ms', +($event.target as HTMLInputElement).value)"
       />
       <span class="val num">{{ jitterText }}</span>
     </div>
@@ -254,7 +288,8 @@ const burstNote = computed(() => {
       <input
         type="range" min="0" max="100" step="1"
         :value="lossPos" :disabled="disabled"
-        @input="set('loss_pct', posToLoss(+($event.target as HTMLInputElement).value))"
+        @input="stage('loss_pct', posToLoss(+($event.target as HTMLInputElement).value))"
+        @change="commit('loss_pct', posToLoss(+($event.target as HTMLInputElement).value))"
       />
       <span class="val num" :class="{ black: loss >= 100 }">{{ lossText }}</span>
     </div>
@@ -268,7 +303,8 @@ const burstNote = computed(() => {
         <input
           type="range" min="1" :max="BURST_MAX" step="1"
           :value="burst" :disabled="disabled || burstOff" :title="burstWhy"
-          @input="set('loss_burst', +($event.target as HTMLInputElement).value)"
+          @input="stage('loss_burst', +($event.target as HTMLInputElement).value)"
+          @change="commit('loss_burst', +($event.target as HTMLInputElement).value)"
         />
         <span class="val num">{{ burstText }}</span>
       </div>
@@ -289,7 +325,8 @@ const burstNote = computed(() => {
         :title="e.needsDelay && reorderBlocked
           ? 'netem reorders by letting packets skip the delay queue. With no delay there is no queue, and it refuses the whole rule.'
           : e.title"
-        @input="set(e.key, +($event.target as HTMLInputElement).value)"
+        @input="stage(e.key, +($event.target as HTMLInputElement).value)"
+        @change="commit(e.key, +($event.target as HTMLInputElement).value)"
       />
       <span class="val num">{{ v(e.key) }} {{ e.unit }}</span>
     </div>
