@@ -39,6 +39,18 @@ func validMAC(mac string) bool { return macRE.MatchString(mac) }
 
 // hostapdAvailable reports whether hostapd is exposing a control socket for
 // iface right now.
+// hostapdSend and hostapdReachable are the seams a test replaces; in production
+// they are the functions immediately below and beside them.
+//
+// They exist because of #205. A deadzone's lift was addressed to the wrong
+// radio and hostapd answered OK, so the failure was silent -- and no test could
+// have caught it, because nothing in this package could observe WHICH radio a
+// control message went to. A bug that is invisible to the test suite stays.
+var (
+	hostapdSend      = hostapdCmd
+	hostapdReachable = hostapdAvailable
+)
+
 func hostapdAvailable(iface string) bool {
 	if iface == "" {
 		return false
@@ -105,7 +117,7 @@ func (e *Engine) LinkControlAvailable() bool { return e.cfg.Demo || e.anyLinkCon
 // withdraw a capability the box actually has.
 func (e *Engine) anyLinkControl() bool {
 	for _, w := range e.cfg.WlanPorts {
-		if hostapdAvailable(w) {
+		if hostapdReachable(w) {
 			return true
 		}
 	}
@@ -206,16 +218,28 @@ func (e *Engine) LinkFlap(mac, kind string, durSec float64) {
 	}()
 }
 
-// denyACL adds or removes a MAC from hostapd's runtime deny list. With the
+// denyACLOn adds or removes a MAC from ONE radio's runtime deny list. With the
 // default macaddr_acl=0 (accept unless denied), a denied MAC cannot associate.
 // op is "ADD" or "DEL".
-func (e *Engine) denyACL(op, mac string) error {
-	reply, err := hostapdCmd(e.radioFor(mac), "DENY_ACL "+op+"_MAC "+mac)
+//
+// The radio is a parameter rather than derived from the MAC, and that is the
+// whole point: a client MOVES. On a box serving one SSID from two radios, the
+// deauth that starts a deadzone puts the client on the OTHER radio within a
+// second -- measured, see LinkDeadzone -- so radioFor(mac) at lift time names
+// the radio it fled to, not the one holding the ban.
+//
+// That failed silently rather than loudly, which is why it survived: hostapd
+// answers OK to a DEL for a MAC that is not in that radio's list, so the lift
+// reported success while the real ban stayed until the next restart cleared it.
+// Issue #205.
+func (e *Engine) denyACLOn(iface, op, mac string) error {
+	reply, err := hostapdSend(iface, "DENY_ACL "+op+"_MAC "+mac)
 	if err != nil {
 		return err
 	}
 	if !strings.HasPrefix(reply, "OK") {
-		return fmt.Errorf("DENY_ACL %s %s: %s", op, mac, strings.TrimSpace(reply))
+		return fmt.Errorf("DENY_ACL %s %s on %s: %s",
+			op, mac, iface, strings.TrimSpace(reply))
 	}
 	return nil
 }
@@ -240,12 +264,18 @@ func (e *Engine) clearDenyACL() {
 	}
 }
 
-// LinkDeadzone holds a client off the AP for durSec: it is added to the deny
-// ACL (so it CANNOT re-associate for the window) and deauthenticated once to
-// kick it off now. This is a true sustained outage -- unlike a repeated deauth,
-// no traffic leaks through the reconnect gaps -- long enough to drain a player's
-// buffer. The ban is lifted in the background; the call returns once it is in
-// force. See issue #135.
+// LinkDeadzone holds a client off ONE radio for durSec: it is added to that
+// radio's deny ACL (so it cannot re-associate there for the window) and
+// deauthenticated once to kick it off now. The ban is lifted in the background;
+// the call returns once it is in force. See issue #135.
+//
+// On a single-radio box this is a sustained outage, with no traffic leaking
+// through the reconnect gaps the way a repeated deauth allows. On THIS box it
+// is not: both radios publish one SSID onto one bridge, so the client simply
+// associates on the other one -- measured at under a second on the bench. It is
+// therefore a forced roam the client cannot decline, which is a useful thing,
+// but it is not the outage this comment used to claim. Naming that choice is
+// issue #206; this function keeps today's behaviour.
 func (e *Engine) LinkDeadzone(mac string, durSec float64) error {
 	if !e.LinkControlAvailable() {
 		return fmt.Errorf("link control unavailable: hostapd is not serving the AP")
@@ -260,14 +290,17 @@ func (e *Engine) LinkDeadzone(mac string, durSec float64) error {
 	if e.cfg.Demo {
 		return nil
 	}
-	if err := e.denyACL("ADD", mac); err != nil {
+	// Captured HERE, before the deauth below moves the client, and used by the
+	// lift rather than asked again. See denyACLOn.
+	on := e.radioFor(mac)
+	if err := e.denyACLOn(on, "ADD", mac); err != nil {
 		return err
 	}
 	_ = e.LinkDeauth(mac, 0) // kick it off now; the ACL keeps it off
 	go func() {
 		time.Sleep(time.Duration(durSec * float64(time.Second)))
-		if err := e.denyACL("DEL", mac); err != nil {
-			log.Printf("deadzone lift %s: %v", mac, err)
+		if err := e.denyACLOn(on, "DEL", mac); err != nil {
+			log.Printf("deadzone lift %s on %s: %v", mac, on, err)
 		}
 	}()
 	return nil
