@@ -219,9 +219,17 @@ onUnmounted(() => window.clearInterval(ticker));
 
 <template>
   <div class="clients-view">
+    <!-- Titled, and at the same weight as the rack above it. The two are the
+         page's only sections now that the tabs are gone, and a reader scrolling
+         past the adapters needs to see where one ends and the other begins --
+         which a bare list of cards does not say. -->
+    <h2 class="section-title">
+      clients<span v-if="clients.length" class="count">{{ clients.length }}</span>
+    </h2>
+
     <!-- The list's own controls: how many are hidden, and whether the cards are
-         open. They sit with the list rather than in the page header now that
-         the header is shared with a tab that has no devices on it. -->
+         open. They sit with the list rather than in the page header, which is
+         shared with everything else on the page. -->
     <div v-if="offlineCount || showOffline || clients.length > 1" class="list-controls">
       <button
         v-if="offlineCount || showOffline" class="pill link"
@@ -259,8 +267,11 @@ onUnmounted(() => window.clearInterval(ticker));
       @show-phy="(v: boolean) => (chart = { ...chart, showPhy: v })"
     />
 
+    <!-- Addressable, so the adapter rack above can jump down to a named device
+         the same way a device row jumps up to its adapter. Keyed by MAC like
+         everything else that has to survive a rename or a roam. -->
     <ClientCard
-      v-for="c in clients" :key="c.mac"
+      v-for="c in clients" :key="c.mac" :id="`client-${c.mac}`"
       :client="c" :series="series[c.mac]"
       :chart="chart" :now="now"
       @hovering="(v: boolean) => (hovering = v)"
@@ -301,6 +312,31 @@ onUnmounted(() => window.clearInterval(ticker));
 </template>
 
 <style scoped>
+/* Section titles, shared in spirit with the rack's. Loud enough to divide the
+   page now that nothing else does: at the old 10px faint weight they read as
+   captions on the thing below them rather than as the two headings this page
+   has. The count rides along because "how many devices" is the first question
+   asked of this list. */
+.section-title {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin: 0 0 8px;
+  font-size: 13px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--ink);
+}
+.section-title .count {
+  font-family: var(--mono);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0;
+  color: var(--ink-faint);
+  font-variant-numeric: tabular-nums;
+}
+
 .list-controls {
   display: flex;
   gap: 8px;

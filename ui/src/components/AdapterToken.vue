@@ -22,6 +22,19 @@ const props = defineProps<{
   jump?: boolean;
   /** Suppress the channel, for contexts too narrow to carry it. */
   bare?: boolean;
+  /**
+   * Heading scale, for the rack fold that this token titles.
+   *
+   * The same token at a different weight, not a different component. A rack
+   * fold is a peer of a client card, so its header has to carry the same
+   * visual weight as one -- at body scale the adapters read as a strip of
+   * annotations above the real content, which is backwards: they are the thing
+   * every client below is attached to.
+   *
+   * Mono at heading size rather than the sans a client name uses, because an
+   * interface name is an identifier and a device label is a name someone chose.
+   */
+  head?: boolean;
 }>();
 
 const colour = computed(() => adapterColour(props.name));
@@ -29,7 +42,7 @@ const channel = computed(() => adapterChannel(props.name));
 </script>
 
 <template>
-  <span class="tok" :style="{ '--tok': colour }">
+  <span class="tok" :class="{ head }" :style="{ '--tok': colour }">
     <span class="swatch" aria-hidden="true" />
     <span class="name">{{ name }}</span>
     <span v-if="!bare && channel" class="ch">ch {{ channel }}</span>
@@ -77,4 +90,12 @@ const channel = computed(() => adapterChannel(props.name));
   cursor: pointer;
 }
 .jump:hover { color: var(--tok); }
+
+/* Heading scale, matching a client card's own head: 15px/600 and a swatch tall
+   enough to read as a colour rather than a tick. The rack folds are peers of
+   those cards and have to look like it. */
+.tok.head { gap: 8px; font-size: 15px; }
+.tok.head .swatch { width: 4px; height: 18px; border-radius: 2px; }
+.tok.head .name { font-weight: 600; }
+.tok.head .ch { font-size: 12px; }
 </style>

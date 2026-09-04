@@ -37,13 +37,23 @@ const wired = computed(
  */
 watchEffect(() => setAdapterIfaces(bridge.info.value?.ifaces ?? []));
 
-/** Clients per adapter, taken from the snapshot the operator is looking at
- *  rather than from hostapd's station count: the rack row and the device list
- *  below it must agree, and the list is the thing being read. */
-const counts = computed(() => {
-  const out: Record<string, number> = {};
+/**
+ * WHO is on each adapter, taken from the snapshot the operator is looking at
+ * rather than from hostapd's station count.
+ *
+ * Names rather than a tally: "2 clients" answers a question nobody asked, and
+ * the one actually being asked at the top of this page is which devices are on
+ * which radio. The count is then obvious from the names, so nothing is lost by
+ * dropping it.
+ *
+ * From the snapshot because the rack and the device list below it must agree,
+ * and the list is the thing being read.
+ */
+const onAdapter = computed(() => {
+  const out: Record<string, { mac: string; label: string }[]> = {};
   for (const c of props.clients ?? []) {
-    if (c.present && c.port) out[c.port] = (out[c.port] ?? 0) + 1;
+    if (!c.present || !c.port) continue;
+    (out[c.port] ??= []).push({ mac: c.mac, label: c.label || c.mac });
   }
   return out;
 });
@@ -136,7 +146,7 @@ const pending = ref('');
         </template>
       </FabricStrip>
 
-      <AdapterRack :bridge="bridge" :counts="counts" v-model:outage="outage">
+      <AdapterRack :bridge="bridge" :on-adapter="onAdapter" v-model:outage="outage">
         <template #plan="{ radio }">
           <ChannelPlan
             :radio="radio" :scans="bridge.scanSummaries.value" :busy="bridge.busy.value"

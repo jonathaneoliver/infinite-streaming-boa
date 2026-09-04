@@ -129,8 +129,11 @@ const BR_Y = 132;
 // The downstream row hangs off the BOTTOM of the bridge box, which is not a
 // constant: it grows with the number of addresses on the bridge.
 const DOWN_Y = computed(() => BR_Y + brH.value + 50);
-// Room under the downstream row for two rows of per-radio action buttons.
-const H = computed(() => DOWN_Y.value + NODE_H + 166);
+// Just clear of the bottom row. The 166 that used to be here was room for two
+// rows of per-radio action buttons and a channel plan hanging below each node;
+// with those moved to the rack it was 150-odd units of empty canvas under the
+// drawing, which reads as a rendering fault rather than as spacing.
+const H = computed(() => DOWN_Y.value + NODE_H + 12);
 
 /**
  * The band a channel is in. Derived from the channel number rather than read,
@@ -250,8 +253,19 @@ function otherRadio(i: IfaceInfo): string {
 </template>
 
 <style scoped>
-.diagram { margin: 0 0 20px; }
-svg { width: 100%; height: auto; display: block; }
+.diagram { margin: 0 0 12px; }
+/* Never scaled UP past its own size.
+   The viewBox is about 640 units wide, and `width: 100%` alone stretched that
+   to whatever the page was -- 1450px on a wide window, so every box, label and
+   MAC was rendered at more than twice its intended size and the drawing
+   dominated a page it is a footnote on. It still shrinks to fit a narrow
+   window, which is the direction that matters. */
+svg {
+  width: 100%;
+  max-width: 660px;
+  height: auto;
+  display: block;
+}
 
 .wire line, .wire path {
   stroke: var(--line);

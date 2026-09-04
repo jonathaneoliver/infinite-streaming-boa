@@ -37,6 +37,16 @@ function linkText(i: IfaceInfo | undefined): string {
 <template>
   <section class="fabric">
     <div class="line">
+      <!-- The same caret a client card and an adapter fold open with, in the
+           same place, so everything on this page folds one way. It was a text
+           button on the far right, which made the one collapsible thing at the
+           top of the page behave unlike the two below it. -->
+      <button
+        class="caret" :aria-expanded="showTopology"
+        :title="showTopology ? 'Hide the topology' : 'Show how the box is wired'"
+        @click="showTopology = !showTopology"
+      >{{ showTopology ? '▾' : '▸' }}</button>
+
       <span class="k">wan</span>
       <span class="v num">{{ find(info, 'wan')?.name ?? '—' }}</span>
       <span class="meta">{{ linkText(find(info, 'wan')) }}</span>
@@ -52,10 +62,7 @@ function linkText(i: IfaceInfo | undefined): string {
 
       <span class="spacer" />
 
-      <button
-        class="disclose" :aria-expanded="showTopology"
-        @click="showTopology = !showTopology"
-      >topology {{ showTopology ? '▴' : '▾' }}</button>
+      <span class="meta">topology</span>
     </div>
 
     <div v-if="showTopology" class="drawer">
@@ -97,16 +104,18 @@ function linkText(i: IfaceInfo | undefined): string {
 }
 .sep { color: var(--ink-faint); }
 .spacer { flex: 1; min-width: 0; }
-.disclose {
+/* The caret every fold on this page uses, at the same size and in the same
+   place: leading the row, not trailing it. */
+.caret {
   background: none;
   border: 0;
-  color: var(--ink-dim);
-  font-family: var(--sans);
-  font-size: 11px;
+  color: var(--ink-faint);
   cursor: pointer;
-  padding: 0;
+  font-size: 13px;
+  line-height: 1;
+  padding: 3px 8px 3px 0;
 }
-.disclose:hover { color: var(--ink); }
+.caret:hover { color: var(--ink); }
 .drawer {
   border-top: 1px solid var(--line-soft);
   padding: 8px 10px;
