@@ -34,6 +34,8 @@ export function useSnapshot() {
   // The longest range fetched so far. Ranges shorter than this are served from
   // what is already in memory.
   const loadedSec = ref(300);
+  // The range on screen right now, as distinct from loadedSec above.
+  const rangeSec = ref(300);
 
   function record(clients: Client[]) {
     const now = Date.now();
@@ -169,6 +171,13 @@ export function useSnapshot() {
    * better than the decimated version the server would return.
    */
   function setRange(sec: number) {
+    // Recorded BEFORE the early return below. `loadedSec` is the longest range
+    // ever fetched and only grows; this is the range currently being LOOKED at,
+    // which also goes down. The adapter charts need the second one so they
+    // cover the same span as the client charts they sit above -- the PRD's rule
+    // that one range applies to every device at once, because the reason to
+    // change it is comparison.
+    rangeSec.value = sec;
     if (sec <= loadedSec.value) return;
     loadedSec.value = sec;
     void seedFromServer(sec);
@@ -243,5 +252,5 @@ export function useSnapshot() {
     if (retry) window.clearTimeout(retry);
   });
 
-  return { snap, connected, transport, error, series, bucketMs, setRange };
+  return { snap, connected, transport, error, series, bucketMs, rangeSec, setRange };
 }

@@ -8,7 +8,7 @@ import ClientsView from '@/components/ClientsView.vue';
 import BridgeView from '@/components/BridgeView.vue';
 import EventLog from '@/components/EventLog.vue';
 
-const { snap, connected, transport, series, bucketMs, setRange } = useSnapshot();
+const { snap, connected, transport, series, bucketMs, rangeSec, setRange } = useSnapshot();
 const dev = useDevice();
 
 /*
@@ -256,7 +256,10 @@ appliance watching itself."
          never the answer. The adapters are folded because their detail is
          occasional and their summary is not. The devices are open, because
          they are what the page is for. -->
-    <BridgeView :active="true" :clients="snap?.clients" />
+    <BridgeView
+      :active="true" :clients="snap?.clients"
+      :series="series" :range-sec="rangeSec"
+    />
     <ClientsView
       :snap="snap" :series="series" :bucket-ms="bucketMs" :caps="caps"
       @range="setRange"

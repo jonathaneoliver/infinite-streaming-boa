@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, watchEffect, type Ref } from 'vue';
 import { DEVELOPER } from '@/types';
-import type { Client, IfaceInfo } from '@/types';
+import type { Client, IfaceInfo, Series } from '@/types';
 import { useBridge } from '@/composables/useBridge';
 import InterfaceDiagram from '@/components/InterfaceDiagram.vue';
 import FabricStrip from '@/components/FabricStrip.vue';
@@ -20,7 +20,13 @@ import { setAdapterIfaces } from '@/composables/useAdapters';
  * both halves.
  */
 
-const props = defineProps<{ active: boolean; clients?: Client[] }>();
+const props = defineProps<{
+  active: boolean;
+  clients?: Client[];
+  /** Passed straight through to the rack's per-adapter charts. */
+  series?: Record<string, Series>;
+  rangeSec?: number;
+}>();
 const activeRef = computed(() => props.active) as Ref<boolean>;
 const bridge = useBridge(activeRef);
 
@@ -146,7 +152,11 @@ const pending = ref('');
         </template>
       </FabricStrip>
 
-      <AdapterRack :bridge="bridge" :on-adapter="onAdapter" v-model:outage="outage">
+      <AdapterRack
+        :bridge="bridge" :on-adapter="onAdapter"
+        :series="series" :range-sec="rangeSec"
+        v-model:outage="outage"
+      >
         <template #plan="{ radio }">
           <ChannelPlan
             :radio="radio" :scans="bridge.scanSummaries.value" :busy="bridge.busy.value"
