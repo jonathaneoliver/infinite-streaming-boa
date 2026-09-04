@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { computed } from 'vue';
-import type { IfaceInfo } from '@/types';
+import type { IfaceInfo, Series } from '@/types';
 import { rackAdapters, isOpen, toggleAdapter } from '@/composables/useAdapters';
+import AdapterStack from '@/components/AdapterStack.vue';
 import type { useBridge } from '@/composables/useBridge';
 import AdapterToken from './AdapterToken.vue';
 
@@ -27,6 +28,11 @@ const props = defineProps<{
    *  hostapd: the rack and the device list below it must agree, and the list is
    *  what the operator is actually looking at. */
   onAdapter: Record<string, { mac: string; label: string }[]>;
+  /** Per-device history, keyed by MAC -- the same object the client cards read,
+   *  so a band in the fold and the line on the card cannot disagree. */
+  series?: Record<string, Series>;
+  /** MAC to display name, covering devices that have since left. */
+  labels?: Record<string, string>;
 }>();
 
 const PROFILES = [
@@ -54,10 +60,17 @@ function showClient(mac: string) {
   document.getElementById(`client-${mac}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' });
 }
 
-/** The other radio a client could be steered to. Empty on a one-radio box,
- *  where the control is absent rather than present and dead. */
-function otherRadio(r: IfaceInfo): string {
-  return rackAdapters.value.find((o) => o.name !== r.name && o.ap?.enabled)?.name ?? '';
+/**
+ * The other radio clients can be moved between, as the whole interface rather
+ * than just its name -- gathering needs to know how many stations are on it,
+ * not only that it exists.
+ *
+ * Undefined on a one-radio box, where BOTH controls are absent rather than
+ * present and dead: a transition request has to name another access point, so
+ * with nowhere to send anyone there is nothing to offer.
+ */
+function otherRadio(r: IfaceInfo): IfaceInfo | undefined {
+  return rackAdapters.value.find((o) => o.name !== r.name && o.ap?.enabled);
 }
 
 /**
@@ -175,11 +188,30 @@ function degraded(i: IfaceInfo): boolean {
             title="Disassociate every client — the softer transition."
             @click="bridge.linkAll(r.name, 'nudge')"
           >nudge</button>
+          <!-- EVICT and GATHER: the same 802.11v request in both directions.
+               One button called "steer" only ever emptied a radio, which is
+               half the question. "Move everyone to the other band" and "bring
+               everyone here" are asked about equally often on a two-band box,
+               and the second one had no button at all -- you had to go to the
+               OTHER adapter and press steer there, which is the same action
+               named after the wrong radio.
+               Each is disabled when its source radio has nobody on it, so a
+               dead button always means "there is no one to move", never "this
+               is not supported". -->
           <button
             v-if="otherRadio(r)" class="ghost" :disabled="busy || !r.ap.stations"
-            :title="`Ask every client to move to ${otherRadio(r)} (802.11v). They may refuse.`"
-            @click="bridge.steerAll(r.name)"
-          >steer</button>
+            :title="`Ask all ${r.ap.stations} client(s) on ${r.name} to move to `
+              + `${otherRadio(r)!.name} (802.11v). They may refuse.`"
+            @click="bridge.evict(r.name)"
+          >evict</button>
+          <button
+            v-if="otherRadio(r)" class="ghost"
+            :disabled="busy || !otherRadio(r)!.ap?.stations"
+            :title="`Ask all ${otherRadio(r)!.ap?.stations ?? 0} client(s) on `
+              + `${otherRadio(r)!.name} to move here to ${r.name} (802.11v). `
+              + `They may refuse.`"
+            @click="bridge.gather(r.name, otherRadio(r)!.name)"
+          >gather</button>
           <button
             class="ghost" :disabled="busy"
             title="Survey the band. Costs a few beacon gaps, or an outage on a radio that will not scan while serving."
@@ -209,6 +241,24 @@ function degraded(i: IfaceInfo): boolean {
               <span class="v num">{{ r.ap.beacon_int_ms }} ms / {{ r.ap.dtim_period }}</span></div>
           </template>
         </div>
+
+        <!-- WHAT IT IS CARRYING, with the facts rather than with the
+             controls: this is status, and MOVE IT still leads the controls
+             below it. It answers the question that sits between the row above
+             and the client cards below -- how the adapter's capacity is being
+             divided right now. A stream that halved because the radio halved
+             looks identical, on its own card, to one that halved by itself.
+             Shown on EVERY adapter, unconditionally. It was gated first on
+             being a radio, which left the wired port with no chart at all, and
+             then on having devices attached, which was subtler and worse: the
+             chart went blank the moment an adapter emptied, deleting the very
+             traffic you had just been watching. What a radio carried is asked
+             about most often right after it stopped carrying it. With nothing
+             in the window the component says so in words. -->
+        <AdapterStack
+          v-if="series"
+          :iface="r.name" :series="series" :labels="labels ?? {}"
+        />
 
         <p v-if="degraded(r)" class="notice bad inline">
           This adapter negotiated USB 2 speed ({{ r.radio?.link_mbps }} Mb/s)<template

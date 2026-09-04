@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, watchEffect, type Ref } from 'vue';
 import { DEVELOPER } from '@/types';
-import type { Client, IfaceInfo } from '@/types';
+import type { Client, IfaceInfo, Series } from '@/types';
 import { useBridge } from '@/composables/useBridge';
 import InterfaceDiagram from '@/components/InterfaceDiagram.vue';
 import FabricStrip from '@/components/FabricStrip.vue';
@@ -20,7 +20,14 @@ import { setAdapterIfaces } from '@/composables/useAdapters';
  * both halves.
  */
 
-const props = defineProps<{ active: boolean; clients?: Client[] }>();
+const props = defineProps<{
+  active: boolean;
+  clients?: Client[];
+  /** Passed straight through to the rack's per-adapter charts. The chart
+   *  SETTINGS are not passed: those live in the shared prefs store, so the fold
+   *  and the client cards cannot be looking at different ranges. */
+  series?: Record<string, Series>;
+}>();
 const activeRef = computed(() => props.active) as Ref<boolean>;
 const bridge = useBridge(activeRef);
 
@@ -49,6 +56,18 @@ watchEffect(() => setAdapterIfaces(bridge.info.value?.ifaces ?? []));
  * From the snapshot because the rack and the device list below it must agree,
  * and the list is the thing being read.
  */
+/**
+ * Names for the adapter charts, covering devices that are NOT currently
+ * attached. `onAdapter` above is the live roster and is right for the header
+ * row; a chart showing the last five minutes needs to name whatever was on the
+ * adapter during them, including something that has since left.
+ */
+const labels = computed(() => {
+  const out: Record<string, string> = {};
+  for (const c of props.clients ?? []) out[c.mac] = c.label || c.mac;
+  return out;
+});
+
 const onAdapter = computed(() => {
   const out: Record<string, { mac: string; label: string }[]> = {};
   for (const c of props.clients ?? []) {
@@ -146,7 +165,11 @@ const pending = ref('');
         </template>
       </FabricStrip>
 
-      <AdapterRack :bridge="bridge" :on-adapter="onAdapter" v-model:outage="outage">
+      <AdapterRack
+        :bridge="bridge" :on-adapter="onAdapter"
+        :series="series" :labels="labels"
+        v-model:outage="outage"
+      >
         <template #plan="{ radio }">
           <ChannelPlan
             :radio="radio" :scans="bridge.scanSummaries.value" :busy="bridge.busy.value"

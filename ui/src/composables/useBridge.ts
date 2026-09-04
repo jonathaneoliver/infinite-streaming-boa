@@ -221,12 +221,34 @@ export function useBridge(active: Ref<boolean>) {
               : '.'),
     );
 
-  /** 802.11v transition request. A REQUEST: the decision stays with the client,
-   *  and whether a given phone honours it is the behaviour worth testing. */
-  const steerAll = (iface: string) =>
+  /*
+   * EVICT and GATHER are the same endpoint read in opposite directions.
+   *
+   * `POST /radios/{iface}/steer?to={other}` asks everyone on `iface` to move to
+   * `other`. Evicting a radio is that call named on the radio being emptied;
+   * gathering to a radio is the same call named on the radio being filled, with
+   * the two interfaces swapped. There is no second endpoint and no new daemon
+   * code -- `to` has always been a parameter, and only the button was missing.
+   *
+   * Both are REQUESTS. 802.11v hands the decision to the client, and whether a
+   * given phone honours it is the behaviour this box exists to test: a steer
+   * that is refused is a result, not a failure.
+   */
+  const evict = (iface: string) =>
     act(`/api/bridge/radios/${encodeURIComponent(iface)}/steer`, (b) =>
       `${b.iface}: asked ${b.asked} client(s) to move to ${b.to}. They may ` +
       `refuse — 802.11v is a suggestion. Watch the stations counts to see who went.`,
+    );
+
+  /** `from` is the radio being emptied, `iface` the one being filled. */
+  const gather = (iface: string, from: string) =>
+    act(
+      `/api/bridge/radios/${encodeURIComponent(from)}/steer` +
+        `?to=${encodeURIComponent(iface)}`,
+      (b) =>
+        `${b.to}: asked ${b.asked} client(s) on ${b.iface} to come here. They ` +
+        `may refuse — 802.11v is a suggestion. Watch the stations counts to ` +
+        `see who came.`,
     );
 
   /**
@@ -272,6 +294,6 @@ export function useBridge(active: Ref<boolean>) {
     info, survey, scan, error, actionMsg, busy,
     scans, scanSummaries, airtimePct,
     load, loadSurvey, deauthAll, setPower, powerOutage, scanBand,
-    applyProfile, setThreshold, steerAll, linkAll, moveChannel,
+    applyProfile, setThreshold, evict, gather, linkAll, moveChannel,
   };
 }

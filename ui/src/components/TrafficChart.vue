@@ -29,6 +29,12 @@
  * comparable. Dynamic range is handled by the axis MODES instead.
  */
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
+import {
+  axisDecimals,
+  niceMax,
+  spanLabel as spanLabelFor,
+  tickDivisions as tickDivisionsFor,
+} from '@/composables/chartAxis';
 import type { YMode } from '@/types';
 
 const props = withDefaults(
@@ -196,13 +202,6 @@ const view = computed(() =>
  * Fit against the old ladder, measured across representative peaks: 77% -> 86%,
  * 63% -> 79%, 61% -> 76%, 68% -> 85%.
  */
-const LADDER = [1, 1.2, 1.5, 1.8, 2, 2.5, 3, 4, 5, 6, 7, 8, 10];
-function niceMax(v: number): number {
-  if (v <= 0) return 1;
-  const mag = Math.pow(10, Math.floor(Math.log10(v)));
-  const n = v / mag;
-  return (LADDER.find((s) => n <= s) ?? 10) * mag;
-}
 
 const peak = computed(() =>
   view.value.length ? Math.max(...view.value.map((p) => p.v)) : 0,
@@ -271,7 +270,6 @@ const fmt = (v: number) => (v >= 100 ? v.toFixed(0) : v >= 10 ? v.toFixed(1) : v
  * axis in tenths is 0.015, which prints as 0.01, so it keeps fifths and stays
  * at six lines.
  */
-const TICK_SPACING_PX = 34;
 /**
  * Decimals needed to write v exactly, or -1 if more than `max` would be.
  *
@@ -285,34 +283,11 @@ const TICK_SPACING_PX = 34;
  * a chart asking for eleven. Precision belongs to the STEP, and every tick on
  * one axis shares it.
  */
-function decimalsFor(v: number): number {
-  if (!(v > 0)) return -1;
-  // Two decimals RELATIVE TO THE STEP'S OWN MAGNITUDE, not two absolute ones.
-  // A hard cap of two is itself a scale: it makes a 0.015 step unwritable while
-  // a 1.5 one is fine, so a small axis lost gridlines for no reason but its
-  // units. Every maximum niceMax returns divides into tenths that need exactly
-  // one decimal more than the maximum itself, which is why this is the whole
-  // fix -- the range was never the problem.
-  const max = Math.min(6, Math.max(2, 2 - Math.floor(Math.log10(v))));
-  for (let d = 0; d <= max; d++) {
-    if (Math.abs(Number(v.toFixed(d)) - v) < 1e-9) return d;
-  }
-  return -1;
-}
 
-const tickDivisions = computed(() => {
-  const m = yMax.value;
-  if (!(m > 0)) return 2;
-  const ideal = plotH.value / TICK_SPACING_PX;
-  const usable = [2, 3, 4, 5, 6, 8, 10].filter((n) => decimalsFor(m / n) >= 0);
-  if (!usable.length) return 2;
-  return usable.reduce((a, b) => (Math.abs(b - ideal) < Math.abs(a - ideal) ? b : a));
-});
+const tickDivisions = computed(() => tickDivisionsFor(yMax.value, plotH.value));
 
 /** One precision for the whole axis, from the step it is drawn in. */
-const tickDecimals = computed(() =>
-  Math.max(0, decimalsFor(yMax.value / tickDivisions.value)),
-);
+const tickDecimals = computed(() => axisDecimals(yMax.value, plotH.value));
 
 const ticks = computed(() => {
   const m = yMax.value;
@@ -564,10 +539,7 @@ const avg = computed(() =>
   view.value.length ? view.value.reduce((a, p) => a + p.v, 0) / view.value.length : 0,
 );
 
-const spanLabel = computed(() => {
-  const secs = Math.round(props.windowMs / 1000);
-  return secs >= 3600 ? `${secs / 3600}h` : secs >= 60 ? `${secs / 60}m` : `${secs}s`;
-});
+const spanLabel = computed(() => spanLabelFor(props.windowMs));
 
 /* --- hover ------------------------------------------------------------- */
 // The crosshair finds the X: the reader aims at a moment in time, never at a

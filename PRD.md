@@ -490,6 +490,14 @@ damages packets, never link state.
   because the box is a single-operator instrument and because these impairments
   are unreachable any other way — not a general licence for AP-wide controls to
   appear beside per-device ones.
+- **A radio can be emptied or filled, and both are the same request.** `evict`
+  asks every client on this radio to move to the other one; `gather` asks every
+  client on the other one to come here. They are one 802.11v transition request
+  read in two directions, so there is no second mechanism and no way for the two
+  to behave differently — only the naming differs, and it names the radio the
+  operator is pointing at rather than the one being emptied. Each is disabled
+  when its source radio has nobody on it, so a dead button always means "there
+  is nobody to move" and never "this is not supported".
 - **Each box-wide control appears exactly once, on the adapter it acts on.**
   Everything that acts on a radio — switching it off, dropping, nudging or
   steering its clients, scanning, moving it, taking it away for a fixed outage,
@@ -503,6 +511,34 @@ damages packets, never link state.
   refuses an action its driver claims to support — an 802.11h channel switch on
   the `mt7921u` is the measured case — the refusal is reported with the
   driver's own words rather than reported as success.
+- **An open adapter shows what it is carrying, stacked by device.** Download and
+  upload as two charts side by side, on the same window and the same axis rules
+  as the client charts below, with one coloured band per device and the top edge
+  as the adapter's total. This answers the question that sits between the rack
+  and the device list: a stream that halved because the radio halved looks
+  identical, on the device's own card, to one that halved by itself.
+  Colour here means **device**, which is the one place in this interface it does
+  not mean direction. That is only safe because the two directions are separate
+  charts named in their headings rather than one chart drawn in two colours, and
+  because every band is named in a legend — colour is a key into that legend and
+  never the only thing carrying the meaning.
+  The axis is floored at 1 Mbit/s rather than scaled to whatever is there: an
+  idle radio otherwise scales to a trickle of ARP and mDNS chatter and draws
+  background noise as a full-height mountain range.
+- **What an adapter carried outlives what is attached to it.** The chart's
+  contents come from the recorded history, which names the adapter that carried
+  each sample, and never from the list of currently-attached devices. A device
+  that leaves keeps its band until its samples age out of the window, and an
+  adapter emptied by a steer still shows what it was doing a moment ago —
+  which is the moment the question is most often asked. The row above it still
+  reports who is on it *now*: "what it carried" and "who is on it" are
+  different questions and are answered separately.
+- **Time advances whether or not data is arriving.** The right-hand edge of
+  every plot follows the clock, so a radio that goes quiet drains to the left
+  and empties rather than freezing on the last thing it did — a chart that
+  stopped telling the time would be most misleading exactly when "nothing is
+  happening" is the finding. The edge is held still while a chart is being
+  read, so the point under the pointer stays the point measured.
 - The airtime readout is labelled as the **operating channel only**. It is not a
   survey of the band: a beaconing radio never visits other channels, so their
   counters are zero, and one driver measured here mislabels the frequency
