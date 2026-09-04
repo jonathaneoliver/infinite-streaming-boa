@@ -1011,6 +1011,10 @@ export interface ChartPrefs {
   showLive: boolean;
   /** Draw the rolling mean over sustainedSec. */
   showSustained: boolean;
+  /** Draw the client's negotiated PHY rate as a rule across the plot. Off by
+   *  default: it is a ceiling most runs sit far below, so on a chart that is
+   *  answering a question about a cap it is mostly a distraction. */
+  showPhy: boolean;
   /** Trailing window for that mean, in seconds. One of SUSTAINED_CHOICES. */
   sustainedSec: number;
   /**

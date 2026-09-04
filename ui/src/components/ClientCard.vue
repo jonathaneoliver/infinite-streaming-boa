@@ -64,6 +64,7 @@ const chartProps = computed(() => ({
   yManual: props.chart.yManual,
   showLive: props.chart.showLive,
   showSustained: props.chart.showSustained,
+  showPhy: props.chart.showPhy,
   sustainedSec: props.chart.sustainedSec,
 }));
 

@@ -60,6 +60,8 @@ const props = withDefaults(
      *  for a wired client or one whose radio could not be read, which is why
      *  that mode falls back rather than drawing an empty axis. */
     phy?: number;
+    /** Draw that ceiling as a rule across the plot. */
+    showPhy?: boolean;
     height?: number;
     /** Render the heading. Off when the surrounding card already names it. */
     titled?: boolean;
@@ -82,7 +84,7 @@ const props = withDefaults(
     sustainedSec?: number;
   }>(),
   {
-    cap: 0, caps: () => [], windowMs: 300_000, now: 0, yMode: 'auto', yManual: 10, phy: 0,
+    cap: 0, caps: () => [], windowMs: 300_000, now: 0, yMode: 'auto', yManual: 10, phy: 0, showPhy: false,
     height: 132, titled: false, compact: false,
     showLive: true, showSustained: false, sustainedSec: 30,
   },
@@ -434,6 +436,19 @@ const sustainedPaths = computed(() =>
 
 const capY = computed(() => (props.cap > 0 ? yAt(props.cap) : null));
 
+/**
+ * Where the PHY rule sits, or null when it is off the top of the axis.
+ *
+ * Null rather than clamped: on "auto" the ceiling is usually far above the
+ * traffic, and a rule pinned to the frame would claim the link is saturated
+ * when the truth is that the axis cannot show how much headroom there is. The
+ * "to PHY" y-mode exists to bring it into view; until then its absence is the
+ * honest answer -- and the same trap the cap line documents two comments down.
+ */
+const phyY = computed(() =>
+  props.phy > 0 && props.phy <= yMax.value ? yAt(props.phy) : null,
+);
+
 /*
  * The cap over time, as a step.
  *
@@ -667,6 +682,21 @@ const gid = `g${Math.random().toString(36).slice(2, 8)}`;
         </text>
       </g>
 
+      <!-- The link's ceiling: what the radio negotiated, not what the box is
+           allowing. Dotted rather than dashed, because a dashed rule already
+           means "cap" on this page and the two are different kinds of limit --
+           one is imposed here and one is the medium's.
+           Drawn last of the rules so it sits above the cap where they cross,
+           and skipped when it is off the top of the axis rather than clamped:
+           a ceiling pinned to the frame would read as a plateau in the data,
+           which is the same trap the cap line documents. -->
+      <g v-if="showPhy && phyY !== null && !compact" class="phy-rule">
+        <line :x1="PAD.l" :x2="PAD.l + plotW" :y1="phyY" :y2="phyY" :stroke="color" />
+        <text :x="PAD.l + plotW + 6" :y="phyY + 3" class="cap-text num">
+          PHY {{ fmt(phy) }}
+        </text>
+      </g>
+
       <!-- Endpoint marker, with a 2px surface ring so it stays legible where it
            crosses the cap line. No text label here: the pane heading directly
            above is already the direct label for this value, and a second copy
@@ -723,6 +753,13 @@ const gid = `g${Math.random().toString(36).slice(2, 8)}`;
             <svg width="16" height="8" aria-hidden="true">
               <line x1="0" y1="4" x2="16" y2="4" :stroke="color" stroke-width="2.25" />
             </svg>{{ sustainedSec }}s mean
+          </span>
+          <span v-if="showPhy && phyY !== null" class="key-item"
+                title="The client's negotiated PHY rate — what the link could carry, not what it is being allowed. The gap below it is what airtime costs.">
+            <svg width="16" height="8" aria-hidden="true">
+              <line x1="0" y1="4" x2="16" y2="4" :stroke="color"
+                    stroke-width="1" stroke-dasharray="1 3" opacity="0.7" />
+            </svg>PHY
           </span>
           <span v-if="capY !== null && cap <= yMax" class="key-item"
                 title="The rate being enforced right now, which is not always the rate you saved: a ladder sweep drives the cap itself while it runs.">
@@ -800,6 +837,12 @@ const gid = `g${Math.random().toString(36).slice(2, 8)}`;
 .cap line,
 .cap polyline { stroke-width: 1; stroke-dasharray: 4 3; opacity: 0.8; fill: none; }
 .cap-text { fill: var(--ink-dim); font-size: 10px; }
+/* Dotted, and fainter than the cap. Both are thresholds, so both are broken
+   rules rather than solid ones -- but they are different KINDS of limit: the
+   cap is imposed by this box and can be moved from the sliders below, while
+   the PHY ceiling belongs to the medium and cannot. Dashes for the one you
+   set, dots for the one you are given. */
+.phy-rule line { stroke-width: 1; stroke-dasharray: 1 3; opacity: 0.7; }
 .crosshair line { stroke: var(--ink-faint); stroke-width: 1; opacity: 0.6; }
 
 .tip {
