@@ -128,6 +128,10 @@ type Engine struct {
 	// control socket of the radio holding that station; the other one answers
 	// with a station it has never heard of.
 	stationRadio map[string]string
+	// assocSeen holds the real time hostapd reported a client's most recent
+	// association change, so the tick can stamp its own event with it rather
+	// than with the moment it noticed. See noteAssoc.
+	assocSeen map[string]assocObs
 
 	// events is the in-memory log of what CHANGED -- joins, roams, radio
 	// moves, actions. Everything else here is state; see events.go for why

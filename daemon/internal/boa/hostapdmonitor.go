@@ -275,6 +275,21 @@ func (e *Engine) handleHostapdEvent(iface, msg string) {
 		msg = msg[i+1:]
 	}
 	msg = strings.TrimSpace(msg)
+
+	// Associations, timestamped by hostapd rather than by the tick that would
+	// otherwise notice them up to a second later. These raise no event of their
+	// own -- the tick still decides WHAT happened, so a radio without a control
+	// socket is not silently dropped from the log -- they only record WHEN, for
+	// the tick to stamp its own event with. See noteAssoc and addAt.
+	if rest, ok := strings.CutPrefix(msg, "AP-STA-CONNECTED "); ok {
+		e.noteAssoc(iface, firstField(rest), true)
+		return
+	}
+	if rest, ok := strings.CutPrefix(msg, "AP-STA-DISCONNECTED "); ok {
+		e.noteAssoc(iface, firstField(rest), false)
+		return
+	}
+
 	rest, ok := strings.CutPrefix(msg, "BSS-TM-RESP ")
 	if !ok {
 		return
@@ -325,4 +340,69 @@ func targetNote(bssid string) string {
 		return ""
 	}
 	return " (" + bssid + ")"
+}
+
+// firstField is the MAC out of the remainder of an AP-STA-* line, which may
+// carry more words after it depending on hostapd's build.
+func firstField(rest string) string {
+	if f := strings.Fields(rest); len(f) > 0 {
+		return f[0]
+	}
+	return ""
+}
+
+// assocFresh is how long an observation may be used to stamp an event.
+//
+// Comfortably more than a tick, so a transition seen just after one poll is
+// still available to the next, and short enough that a stale record cannot
+// backdate an unrelated event later on. A client that joins, leaves and rejoins
+// inside this window has its most recent transition used, which is the one the
+// tick is about to raise.
+const assocFresh = 5 * time.Second
+
+// assocObs is one association transition as hostapd reported it, in real time.
+type assocObs struct {
+	iface     string
+	at        time.Time
+	connected bool
+}
+
+// noteAssoc records that hostapd saw a client associate or disassociate, with
+// the time it said so.
+//
+// Deliberately NOT an event. hostapd only speaks for radios it is serving, and
+// this box can run one radio under hostapd and another under NetworkManager --
+// see anyLinkControl. Raising the log line from here would make a client on the
+// second radio invisible, which is a worse failure than a coarse timestamp. So
+// the tick remains the single thing that decides an event happened, and this
+// only sharpens when it says it did.
+func (e *Engine) noteAssoc(iface, mac string, connected bool) {
+	mac = normMAC(mac)
+	if !validMAC(mac) {
+		return
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.assocSeen == nil {
+		e.assocSeen = map[string]assocObs{}
+	}
+	e.assocSeen[mac] = assocObs{iface: iface, at: time.Now(), connected: connected}
+}
+
+// assocTime is when hostapd saw this client's most recent transition of the
+// kind being reported, or now if it did not see one.
+//
+// The record is consumed, so a single transition stamps a single event: if the
+// same observation stamped a join and then a later leave, the second would
+// carry a time it has no claim to.
+func (e *Engine) assocTime(mac string, connected bool) time.Time {
+	now := time.Now()
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	obs, ok := e.assocSeen[mac]
+	if !ok || obs.connected != connected || now.Sub(obs.at) > assocFresh {
+		return now
+	}
+	delete(e.assocSeen, mac)
+	return obs.at
 }
