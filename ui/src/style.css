@@ -310,6 +310,15 @@ button {
 button:hover { color: var(--ink); border-color: var(--ink-faint); }
 button.accent { color: var(--bg); background: var(--down); border-color: var(--down); font-weight: 600; }
 button.ghost { background: transparent; }
+/* A ghost button that is ALSO the call to action keeps the accent fill.
+   .ghost and .accent have equal specificity, so whichever is written last wins
+   the background -- and .ghost coming second blanked the accent fill while
+   leaving accent's `color: var(--bg)` in place. That painted #0d1117 text on
+   the #151b23 panel: about 1.2:1, invisible. It only showed up in one state,
+   the radio power button reading "switch on", because .accent is applied only
+   while a radio is switched off. Spelled out at higher specificity rather than
+   fixed by reordering, so re-sorting this file cannot bring it back. */
+button.ghost.accent { background: var(--down); }
 
 select, input[type='text'], input[type='number'] {
   font: inherit;
