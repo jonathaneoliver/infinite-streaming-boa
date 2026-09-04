@@ -52,6 +52,12 @@ const emit = defineEmits<{
 // four times, so the sparkline on a folded row can never drift out of step with
 // the full chart it summarises.
 const chartProps = computed(() => ({
+  // The client's own ceiling, for the "to PHY" axis. Per client rather than per
+  // card setting, because two devices on the same radio can negotiate very
+  // different rates -- an 802.11n phone and an ax laptop on one AP differ by
+  // several times, and scaling both to the same number would flatter one and
+  // crush the other.
+  phy: props.client.station?.tx_phy_mbps ?? 0,
   windowMs: props.chart.rangeSec * 1000,
   now: props.now,
   yMode: props.chart.yMode,

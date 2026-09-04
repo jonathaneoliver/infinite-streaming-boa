@@ -56,6 +56,10 @@ const props = withDefaults(
     now?: number;
     yMode?: YMode;
     yManual?: number;
+    /** The client's negotiated PHY rate, Mbit/s, for the "to PHY" axis. Zero
+     *  for a wired client or one whose radio could not be read, which is why
+     *  that mode falls back rather than drawing an empty axis. */
+    phy?: number;
     height?: number;
     /** Render the heading. Off when the surrounding card already names it. */
     titled?: boolean;
@@ -78,7 +82,7 @@ const props = withDefaults(
     sustainedSec?: number;
   }>(),
   {
-    cap: 0, caps: () => [], windowMs: 300_000, now: 0, yMode: 'auto', yManual: 10,
+    cap: 0, caps: () => [], windowMs: 300_000, now: 0, yMode: 'auto', yManual: 10, phy: 0,
     height: 132, titled: false, compact: false,
     showLive: true, showSustained: false, sustainedSec: 30,
   },
@@ -181,6 +185,14 @@ const yMax = computed(() => {
     // to compare two devices, and quietly moving it to 15 would break that.
     return props.yManual;
   }
+  // "To PHY" scales to what the LINK could carry rather than to what the box is
+  // allowing, so the gap on screen is the one between the radio's ceiling and
+  // what is arriving. Only 1.05 of headroom, not 1.15: unlike a cap, traffic
+  // cannot exceed the PHY rate, so the space above the line would never be used.
+  //
+  // Falls back to auto without a PHY -- a wired client has no such ceiling, and
+  // an axis locked to zero would draw nothing at all.
+  if (props.yMode === 'phy' && props.phy > 0) return niceMax(props.phy * 1.05);
   // "To cap" falls back to auto on an unconditioned device rather than drawing
   // an empty axis: a cap of zero means unlimited, which is not a ceiling.
   if (props.yMode === 'cap' && props.cap > 0) return niceMax(props.cap * 1.15);

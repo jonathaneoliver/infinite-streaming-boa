@@ -86,6 +86,13 @@ const seriesLabel = (key: 'live' | 'sustained') =>
 const MODES: { v: YMode; label: string; title: string }[] = [
   { v: 'auto', label: 'auto', title: 'Scale to the traffic, including the cap' },
   { v: 'cap', label: 'to cap', title: 'Lock the axis to the configured cap, so headroom stays constant' },
+  // The ceiling the LINK could carry, as opposed to the cap the box is
+  // imposing. Scaling to it answers a different question from either of the
+  // others: not "is the cap working" but "how much of what this radio could
+  // deliver is actually arriving". Measured here, throughput lands around 85%
+  // of PHY on a quiet channel and about a third of it on a busy one, so the
+  // gap this mode shows is mostly airtime.
+  { v: 'phy', label: 'to PHY', title: "Scale to the client's negotiated PHY rate — the link's ceiling, not the cap. Falls back to auto for a client with no radio." },
   { v: 'manual', label: 'fixed', title: 'A fixed ceiling, so devices can be compared on one scale' },
 ];
 

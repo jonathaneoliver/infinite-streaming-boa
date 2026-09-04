@@ -793,7 +793,7 @@ export const RANGES = [
  * player that has filled its buffer stops requesting), and a log axis has no
  * position for it. See the note in TrafficChart.
  */
-export type YMode = 'auto' | 'cap' | 'manual';
+export type YMode = 'auto' | 'cap' | 'manual' | 'phy';
 
 /**
  * Window for the sustained line, in seconds.
