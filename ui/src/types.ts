@@ -394,9 +394,20 @@ export interface ScanAP {
 export interface ScanChannel {
   channel: number;
   freq_mhz: number;
-  /** Neighbouring APs, excluding our own. */
+  /** Neighbouring APs PRIMARY on this channel, excluding our own. */
   aps: number;
+  /** Every AP whose occupied spectrum reaches this channel, including the ones
+   *  primary on it. An 80MHz neighbour covers four channels, so a channel with
+   *  aps: 0 and covering: 4 is fully occupied and empty by headcount. */
+  covering?: number;
   strongest_dbm?: number;
+  /** Measured airtime utilisation, 0-100, from neighbours' BSS Load. Only
+   *  meaningful when util_from > 0: a channel nobody measured is not an idle
+   *  one, and reading an absent value as 0% would paint the busiest green. */
+  util_pct?: number;
+  util_from?: number;
+  /** Clients the BSS Load elements on this channel reported. */
+  stations?: number;
   recommended?: boolean;
 }
 

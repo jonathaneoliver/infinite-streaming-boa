@@ -1028,3 +1028,73 @@ interfering with them.
 channel. It is deliberately not set: the scan exists to avoid clobbering
 neighbouring networks, and turning it off is a decision about someone else's
 airtime, not a bug fix.
+
+## Source O — `iw dev <if> scan` · neighbours, their width, and measured airtime
+
+**VERIFIED** on hardware 2026-09-04, both radios, 13 BSSes in one 1561-line dump.
+
+| Field | Meaning | Confidence |
+|---|---|---|
+| `BSS <mac>(on <if>)` | Opens a block. **The only line that does** | certain |
+| `freq:` | Frequency, MHz, **as a float** (`2417.0`) | certain |
+| `signal:` | Received signal, dBm, negative | certain |
+| `SSID:` | Network name; may be empty for a hidden BSS | certain |
+| `DS Parameter set: channel` | Primary channel; authoritative where present | certain |
+| `* station count:` | Clients associated **to that BSS** (BSS Load) | certain |
+| `* channel utilisation:` | **`N/255`** — fraction of time the medium was sensed busy, as observed by that AP (BSS Load) | certain |
+| `* channel width:` | VHT operation **enum**: `0`=20/40, `1`=80, `2`=160, `3`=80+80 | certain |
+| `* center freq segment 1:` | Channel index at the centre of an 80/160MHz block (42, 155, …) | certain |
+| `* secondary channel offset:` | HT: `above` / `below` / `no secondary` — settles 20 vs 40 | certain |
+
+**Semantics that bite**
+
+- **`channel utilisation` is out of 255, not out of 100.** `60/255` is **23.5%**,
+  not 60%. Stored raw as `UtilRaw` and converted once, at the point of display,
+  precisely because a percentage stored here would be a plausible-looking wrong
+  answer for ever. Measured values on this box ranged 22–94 out of 255, i.e.
+  8.6%–37%, which read as sensible percentages either way — the units error
+  would not have announced itself.
+- **Absent BSS Load is NOT zero utilisation.** 10 of 13 neighbours advertised it;
+  3 did not. A channel where nobody advertised it must fall back to a headcount,
+  because reading the absence as 0% paints the busiest channel green — the exact
+  inversion the field was added to fix. Hence `UtilKnown` per AP and `UtilFrom`
+  per channel: "nothing measured this" and "this measured zero" are different
+  facts and must not share a representation.
+- **`BSS Load:` is an element, not a header.** It begins with `BSS ` like the
+  block header does. Treating it as a header produced phantom access points
+  whose BSSID was the literal `load:` **and** — far worse — ended the real block
+  half way through, so every field after it, the BSS Load values included, was
+  parsed with no current AP and silently dropped. A `BSS ` line opens a block
+  only when its second field is a MAC.
+- **`* STA channel width:` is not `* channel width:`.** The first is an HT
+  *capability* describing what the AP will accept from a station; the second is
+  the VHT *operation* width the BSS is actually running. Measured: an AP running
+  80MHz advertised `STA channel width: 20 MHz`. Matching the wrong one reports
+  20MHz for an access point that is on 80.
+- **`channel width` is an enum, and `surveyValue` returns the first field only.**
+  `channel width: 1 (80 MHz)` yields `1`. Reading the bracketed `80` would need
+  the whole line, and would have no answer for `3` (`80+80 MHz`), which has no
+  single width.
+- **Utilisation describes the CHANNEL, not the BSS.** Several APs on one channel
+  broadly agree; where they disagree, the higher reading heard something real.
+  Aggregated as the maximum, never the mean — an average lets one quiet observer
+  hide a busy medium.
+- **Headcount does not predict congestion.** Measured on this box, in one scan:
+
+  | BSSID | station count | channel utilisation |
+  |---|---|---|
+  | `60:32:b1:45:ec:3f` | 0 | 94/255 (**37%**) |
+  | `48:22:54:4e:90:76` | 10 | 22/255 (**8.6%**) |
+
+  The access point with **no clients** sits in air four times busier than the one
+  with ten. Any rating built on AP or client counts ranks those the wrong way
+  round, which is why the measurement is preferred wherever it exists.
+- **A neighbour occupies more than its primary channel.** Measured: 7 of 13 APs
+  ran 80MHz, six of them centred on channel 42 — covering all of 36/40/44/48.
+  Channel 36 therefore showed **0 access points primary on it and 6 covering
+  it**. Counted from the CENTRE (`centre ± 2, ± 6` for 80MHz; `± 2, 6, 10, 14`
+  for 160), never from the primary: which of the four a neighbour beacons on
+  says nothing about the block it fills.
+- **2.4GHz is deliberately excluded from width-derived coverage.** That band is
+  already counted with a ±4-channel overlap window, and layering a second
+  coverage set on top would count the same interference twice.

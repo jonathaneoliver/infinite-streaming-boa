@@ -26,12 +26,52 @@ export type Quality = 'clear' | 'busy' | 'crowded' | 'unknown';
 const LOUD_DBM = -60;
 const FAINT_DBM = -75;
 
+/*
+ * Measured airtime, where a neighbour reported it.
+ *
+ * BSS Load is the only thing in a scan that MEASURES congestion rather than
+ * letting it be inferred, and the inference is demonstrably poor: on this box
+ * an access point with zero clients sat in 37% utilisation while one with ten
+ * clients sat in 8.6%. A headcount ranks those the wrong way round.
+ *
+ * 50% is where a channel stops being merely shared and starts costing a client
+ * throughput it asked for; 25% is comfortably shared. Both are judgements, but
+ * they are judgements about a measured quantity rather than about a proxy.
+ */
+const BUSY_PCT = 25;
+const CROWDED_PCT = 50;
+
+/** Whether a rating came from a measurement or from a headcount. The two are
+ *  not equally good and the interface should not present them identically. */
+export type Basis = 'measured' | 'estimated' | 'none';
+
+export function basisFor(c: ScanChannel | undefined): Basis {
+  if (!c) return 'none';
+  return (c.util_from ?? 0) > 0 ? 'measured' : 'estimated';
+}
+
 export function rateChannel(c: ScanChannel | undefined): Quality {
-  if (!c || c.aps === 0) return 'clear';
+  // Nothing heard at all. Absence IS evidence here -- the scan lists every
+  // channel it heard something on -- so this stays clear rather than unknown.
+  if (!c || (c.covering ?? c.aps) === 0) return 'clear';
+
+  // Prefer what was measured.
+  if ((c.util_from ?? 0) > 0) {
+    const u = c.util_pct ?? 0;
+    if (u >= CROWDED_PCT) return 'crowded';
+    if (u >= BUSY_PCT) return 'busy';
+    return 'clear';
+  }
+
+  // Fallback: nobody on this channel advertised BSS Load, so this is the old
+  // proxy -- how many neighbours occupy it and how loud the worst one is.
+  // `covering` rather than `aps`, so an 80MHz neighbour counts against every
+  // channel it fills instead of only the one it beacons on.
+  const n = c.covering ?? c.aps;
   const s = c.strongest_dbm;
   if (s !== undefined && s >= LOUD_DBM) return 'crowded';
-  if (c.aps >= 3) return 'crowded';
-  if (s !== undefined && s < FAINT_DBM && c.aps === 1) return 'clear';
+  if (n >= 3) return 'crowded';
+  if (s !== undefined && s < FAINT_DBM && n === 1) return 'clear';
   return 'busy';
 }
 
@@ -55,8 +95,20 @@ export function describeChannel(
 ): string {
   if (!scan) return 'not scanned yet';
   const c = scan.channels?.find((x) => x.channel === channel);
-  if (!c || c.aps === 0) return 'nothing heard here';
-  const loud =
-    c.strongest_dbm !== undefined ? `, strongest ${c.strongest_dbm} dBm` : '';
-  return `${c.aps} access point${c.aps === 1 ? '' : 's'}${loud}`;
+  if (!c || (c.covering ?? c.aps) === 0) return 'nothing heard here';
+
+  const n = c.covering ?? c.aps;
+  const parts: string[] = [`${c.aps} access point${c.aps === 1 ? '' : 's'}`];
+  // Only worth saying when they differ: it is the whole point that a channel
+  // can be occupied by neighbours that do not beacon on it.
+  if (n > c.aps) parts.push(`${n} covering it at their width`);
+  if (c.strongest_dbm !== undefined) parts.push(`strongest ${c.strongest_dbm} dBm`);
+
+  if ((c.util_from ?? 0) > 0) {
+    // Lead with the measurement and name it as one, so a colour resting on
+    // evidence is distinguishable from a colour resting on a guess.
+    const s = c.stations ? `, ${c.stations} client(s)` : '';
+    return `${Math.round(c.util_pct ?? 0)}% airtime busy, measured${s} · ${parts.join(', ')}`;
+  }
+  return `${parts.join(', ')} · no airtime reported, so this is an estimate`;
 }

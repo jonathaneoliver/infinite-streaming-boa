@@ -2,6 +2,7 @@ package boa
 
 import (
 	"fmt"
+	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -506,6 +507,27 @@ type ScanAP struct {
 	// Ours marks an AP served by this box, so a channel does not look busy
 	// because of the very radio asking the question.
 	Ours bool `json:"ours,omitempty"`
+
+	// UtilRaw is the BSS Load channel utilisation, 0-255, AS REPORTED. Kept in
+	// the wire's own units rather than converted to a percentage here, because
+	// the conversion is the exact kind of thing docs/DATA-CONTRACT.md exists to
+	// stop happening twice: 60 is 23.5%, not 60%. Zero means the element was
+	// absent -- see UtilKnown, since a genuinely idle channel also reads 0.
+	UtilRaw   int  `json:"util_raw,omitempty"`
+	UtilKnown bool `json:"util_known,omitempty"`
+	// Stations is the BSS Load station count for this BSS.
+	Stations int `json:"stations,omitempty"`
+
+	// WidthMHz is how much spectrum this neighbour actually occupies, derived
+	// from its VHT operation width or, failing that, its HT secondary channel
+	// offset. 20 when it says nothing, which is what an AP with neither element
+	// is.
+	WidthMHz int `json:"width_mhz,omitempty"`
+	// Centre is the channel index at the middle of that width, for the 80/160MHz
+	// cases where it is not the primary. Zero at 20/40MHz.
+	Centre int `json:"centre,omitempty"`
+	// SecAbove is which side a 40MHz secondary sits, for deriving coverage.
+	SecAbove bool `json:"-"`
 }
 
 // ScanChannel is the per-channel summary the recommendation is made from.
@@ -518,6 +540,27 @@ type ScanChannel struct {
 	// very loud neighbour is worse than one with three faint ones.
 	StrongestDBm float64 `json:"strongest_dbm,omitempty"`
 	Recommended  bool    `json:"recommended,omitempty"`
+
+	// Covering is every AP whose occupied spectrum includes this channel,
+	// including those merely primary on it. APs counts only the ones PRIMARY
+	// here, and the two are different facts: an 80MHz neighbour centred on 42
+	// covers 36/40/44/48 while being primary on one of them, so a channel with
+	// APs=0 and Covering=4 is fully occupied and looks empty by headcount.
+	Covering int `json:"covering,omitempty"`
+
+	// UtilPct is measured airtime utilisation, 0-100, the HIGHEST reported by
+	// any AP on this channel. Utilisation is a property of the channel rather
+	// than of one BSS, so neighbours on the same channel broadly agree; taking
+	// the highest keeps a busy reading from being averaged away by an AP that
+	// heard less of it.
+	UtilPct float64 `json:"util_pct,omitempty"`
+	// UtilFrom is how many APs on this channel reported BSS Load. Zero means
+	// nothing measured it and UtilPct must not be read -- a channel nobody
+	// advertised is not an idle one, and treating it as 0% would paint the
+	// busiest channel green.
+	UtilFrom int `json:"util_from,omitempty"`
+	// Stations is the total client count the BSS Load elements reported.
+	Stations int `json:"stations,omitempty"`
 }
 
 // ScanResult is a full band scan taken from a radio briefly out of service.
@@ -767,21 +810,80 @@ func (e *Engine) ScanBand(iface string, apply bool) (ScanResult, error) {
 
 	// One line, saying what it cost as well as what it found: a scan that
 	// dropped every client and one that cost a few beacon gaps look identical
-	// in the result otherwise.
+	// in the result otherwise. found() adds what was actually measured, so the
+	// log records the evidence a channel recommendation was made on rather than
+	// only the recommendation.
+	found := scanFindings(res)
 	switch {
 	case res.Applied:
-		e.logEvent(EventRadio, iface, "", "%s scanned %s (%d APs) and moved %d → %d",
-			iface, band, len(aps), res.Was, res.Now)
+		e.logEvent(EventRadio, iface, "", "%s scanned %s — %s — and moved %d → %d",
+			iface, band, found, res.Was, res.Now)
 	case res.OutageSec > 0:
-		e.logEvent(EventAction, iface, "", "%s scanned %s (%d APs, %.0fs off the air), stayed on %d",
-			iface, band, len(aps), res.OutageSec, res.Now)
+		e.logEvent(EventAction, iface, "", "%s scanned %s (%.0fs off the air) — %s — stayed on %d",
+			iface, band, res.OutageSec, found, res.Now)
 	default:
-		e.logEvent(EventAction, iface, "", "%s scanned %s (%d APs) while serving, stayed on %d",
-			iface, band, len(aps), res.Now)
+		e.logEvent(EventAction, iface, "", "%s scanned %s while serving — %s — stayed on %d",
+			iface, band, found, res.Now)
 	}
 	e.syncRadioState(iface)
 	e.rememberScan(iface, res)
 	return res, nil
+}
+
+// scanFindings phrases what a scan actually measured, for the activity log.
+//
+// The log used to carry a headcount and nothing else -- "(29 APs)" -- which is
+// the one number that turned out not to predict congestion: on this box an AP
+// with no clients sat in 37% utilisation while one with ten sat in 8.6%. So the
+// line now leads with airtime where a neighbour measured it, names the busiest
+// channel and the quietest, and says which of the two it is quoting.
+//
+// Deliberately one line. The log is a ring of a few hundred events read at a
+// glance; a scan that spilled a row per channel would push the rest of the
+// session out of it.
+func scanFindings(res ScanResult) string {
+	if len(res.Channels) == 0 {
+		return "nothing heard"
+	}
+	var busiest, quietest *ScanChannel
+	measured, stations := 0, 0
+	for i := range res.Channels {
+		c := &res.Channels[i]
+		stations += c.Stations
+		if c.UtilFrom == 0 {
+			continue
+		}
+		measured++
+		if busiest == nil || c.UtilPct > busiest.UtilPct {
+			busiest = c
+		}
+		if quietest == nil || c.UtilPct < quietest.UtilPct {
+			quietest = c
+		}
+	}
+	aps := 0
+	for _, c := range res.Channels {
+		aps += c.APs
+	}
+	out := fmt.Sprintf("%d AP(s) on %d channel(s)", aps, len(res.Channels))
+	if measured == 0 {
+		// Said plainly, because a recommendation made without it rests on a
+		// headcount and the reader should know that is all it rests on.
+		return out + ", none reporting airtime"
+	}
+	out += fmt.Sprintf(", %d client(s)", stations)
+	if busiest != nil {
+		out += fmt.Sprintf("; busiest ch %d at %.0f%% airtime",
+			busiest.Channel, busiest.UtilPct)
+	}
+	if quietest != nil && busiest != nil && quietest.Channel != busiest.Channel {
+		out += fmt.Sprintf(", quietest ch %d at %.0f%%",
+			quietest.Channel, quietest.UtilPct)
+	}
+	if measured < len(res.Channels) {
+		out += fmt.Sprintf(" (%d of %d channels measured)", measured, len(res.Channels))
+	}
+	return out
 }
 
 // rememberScan keeps the per-channel conclusions of a scan, so the interface
@@ -842,6 +944,12 @@ func parseScan(raw string) []ScanAP {
 	var cur *ScanAP
 	flush := func() {
 		if cur != nil && cur.BSSID != "" {
+			// Said nothing about width, so it is a 20MHz AP. Defaulted at flush
+			// rather than at creation because the HT and VHT elements arrive in
+			// no guaranteed order.
+			if cur.WidthMHz == 0 {
+				cur.WidthMHz = 20
+			}
 			out = append(out, *cur)
 		}
 		cur = nil
@@ -849,12 +957,18 @@ func parseScan(raw string) []ScanAP {
 	for _, line := range strings.Split(raw, "\n") {
 		t := strings.TrimSpace(line)
 		switch {
-		case strings.HasPrefix(t, "BSS "):
+		case strings.HasPrefix(t, "BSS ") && isBSSHeader(t):
+			// Only a REAL header ends the previous access point.
+			//
+			// "BSS Load:" is an element INSIDE a block and also begins "BSS ".
+			// Treating it as a header did two things: it produced phantom
+			// entries whose BSSID was the literal "load:", and -- far worse --
+			// it flushed the access point half way through, so every field
+			// after it, the BSS Load sub-fields included, was parsed with no
+			// current AP and silently dropped. The station count and channel
+			// utilisation this parser now depends on sit exactly there.
 			flush()
 			f := strings.Fields(t)
-			if len(f) < 2 {
-				continue
-			}
 			// "BSS aa:bb:cc:dd:ee:ff(on wlan0)" -- the interface is glued on.
 			mac := f[1]
 			if i := strings.Index(mac, "("); i > 0 {
@@ -880,6 +994,52 @@ func parseScan(raw string) []ScanAP {
 		case strings.HasPrefix(t, "SSID:"):
 			_, v, _ := strings.Cut(t, ":")
 			cur.SSID = strings.TrimSpace(v)
+		// BSS Load (802.11e QBSS). Most neighbours advertise it -- 10 of 13 on
+		// this box -- and it is the only thing in a scan that MEASURES how busy
+		// a channel is rather than letting it be inferred from a headcount.
+		case strings.HasPrefix(t, "* station count:"):
+			cur.Stations = atoiSafe(surveyValue(t))
+		case strings.HasPrefix(t, "* channel utilisation:"):
+			// "60/255". Kept raw; 60 here is 23.5%, and storing it as 60
+			// would be a plausible-looking wrong answer for ever.
+			num, _, _ := strings.Cut(strings.TrimSpace(surveyValue(t)), "/")
+			cur.UtilRaw = atoiSafe(num)
+			cur.UtilKnown = true
+
+		// How much spectrum this neighbour actually occupies. VHT names the
+		// width outright; HT only says which side its 40MHz partner is on.
+		//
+		// The prefix must be "* channel width:" EXACTLY. "* STA channel width:"
+		// is a different element -- an HT capability describing what the AP will
+		// accept from a station, not what the BSS is running -- and matching it
+		// here would report 20MHz for APs that are on 80.
+		case strings.HasPrefix(t, "* channel width:"):
+			// The VHT operation ENUM, not the megahertz in the brackets:
+			// iw prints "channel width: 1 (80 MHz)" and surveyValue returns the
+			// first field, so this reads 1 and not 80. Taking the number is
+			// also the more honest parse -- the bracketed text is a rendering
+			// of the enum, and 3 renders as "80+80 MHz" with no single width.
+			switch atoiSafe(surveyValue(t)) {
+			case 1, 3: // 80MHz, and 80+80 which this models by its first segment
+				cur.WidthMHz = 80
+			case 2:
+				cur.WidthMHz = 160
+			}
+			// 0 means "20 or 40", which only the HT secondary offset can
+			// settle, so it deliberately leaves any width already found alone.
+		case strings.HasPrefix(t, "* center freq segment 1:"):
+			cur.Centre = atoiSafe(surveyValue(t))
+		case strings.HasPrefix(t, "* secondary channel offset:"):
+			// Only promotes to 40 -- a VHT width already read above wins, since
+			// an 80MHz BSS also carries an HT secondary offset.
+			v := surveyValue(t)
+			if strings.Contains(v, "above") || strings.Contains(v, "below") {
+				if cur.WidthMHz == 0 {
+					cur.WidthMHz = 40
+				}
+				cur.SecAbove = strings.Contains(v, "above")
+			}
+
 		case strings.HasPrefix(t, "DS Parameter set: channel"):
 			// Authoritative where present; freq alone is enough otherwise.
 			f := strings.Fields(t)
@@ -892,6 +1052,68 @@ func parseScan(raw string) []ScanAP {
 	}
 	flush()
 	return out
+}
+
+// coveredChannels is every 20MHz channel a neighbour's signal actually sits in.
+//
+// A neighbour is counted against ONE channel today -- its primary -- and an
+// 80MHz AP interferes across four. Measured on this box: six of thirteen
+// neighbours ran 80MHz and four were centred on channel 42, which covers the
+// whole of 36/40/44/48. A scan reporting "one AP on 36, nothing on 40/44/48"
+// was describing a block that was entirely occupied (issue #180).
+//
+// 5GHz only. 2.4GHz channels overlap by design and are already counted with a
+// +/-4 window in pickBestChannel; layering a width-derived set on top of that
+// would count the same interference twice.
+//
+// The arithmetic, in channel numbers, where 5GHz channels are 4 apart:
+//
+//	80MHz   centre +/- 2 and +/- 6   centre 42  -> 36 40 44 48
+//	160MHz  centre +/- 2, 6, 10, 14  centre 50  -> 36 ... 64
+//	40MHz   the primary and its partner, on the side the offset names
+//	20MHz   the primary alone
+func coveredChannels(a ScanAP) []int {
+	if a.Channel == 0 || a.FreqMHz < 3000 {
+		return []int{a.Channel}
+	}
+	switch {
+	case a.WidthMHz >= 80 && a.Centre > 0:
+		// Derived from the CENTRE, not the primary: which of the four a
+		// neighbour happens to beacon on says nothing about the block it fills.
+		offs := []int{-6, -2, 2, 6}
+		if a.WidthMHz >= 160 {
+			offs = []int{-14, -10, -6, -2, 2, 6, 10, 14}
+		}
+		out := make([]int, 0, len(offs))
+		for _, o := range offs {
+			out = append(out, a.Centre+o)
+		}
+		return out
+	case a.WidthMHz == 40:
+		if a.SecAbove {
+			return []int{a.Channel, a.Channel + 4}
+		}
+		return []int{a.Channel - 4, a.Channel}
+	}
+	return []int{a.Channel}
+}
+
+// isBSSHeader reports whether a "BSS ..." line opens a new access point rather
+// than naming an element inside one.
+//
+// The header carries a MAC; "BSS Load:" does not. Checked by shape rather than
+// by excluding that one string, because the same trap is waiting for any future
+// element whose name begins with the word BSS.
+func isBSSHeader(line string) bool {
+	f := strings.Fields(line)
+	if len(f) < 2 {
+		return false
+	}
+	mac := f[1]
+	if i := strings.Index(mac, "("); i > 0 {
+		mac = mac[:i]
+	}
+	return validMAC(strings.ToLower(mac))
 }
 
 // atoiLoose parses an integer that may arrive with a decimal part, truncating
@@ -935,15 +1157,55 @@ func summariseScan(iface, band string, aps []ScanAP) ScanResult {
 		if a.Ours || a.Channel == 0 || (band != "" && bandOf(a.FreqMHz) != band) {
 			continue
 		}
-		c := byChan[a.Channel]
-		if c == nil {
-			c = &ScanChannel{Channel: a.Channel, FreqMHz: a.FreqMHz}
-			byChan[a.Channel] = c
+		at := func(ch int) *ScanChannel {
+			c := byChan[ch]
+			if c == nil {
+				// Freq is derived for a covered channel: only the PRIMARY was
+				// seen at a frequency, and a covered one may have no AP of its
+				// own at all.
+				c = &ScanChannel{Channel: ch, FreqMHz: 5000 + 5*ch}
+				if ch == a.Channel {
+					c.FreqMHz = a.FreqMHz
+				}
+				byChan[ch] = c
+			}
+			return c
 		}
+		c := at(a.Channel)
 		c.APs++
 		if a.SignalDBm != 0 && (c.StrongestDBm == 0 || a.SignalDBm > c.StrongestDBm) {
 			c.StrongestDBm = a.SignalDBm
 		}
+
+		// Airtime, where the neighbour measured it. Recorded on every channel
+		// the AP covers, because utilisation describes the medium rather than
+		// the BSS -- an 80MHz neighbour reporting 37% busy is describing all
+		// four of the channels it occupies, not just the one it beacons on.
+		//
+		// The HIGHEST wins rather than an average: APs on one channel broadly
+		// agree, and where they do not, the one that heard more traffic heard
+		// something real. Averaging would let a quiet reading hide a busy one.
+		for _, ch := range coveredChannels(a) {
+			cc := at(ch)
+			if ch != a.Channel {
+				cc.Covering++
+			}
+			if !a.UtilKnown {
+				continue
+			}
+			pct := float64(a.UtilRaw) / 255 * 100
+			if pct > cc.UtilPct {
+				cc.UtilPct = pct
+			}
+			cc.UtilFrom++
+			cc.Stations += a.Stations
+		}
+	}
+	// Covering counts EVERY AP whose spectrum reaches the channel, so the ones
+	// primary on it belong in the total too. Added afterwards so the loop above
+	// does not have to special-case the primary twice.
+	for _, c := range byChan {
+		c.Covering += c.APs
 	}
 	out := ScanResult{Iface: iface, Band: band}
 	for _, c := range byChan {
@@ -990,9 +1252,20 @@ func bandOf(mhz int) string {
 func pickBestChannel(chans []ScanChannel, band string) int {
 	counts := map[int]int{}
 	loudest := map[int]float64{}
+	util := map[int]float64{}
+	measured := map[int]bool{}
 	for _, c := range chans {
-		counts[c.Channel] = c.APs
+		// Covering, not APs: an 80MHz neighbour occupies this channel whether
+		// or not it beacons on it, and the point of the count is competition.
+		counts[c.Channel] = c.Covering
+		if c.Covering == 0 {
+			counts[c.Channel] = c.APs
+		}
 		loudest[c.Channel] = c.StrongestDBm
+		if c.UtilFrom > 0 {
+			util[c.Channel] = c.UtilPct
+			measured[c.Channel] = true
+		}
 	}
 	var candidates []int
 	for ch, c := range apChannels {
@@ -1007,8 +1280,11 @@ func pickBestChannel(chans []ScanChannel, band string) int {
 		// 2.4GHz channels overlap their four neighbours either side, so an AP on
 		// channel 4 genuinely competes with one on channel 6. Count the whole
 		// overlapping window rather than exact matches, or a crowded band looks
-		// empty. 5GHz channels at 20MHz do not overlap, so they are counted
-		// exactly.
+		// empty.
+		//
+		// 5GHz needs no window: Covering already accounts for what each
+		// neighbour occupies, so a channel inside an 80MHz block is counted
+		// whether or not anything beacons on it.
 		n := 0
 		var loud float64
 		if ch <= 14 {
@@ -1022,11 +1298,35 @@ func pickBestChannel(chans []ScanChannel, band string) int {
 			n = counts[ch]
 			loud = loudest[ch]
 		}
-		// Fewer neighbours first; a louder neighbour breaks the tie, since one
-		// strong AP nearby costs more airtime than several distant ones.
-		// Signals are negative dBm, so +100 keeps the tiebreak positive and
-		// ordered the same way.
-		score := float64(n)*100 + (loud + 100)
+		// One axis: how busy the air is, as a percentage.
+		//
+		// MEASURED where a neighbour advertised BSS Load, ESTIMATED from the
+		// headcount where none did -- and the two are not equally good. The
+		// estimate is only a guess, and this box's own scan shows how poor a
+		// guess it is: an AP with 0 clients sat in 37% utilisation while one
+		// with 10 clients sat in 8.6%. That is the reason to prefer the
+		// measurement wherever it exists (issue #179).
+		//
+		// Nothing heard at all scores 0 rather than falling to the estimate. A
+		// channel absent from the scan is evidence of quiet, not an absence of
+		// evidence -- the scan lists everything it heard.
+		var busy float64
+		switch {
+		case n == 0:
+			busy = 0
+		case measured[ch]:
+			busy = util[ch]
+		default:
+			// ~20 points per covering neighbour, capped short of certainty so a
+			// guessed-busy channel never outranks a measured-busier one purely
+			// by saturating.
+			busy = math.Min(90, float64(n)*20)
+		}
+		// A louder neighbour breaks ties, since one strong AP nearby costs more
+		// airtime than several distant ones. Signals are negative dBm, so +100
+		// keeps the tiebreak positive and ordered the same way; scaled small so
+		// it can only separate channels the busy figure already ties.
+		score := busy*100 + (loud + 100)
 		if best == 0 || score < bestScore {
 			best, bestScore = ch, score
 		}
