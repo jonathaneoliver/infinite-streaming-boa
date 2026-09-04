@@ -382,6 +382,26 @@ func (e *Engine) forgetRadioOn() {
 // than assumed -- a refused SET partway through does not undo the ones before
 // it, and reporting the requested channel would be confidently wrong.
 func (e *Engine) MoveChannel(iface string, channel, widthMHz int) (int, error) {
+	// ONE MOVE AT A TIME PER RADIO.
+	//
+	// A move is a read-modify-write on hardware -- DISABLE, a run of SETs, one
+	// ENABLE, then a STATUS read attributed to this request -- and it takes
+	// seconds. Two of them at once interleave their SETs, share whichever
+	// ENABLE lands last, and each reads back the OTHER's result as its own.
+	//
+	// MEASURED 2026-09-04, two sessions moving wlan-usb in the same second:
+	// one asked for 40, the other for 149, and the first was told "asked for
+	// channel 40 and came back on 149" -- a coexistence swap between two
+	// different BANDS, which cannot happen and did not. Harmless when the
+	// answer was only a message; not harmless now that the answer is written
+	// down as the operator's choice and acted on later.
+	//
+	// Per interface rather than one lock for the box: two radios move
+	// independently and serialising them would make a two-radio box half as
+	// quick to set up for no benefit.
+	unlock := e.lockRadio(iface)
+	defer unlock()
+
 	ch, ok := apChannels[channel]
 	if !ok {
 		return 0, fmt.Errorf(
@@ -447,11 +467,45 @@ func (e *Engine) MoveChannel(iface string, channel, widthMHz int) (int, error) {
 			return now, fmt.Errorf(
 				"%q was refused, so %s came back on channel %d", refused, iface, now)
 		}
+		// The coexistence swap is remembered rather than treated as a failure:
+		// the access point is UP, on the sibling of the channel asked for, and
+		// that is where this request lands every time it is made. Recording
+		// where it settled is what stops the tick reading it as a radio that
+		// has drifted and moving it once a second forever.
+		e.rememberChannel(iface, channel, widthMHz, now)
 		return now, coexError(iface, channel, now, widthMHz)
 	}
+	e.rememberChannel(iface, channel, widthMHz, now)
 	e.noteMoveChannel(iface, now)
 	e.syncRadioState(iface)
 	return now, nil
+}
+
+// rememberChannel records a move that the access point actually came back from.
+//
+// Gated on the BSS being up, and that gate is the whole of it. An earlier
+// attempt at this persistence wrote on "hostapd accepted every SET", which is
+// not the same thing: measured 2026-09-04, a move whose SETs were all
+// acknowledged failed its ENABLE and left the radio with no access point --
+// and storing that as the operator's choice would have had the box chase a
+// channel it cannot serve on. A preference is somewhere the radio HAS served,
+// never merely somewhere it was pointed.
+func (e *Engine) rememberChannel(iface string, channel, widthMHz, settled int) {
+	if e.chp == nil || !apEnabled(iface) {
+		return
+	}
+	// Clear any earlier give-up: this is a fresh instruction, so the radio is
+	// worth putting back again even if the last one could not be made to stick.
+	e.restore.settled(iface)
+	if err := e.chp.Put(iface, ChannelPref{
+		Channel: channel, WidthMHz: widthMHz, Settled: settled,
+	}); err != nil {
+		// Loud, per the house rule. The radio is on the new channel either
+		// way; what is lost is only its return there after a restart.
+		fmt.Printf("infinite-streaming-boa: %s moved to channel %d but the "+
+			"choice could not be saved, so a restart will not restore it: %v\n",
+			iface, channel, err)
+	}
 }
 
 // coexError explains a move that hostapd accepted, applied, and then undid.
@@ -486,6 +540,25 @@ func coexError(iface string, want, got, widthMHz int) error {
 				"refused nothing along the way -- the driver overrode it",
 			iface, want, got)
 	}
+	// A coexistence swap trades a channel for its PARTNER, so the two are
+	// always in the same 40 or 80MHz block. A result outside it is not a swap,
+	// however much it looks like one at the call site.
+	//
+	// MEASURED 2026-09-04: two sessions moved the same radio in the same
+	// second, and the one that asked for 40 was told it had come back on 149 --
+	// with this message's confident account of a scan that never ran, naming a
+	// secondary in a different band. The per-radio lock above now stops the
+	// daemon racing itself, so the remaining ways to reach this are something
+	// outside the daemon moving the radio: a hand-run hostapd_cli, or a second
+	// operator. Saying that is worth more than a mechanism nobody checked.
+	if !sameBlock(want, got) {
+		return fmt.Errorf(
+			"%s came back on channel %d, not %d. Every setting was accepted, "+
+				"and %d is not %d's partner, so this is not a coexistence "+
+				"swap -- something outside this daemon moved the radio while "+
+				"it was being set up",
+			iface, got, want, got, want)
+	}
 	return fmt.Errorf(
 		"%s came back on channel %d, not %d. Every setting was accepted; "+
 			"hostapd's 20/40MHz coexistence scan then found neighbouring "+
@@ -493,6 +566,21 @@ func coexError(iface string, want, got, widthMHz int) error {
 			"and secondary to avoid them. At %dMHz the primary can only land "+
 			"where that scan puts it -- move at 20MHz to choose exactly",
 		iface, got, want, widthMHz)
+}
+
+// sameBlock reports whether two channels sit in one 80MHz block, which is the
+// only place a coexistence swap can move a radio to.
+//
+// Read from the table rather than from arithmetic on the numbers: 149 and 153
+// are 4 apart and partners, 48 and 52 are 4 apart and in different blocks
+// either side of the DFS range.
+func sameBlock(a, b int) bool {
+	ca, oka := apChannels[a]
+	cb, okb := apChannels[b]
+	if !oka || !okb || ca.Center80 == 0 || cb.Center80 == 0 {
+		return false
+	}
+	return ca.Center80 == cb.Center80
 }
 
 // --- scanning -------------------------------------------------------------
