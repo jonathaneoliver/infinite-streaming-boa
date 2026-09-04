@@ -288,11 +288,31 @@ func (e *Engine) demoTick() {
 	// exercises the same history path the interface reads back -- and so the
 	// sweep's detector has real telemetry to work from here too.
 	for i := range clients {
+		// Adapter and channel too, so the band under the chart can be designed
+		// against a fleet that actually moves between radios rather than
+		// against a fixture that never does.
+		var sIface string
+		var sChan int
+		if clients[i].Present {
+			sIface = clients[i].Port
+			// Mirrors demoBridgeState's channels, so the band under the chart
+			// and the adapter rack agree in demo mode as they must on a box.
+			switch sIface {
+			case "wlan1":
+				sChan = 6
+			case e.cfg.LanPort:
+				sChan = 0 // wired: an adapter, but no channel
+			default:
+				sChan = 36
+			}
+		}
 		e.hist.Add(clients[i].MAC, Sample{
-			T:    now.UnixMilli(),
-			Down: clients[i].DownCounters.ThroughputMbps,
-			Up:   clients[i].UpCounters.ThroughputMbps,
-			Cap:  clients[i].DownCounters.CapMbps,
+			T:       now.UnixMilli(),
+			Down:    clients[i].DownCounters.ThroughputMbps,
+			Up:      clients[i].UpCounters.ThroughputMbps,
+			Cap:     clients[i].DownCounters.CapMbps,
+			Iface:   sIface,
+			Channel: sChan,
 		})
 	}
 	// The event log gets the same treatment as everything else here: fed from
