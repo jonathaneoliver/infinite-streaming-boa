@@ -251,3 +251,56 @@ func TestReenableAPReportsWhetherItRebuilt(t *testing.T) {
 		t.Fatal("a rebuilt BSS was not reported as rebuilt")
 	}
 }
+
+// Cycling a radio must not set rebuilds fighting each other.
+//
+// Every power-on starts a watch, and a watch can run for minutes while a wedged
+// mt7921u re-initialises. Before the guard, an operator switching a radio off
+// and on a few times had several watches alive at once, each firing its own
+// DISABLE/ENABLE and undoing the last -- seen on the box as seventeen "rebuilt
+// and serving again" lines at the same second, and a recovery that took 97
+// seconds because the rebuilds were tearing down each other's work.
+func TestOnlyOneRecoveryPerRadioAtATime(t *testing.T) {
+	f := &fakeAP{mute: true, refuseEnable: true}
+	withFakeAP(t, f)
+	e := wedgeEngine()
+
+	var wg sync.WaitGroup
+	for i := 0; i < 5; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			e.confirmAPBack("wlan-usb")
+		}()
+	}
+	wg.Wait()
+
+	// Exactly one teardown. Five would mean five concurrent rebuilds, which is
+	// the bug: each DISABLE drops the access point another had just brought up.
+	if n := f.count("DISABLE"); n != 1 {
+		t.Fatalf("expected one rebuild across five concurrent watches, got %d: %v",
+			n, f.commands())
+	}
+	if !f.isEnabled() {
+		t.Fatal("the radio was left down")
+	}
+}
+
+// The guard must be released, or a radio recovers once and never again.
+func TestRecoveryGuardIsReleased(t *testing.T) {
+	e := wedgeEngine()
+	if !e.startRecovery("wlan-usb") {
+		t.Fatal("could not claim a free radio")
+	}
+	if e.startRecovery("wlan-usb") {
+		t.Fatal("claimed a radio that was already being recovered")
+	}
+	// A second radio is unaffected: the guard is per radio, not global.
+	if !e.startRecovery("wlan0") {
+		t.Fatal("one radio's recovery blocked another's")
+	}
+	e.endRecovery("wlan-usb")
+	if !e.startRecovery("wlan-usb") {
+		t.Fatal("the guard was not released")
+	}
+}

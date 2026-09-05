@@ -160,6 +160,22 @@ type Engine struct {
 	// radio; guaranteed with two.
 	radioOnAt map[string]time.Time
 
+	// recovering guards ONE access-point recovery per radio at a time.
+	//
+	// Every power-on starts a background watch, and that watch can run for
+	// minutes while a wedged mt7921u re-initialises. An operator cycling a
+	// radio off and on a few times therefore had several watches alive at once,
+	// each independently concluding the access point was wedged and each firing
+	// its own DISABLE/ENABLE -- tearing down what the previous one had just
+	// built. Observed 2026-09-05 as seventeen "rebuilt and serving again" lines
+	// at the same second, and a recovery that took 97 seconds because the
+	// rebuilds were undoing each other.
+	//
+	// The newest attempt is the one dropped, not the running one: the watch
+	// already in flight has done the waiting, and restarting it would throw
+	// that away to begin the same work again.
+	recovering map[string]bool
+
 	// scanSeen is the last band scan per radio, kept so the interface can
 	// colour its channel controls from a measurement rather than a guess. In
 	// memory like the event log, and for the same reason: it describes a

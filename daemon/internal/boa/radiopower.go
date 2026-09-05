@@ -123,6 +123,13 @@ func (e *Engine) confirmAPBack(iface string) {
 	if !hostapdReachable(iface) {
 		return
 	}
+	// ONE recovery per radio. See Engine.recovering: without this, cycling a
+	// radio off and on set concurrent watches rebuilding the same access point
+	// on top of each other.
+	if !e.startRecovery(iface) {
+		return
+	}
+	defer e.endRecovery(iface)
 	started := time.Now()
 	rebuilt := e.reenableAP(iface)
 	took := time.Since(started).Round(time.Second)
@@ -272,6 +279,27 @@ func (e *Engine) reenableAP(iface string) bool {
 	// worth trying before giving up on it.
 	e.rebuildBSS(iface)
 	return true
+}
+
+// startRecovery claims the right to recover this radio, or reports that
+// somebody else already holds it.
+func (e *Engine) startRecovery(iface string) bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.recovering == nil {
+		e.recovering = map[string]bool{}
+	}
+	if e.recovering[iface] {
+		return false
+	}
+	e.recovering[iface] = true
+	return true
+}
+
+func (e *Engine) endRecovery(iface string) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	delete(e.recovering, iface)
 }
 
 // rebuildBSS tears the access point down and builds it again, which is the one
