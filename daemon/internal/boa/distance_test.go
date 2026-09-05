@@ -69,9 +69,9 @@ func TestFiveGigIsWeakerAtTheSameDistance(t *testing.T) {
  */
 func TestDegradationIsACliffNotASlope(t *testing.T) {
 	const f, w = 5745, 80
-	strong, _ := ShapeForRssi(-45, f, w, DefaultDeltaDb)
-	mid, _ := ShapeForRssi(-60, f, w, DefaultDeltaDb)
-	weak, _ := ShapeForRssi(-73, f, w, DefaultDeltaDb)
+	strong, _ := ShapeForLevels(-45, (-45)-DefaultTxDb, f, w)
+	mid, _ := ShapeForLevels(-60, (-60)-DefaultTxDb, f, w)
+	weak, _ := ShapeForLevels(-73, (-73)-DefaultTxDb, f, w)
 
 	ceiling := phyCeilingMbps(f, w)
 	if strong.RateMbps < ceiling*0.9 {
@@ -103,7 +103,7 @@ func TestCorruptArrivesBeforeLoss(t *testing.T) {
 	const f, w = 5745, 80
 	var firstCorrupt, firstLoss float64
 	for dbm := -40.0; dbm > -85; dbm -= 0.5 {
-		d, _ := ShapeForRssi(dbm, f, w, DefaultDeltaDb)
+		d, _ := ShapeForLevels(dbm, (dbm)-DefaultTxDb, f, w)
 		if firstCorrupt == 0 && d.CorruptPct > 0 {
 			firstCorrupt = dbm
 		}
@@ -128,7 +128,7 @@ func TestCorruptArrivesBeforeLoss(t *testing.T) {
 // never happens on a real link.
 func TestLossIsAlwaysBursty(t *testing.T) {
 	for dbm := -40.0; dbm > -90; dbm -= 0.5 {
-		d, _ := ShapeForRssi(dbm, 5745, 80, DefaultDeltaDb)
+		d, _ := ShapeForLevels(dbm, (dbm)-DefaultTxDb, 5745, 80)
 		if d.LossPct > 0 && d.LossBurst <= 1 {
 			t.Fatalf("at %v dBm loss %v came with burst %v; correlated loss needs burst > 1",
 				dbm, d.LossPct, d.LossBurst)
@@ -141,7 +141,7 @@ func TestLossIsAlwaysBursty(t *testing.T) {
 func TestRateFallsMonotonically(t *testing.T) {
 	prev := math.Inf(1)
 	for dbm := -40.0; dbm > -82; dbm -= 0.5 {
-		d, _ := ShapeForRssi(dbm, 5745, 80, DefaultDeltaDb)
+		d, _ := ShapeForLevels(dbm, (dbm)-DefaultTxDb, 5745, 80)
 		if d.RateMbps > prev+0.001 {
 			t.Fatalf("rate rose as signal fell: %v at %v dBm after %v", d.RateMbps, dbm, prev)
 		}
@@ -152,8 +152,8 @@ func TestRateFallsMonotonically(t *testing.T) {
 // A wider channel needs a stronger signal for the same result, so at one level
 // the narrow link should be the healthier of the two.
 func TestWiderChannelsDieFirst(t *testing.T) {
-	wide, _ := ShapeForRssi(-70, 5745, 80, DefaultDeltaDb)
-	narrow, _ := ShapeForRssi(-70, 5745, 20, DefaultDeltaDb)
+	wide, _ := ShapeForLevels(-70, (-70)-DefaultTxDb, 5745, 80)
+	narrow, _ := ShapeForLevels(-70, (-70)-DefaultTxDb, 5745, 20)
 	if narrow.CorruptPct > wide.CorruptPct {
 		t.Errorf("20MHz should be more robust than 80MHz at the same level: "+
 			"corrupt %v vs %v", narrow.CorruptPct, wide.CorruptPct)
@@ -168,7 +168,7 @@ func TestWiderChannelsDieFirst(t *testing.T) {
  * client a perfect link at the exact moment it should have none.
  */
 func TestOutOfRangeIsLossNotAnUnlimitedRate(t *testing.T) {
-	d, u := ShapeForRssi(-95, 5745, 80, DefaultDeltaDb)
+	d, u := ShapeForLevels(-95, (-95)-DefaultTxDb, 5745, 80)
 	if d.LossPct != 100 {
 		t.Errorf("beyond the floor should be total loss, got %v", d.LossPct)
 	}
@@ -191,7 +191,7 @@ func TestOutOfRangeIsLossNotAnUnlimitedRate(t *testing.T) {
 func TestUplinkDegradesBeforeDownlink(t *testing.T) {
 	const f, w = 5745, 80
 	// Somewhere in the middle of the cliff, where both are alive but unequal.
-	d, u := ShapeForRssi(-68, f, w, DefaultDeltaDb)
+	d, u := ShapeForLevels(-68, (-68)-DefaultTxDb, f, w)
 	if u.RateMbps >= d.RateMbps {
 		t.Errorf("uplink %v should be slower than downlink %v at the same distance",
 			u.RateMbps, d.RateMbps)
@@ -205,7 +205,7 @@ func TestUplinkDegradesBeforeDownlink(t *testing.T) {
 	// still hear the AP but can no longer be heard.
 	var found bool
 	for dbm := -60.0; dbm > -85; dbm -= 0.5 {
-		dd, uu := ShapeForRssi(dbm, f, w, DefaultDeltaDb)
+		dd, uu := ShapeForLevels(dbm, (dbm)-DefaultTxDb, f, w)
 		if uu.LossPct == 100 && dd.LossPct < 100 {
 			found = true
 			break
@@ -225,27 +225,65 @@ func TestUplinkDegradesBeforeDownlink(t *testing.T) {
  * thing to ask for, which is why DeltaDb is not omitempty -- an absent field
  * would be indistinguishable from someone asking for it.
  */
-func TestDeltaIsTheOnlyThingSeparatingTheDirections(t *testing.T) {
+func TestEqualLevelsGiveEqualDirections(t *testing.T) {
 	const f, w = 5745, 80
-	d, u := ShapeForRssi(-68, f, w, 0)
+	d, u := ShapeForLevels(-68, -68, f, w)
 	if d != u {
-		t.Errorf("with no delta the directions should be identical:\n down %+v\n up   %+v", d, u)
+		t.Errorf("at equal levels the directions should be identical:\n down %+v\n up   %+v", d, u)
 	}
 
 	// And a louder client is a better uplink at the same distance.
-	_, quiet := ShapeForRssi(-68, f, w, 12)
-	_, loud := ShapeForRssi(-68, f, w, 2)
+	_, quiet := ShapeForLevels(-68, (-68)-12, f, w)
+	_, loud := ShapeForLevels(-68, (-68)-2, f, w)
 	if loud.RateMbps <= quiet.RateMbps {
 		t.Errorf("a louder client should get the better uplink: %v at 2dB vs %v at 12dB",
 			loud.RateMbps, quiet.RateMbps)
 	}
 }
 
+/*
+ * THE ANTENNA MOVES BOTH DIRECTIONS; THE TRANSMITTER MOVES ONLY ONE.
+ *
+ * Antenna gain is reciprocal -- the same small antenna that transmits poorly
+ * also receives poorly -- so a worse device hears worse as well as being heard
+ * worse. An earlier version had only the transmit half, which left downlink
+ * untouched when the device kind changed, and that was simply wrong physics.
+ */
+func TestTheAntennaIsReciprocalAndTheTransmitterIsNot(t *testing.T) {
+	const path = -60.0
+
+	laptop := RssiModel{Dbm: path, RxDb: 0, TxDb: 3}
+	watch := RssiModel{Dbm: path, RxDb: 5, TxDb: 6}
+
+	lDown, lUp := LevelsFor(path, laptop)
+	wDown, wUp := LevelsFor(path, watch)
+
+	if wDown >= lDown {
+		t.Errorf("a worse antenna must also HEAR worse: watch %v vs laptop %v", wDown, lDown)
+	}
+	if wUp >= lUp {
+		t.Errorf("and be heard worse: watch %v vs laptop %v", wUp, lUp)
+	}
+	// The antenna is subtracted once per direction; the transmitter only from up.
+	if lDown != path-laptop.RxDb {
+		t.Errorf("downlink should be path minus antenna only, got %v", lDown)
+	}
+	if lUp != path-laptop.RxDb-laptop.TxDb {
+		t.Errorf("uplink should be path minus antenna and transmitter, got %v", lUp)
+	}
+
+	// A device with no losses of its own sits exactly on the path.
+	ideal := RssiModel{Dbm: path}
+	if d, u := LevelsFor(path, ideal); d != path || u != path {
+		t.Errorf("an ideal device should sit on the path, got down %v up %v", d, u)
+	}
+}
+
 // Both directions cross the SAME channel, so a wider channel or a different
 // band moves them together. Only the transmit power differs.
 func TestBothDirectionsShareTheChannel(t *testing.T) {
-	narrowD, narrowU := ShapeForRssi(-60, 2462, 20, DefaultDeltaDb)
-	wideD, wideU := ShapeForRssi(-60, 5745, 80, DefaultDeltaDb)
+	narrowD, narrowU := ShapeForLevels(-60, (-60)-DefaultTxDb, 2462, 20)
+	wideD, wideU := ShapeForLevels(-60, (-60)-DefaultTxDb, 5745, 80)
 	if !(wideD.RateMbps > narrowD.RateMbps) {
 		t.Errorf("80MHz downlink should out-run 20MHz: %v vs %v",
 			wideD.RateMbps, narrowD.RateMbps)
@@ -258,7 +296,7 @@ func TestBothDirectionsShareTheChannel(t *testing.T) {
 
 // A strong link must be indistinguishable from no conditioning at all.
 func TestAStrongLinkIsClean(t *testing.T) {
-	d, u := ShapeForRssi(-38, 5745, 80, DefaultDeltaDb)
+	d, u := ShapeForLevels(-38, (-38)-DefaultTxDb, 5745, 80)
 	if d.DelayMs > 5 || d.LossPct != 0 || d.CorruptPct != 0 {
 		t.Errorf("a strong link should be near-clean, got %+v", d)
 	}

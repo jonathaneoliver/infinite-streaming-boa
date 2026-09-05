@@ -2,7 +2,7 @@
 import { computed, ref, watch } from 'vue';
 import type { Client, Shape, Series, ChartPrefs, Pattern, RssiModel } from '@/types';
 import {
-  CLEAN, DEFAULT_DELTA_DB, DEFAULT_EXPONENT, DEVELOPER, DEVICE_KINDS, PRESETS,
+  CLEAN, DEFAULT_EXPONENT, DEFAULT_RX_DB, DEFAULT_TX_DB, DEVELOPER, DEVICE_KINDS, PRESETS,
   distanceFor, freqForChannel, ntopngUrl, patternFromPolicy,
 } from '@/types';
 import { setShapeAt } from '@/lib/pattern';
@@ -509,11 +509,25 @@ function dbmForPos(pos: number): number {
 
 const modelFreq = computed(() => freqForChannel(props.client.radio_on?.channel ?? 0));
 const modelN = computed(() => props.client.policy.rssi?.n || DEFAULT_EXPONENT);
-const modelDelta = computed(() =>
-  props.client.policy.rssi?.delta_db ?? DEFAULT_DELTA_DB);
-/** The uplink level, from the daemon when it has one so the two agree. */
+const modelRx = computed(() => props.client.policy.rssi?.rx_db ?? DEFAULT_RX_DB);
+const modelTx = computed(() => props.client.policy.rssi?.tx_db ?? DEFAULT_TX_DB);
+
+/*
+ * The two levels that actually arrive.
+ *
+ * The slider sets the PATH -- what a device with no losses of its own would see
+ * at that distance -- and the device kind takes its antenna off both directions
+ * and its transmit power off the uplink as well. So both figures move when
+ * either control moves, which is what makes the pair worth showing.
+ *
+ * Taken from the daemon when it has computed them, so the label and the
+ * conditioning cannot disagree; derived locally only for the live label while
+ * dragging, before the write has come back.
+ */
+const modelDownDbm = computed(() =>
+  props.client.rssi_run?.down_dbm ?? modelDbm.value - modelRx.value);
 const modelUpDbm = computed(() =>
-  props.client.rssi_run?.up_dbm ?? modelDbm.value - modelDelta.value);
+  props.client.rssi_run?.up_dbm ?? modelDbm.value - modelRx.value - modelTx.value);
 const modelDbm = computed(() => props.client.policy.rssi?.dbm ?? RSSI_NEAR);
 const modelOn = computed(() => !!props.client.policy.rssi);
 // The daemon's figure when there is one: it resolves the band the client is
@@ -534,16 +548,21 @@ function onDistance(e: Event) {
     return;
   }
   emit('distance', {
-    dbm: dbmForPos(pos), n: modelN.value, delta_db: modelDelta.value,
+    dbm: dbmForPos(pos), n: modelN.value,
+    rx_db: modelRx.value, tx_db: modelTx.value,
   });
 }
 
-/** Choosing a device kind changes only how loud it is, never where it is. */
-function onKind(delta: number) {
+/** Choosing a device changes what it costs itself, never where it is. */
+function onKind(rx: number, tx: number) {
   emit('distance', {
-    dbm: modelDbm.value, n: modelN.value, delta_db: delta,
+    dbm: modelDbm.value, n: modelN.value, rx_db: rx, tx_db: tx,
   });
 }
+
+/** Which named device the current pair corresponds to, for the pressed state. */
+const modelKind = computed(() =>
+  DEVICE_KINDS.find((k) => k.rx === modelRx.value && k.tx === modelTx.value)?.key);
 
 /*
  * Everything a distance model can reach, held open while one is driving.
@@ -898,7 +917,12 @@ function fmtBytes(n: number): string {
          standing for a whole set of impairments. It differs in staying in
          force -- a preset is a value you then edit, this keeps driving the
          device until it is switched off or you move a slider by hand. -->
-    <div class="distance" style="padding: 8px 14px 0">
+    <!-- WI-FI ONLY. Distance is a property of a radio link; a device on lan0
+         is on a cable, where being further away costs nothing this could
+         express. Absent rather than disabled, on the same reasoning the link
+         events use for a wired client -- there is no association to disturb,
+         and no air to cross. -->
+    <div v-if="client.medium === 'wifi'" class="distance" style="padding: 8px 14px 0">
       <label class="dist-row">
         <span class="dist-name">distance</span>
         <input
@@ -909,10 +933,7 @@ function fmtBytes(n: number): string {
           @input="onDistance"
         />
         <span class="dist-read num">
-          <template v-if="modelOn">
-            {{ metresLabel(modelMetres) }}
-            <span class="dist-dbm">{{ modelDbm }} dBm</span>
-          </template>
+          <template v-if="modelOn">{{ metresLabel(modelMetres) }}</template>
           <template v-else>off</template>
         </span>
         <button
@@ -921,26 +942,38 @@ function fmtBytes(n: number): string {
           @click="emit('distance', null)"
         >off</button>
       </label>
-      <!-- The contradiction, stated where it is visible rather than left to be
-           discovered: the model moves what a player senses and cannot move what
-           the radio reports. -->
-      <!-- HOW LOUD the device is, as opposed to how far away it is. Both
-           directions cross the same air, so the only thing separating them is
-           that the client transmits more quietly than the access point -- which
-           is why its uplink fails first. Named for the device rather than the
-           dB, because that is how anyone actually thinks about it, with the
-           number shown because these are typed figures and a label alone would
-           claim more than we know. -->
+      <!-- HOW LOUD the device is, as distinct from how far away it is.
+           Both directions cross the same air, so the only thing separating
+           them is that a client transmits more quietly than an access point --
+           which is why its uplink fails first. Named for the device rather than
+           the dB, because that is how anyone thinks about it. -->
       <div v-if="modelOn" class="dist-kinds">
-        <span class="dist-name">heard as</span>
+        <span class="dist-name">device</span>
         <button
           v-for="k in DEVICE_KINDS" :key="k.key"
-          class="ghost" :class="{ on: modelDelta === k.delta }"
-          :title="`${k.note} Uplink arrives ${k.delta} dB weaker than downlink.`"
-          @click="onKind(k.delta)"
-        >{{ k.label }} <span class="dist-dbm">−{{ k.delta }} dB</span></button>
-        <span class="dist-read num dist-up">
-          uplink {{ modelUpDbm }} dBm
+          class="ghost" :class="{ on: modelKind === k.key }"
+          :title="k.note"
+          @click="onKind(k.rx, k.tx)"
+        >{{ k.label }}</button>
+      </div>
+
+      <!-- THE TWO LEVELS, TOGETHER AND IN ORDER.
+           They were on separate rows, which is what made this unreadable: the
+           uplink figure sat beside the device buttons with nothing to compare
+           it against, so "-53 dBm" had no referent and the arithmetic joining
+           it to the distance was invisible. Both levels, on one line, with the
+           subtraction shown, is the whole explanation -- this is the model's
+           output and the reason the two directions differ. -->
+      <div v-if="modelOn" class="dist-levels num">
+        <span class="dist-name">signal</span>
+        <span class="lvl">
+          <span class="lvl-dir">hears</span>{{ modelDownDbm }} dBm
+        </span>
+        <span class="lvl">
+          <span class="lvl-dir">is heard</span>{{ modelUpDbm }} dBm
+        </span>
+        <span class="dist-why meta">
+          both move with distance; the device moves them by different amounts
         </span>
       </div>
       <!-- Two things that are easy to mistake for bugs, said where they
@@ -1272,7 +1305,25 @@ function fmtBytes(n: number): string {
   border-color: var(--accent);
   color: var(--ink);
 }
-.dist-up { min-width: 0; margin-left: 6px; }
+.dist-why { margin-left: 4px; }
+/* The two levels read as one sentence, so they are spaced as one rather than
+   as three separate figures. */
+.dist-levels {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin-top: 6px;
+  font-size: 12px;
+  color: var(--ink-dim);
+}
+.lvl-dir {
+  color: var(--ink-faint);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  margin-right: 5px;
+}
+.lvl-op { color: var(--ink-faint); font-size: 11px; }
 .card-head.folded .val { text-align: right; font-size: 12px; font-weight: 600; }
 .card-head.folded .unit { font-size: 11px; }
 .card-head.folded .spark { display: block; }

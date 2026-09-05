@@ -239,8 +239,10 @@ export interface Policy {
 export interface RssiModel {
   dbm: number;
   n?: number;
-  /** How much quieter this device is than the access point, in dB. */
-  delta_db: number;
+  /** What this device's antenna costs it, in BOTH directions. */
+  rx_db: number;
+  /** The additional loss on uplink only, from transmitting more quietly. */
+  tx_db: number;
 }
 
 /**
@@ -259,12 +261,22 @@ export interface RssiModel {
  * larger delta means the uplink dies sooner.
  */
 export const DEVICE_KINDS = [
-  { key: 'laptop', label: 'laptop', delta: 3, note: 'Bigger antennas and more of them: heard almost as well as it hears.' },
-  { key: 'phone', label: 'phone', delta: 6, note: 'The usual case — a phone transmits around 5 dB quieter than an access point.' },
-  { key: 'watch', label: 'watch', delta: 11, note: 'A tiny antenna and a small battery: it hears far better than it is heard.' },
+  {
+    key: 'laptop', label: 'laptop', rx: 0, tx: 3,
+    note: 'Big antennas and more of them. The reference: it hears about as well as an access point does, and is heard nearly as well.',
+  },
+  {
+    key: 'phone', label: 'phone', rx: 2, tx: 4,
+    note: 'A smaller antenna costs it 2 dB in both directions, and lower transmit power costs another 4 dB on the way back.',
+  },
+  {
+    key: 'watch', label: 'watch', rx: 5, tx: 6,
+    note: 'A tiny antenna and a small battery: 5 dB worse in both directions, and 6 dB worse again on the way back.',
+  },
 ] as const;
 
-export const DEFAULT_DELTA_DB = 6;
+export const DEFAULT_RX_DB = 2;
+export const DEFAULT_TX_DB = 4;
 
 /**
  * What a distance model is imposing right now.
@@ -278,8 +290,9 @@ export const DEFAULT_DELTA_DB = 6;
 export interface RssiView {
   dbm: number;
   distance_m: number;
-  /** The level the client's own transmissions arrive at, which is what decides
-   *  the uplink shape. Weaker than `dbm` by the device's delta. */
+  /** The levels each direction actually arrives at, after the device's antenna
+   *  and transmit power come off the path. Both move when either control does. */
+  down_dbm: number;
   up_dbm: number;
   down: Shape;
   up: Shape;

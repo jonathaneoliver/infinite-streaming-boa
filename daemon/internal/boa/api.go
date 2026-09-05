@@ -625,8 +625,10 @@ func validRssiModel(m RssiModel) error {
 		return fmt.Errorf("dbm must be between -120 and -10 (received signal is negative)")
 	case m.N < 0 || m.N > 8:
 		return fmt.Errorf("n must be between 0 (use the default) and 8")
-	case m.DeltaDb < 0 || m.DeltaDb > MaxDeltaDb:
-		return fmt.Errorf("delta_db must be between 0 (both directions equally loud) and %g", MaxDeltaDb)
+	case m.RxDb < 0 || m.RxDb > MaxDeviceDb:
+		return fmt.Errorf("rx_db must be between 0 and %g", MaxDeviceDb)
+	case m.TxDb < 0 || m.TxDb > MaxDeviceDb:
+		return fmt.Errorf("tx_db must be between 0 and %g", MaxDeviceDb)
 	}
 	return nil
 }

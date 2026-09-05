@@ -274,12 +274,14 @@ type Policy struct {
 type RssiView struct {
 	Dbm       float64 `json:"dbm"`
 	DistanceM float64 `json:"distance_m"`
-	// UpDbm is the level the client's own transmissions arrive at, which is
-	// what actually decides the uplink shape. Shown so the asymmetry is a
-	// number on screen rather than a constant buried in the model.
-	UpDbm float64 `json:"up_dbm"`
-	Down  Shape   `json:"down"`
-	Up    Shape   `json:"up"`
+	// DownDbm and UpDbm are the levels each direction actually arrives at,
+	// after the device's antenna and transmit power are taken off the path.
+	// Both are shown, because both move when either control moves and the pair
+	// is the whole explanation of why the directions differ.
+	DownDbm float64 `json:"down_dbm"`
+	UpDbm   float64 `json:"up_dbm"`
+	Down    Shape   `json:"down"`
+	Up      Shape   `json:"up"`
 }
 
 // RssiModel is a modelled signal level, and the exponent used to render it as a
@@ -293,13 +295,21 @@ type RssiView struct {
 type RssiModel struct {
 	Dbm float64 `json:"dbm"`
 	N   float64 `json:"n,omitempty"`
-	// DeltaDb is how much quieter the CLIENT is than the access point, and so
-	// how much worse its uplink is at the same distance.
+	// RxDb is what this device's ANTENNA costs it, in both directions.
 	//
-	// Not omitempty: 0 is a meaningful value here -- it means the two
-	// directions are equally loud -- and an omitted field would be
+	// Antenna gain is reciprocal: the same small antenna that transmits poorly
+	// also receives poorly, so this moves downlink and uplink together. It is
+	// why changing the device kind changes what the device hears as well as how
+	// well it is heard -- an earlier version had only the transmit half and so
+	// left downlink untouched, which is wrong.
+	RxDb float64 `json:"rx_db"`
+	// TxDb is the ADDITIONAL loss on uplink only, from transmitting at lower
+	// power than the access point.
+	//
+	// Neither is omitempty: 0 is meaningful for both -- it describes a device
+	// as capable as the access point -- and an omitted field would be
 	// indistinguishable from someone asking for that.
-	DeltaDb float64 `json:"delta_db"`
+	TxDb float64 `json:"tx_db"`
 }
 
 // LadderFor returns this device's ladder for one service.

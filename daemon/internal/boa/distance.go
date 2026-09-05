@@ -220,9 +220,27 @@ func phyCeilingMbps(freqMHz, widthMHz int) float64 {
  * had the asymmetry backwards, giving uplink a smaller pipe on an equally good
  * link rather than an equally sized pipe on a worse one.
  */
-func ShapeForRssi(rssiDbm float64, freqMHz, widthMHz int, deltaDb float64) (down, up Shape) {
-	return shapeAtLevel(rssiDbm, freqMHz, widthMHz),
-		shapeAtLevel(rssiDbm-deltaDb, freqMHz, widthMHz)
+func ShapeForLevels(downDbm, upDbm float64, freqMHz, widthMHz int) (down, up Shape) {
+	return shapeAtLevel(downDbm, freqMHz, widthMHz),
+		shapeAtLevel(upDbm, freqMHz, widthMHz)
+}
+
+/*
+ * LevelsFor turns a path level into the two levels that actually arrive.
+ *
+ * The slider sets the PATH -- what a device with no losses of its own would
+ * see at that distance. What each direction then gets depends on the device:
+ *
+ *   down = path - antenna
+ *   up   = path - antenna - transmit
+ *
+ * The antenna appears in both because its gain is reciprocal, which is the
+ * whole reason changing the device kind moves both numbers. The transmit
+ * deficit appears once, which is why uplink fails first.
+ */
+func LevelsFor(pathDbm float64, m RssiModel) (downDbm, upDbm float64) {
+	downDbm = pathDbm - m.RxDb
+	return downDbm, downDbm - m.TxDb
 }
 
 /*
@@ -239,11 +257,14 @@ func ShapeForRssi(rssiDbm float64, freqMHz, widthMHz int, deltaDb float64) (down
  * phone in a pocket is quieter than one on a desk. Setting it to 0 makes the
  * two directions equally loud, which is a legitimate thing to want to test.
  */
-const DefaultDeltaDb = 6.0
+const (
+	DefaultRxDb = 2.0 // a phone's antenna, against a laptop's
+	DefaultTxDb = 4.0 // and its lower transmit power, on top
+)
 
-// MaxDeltaDb bounds it. Past this the uplink is dead across the whole usable
-// range and the control stops describing a device.
-const MaxDeltaDb = 20.0
+// MaxDeviceDb bounds each half. Past this a device is dead across the whole
+// usable range and the control stops describing anything.
+const MaxDeviceDb = 20.0
 
 func shapeAtLevel(rssiDbm float64, freqMHz, widthMHz int) Shape {
 	if widthMHz <= 0 {
@@ -314,16 +335,31 @@ func RssiShapesFor(c Client) (down, up Shape, freqMHz int, ok bool) {
 	if m == nil || !c.Policy.Enabled {
 		return Shape{}, Shape{}, 0, false
 	}
-	freqMHz, width := 5745, 80
-	if c.RadioOn != nil {
-		if f := freqForChannel(c.RadioOn.Channel); f > 0 {
-			freqMHz = f
-		}
-		if c.RadioOn.WidthMHz > 0 {
-			width = c.RadioOn.WidthMHz
-		}
+	/*
+	 * WI-FI ONLY, and this is a refusal rather than a default.
+	 *
+	 * Distance is a property of a radio link. A device on lan0 is on a cable,
+	 * where being further away costs nothing a model could express, so there is
+	 * no honest curve to apply -- exactly as drop, nudge and deadzone are
+	 * absent for a wired client because it has no association to disturb.
+	 *
+	 * This used to fall back to 5GHz at 80MHz when a client had no radio, which
+	 * meant a wired device could be handed a 5GHz curve it has nothing to do
+	 * with. Refusing leaves the shapes clean and the control absent.
+	 */
+	if c.RadioOn == nil || c.RadioOn.Channel == 0 {
+		return Shape{}, Shape{}, 0, false
 	}
-	down, up = ShapeForRssi(m.Dbm, freqMHz, width, m.DeltaDb)
+	freqMHz = freqForChannel(c.RadioOn.Channel)
+	if freqMHz == 0 {
+		return Shape{}, Shape{}, 0, false
+	}
+	width := c.RadioOn.WidthMHz
+	if width <= 0 {
+		width = 20
+	}
+	dn, upl := LevelsFor(m.Dbm, *m)
+	down, up = ShapeForLevels(dn, upl, freqMHz, width)
 	return down, up, freqMHz, true
 }
 
@@ -336,10 +372,12 @@ func rssiViewFor(c Client) *RssiView {
 		return nil
 	}
 	m := c.Policy.Rssi
+	dn, upl := LevelsFor(m.Dbm, *m)
 	return &RssiView{
 		Dbm:       m.Dbm,
 		DistanceM: round1(DistanceFor(m.Dbm, freq, m.N)),
-		UpDbm:     round1(m.Dbm - m.DeltaDb),
+		DownDbm:   round1(dn),
+		UpDbm:     round1(upl),
 		Down:      down,
 		Up:        up,
 	}
