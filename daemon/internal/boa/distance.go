@@ -26,10 +26,46 @@ import "math"
  * and buffer level rather than on signal strength -- the gap bites only for
  * something that reads RSSI directly, which is a different test.
  *
- * WRITTEN FROM THE PUBLISHED RELATIONSHIPS, not ported. ns-3 and wmediumd
- * implement the same models and are both GPL-2.0; docs/LICENSING.md commits this
- * repo to containing only our own MIT code, with GPL tools used strictly as
- * subprocesses. The physics is not anyone's to license; their code is.
+ * WHERE THIS COMES FROM, and where it does not.
+ *
+ * Two of the three layers are standard and named; the third is invented here,
+ * and the difference matters more than either on its own. A reader has to be
+ * able to tell which numbers carry the authority of a published relationship
+ * and which are a shape someone chose because it looked right.
+ *
+ *   1. FREE-SPACE LOSS is the Friis transmission equation, in its decibel form
+ *      for MHz and metres. Exact, and the constant -27.55 falls out of it
+ *      rather than being fitted.
+ *
+ *   2. LOG-DISTANCE PATH LOSS is the standard indoor propagation model,
+ *      PL(d) = PL(d0) + 10*n*log10(d/d0). The 3 dB per doubling of channel
+ *      width is thermal noise scaling, 10*log10(2), not an estimate.
+ *
+ *      The exponent VALUES -- about 2 in free space, 3 in a typical building,
+ *      near 4 through several walls -- are conventional figures written from
+ *      memory rather than looked up. So are the -82 dBm sensitivity floor, the
+ *      PHY ceilings and the per-device dB. NO SOURCE WAS CONSULTED for any
+ *      number in this file, which is a weaker claim than "published" and is
+ *      why they are all marked unverified in Source S.
+ *
+ *   3. THE DEGRADATION CURVE IS OURS. quality() is a logistic, and its
+ *      steepness, centre and 30 dB headroom were CHOSEN to put the knee where a
+ *      link starts retrying and to make the collapse happen inside about 10 dB.
+ *      The rate curve, the corruption and loss thresholds, and the per-device
+ *      antenna and transmit figures are all the same: plausible, internally
+ *      consistent, and nobody's published result. Frame error rate against SNR
+ *      really is a sigmoid; THIS sigmoid is an assertion about its parameters.
+ *
+ * So the model is not ported and is not cited: it is arithmetic over named
+ * relationships with a made-up curve joining them, and DATA-CONTRACT Source S
+ * carries the same split per number. That is also why every output is labelled
+ * typed rather than measured, and why the calibration walk in #221 exists.
+ *
+ * NOT PORTED, deliberately. ns-3 and wmediumd implement the same standard
+ * models and are both GPL-2.0; docs/LICENSING.md commits this repo to
+ * containing only our own MIT code, with GPL tools used strictly as
+ * subprocesses. A physical relationship is not anyone's to license; an
+ * implementation of it is.
  */
 
 // Path-loss exponents, for turning a distance into a signal level. The only
@@ -157,8 +193,11 @@ func quality(rssiDbm float64, widthMHz int) float64 {
 	if x >= 1 {
 		return 1
 	}
-	// Logistic centred just above the floor, so the knee sits where a real link
-	// starts retrying rather than in the middle of the usable range.
+	// CHOSEN, not derived and not cited. The logistic shape is the right family
+	// -- frame error rate against SNR really does turn over sharply -- but these
+	// two numbers are an assertion about where and how sharply, picked to put
+	// the knee where a link starts retrying rather than in the middle of the
+	// usable range. Replaced by a fitted curve when #221's walk is recorded.
 	const steepness = 9.0
 	const centre = 0.32
 	q := 1 / (1 + math.Exp(-steepness*(x-centre)))
@@ -286,6 +325,8 @@ func shapeAtLevel(rssiDbm float64, freqMHz, widthMHz int) Shape {
 	// Throughput tracks the MCS ladder, which is roughly linear in quality once
 	// the link is usable at all, with a floor at the lowest rung rather than at
 	// zero -- a barely-connected client still passes a trickle.
+	//
+	// The exact curve is ours: the shape is asserted, not fitted to anything.
 	rate := ceiling * (0.06 + 0.94*q*q)
 
 	// Corruption is the leading indicator, rising as the floor approaches.

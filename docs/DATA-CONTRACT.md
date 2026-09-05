@@ -1332,6 +1332,46 @@ and applies it with the impairments that already exist.
   at 20 MHz, −76 at 80. A wide channel spreads the same power over more
   spectrum, so it dies first — on top of the extra path loss at 5 GHz.
 
+### Where each number comes from
+
+Every other source here rates its confidence per field because it is reading
+something. This one is *computing*, so the equivalent question is which numbers
+carry the authority of a standard relationship and which are ours.
+
+**No source was consulted while writing this.** The two relationships named
+below are standard and were written out from knowledge of them; every *number*
+was recalled rather than looked up, and none has been checked against a
+publication or against this hardware. That is a weaker provenance than "typed"
+usually implies here, and it is the reason the calibration walk in #221 is not
+optional if anyone wants to rely on the output.
+
+| Quantity | Origin | Standing |
+|---|---|---|
+| `20*log10(f_MHz) - 27.55` | **Friis transmission equation**, decibel form for MHz and metres | exact; the constant falls out of the equation |
+| `RSSI(d) = Ptx - FSPL(1m) - 10*n*log10(d)` | **log-distance path loss**, the standard indoor model | exact given `n` |
+| `n` = 2.2 / 3.0 / 3.8 | conventional indoor exponents, **recalled not looked up** | **unverified**; and a per-building guess even if right |
+| 3 dB per doubling of channel width | thermal noise scaling, `10*log10(2)` | exact |
+| Floor −82 dBm at 20 MHz | approximately 802.11 minimum sensitivity for the lowest rung, **recalled not looked up** | **unverified** |
+| `Ptx` = 20 dBm | the common regulatory ceiling for these bands | **assumed**; the box cannot read its own (Source Q) |
+| PHY ceilings 600 / 72 Mbit/s etc. | 802.11 MCS rates for that width, **recalled not looked up** | **unverified**, rounded |
+| **The logistic in `quality()`** — steepness 9, centre 0.32, 30 dB headroom | **ours** | **asserted.** The sigmoid *family* is right; these parameters are a choice |
+| **The rate curve** `0.06 + 0.94*q²` | **ours** | asserted, not fitted |
+| **Corruption and loss thresholds** | **ours** | asserted; the ORDERING is principled, the numbers are not |
+| **Device figures** laptop 0/3, phone 2/4, watch 5/6 dB | **ours** | asserted, and unmeasurable here — see below |
+
+The device figures deserve their own note, because they look more solid than
+they are — they are named after real device classes, which lends them an
+authority nothing earned. `station dump` gives the AP's view of a client, and nothing gives the
+client's view of the AP, so the difference between the two directions **cannot
+be measured from this box at all**. They are plausible for the device classes
+named and nothing more.
+
+**Nothing here is ported.** ns-3 and wmediumd implement the same standard
+models and are both GPL-2.0, while `docs/LICENSING.md` commits this repo to
+containing only its own MIT code. A physical relationship is not anyone's to
+license; an implementation of one is, so the relationships were written out and
+the implementations left alone.
+
 ### Semantics that bite
 
 - **It is a cliff, not a slope.** Frame error rate against SNR is a sigmoid:
