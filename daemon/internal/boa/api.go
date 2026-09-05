@@ -45,6 +45,7 @@ func (a *API) Routes() *http.ServeMux {
 	mux.HandleFunc("POST /api/bridge/radios/{iface}/link-all", a.postLinkAll)
 	mux.HandleFunc("POST /api/bridge/radios/{iface}/power", a.postRadioPower)
 	mux.HandleFunc("POST /api/bridge/radios/{iface}/ap", a.postAPEnabled)
+	mux.HandleFunc("POST /api/services/{name}", a.postService)
 	mux.HandleFunc("POST /api/bridge/radios/{iface}/scan", a.postScan)
 	mux.HandleFunc("POST /api/bridge/radios/{iface}/profile", a.postRadioProfile)
 	mux.HandleFunc("POST /api/bridge/radios/{iface}/threshold", a.postThreshold)
@@ -479,6 +480,23 @@ func (a *API) postLinkAll(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"iface": iface, "action": "link_all", "kind": kind, "stations": n,
+	})
+}
+
+// postService starts or stops one of the box's own observability services.
+//
+// The name is looked up in an allowlist and never passed through to systemctl,
+// so a request cannot name a unit of its own choosing. See services.go.
+func (a *API) postService(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	q := r.URL.Query()
+	on := q.Get("on") != "0" && !strings.EqualFold(q.Get("on"), "false")
+	if err := a.e.SetService(name, on); err != nil {
+		writeErr(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"service": name, "action": "service", "running": on,
 	})
 }
 

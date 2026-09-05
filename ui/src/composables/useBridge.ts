@@ -131,6 +131,25 @@ export function useBridge(active: Ref<boolean>) {
           `unlike a power cut the clients were told it went away.`,
     );
 
+  /**
+   * Start or stop one of the box's own observability services.
+   *
+   * Worth a control rather than an SSH session because of what these two cost a
+   * MEASUREMENT, not what they cost the box. ntopng inspects every packet
+   * crossing the bridge, so it works hardest exactly while a run is in
+   * progress -- 7% of a core idle, 71% under load, measured 2026-09-05. Being
+   * able to take it out of the picture for the duration of a test, and put it
+   * back afterwards, is the difference between a number and a number with a
+   * caveat.
+   */
+  const setService = (name: string, on: boolean) =>
+    act(`/api/services/${encodeURIComponent(name)}?on=${on ? 1 : 0}`, (b) =>
+      b.running
+        ? `${b.service} started.`
+        : `${b.service} stopped — it is no longer competing for CPU with what ` +
+          `you are measuring.`,
+    );
+
   const powerOutage = (iface: string, sec: number) =>
     act(`/api/bridge/radios/${encodeURIComponent(iface)}/power?dur=${sec}`, (b) =>
       `${b.iface}: power cut for ${b.dur_sec}s. Nothing was announced — clients ` +
@@ -311,7 +330,8 @@ export function useBridge(active: Ref<boolean>) {
   return {
     info, survey, scan, error, actionMsg, busy,
     scans, scanSummaries, airtimePct,
-    load, loadSurvey, deauthAll, setPower, setAPEnabled, powerOutage, scanBand,
+    load, loadSurvey, deauthAll, setPower, setAPEnabled, setService, powerOutage,
+    scanBand,
     applyProfile, setThreshold, evict, gather, linkAll, moveChannel,
   };
 }

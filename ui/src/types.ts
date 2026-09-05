@@ -472,10 +472,33 @@ export interface ScanResult {
   note: string;
 }
 
+/** One of the box's own observability services, and whether it is running. */
+export interface ServiceInfo {
+  name: string;
+  running: boolean;
+}
+
 export interface BridgeInfo {
   bridge: string;
   ifaces: IfaceInfo[];
   notes?: Notice[];
+  /**
+   * The box's own processes -- ntopng and glances -- with a switch each.
+   *
+   * On the bridge payload rather than in caps because reading them costs a
+   * subprocess apiece, and this view is built on a timer where the snapshot is
+   * built every second.
+   */
+  services?: ServiceInfo[];
+  /**
+   * How long ago this view was built, in milliseconds.
+   *
+   * It is served from a snapshot refreshed on a timer, so it is normally a
+   * second or two old -- and can be minutes old while a radio holds rtnl_lock
+   * through a firmware reload, which is when everything else on the box stalls
+   * too. A number describing a moment has to say which moment.
+   */
+  read_age_ms?: number;
   /** The last band scan per radio, kept by the daemon so the channel plan's
    *  colours survive a reload and are the same for everyone looking. */
   scans?: Record<string, ScanSummary>;
