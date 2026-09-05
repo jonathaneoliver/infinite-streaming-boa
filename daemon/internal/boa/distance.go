@@ -220,21 +220,30 @@ func phyCeilingMbps(freqMHz, widthMHz int) float64 {
  * had the asymmetry backwards, giving uplink a smaller pipe on an equally good
  * link rather than an equally sized pipe on a worse one.
  */
-func ShapeForRssi(rssiDbm float64, freqMHz, widthMHz int) (down, up Shape) {
+func ShapeForRssi(rssiDbm float64, freqMHz, widthMHz int, deltaDb float64) (down, up Shape) {
 	return shapeAtLevel(rssiDbm, freqMHz, widthMHz),
-		shapeAtLevel(rssiDbm-clientTxDeficitDb, freqMHz, widthMHz)
+		shapeAtLevel(rssiDbm-deltaDb, freqMHz, widthMHz)
 }
 
 /*
- * clientTxDeficitDb is how much quieter a client is than the access point.
+ * DefaultDeltaDb is how much quieter a typical client is than the access point.
  *
  * A phone transmits around 13-15 dBm against an AP's 20, and it has a smaller
  * antenna. Six dB is the middle of that and is what makes uplink cross the
  * sensitivity floor before downlink does -- so on a modelled walk the device
  * loses the ability to be heard before it loses the ability to hear, which is
  * the order a real walk fails in.
+ *
+ * A DEFAULT rather than a constant, because it is the one part of this model
+ * that genuinely varies by device: a watch is quieter than a laptop, and a
+ * phone in a pocket is quieter than one on a desk. Setting it to 0 makes the
+ * two directions equally loud, which is a legitimate thing to want to test.
  */
-const clientTxDeficitDb = 6.0
+const DefaultDeltaDb = 6.0
+
+// MaxDeltaDb bounds it. Past this the uplink is dead across the whole usable
+// range and the control stops describing a device.
+const MaxDeltaDb = 20.0
 
 func shapeAtLevel(rssiDbm float64, freqMHz, widthMHz int) Shape {
 	if widthMHz <= 0 {
@@ -314,7 +323,7 @@ func RssiShapesFor(c Client) (down, up Shape, freqMHz int, ok bool) {
 			width = c.RadioOn.WidthMHz
 		}
 	}
-	down, up = ShapeForRssi(m.Dbm, freqMHz, width)
+	down, up = ShapeForRssi(m.Dbm, freqMHz, width, m.DeltaDb)
 	return down, up, freqMHz, true
 }
 
@@ -330,6 +339,7 @@ func rssiViewFor(c Client) *RssiView {
 	return &RssiView{
 		Dbm:       m.Dbm,
 		DistanceM: round1(DistanceFor(m.Dbm, freq, m.N)),
+		UpDbm:     round1(m.Dbm - m.DeltaDb),
 		Down:      down,
 		Up:        up,
 	}

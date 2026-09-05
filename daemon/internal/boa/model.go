@@ -274,8 +274,12 @@ type Policy struct {
 type RssiView struct {
 	Dbm       float64 `json:"dbm"`
 	DistanceM float64 `json:"distance_m"`
-	Down      Shape   `json:"down"`
-	Up        Shape   `json:"up"`
+	// UpDbm is the level the client's own transmissions arrive at, which is
+	// what actually decides the uplink shape. Shown so the asymmetry is a
+	// number on screen rather than a constant buried in the model.
+	UpDbm float64 `json:"up_dbm"`
+	Down  Shape   `json:"down"`
+	Up    Shape   `json:"up"`
 }
 
 // RssiModel is a modelled signal level, and the exponent used to render it as a
@@ -289,6 +293,13 @@ type RssiView struct {
 type RssiModel struct {
 	Dbm float64 `json:"dbm"`
 	N   float64 `json:"n,omitempty"`
+	// DeltaDb is how much quieter the CLIENT is than the access point, and so
+	// how much worse its uplink is at the same distance.
+	//
+	// Not omitempty: 0 is a meaningful value here -- it means the two
+	// directions are equally loud -- and an omitted field would be
+	// indistinguishable from someone asking for that.
+	DeltaDb float64 `json:"delta_db"`
 }
 
 // LadderFor returns this device's ladder for one service.

@@ -2,7 +2,7 @@
 import { computed, ref, watch } from 'vue';
 import type { Client, Shape, Series, ChartPrefs, Pattern, RssiModel } from '@/types';
 import {
-  CLEAN, DEFAULT_EXPONENT, DEVELOPER, PRESETS,
+  CLEAN, DEFAULT_DELTA_DB, DEFAULT_EXPONENT, DEVELOPER, DEVICE_KINDS, PRESETS,
   distanceFor, freqForChannel, ntopngUrl, patternFromPolicy,
 } from '@/types';
 import { setShapeAt } from '@/lib/pattern';
@@ -481,8 +481,39 @@ function onPreset(down: Shape, up: Shape) {
 const RSSI_NEAR = -40;
 const RSSI_FAR = -90;
 
+/*
+ * The slider is a POSITION, not a level: 0 is off and every step right is one
+ * dB further away.
+ *
+ * Off sits at the left end rather than in a separate button because it belongs
+ * on the same axis -- no model is the same situation as standing next to the
+ * access point, so the control reads left to right as "here, and then walking
+ * away". Sliding off the left end is how you hand the controls back.
+ *
+ * Uniform in dB and therefore LOGARITHMIC in metres, which is the only honest
+ * spacing: signal falls with the log of distance, so at n=3 every 9 dB is a
+ * doubling. Uniform metres would give three quarters of the travel to the dead
+ * ground past the cliff and a few pixels to everything worth exploring. It is
+ * why the metre labels run 1, 2, 4, 8, 16, 33, 84 rather than evenly.
+ */
+const DIST_STEPS = RSSI_NEAR - RSSI_FAR; // 50 one-dB positions past "off"
+
+/** Slider position for the model in force: 0 when off, 1 at the nearest. */
+const sliderPos = computed(() =>
+  modelOn.value ? RSSI_NEAR - modelDbm.value + 1 : 0);
+
+/** Position back to a level. Position 0 has no level -- it is off. */
+function dbmForPos(pos: number): number {
+  return RSSI_NEAR - (pos - 1);
+}
+
 const modelFreq = computed(() => freqForChannel(props.client.radio_on?.channel ?? 0));
 const modelN = computed(() => props.client.policy.rssi?.n || DEFAULT_EXPONENT);
+const modelDelta = computed(() =>
+  props.client.policy.rssi?.delta_db ?? DEFAULT_DELTA_DB);
+/** The uplink level, from the daemon when it has one so the two agree. */
+const modelUpDbm = computed(() =>
+  props.client.rssi_run?.up_dbm ?? modelDbm.value - modelDelta.value);
 const modelDbm = computed(() => props.client.policy.rssi?.dbm ?? RSSI_NEAR);
 const modelOn = computed(() => !!props.client.policy.rssi);
 // The daemon's figure when there is one: it resolves the band the client is
@@ -497,9 +528,37 @@ function metresLabel(m: number): string {
 }
 
 function onDistance(e: Event) {
-  const dbm = Number((e.target as HTMLInputElement).value);
-  emit('distance', { dbm, n: modelN.value });
+  const pos = Number((e.target as HTMLInputElement).value);
+  if (pos <= 0) {
+    emit('distance', null);
+    return;
+  }
+  emit('distance', {
+    dbm: dbmForPos(pos), n: modelN.value, delta_db: modelDelta.value,
+  });
 }
+
+/** Choosing a device kind changes only how loud it is, never where it is. */
+function onKind(delta: number) {
+  emit('distance', {
+    dbm: modelDbm.value, n: modelN.value, delta_db: delta,
+  });
+}
+
+/*
+ * Everything a distance model can reach, held open while one is driving.
+ *
+ * Deliberately what the model CAN drive rather than what it currently is:
+ * corruption starts partway down the curve and loss only near the floor, so a
+ * list of what is active right now would pop controls in and out as the slider
+ * moves. `reorder` is absent because the model never touches it -- the point is
+ * to stop the set changing, not to show everything.
+ *
+ * jitter rides with delay and burst with loss, so naming the two parents is
+ * enough.
+ */
+const MODEL_DRIVES = ['delay_ms', 'loss_pct', 'corrupt_pct'] as const;
+const modelFields = computed(() => (modelOn.value ? MODEL_DRIVES : undefined));
 
 // Both a sweep and a pattern drive the cap. The daemon refuses the second one
 // rather than letting them fight; the card says so before the click.
@@ -844,9 +903,9 @@ function fmtBytes(n: number): string {
         <span class="dist-name">distance</span>
         <input
           type="range" class="dist-range"
-          :min="RSSI_FAR" :max="RSSI_NEAR" step="1"
-          :value="modelDbm" :disabled="!client.shapeable"
-          title="How far away this device should behave as though it is. Moves the impairments, not the radio."
+          min="0" :max="DIST_STEPS" step="1"
+          :value="sliderPos" :disabled="!client.shapeable"
+          title="How far away this device should behave as though it is. Off at the left, further away to the right. Moves the impairments, not the radio."
           @input="onDistance"
         />
         <span class="dist-read num">
@@ -865,6 +924,25 @@ function fmtBytes(n: number): string {
       <!-- The contradiction, stated where it is visible rather than left to be
            discovered: the model moves what a player senses and cannot move what
            the radio reports. -->
+      <!-- HOW LOUD the device is, as opposed to how far away it is. Both
+           directions cross the same air, so the only thing separating them is
+           that the client transmits more quietly than the access point -- which
+           is why its uplink fails first. Named for the device rather than the
+           dB, because that is how anyone actually thinks about it, with the
+           number shown because these are typed figures and a label alone would
+           claim more than we know. -->
+      <div v-if="modelOn" class="dist-kinds">
+        <span class="dist-name">heard as</span>
+        <button
+          v-for="k in DEVICE_KINDS" :key="k.key"
+          class="ghost" :class="{ on: modelDelta === k.delta }"
+          :title="`${k.note} Uplink arrives ${k.delta} dB weaker than downlink.`"
+          @click="onKind(k.delta)"
+        >{{ k.label }} <span class="dist-dbm">−{{ k.delta }} dB</span></button>
+        <span class="dist-read num dist-up">
+          uplink {{ modelUpDbm }} dBm
+        </span>
+      </div>
       <!-- Two things that are easy to mistake for bugs, said where they
            apply. The sliders below move on their own because the model is
            driving them; the radio readings do not, because nothing here can
@@ -915,7 +993,7 @@ function fmtBytes(n: number): string {
           settings — those are untouched and return when it ends.
         </p>
         <ShapeSliders
-          :shape="downShape" dir="down"
+          :shape="downShape" dir="down" :always="modelFields"
           :disabled="!client.shapeable || sweeping || playing"
           @update="(s) => onShape('down', s)"
         />
@@ -946,7 +1024,7 @@ function fmtBytes(n: number): string {
           :window-ms="chartProps.windowMs" :now="chartProps.now"
         />
         <ShapeSliders
-          :shape="upShape" dir="up"
+          :shape="upShape" dir="up" :always="modelFields"
           :disabled="!client.shapeable || playing"
           @update="(s) => onShape('up', s)"
         />
@@ -1183,6 +1261,18 @@ function fmtBytes(n: number): string {
 .dist-dbm { color: var(--ink-faint); margin-left: 6px; font-size: 11px; }
 .dist-off { font-size: 11px; padding: 2px 8px; }
 .dist-note { margin: 4px 0 0; max-width: 62ch; }
+.dist-kinds {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 6px;
+}
+.dist-kinds .ghost { font-size: 11px; padding: 2px 8px; }
+.dist-kinds .ghost.on {
+  border-color: var(--accent);
+  color: var(--ink);
+}
+.dist-up { min-width: 0; margin-left: 6px; }
 .card-head.folded .val { text-align: right; font-size: 12px; font-weight: 600; }
 .card-head.folded .unit { font-size: 11px; }
 .card-head.folded .spark { display: block; }

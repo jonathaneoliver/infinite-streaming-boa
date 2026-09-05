@@ -239,7 +239,32 @@ export interface Policy {
 export interface RssiModel {
   dbm: number;
   n?: number;
+  /** How much quieter this device is than the access point, in dB. */
+  delta_db: number;
 }
+
+/**
+ * How loud a client is, named for the reason rather than the number.
+ *
+ * Nobody thinks "this device is 6 dB quieter"; they think "it is a phone". So
+ * the control names the case, the same move PRESETS makes for link conditions —
+ * and shows the dB, because a label asserts more confidence than a number does
+ * and these figures are typed rather than measured.
+ *
+ * They are not measurable from this box either: `station dump` gives the AP's
+ * view of the client, and nothing gives the client's view of the AP, so the
+ * difference between them can only be assumed.
+ *
+ * A bigger radio with more antennas is heard better at the same distance, so a
+ * larger delta means the uplink dies sooner.
+ */
+export const DEVICE_KINDS = [
+  { key: 'laptop', label: 'laptop', delta: 3, note: 'Bigger antennas and more of them: heard almost as well as it hears.' },
+  { key: 'phone', label: 'phone', delta: 6, note: 'The usual case — a phone transmits around 5 dB quieter than an access point.' },
+  { key: 'watch', label: 'watch', delta: 11, note: 'A tiny antenna and a small battery: it hears far better than it is heard.' },
+] as const;
+
+export const DEFAULT_DELTA_DB = 6;
 
 /**
  * What a distance model is imposing right now.
@@ -253,6 +278,9 @@ export interface RssiModel {
 export interface RssiView {
   dbm: number;
   distance_m: number;
+  /** The level the client's own transmissions arrive at, which is what decides
+   *  the uplink shape. Weaker than `dbm` by the device's delta. */
+  up_dbm: number;
   down: Shape;
   up: Shape;
 }
