@@ -1395,6 +1395,31 @@ the implementations left alone.
   cleared. This is deliberate — storing a model's output beside its input is how
   the two come to disagree, the failure `putLadder`'s provenance reset exists to
   prevent. `TestTheModelDrivesTheKernelWithoutTouchingTheStore` is the guard.
+- **JITTER REORDERS, AND ON THE ACK PATH THAT IS RUINOUS.** MEASURED
+  2026-09-05, and the most expensive assumption in this feature. netem applies
+  jitter by scheduling each packet independently, so a packet with less jitter
+  overtakes one with more — the delivery order changes without `reorder` being
+  set at all. On a data path that costs some throughput; on the ACK path it is
+  catastrophic, because reordered ACKs reach the sender as duplicate ACKs, which
+  is TCP's signal for loss. The window collapses and the sender never recovers
+  while the jitter continues.
+
+  An earlier version of this model set jitter to **45% of the delay at every
+  signal level**, giving 9.1 ms on a 20.2 ms uplink at a modelled 53 ft. A real
+  player on a real phone sat at **360p**. Changing only the jitter — to 25% of a
+  2 ms delay — moved the same player to **2160p** at the same modelled distance.
+  Nothing else was touched.
+
+  Two consequences beyond this model. The uplink matters far more than its
+  share of the traffic suggests, because it carries the ACKs for the downlink.
+  And **the jitter slider has this property too**: a hand-set jitter that is
+  large relative to its delay will wreck TCP throughput for reasons the number
+  on screen does not suggest.
+
+  It also explains why an `iperf3 -R` against the box did NOT reveal the
+  problem: that traffic terminates at the box, so its ACKs never reach the WAN
+  port where uplink shaping lives. Testing this feature requires traffic that
+  crosses the WAN.
 - **dBm is stored, metres are shown.** Metres depend on `n`, which is a guess, so
   a policy in metres would mean a different impairment in a different building.
   dBm replays identically anywhere.
