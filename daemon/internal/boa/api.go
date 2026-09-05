@@ -101,6 +101,15 @@ func (a *API) health(w http.ResponseWriter, r *http.Request) {
 	s := a.e.Snapshot()
 	writeJSON(w, http.StatusOK, map[string]any{
 		"ok": s.Caps.Shaping, "caps": s.Caps, "revision": s.Revision,
+		// WHICH BUILD IS ACTUALLY RUNNING. Stamped at link time and already
+		// carried in Config; it just had no way out of the process.
+		//
+		// Without it, "is my change on the box" needed SSH and `strings` over
+		// the binary, so two deploys landed on top of other people's work
+		// unnoticed on 2026-09-05 -- one of them replacing a newer build with
+		// an older tree, and costing an operator a testing session against a
+		// binary that did not contain the change under test. See #222.
+		"version": a.e.cfg.Version,
 	})
 }
 
