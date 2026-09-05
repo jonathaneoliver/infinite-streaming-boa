@@ -336,16 +336,7 @@ func (e *Engine) rebuildBSS(iface string) bool {
 // the state of the BSS is a question with an answer, so the rebuild waits on
 // that answer rather than on a sleep picked to look long enough.
 func waitAPDisabled(iface string, budget time.Duration) bool {
-	deadline := time.Now().Add(budget)
-	for {
-		if !apEnabled(iface) {
-			return true
-		}
-		if time.Now().After(deadline) {
-			return false
-		}
-		time.Sleep(200 * time.Millisecond)
-	}
+	return waitAPState(iface, budget, false)
 }
 
 // apEnabled reports whether hostapd is actually serving on this radio.
@@ -382,15 +373,46 @@ func apState(iface string) (enabled, known bool) {
 // waitAPEnabled polls until the access point is serving, or the budget runs
 // out. Returns whether it came back.
 func waitAPEnabled(iface string, budget time.Duration) bool {
+	return waitAPState(iface, budget, true)
+}
+
+// waitAPState is the shared wait, backing OFF as it goes.
+//
+// A flat 200ms poll was right while the longest budget here was 20 seconds. It
+// is actively harmful at three minutes, and it made the web interface look
+// broken: /api/bridge builds its answer by asking hostapd for STATUS
+// (bridgeinfo.go), every control-socket call carries a 2s deadline, and a radio
+// re-initialising after a power cut does not answer any of them. So each poll
+// burned its full 2s and the loop immediately asked again, holding a dead
+// socket busy for the entire window while the operator's browser queued behind
+// it. Measured 2026-09-05: /api/bridge answers in 31ms healthy, and hung long
+// enough during a rebuild to be reported as a broken interface.
+//
+// Backing off keeps the same guarantee -- the wait still ends the moment the
+// answer changes -- while asking a hundred times less often at the far end of a
+// long budget. It does NOT fix the underlying coupling: the bridge view blocks
+// on hostapd whether or not this loop is running, and a radio that goes quiet
+// for two minutes will slow that endpoint regardless. That is a separate fault
+// and predates this file's involvement in it.
+func waitAPState(iface string, budget time.Duration, want bool) bool {
 	deadline := time.Now().Add(budget)
+	wait := 200 * time.Millisecond
+	const maxWait = 3 * time.Second
 	for {
-		if apEnabled(iface) {
+		if apEnabled(iface) == want {
 			return true
 		}
 		if time.Now().After(deadline) {
 			return false
 		}
-		time.Sleep(200 * time.Millisecond)
+		time.Sleep(wait)
+		if wait < maxWait {
+			// Doubling rather than a fixed step, so a recovery that arrives in
+			// the first second is still noticed in the first second.
+			if wait *= 2; wait > maxWait {
+				wait = maxWait
+			}
+		}
 	}
 }
 
