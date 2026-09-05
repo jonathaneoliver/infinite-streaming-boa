@@ -84,18 +84,36 @@ const stackEl = ref<HTMLElement | null>(null);
 /* ---------------------------------------------------------------- lanes -- */
 
 const kindUses = (kind: Kind) => events.value.some((e) => e.kind === kind);
-/** An effect in use is never collapsible. The same rule PatternPanel applies to
- *  its own lanes, and here it is a safety property rather than tidiness: an
- *  adapter pattern must not be able to hide that it takes a radio off the air. */
-const kindShown = (kind: Kind) => kindUses(kind) || revealed.value.has(kind);
+/** Whether THIS radio's row of this kind has anything on it. */
+const laneUses = (iface: string, kind: Kind) =>
+  events.value.some((e) => e.iface === iface && e.kind === kind);
+
+/**
+ * A row is shown when it is doing something, or when its effect was revealed.
+ *
+ * Per LANE rather than per kind, so loading a pattern shows exactly the rows
+ * that carry events and nothing else -- a gather on one radio does not drag its
+ * empty twin onto the screen. Revealing is still per effect, because a chip
+ * opens a row to draw ON and you cannot know which radio you want yet.
+ *
+ * A row in use is never collapsible. On a client card that is tidiness; here it
+ * is a safety property, because an adapter pattern must not be able to hide
+ * that it takes a radio off the air.
+ */
+const laneShown = (iface: string, kind: Kind) =>
+  laneUses(iface, kind) || revealed.value.has(kind);
+const kindShown = (kind: Kind) =>
+  revealed.value.has(kind) || props.radios.some((iface) => laneUses(iface, kind));
 
 const lanes = computed(() =>
   groupBy.value === 'effect'
-    ? KINDS.filter((k) => kindShown(k.kind)).flatMap((k) =>
-        props.radios.map((iface) => ({ iface, ...k })),
+    ? KINDS.flatMap((k) =>
+        props.radios
+          .filter((iface) => laneShown(iface, k.kind))
+          .map((iface) => ({ iface, ...k })),
       )
     : props.radios.flatMap((iface) =>
-        KINDS.filter((k) => kindShown(k.kind)).map((k) => ({ iface, ...k })),
+        KINDS.filter((k) => laneShown(iface, k.kind)).map((k) => ({ iface, ...k })),
       ),
 );
 const addChips = computed(() => KINDS.filter((k) => !kindShown(k.kind)));
@@ -126,6 +144,21 @@ const endOf = (e: RadioEvent) => e.at_sec + (e.kind === 'off' ? e.dur_sec ?? 0 :
  * holds there.
  */
 const tail = ref(0);
+
+/**
+ * What the BOX holds, as last loaded or last saved.
+ *
+ * play runs the pattern in the daemon's store, not the one on screen -- there
+ * is one adapter slot and the editor is a view onto it. So the two can differ,
+ * and when they do the lanes are asserting something that is not what would
+ * run. That is the worst shape of failure this codebase keeps naming: not
+ * silence, but a confident wrong answer. It cost a 40s whole-AP blackout that
+ * the lanes on screen did not contain.
+ *
+ * So the difference is tracked and play refuses while it stands.
+ */
+const savedJSON = ref('[]');
+const dirty = computed(() => JSON.stringify(events.value) !== savedJSON.value);
 const contentEnd = computed(() => events.value.reduce((m, e) => Math.max(m, endOf(e)), 0));
 const MIN_SPAN_SEC = 60;
 const dur = computed(() => Math.max(MIN_SPAN_SEC, contentEnd.value, tail.value));
@@ -567,6 +600,7 @@ async function load() {
   events.value = [...(p.radios ?? [])].sort((a, b) => a.at_sec - b.at_sec);
   loop.value = p.loop;
   tail.value = p.keys?.[p.keys.length - 1]?.at_sec ?? 0;
+  savedJSON.value = JSON.stringify(events.value);
 }
 
 async function save() {
@@ -587,10 +621,19 @@ async function save() {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(pattern),
   });
-  if (body) msg.value = `saved — ${body.radios} radio event(s) over ${body.dur_sec}s`;
+  if (body) {
+    savedJSON.value = JSON.stringify(events.value);
+    msg.value = `saved — ${body.radios} radio event(s) over ${body.dur_sec}s`;
+  }
 }
 
 async function play() {
+  if (dirty.value) {
+    err.value =
+      'the box plays what is saved, and these lanes have not been saved — ' +
+      'save first, or the run will not be the pattern you are looking at';
+    return;
+  }
   if (await call('/api/bridge/pattern/play', { method: 'POST' })) msg.value = 'playing';
 }
 async function stop() {
@@ -600,6 +643,25 @@ async function stop() {
 
 onMounted(load);
 watch(() => props.radios.join(','), load);
+
+/**
+ * When a run starts, show the pattern that is RUNNING.
+ *
+ * play runs what the box holds, so the moment one begins the lanes must be the
+ * box's -- otherwise the panel draws one pattern while another conditions the
+ * radios, which is the divergence that cost a blackout nobody had drawn. A run
+ * can also be started from elsewhere: another browser, or the API.
+ *
+ * Unsaved work is NOT thrown away to do it. Local edits stay, the unsaved badge
+ * stands, and the operator decides -- discarding someone's drawing to win an
+ * argument about which pattern is real would be the worse failure of the two.
+ */
+watch(
+  () => !!props.run,
+  (running, was) => {
+    if (running && !was && !dirty.value) void load();
+  },
+);
 </script>
 
 <template>
@@ -615,11 +677,14 @@ watch(() => props.radios.join(','), load);
       >{{ open ? '▾' : '▸' }}</button>
       Pattern
       <span class="meta">{{ summary }}</span>
+      <span v-if="dirty" class="dirty" title="the box plays what is saved">unsaved</span>
       <span class="spacer"></span>
       <button v-if="open" class="ghost" :disabled="busy || playing" @click="save()">save</button>
       <button v-if="playing" class="ghost" :disabled="busy" @click="stop()">stop</button>
       <button
-        v-else class="primary" :disabled="busy || !events.length" @click="play()"
+        v-else class="primary" :disabled="busy || !events.length || dirty"
+        :title="dirty ? 'save first — the box plays what is saved, not what is drawn' : ''"
+        @click="play()"
       >play</button>
       <button class="ghost" @click="open = !open">
         {{ open ? 'close' : events.length ? 'edit' : 'add' }}
@@ -773,6 +838,10 @@ watch(() => props.radios.join(','), load);
       <p v-if="oneRadioOnly && needsTwoRadios" class="note bad">
         This pattern moves clients between radios, and this box is serving only
         one. There is nowhere to steer to, so it will be refused.
+      </p>
+      <p v-if="dirty" class="note warnish">
+        These lanes are not what the box holds. <b>play</b> runs the saved
+        pattern, so save before playing or the run will not be what is drawn.
       </p>
       <p v-if="herdsWithoutReset" class="note warnish">
         This pattern moves clients between radios and loops, but never takes
@@ -966,4 +1035,8 @@ button.primary { background: var(--down); border-color: var(--down); color: #fff
 .note { margin: 8px 0 0; font-size: 12px; color: var(--ink-dim); }
 .note.bad { color: var(--bad); }
 .note.warnish { color: var(--warn); }
+.dirty {
+  font-weight: 600; font-size: 11px; color: var(--warn);
+  border: 1px solid var(--warn); border-radius: 999px; padding: 0 7px;
+}
 </style>
