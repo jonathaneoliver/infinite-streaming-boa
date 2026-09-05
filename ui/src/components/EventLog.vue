@@ -168,13 +168,24 @@ function clock(ms: number): string {
   border-top: 1px solid var(--line-soft);
   padding: 4px 10px 6px;
 }
-/* Only the open log scrolls. Collapsed it is padded to a fixed handful of
-   rows -- see padRows -- so the page below it sits at the same height whatever
-   has just happened. Capping alone did not do that: with fewer events the
-   panel was shorter and grew as they arrived. */
+/* Only the open log scrolls, and it does so at a FIXED height.
+ *
+ * max-height was the same half-measure padRows was written to fix at the other
+ * end: it caps the panel but does not reserve it, so an open log grew from one
+ * row up to the cap as events arrived and pushed the whole page down on every
+ * line. On a box where watching the log IS the task -- events arrive exactly
+ * when an operator is reaching for the controls under it -- that is the worst
+ * possible moment to move them.
+ *
+ * A fixed height means empty space under a quiet log, which is the right trade:
+ * the space belongs to the log either way, and reserving it is the point.
+ *
+ * scrollbar-gutter keeps the width steady too, so the rows do not reflow the
+ * first time the content passes the fold. */
 .rows.scroll {
-  max-height: 220px;
+  height: 220px;
   overflow-y: auto;
+  scrollbar-gutter: stable;
 }
 .row.pad { visibility: hidden; }
 .row {

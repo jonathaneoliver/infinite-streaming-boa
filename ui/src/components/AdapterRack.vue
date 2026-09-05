@@ -84,11 +84,6 @@ function otherRadio(r: IfaceInfo): IfaceInfo | undefined {
   return rackAdapters.value.find((o) => o.name !== r.name && o.wireless);
 }
 
-/** Whether that peer can take clients right now. Disables, never hides. */
-function otherReady(r: IfaceInfo): boolean {
-  return otherRadio(r)?.ap?.enabled === true;
-}
-
 /**
  * What the row says beyond the token.
  *
@@ -244,17 +239,31 @@ Clients ARE told it has gone, unlike a power cut.`
                named after the wrong radio.
                Each is disabled when its source radio has nobody on it, so a
                dead button always means "there is no one to move", never "this
-               is not supported". -->
+               is not supported".
+
+               DELIBERATELY NOT gated on either access point being up. That was
+               tried and reverted: an AP goes up and down constantly here --
+               half the controls on this row do exactly that -- so keying the
+               buttons to it made them flicker between live and dead while an
+               operator was working, which is the same churn as removing them,
+               only quieter. It also broke the rule stated just above, because a
+               greyed button then meant "the AP is down", not "there is nobody
+               to move".
+               If the target radio cannot take the clients the steer fails and
+               says so, which tells the operator more than a button that will
+               not be pressed. -->
           <button
             class="ghost"
-            :disabled="busy || !r.ap?.stations || !otherReady(r)"
-            :title="`Ask all ${r.ap?.stations ?? 0} client(s) on ${r.name} to move to `
-              + `${otherRadio(r)!.name} (802.11v). They may refuse.`"
+            :disabled="busy || !r.ap?.stations"
+            :title="otherRadio(r)
+              ? `Ask all ${r.ap?.stations ?? 0} client(s) on ${r.name} to move to `
+                + `${otherRadio(r)!.name} (802.11v). They may refuse.`
+              : 'No other radio on this box to move them to.'"
             @click="bridge.evict(r.name)"
           >evict</button>
           <button
             class="ghost"
-            :disabled="busy || !otherRadio(r)?.ap?.stations || !r.ap?.enabled"
+            :disabled="busy || !otherRadio(r)?.ap?.stations"
             :title="otherRadio(r)
               ? `Ask all ${otherRadio(r)!.ap?.stations ?? 0} client(s) on `
                 + `${otherRadio(r)!.name} to move here to ${r.name} (802.11v). `
