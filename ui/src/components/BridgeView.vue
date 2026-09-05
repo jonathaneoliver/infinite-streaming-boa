@@ -177,6 +177,20 @@ const pending = ref('');
         :series="series" :labels="labels"
         v-model:outage="outage"
       >
+        <!-- The radios on a clock, inside the section that names them. The
+             rack's own rule is that a control lives where its subject is named
+             exactly once, and the subject of a cross-radio timeline is the set
+             of radios rather than any one of them.
+             Worth knowing: this is the first many-subject control in this UI to
+             sit INSIDE its per-subject list. The others are a strip above the
+             list (ClientsView), a peer section (FabricStrip), or hoisted above
+             both (EventLog). If it stops earning that place -- most likely by
+             becoming part of a scenario surface, where its subject is the RUN
+             rather than the radios -- this is the seam to pull. -->
+        <template #pattern>
+          <AdapterPatternPanel :radios="props.radios ?? []" :run="props.adapterRun ?? null" />
+        </template>
+
         <template #plan="{ radio }">
           <ChannelPlan
             :radio="radio" :scans="bridge.scanSummaries.value" :busy="bridge.busy.value"
@@ -184,15 +198,6 @@ const pending = ref('');
           />
         </template>
       </AdapterRack>
-
-      <!-- The radios on a clock, under the rack that names them. The rack is
-           the one home for immediate radio controls; this is the same subjects
-           over time, so it belongs directly beneath rather than in a view of
-           its own. -->
-      <AdapterPatternPanel
-        :radios="props.radios ?? []"
-        :run="props.adapterRun ?? null"
-      />
 
 
       <!-- Unfinished work, behind ?developer=1. Never in the default view. -->

@@ -343,11 +343,35 @@ function degraded(i: IfaceInfo): boolean {
         </template>
       </div>
     </article>
+
+    <!-- Rack-level, and deliberately NOT another fold.
+         A timeline that spans the radios has the SET as its subject, so it
+         belongs in the section that names the set rather than beside it -- the
+         rule this rack already states, that a control lives where its subject
+         is named, exactly once.
+         Not an <article class="fold"> though: the heading counts adapters, and
+         a fourth fold under "adapters 3" would contradict it; and the fold row
+         is a positional grid of six fixed tracks that a pattern header has no
+         cells for. So it is its own element, at the folds' indent, separated by
+         a rule. -->
+    <div v-if="$slots.pattern" class="fold rack-wide">
+      <slot name="pattern"></slot>
+    </div>
   </section>
 </template>
 
 <style scoped>
 .rack { margin-bottom: 12px; }
+/* Wears the fold's clothes, because it IS one to the eye: same box, same
+   indent, same caret. What it is not is an <article> in the v-for -- the
+   heading counts adapters, and the fold's six-track grid has no cells for a
+   pattern header. Only the marker sets it apart. */
+.rack-wide { position: relative; }
+.rack-wide::before {
+  content: '';
+  position: absolute; left: 14px; right: 14px; top: -6px;
+  border-top: 1px dashed var(--line-soft);
+}
 /* Matches the client list's heading exactly: these two are the page's only
    sections now that the tabs are gone, and they have to look like a pair. At
    the old 10px faint weight this read as a caption on the first fold rather

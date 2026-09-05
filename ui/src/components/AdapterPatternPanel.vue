@@ -173,6 +173,71 @@ const scrub = ref(0);
 const head = computed(() => (props.run ? props.run.pos_sec : scrub.value));
 const playing = computed(() => props.run?.state === 'running');
 
+/**
+ * Folded by default, the same as a client's timeline.
+ *
+ * Eight radio lanes, a ruler, a preset row and a chip row is a lot of chrome
+ * for something the box is usually not doing -- and PatternPanel had already
+ * reached that conclusion for four lanes on a device. The summary and the
+ * transport stay in the head, so a box with a pattern is never silent about
+ * having one.
+ */
+const open = ref(false);
+
+/**
+ * The whole header toggles the fold, not just the button on the end.
+ *
+ * The same two exclusions PatternPanel documents, mirrored rather than
+ * reinvented: play, stop and save live in this header and swallowing their
+ * clicks would break them; and dragging across the summary to copy a duration
+ * ends in a click on the header, which must not fold the panel away underneath
+ * the selection.
+ *
+ * The button stays. It is the keyboard route and it names the action, which a
+ * click target alone does not.
+ */
+function onHeadClick(e: MouseEvent) {
+  const el = e.target as HTMLElement | null;
+  if (el?.closest('input, button, a, select, textarea')) return;
+  if ((window.getSelection()?.toString() ?? '').length > 0) return;
+  open.value = !open.value;
+}
+
+/** What the folded header says, so a timeline is never invisible. */
+const summary = computed(() => {
+  if (!events.value.length) {
+    return 'no timeline — the radios hold still';
+  }
+  const n = events.value.length;
+  return `${n} radio event${n === 1 ? '' : 's'} · ${dur.value}s${loop.value ? ' · loops' : ''}`;
+});
+
+/**
+ * What a folded panel must still say while a run is in force.
+ *
+ * More important here than on a device card. A device being conditioned is
+ * invisible but harmless; a radio that is OFF THE AIR is a missing access
+ * point, and a folded panel that hid it would send the operator looking for a
+ * hardware fault. So the radios that are down are named, not counted.
+ */
+const foldedStatus = computed(() => {
+  if (!props.run) return '';
+  const at = `${props.run.pos_sec.toFixed(0)}s of ${props.run.dur_sec.toFixed(0)}s`;
+  const down = props.radios.filter((iface) =>
+    events.value.some(
+      (e) =>
+        e.kind === 'off' &&
+        e.iface === iface &&
+        props.run!.pos_sec >= e.at_sec &&
+        props.run!.pos_sec < endOf(e),
+    ),
+  );
+  const state = props.run.state === 'running' ? 'playing' : props.run.state;
+  return down.length
+    ? `${state}, ${at} — ${down.join(' and ')} off the air`
+    : `${state}, ${at}`;
+});
+
 function timeAt(clientX: number): number {
   const box = stackEl.value?.getBoundingClientRect();
   if (!box || renderSpan.value <= 0) return 0;
@@ -539,21 +604,35 @@ watch(() => props.radios.join(','), load);
 
 <template>
   <section class="adapter">
-    <h3 class="head">
-      Adapter pattern
-      <span class="meta">
-        {{ events.length }} radio event{{ events.length === 1 ? '' : 's' }} ·
-        {{ dur }}s{{ loop ? ' · loops' : '' }}
-      </span>
+    <!-- Folded by default. The summary and the transport stay, so a box with
+         a pattern is never silent about having one. -->
+    <h3 class="head" :class="{ open }" @click="onHeadClick">
+      <!-- The rack's own caret, so everything on this page folds one way. -->
+      <button
+        class="caret" :aria-expanded="open"
+        :title="open ? 'Collapse' : 'Show the timeline'"
+        @click="open = !open"
+      >{{ open ? '▾' : '▸' }}</button>
+      Pattern
+      <span class="meta">{{ summary }}</span>
       <span class="spacer"></span>
-      <button class="ghost" :disabled="busy || playing" @click="save()">save</button>
+      <button v-if="open" class="ghost" :disabled="busy || playing" @click="save()">save</button>
       <button v-if="playing" class="ghost" :disabled="busy" @click="stop()">stop</button>
-      <button v-else class="primary" :disabled="busy || !events.length" @click="play()">play</button>
+      <button
+        v-else class="primary" :disabled="busy || !events.length" @click="play()"
+      >play</button>
+      <button class="ghost" @click="open = !open">
+        {{ open ? 'close' : events.length ? 'edit' : 'add' }}
+      </button>
     </h3>
 
-    <p v-if="!radios.length" class="note">This box is serving no radios.</p>
+    <!-- A run reports itself whether or not the editor is open: a radio that is
+         off the air must never be something the fold is hiding. -->
+    <p v-if="foldedStatus && !open" class="meta folded-status">{{ foldedStatus }}</p>
 
-    <div v-else class="body">
+    <p v-if="open && !radios.length" class="note">This box is serving no radios.</p>
+
+    <div v-else-if="open" class="body">
       <!-- Pre-populated patterns, above the lanes as on a client card. These
            WRITE the timeline; the chips below only reveal an empty lane. -->
       <div class="presets">
@@ -718,19 +797,30 @@ watch(() => props.radios.join(','), load);
 <style scoped>
 /* Violet sits clear of --down blue and --up orange, which mean DIRECTION
    everywhere else in boa and must not be borrowed for a radio. */
-.adapter {
-  --violet: #a78bfa;
-  background: var(--panel);
-  border: 1px solid var(--line);
-  border-radius: var(--r);
-}
+/* No box of its own: the rack wrapper around this IS the fold, so a second
+   border here would draw a card inside a card. */
+.adapter { --violet: #a78bfa; }
 
+/* The rack's collapsed row, not a panel header: same padding, same gap, same
+   weight, so this line sits among the adapters rather than beside them. The
+   rule under it appears only when the editor is open, because a folded row has
+   nothing to divide it from. */
 .head {
-  display: flex; align-items: center; gap: 10px; margin: 0;
-  padding: 10px 14px; border-bottom: 1px solid var(--line);
-  background: var(--panel-2); font-size: 14px; font-weight: 600;
+  display: flex; align-items: center; gap: 12px; margin: 0;
+  padding: 12px 14px; font-size: 14px; font-weight: 600;
 }
+.head.open { border-bottom: 1px solid var(--line); }
+.caret {
+  background: none; border: 0; color: var(--ink-faint);
+  cursor: pointer; font-size: 13px; line-height: 1; padding: 3px 8px;
+  border-radius: 0;
+}
+.caret:hover { color: var(--ink); }
+.head { cursor: pointer; }
 .head .meta { font-weight: 400; color: var(--ink-dim); font-size: 12px; }
+.folded-status {
+  margin: 0; padding: 6px 14px 8px; font-size: 12px; color: var(--warn);
+}
 .spacer { flex: 1; }
 button {
   font: inherit; color: var(--ink); background: var(--panel-2);
