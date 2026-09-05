@@ -69,8 +69,24 @@ function showClient(mac: string) {
  * present and dead: a transition request has to name another access point, so
  * with nowhere to send anyone there is nothing to offer.
  */
+/**
+ * The other radio on this box, whether or not it is currently serving.
+ *
+ * EXISTENCE, not health. This decides whether evict and gather are DRAWN, and
+ * that must depend only on how many radios the box has -- which never changes
+ * while anyone is looking at it. It previously required `o.ap?.enabled`, so the
+ * moment the other radio's access point went down these two buttons vanished
+ * from THIS radio's row, and every control after them slid left under the
+ * pointer. Whether the peer can actually receive clients is a separate question,
+ * asked below, and its answer disables the button instead of removing it.
+ */
 function otherRadio(r: IfaceInfo): IfaceInfo | undefined {
-  return rackAdapters.value.find((o) => o.name !== r.name && o.ap?.enabled);
+  return rackAdapters.value.find((o) => o.name !== r.name && o.wireless);
+}
+
+/** Whether that peer can take clients right now. Disables, never hides. */
+function otherReady(r: IfaceInfo): boolean {
+  return otherRadio(r)?.ap?.enabled === true;
 }
 
 /**
@@ -162,14 +178,29 @@ function degraded(i: IfaceInfo): boolean {
         <span v-else class="who-none">no clients</span>
 
         <div class="tail">
-          <span v-if="!r.serving && r.wireless" class="badge warn-badge">not serving</span>
-          <span v-else-if="r.power_known && !r.powered" class="badge warn-badge">off</span>
+          <!-- The badge holds its place whether or not it has anything to say.
+               It sits before the buttons in a flex row, so appearing pushed
+               every control along by its own width -- mid-press, on the one
+               radio whose state was changing. -->
+          <span
+            v-if="r.wireless" class="badge warn-badge"
+            :class="{ blank: r.serving && !(r.power_known && !r.powered) }"
+          >{{ !r.serving ? 'not serving' : (r.power_known && !r.powered ? 'off' : '\u00a0') }}</span>
 
         <!-- The actions reached for constantly. Every one of these acts on
              EVERY client on this adapter -- which is why the devices are named
              at the left of the row rather than counted on a button. "drop 2"
              read as part of the label, as though there were some other drop. -->
-        <template v-if="r.ap">
+        <!-- DRAWN WHENEVER THIS IS A RADIO, never gated on hostapd being
+             readable. `r.ap` is absent whenever the control socket cannot be
+             read -- a wedged adapter, a rebuild, a band scan -- which is
+             precisely when an operator is watching this row and reaching for
+             these controls. Removing them then took the whole set off the page
+             and slid everything below it upwards, so a click already committed
+             to landed somewhere else.
+             A disabled button says "not now"; an absent one says "this box
+             cannot do that", and only one of those is true here. -->
+        <template v-if="r.wireless">
           <button
             class="ghost" :class="{ accent: r.power_known && !r.powered }"
             :disabled="busy || !r.power_known"
@@ -178,13 +209,29 @@ function degraded(i: IfaceInfo): boolean {
               : `Switch ${r.name} back on.`"
             @click="bridge.setPower(r.name, !r.powered)"
           >{{ r.powered ? 'switch off' : 'switch on' }}</button>
+          <!-- THE OTHER HALF OF THE PAIR, and it sits next to the power switch
+               on purpose: the two look identical to a client -- the network
+               goes away -- and differ in the one respect being tested, whether
+               it was TOLD. Power is rfkill and says nothing; this closes the
+               BSS with the transmitter still on, so the departure is announced.
+               Side by side is what makes them read as a choice of mechanism
+               rather than two unrelated ways to break the same thing. -->
           <button
-            class="ghost" :disabled="busy || !r.ap.stations"
-            :title="`Deauthenticate all ${r.ap.stations} client(s). They are told, so they reconnect quickly.`"
+            class="ghost" :class="{ accent: r.powered && r.ap && !r.ap.enabled }"
+            :disabled="busy || !r.powered || !r.ap"
+            :title="r.ap?.enabled
+              ? `Take ${r.name}'s access point down, leaving the radio powered. \
+Clients ARE told it has gone, unlike a power cut.`
+              : `Bring ${r.name}'s access point back up.`"
+            @click="bridge.setAPEnabled(r.name, !r.ap?.enabled)"
+          >{{ r.ap?.enabled === false ? 'AP up' : 'AP down' }}</button>
+          <button
+            class="ghost" :disabled="busy || !r.ap?.stations"
+            :title="`Deauthenticate all ${r.ap?.stations ?? 0} client(s). They are told, so they reconnect quickly.`"
             @click="bridge.linkAll(r.name, 'drop')"
           >drop</button>
           <button
-            class="ghost" :disabled="busy || !r.ap.stations"
+            class="ghost" :disabled="busy || !r.ap?.stations"
             title="Disassociate every client — the softer transition."
             @click="bridge.linkAll(r.name, 'nudge')"
           >nudge</button>
@@ -199,18 +246,21 @@ function degraded(i: IfaceInfo): boolean {
                dead button always means "there is no one to move", never "this
                is not supported". -->
           <button
-            v-if="otherRadio(r)" class="ghost" :disabled="busy || !r.ap.stations"
-            :title="`Ask all ${r.ap.stations} client(s) on ${r.name} to move to `
+            class="ghost"
+            :disabled="busy || !r.ap?.stations || !otherReady(r)"
+            :title="`Ask all ${r.ap?.stations ?? 0} client(s) on ${r.name} to move to `
               + `${otherRadio(r)!.name} (802.11v). They may refuse.`"
             @click="bridge.evict(r.name)"
           >evict</button>
           <button
-            v-if="otherRadio(r)" class="ghost"
-            :disabled="busy || !otherRadio(r)!.ap?.stations"
-            :title="`Ask all ${otherRadio(r)!.ap?.stations ?? 0} client(s) on `
-              + `${otherRadio(r)!.name} to move here to ${r.name} (802.11v). `
-              + `They may refuse.`"
-            @click="bridge.gather(r.name, otherRadio(r)!.name)"
+            class="ghost"
+            :disabled="busy || !otherRadio(r)?.ap?.stations || !r.ap?.enabled"
+            :title="otherRadio(r)
+              ? `Ask all ${otherRadio(r)!.ap?.stations ?? 0} client(s) on `
+                + `${otherRadio(r)!.name} to move here to ${r.name} (802.11v). `
+                + `They may refuse.`
+              : 'No other radio on this box to gather from.'"
+            @click="otherRadio(r) && bridge.gather(r.name, otherRadio(r)!.name)"
           >gather</button>
           <button
             class="ghost" :disabled="busy"
@@ -543,7 +593,11 @@ function degraded(i: IfaceInfo): boolean {
 .warn-line { color: var(--warn); font-size: 11px; margin: 2px 0; }
 .group-note { margin: 0 0 4px; }
 .notice.inline { margin: 8px 0 0; }
-.badge.warn-badge {
+.badge/* An empty badge keeps its box so the controls after it never move. Invisible
+   rather than absent: `visibility` reserves the space that `display:none` would
+   give back, which is the whole point. */
+.badge.blank { visibility: hidden; }
+.warn-badge {
   color: var(--warn);
   border-color: color-mix(in srgb, var(--warn) 45%, var(--line));
 }
