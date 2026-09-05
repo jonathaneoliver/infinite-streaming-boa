@@ -1,4 +1,5 @@
-import { onUnmounted, ref } from 'vue';
+import { onUnmounted, ref, watch } from 'vue';
+import { onStream, transport } from '@/composables/useStream';
 
 /**
  * The box's activity log: what CHANGED, as opposed to what is.
@@ -9,10 +10,23 @@ import { onUnmounted, ref } from 'vue';
  * nothing saying it moved. The daemon raises an event at the moment it notices,
  * and this reads them.
  *
- * POLLED, not streamed, and deliberately: events are bursty and rare -- nothing
- * for ten minutes, then six in a second when a radio is switched off -- so
- * attaching them to the SSE snapshot would carry an empty array every second
- * for the sake of the rare one that is not.
+ * STREAMED when the connection is up, polled when it is not.
+ *
+ * This was polled outright, on the argument that events are bursty and rare --
+ * nothing for ten minutes, then six in a second when a radio is switched off --
+ * so attaching them to the SSE snapshot would carry an empty array every second
+ * for the sake of the rare one that is not. That was right about riding the
+ * SNAPSHOT, which goes out every tick whether or not anything happened.
+ *
+ * It is not an argument against a NAMED frame. The daemon writes one only when
+ * the log has gained something, so an idle box carries nothing at all -- and
+ * six events in a second arrive as they happen instead of batched up to three
+ * seconds later. Sporadic turns out to be the best case for push, not the
+ * worst.
+ *
+ * A frame and a poll response are the same payload and go through the same
+ * apply(), so the restart detection below cannot come to work on one path and
+ * not the other.
  */
 export interface BoaEvent {
   seq: number;
@@ -34,11 +48,8 @@ export function useEvents(pollMs = 3000) {
   let since = 0;
   let timer = 0;
 
-  async function poll() {
-    try {
-      const r = await fetch(`/api/events?since=${since}`);
-      if (!r.ok) throw new Error(`${r.status}`);
-      const body = (await r.json()) as { events: BoaEvent[]; latest?: number };
+  /** What to do with a batch, however it arrived. */
+  function apply(body: { events: BoaEvent[]; latest?: number }) {
       // The log RESTARTED under us: the daemon's ring is in memory, so a
       // deploy begins its sequence again at 1 while this page is still holding
       // a cursor from the previous run. Asking for events after that cursor
@@ -68,7 +79,14 @@ export function useEvents(pollMs = 3000) {
           .slice(0, KEEP);
         unseen.value += body.events.length;
       }
-      err.value = '';
+    err.value = '';
+  }
+
+  async function poll() {
+    try {
+      const r = await fetch(`/api/events?since=${since}`);
+      if (!r.ok) throw new Error(`${r.status}`);
+      apply((await r.json()) as { events: BoaEvent[]; latest?: number });
     } catch (e) {
       // Named rather than swallowed. A silent poll failure looks exactly like a
       // quiet box, which is the one thing this panel must never fake.
@@ -76,15 +94,43 @@ export function useEvents(pollMs = 3000) {
     }
   }
 
+  let unsubscribe: (() => void) | undefined;
+
   function start() {
+    if (!unsubscribe) {
+      unsubscribe = onStream('activity', (data) =>
+        apply(data as { events: BoaEvent[]; latest?: number }),
+      );
+    }
+    syncPolling();
+  }
+
+  /**
+   * Poll only while the stream is down.
+   *
+   * Not a legacy path: conditioning a link means the operator may have just
+   * made their own connection to this box unreliable on purpose, and the
+   * activity log is the surface they would look at to see whether they had.
+   */
+  function syncPolling() {
+    if (transport.value === 'sse') {
+      if (timer) window.clearInterval(timer);
+      timer = 0;
+      return;
+    }
     if (timer) return;
     void poll();
     timer = window.setInterval(poll, pollMs);
   }
+
   function stop() {
     if (timer) window.clearInterval(timer);
     timer = 0;
+    unsubscribe?.();
+    unsubscribe = undefined;
   }
+
+  watch(transport, syncPolling);
   const markSeen = () => {
     unseen.value = 0;
   };

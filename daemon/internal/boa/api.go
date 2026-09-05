@@ -805,11 +805,57 @@ func (a *API) stream(w http.ResponseWriter, r *http.Request) {
 	if !sendBridge() {
 		return
 	}
-	// Checked on a ticker rather than subscribed to, because the producer is a
-	// timer already: a rebuild happens every couple of seconds and this only
-	// has to notice that one of them differed. A second's granularity is well
-	// inside the time it takes an operator to look up from a button.
-	bridgeCheck := time.NewTicker(time.Second)
+
+	// ACTIVITY, on the same connection and the same terms.
+	//
+	// This was polled every three seconds, on the argument that events are
+	// "bursty and rare -- nothing for ten minutes, then six in a second when a
+	// radio is switched off -- so attaching them to the SSE snapshot would carry
+	// an empty array every second". That was right about riding the SNAPSHOT,
+	// and it is not an argument against a named frame: this one is written only
+	// when the log has actually gained something, so an idle box carries
+	// nothing at all. Sporadic is the best case for push, not the worst.
+	//
+	// The payload is the shape /api/events returns, so the client applies a
+	// frame and a poll response through the same code -- including the
+	// restart detection that `latest` exists for (#196).
+	sendEvents := func(since uint64) (uint64, bool) {
+		evs := a.e.Events(since, eventRing)
+		if evs == nil {
+			evs = []Event{}
+		}
+		raw, err := json.Marshal(map[string]any{
+			"events": evs,
+			"latest": a.e.LatestEventSeq(),
+		})
+		if err != nil {
+			return since, true
+		}
+		if _, err := fmt.Fprintf(w, "event: activity\ndata: %s\n\n", raw); err != nil {
+			return since, false
+		}
+		fl.Flush()
+		if n := len(evs); n > 0 {
+			since = evs[n-1].Seq
+		}
+		return since, true
+	}
+	// Everything the ring holds, once, so a reconnecting page paints its
+	// history immediately rather than looking like a box that has done nothing.
+	lastSeq, ok := sendEvents(0)
+	if !ok {
+		return
+	}
+	// Both are checked on one ticker rather than subscribed to, because each is
+	// a single integer read: the bridge view is rebuilt on a timer already and
+	// this only has to notice that one rebuild differed, and the event log
+	// hands out a sequence number that only moves when something happened.
+	//
+	// Half a second, which is below what an operator can see and well inside
+	// the one-second rebuild that feeds it. Cheap enough not to need a
+	// broadcast: two uint64 comparisons under a read lock, twice a second, per
+	// connected browser.
+	bridgeCheck := time.NewTicker(500 * time.Millisecond)
 	defer bridgeCheck.Stop()
 
 	keepalive := time.NewTicker(20 * time.Second)
@@ -822,6 +868,18 @@ func (a *API) stream(w http.ResponseWriter, r *http.Request) {
 			if v := a.e.BridgeVersion(); v != lastBridge {
 				lastBridge = v
 				if !sendBridge() {
+					return
+				}
+			}
+			// Two integer comparisons on a shared ticker. The sequence going
+			// BACKWARDS is a daemon restart -- the ring is in memory and begins
+			// again at 1 -- and the client has to be told, or it sits holding a
+			// cursor the new run may never reach and shows a quiet box forever.
+			if v := a.e.LatestEventSeq(); v != lastSeq {
+				if v < lastSeq {
+					lastSeq = 0
+				}
+				if lastSeq, ok = sendEvents(lastSeq); !ok {
 					return
 				}
 			}
