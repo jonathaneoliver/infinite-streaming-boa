@@ -61,24 +61,41 @@ function showClient(mac: string) {
 }
 
 /**
+ * Whether this radio can act on its clients at all.
+ *
+ * Everything on the row except the two switches goes through hostapd on THIS
+ * radio: a deauth, a disassociation, a steer in either direction and a band
+ * scan all need a BSS to issue them from. With the radio powered off, or its
+ * access point down, none of them can do anything -- so they say so by being
+ * dead rather than by failing when pressed.
+ *
+ * The two switches are deliberately exempt. `switch on` and `enable AP` are the
+ * way BACK, and a row that greys out its own recovery controls when a radio is
+ * down has locked the operator out of the one state they need to leave.
+ *
+ * The distinction that matters, and the one an earlier version got wrong: this
+ * is THIS radio's own state. Disabling a control because of the OTHER radio is
+ * what made buttons vanish and then flicker while an operator worked, and it is
+ * not something a button on this row should ever be saying.
+ */
+function apLive(r: IfaceInfo): boolean {
+  return r.powered !== false && r.ap?.enabled === true;
+}
+
+/**
  * The other radio clients can be moved between, as the whole interface rather
  * than just its name -- gathering needs to know how many stations are on it,
  * not only that it exists.
  *
- * Undefined on a one-radio box, where BOTH controls are absent rather than
- * present and dead: a transition request has to name another access point, so
- * with nowhere to send anyone there is nothing to offer.
- */
-/**
- * The other radio on this box, whether or not it is currently serving.
+ * EXISTENCE, not health.
  *
- * EXISTENCE, not health. This decides whether evict and gather are DRAWN, and
- * that must depend only on how many radios the box has -- which never changes
- * while anyone is looking at it. It previously required `o.ap?.enabled`, so the
- * moment the other radio's access point went down these two buttons vanished
- * from THIS radio's row, and every control after them slid left under the
- * pointer. Whether the peer can actually receive clients is a separate question,
- * asked below, and its answer disables the button instead of removing it.
+ *
+ * This decides only whether a peer EXISTS, which depends on how many radios the
+ * box has and so never changes while anyone is looking. It previously required
+ * `o.ap?.enabled`, so the moment the other radio's access point went down these
+ * two buttons vanished from THIS radio's row and every control after them slid
+ * left under the pointer. On a one-radio box they are present and dead rather
+ * than absent, for the same reason.
  */
 function otherRadio(r: IfaceInfo): IfaceInfo | undefined {
   return rackAdapters.value.find((o) => o.name !== r.name && o.wireless);
@@ -229,13 +246,17 @@ Clients ARE told it has gone, unlike a power cut.`
             @click="bridge.setAPEnabled(r.name, !r.ap?.enabled)"
           >{{ r.ap?.enabled === false ? 'enable AP' : 'disable AP' }}</button>
           <button
-            class="ghost" :disabled="busy || !r.ap?.stations"
-            :title="`Deauthenticate all ${r.ap?.stations ?? 0} client(s). They are told, so they reconnect quickly.`"
+            class="ghost" :disabled="busy || !apLive(r) || !r.ap?.stations"
+            :title="apLive(r)
+              ? `Deauthenticate all ${r.ap?.stations ?? 0} client(s). They are told, so they reconnect quickly.`
+              : `${r.name} has no access point up, so there is nothing to deauthenticate from.`"
             @click="bridge.linkAll(r.name, 'drop')"
           >drop</button>
           <button
-            class="ghost" :disabled="busy || !r.ap?.stations"
-            title="Disassociate every client — the softer transition."
+            class="ghost" :disabled="busy || !apLive(r) || !r.ap?.stations"
+            :title="apLive(r)
+              ? 'Disassociate every client — the softer transition.'
+              : `${r.name} has no access point up, so there is nobody to disassociate.`"
             @click="bridge.linkAll(r.name, 'nudge')"
           >nudge</button>
           <!-- EVICT and GATHER: the same 802.11v request in both directions.
@@ -249,39 +270,42 @@ Clients ARE told it has gone, unlike a power cut.`
                dead button always means "there is no one to move", never "this
                is not supported".
 
-               DELIBERATELY NOT gated on either access point being up. That was
-               tried and reverted: an AP goes up and down constantly here --
-               half the controls on this row do exactly that -- so keying the
-               buttons to it made them flicker between live and dead while an
-               operator was working, which is the same churn as removing them,
-               only quieter. It also broke the rule stated just above, because a
-               greyed button then meant "the AP is down", not "there is nobody
-               to move".
-               If the target radio cannot take the clients the steer fails and
-               says so, which tells the operator more than a button that will
-               not be pressed. -->
+               Gated on THIS radio's access point, and never on the other
+               one's. The difference is the whole lesson from getting it wrong
+               twice: keyed to the PEER's state these vanished, and then
+               flickered, while an operator was working -- and a greyed button
+               then meant "some other radio is down", which is not something a
+               button on this row should ever say.
+               Its own AP is different. With no BSS here there is genuinely
+               nothing to steer, and dead is the honest state. -->
           <button
             class="ghost"
-            :disabled="busy || !r.ap?.stations"
-            :title="otherRadio(r)
-              ? `Ask all ${r.ap?.stations ?? 0} client(s) on ${r.name} to move to `
-                + `${otherRadio(r)!.name} (802.11v). They may refuse.`
-              : 'No other radio on this box to move them to.'"
+            :disabled="busy || !apLive(r) || !r.ap?.stations"
+            :title="!apLive(r)
+              ? `${r.name} has no access point up, so it has nobody to move.`
+              : otherRadio(r)
+                ? `Ask all ${r.ap?.stations ?? 0} client(s) on ${r.name} to move to `
+                  + `${otherRadio(r)!.name} (802.11v). They may refuse.`
+                : 'No other radio on this box to move them to.'"
             @click="bridge.evict(r.name)"
           >evict</button>
           <button
             class="ghost"
-            :disabled="busy || !otherRadio(r)?.ap?.stations"
-            :title="otherRadio(r)
-              ? `Ask all ${otherRadio(r)!.ap?.stations ?? 0} client(s) on `
-                + `${otherRadio(r)!.name} to move here to ${r.name} (802.11v). `
-                + `They may refuse.`
-              : 'No other radio on this box to gather from.'"
+            :disabled="busy || !apLive(r) || !otherRadio(r)?.ap?.stations"
+            :title="!apLive(r)
+              ? `${r.name} has no access point up, so there is nowhere here to gather them to.`
+              : otherRadio(r)
+                ? `Ask all ${otherRadio(r)!.ap?.stations ?? 0} client(s) on `
+                  + `${otherRadio(r)!.name} to move here to ${r.name} (802.11v). `
+                  + `They may refuse.`
+                : 'No other radio on this box to gather from.'"
             @click="otherRadio(r) && bridge.gather(r.name, otherRadio(r)!.name)"
           >gather</button>
           <button
-            class="ghost" :disabled="busy"
-            title="Survey the band. Costs a few beacon gaps, or an outage on a radio that will not scan while serving."
+            class="ghost" :disabled="busy || !apLive(r)"
+            :title="apLive(r)
+              ? 'Survey the band. Costs a few beacon gaps, or an outage on a radio that will not scan while serving.'
+              : `${r.name} has no access point up; a scan takes the BSS down and puts it back, so there is nothing to take down.`"
             @click="bridge.scanBand(r.name, false)"
           >scan</button>
           <!-- The profiles are NOT here. They restart the access point and drop
