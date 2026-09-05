@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // The box's own interfaces: what it has, what they are called, what addresses
@@ -62,6 +63,13 @@ type APStatus struct {
 	// by them and by nothing else visible in this interface.
 	BeaconIntMs int `json:"beacon_int_ms,omitempty"`
 	DTIMPeriod  int `json:"dtim_period,omitempty"`
+	// ReadAgeMs is how long ago hostapd actually said this, in milliseconds.
+	//
+	// Present because this reading is served from a cache and can be old: a
+	// radio whose control socket has gone quiet keeps its last answer rather
+	// than disappearing from the view. A number that describes a moment must
+	// say which moment, or it will be read as "now" and believed.
+	ReadAgeMs int `json:"read_age_ms,omitempty"`
 }
 
 // IfaceInfo is one interface as the bridge view draws it.
@@ -176,7 +184,8 @@ func (e *Engine) BridgeState() BridgeInfo {
 			in.Powered, in.PowerKnown = radioPowered(name)
 			in.Serving = e.cfg.IsWlan(name)
 			if hostapdAvailable(name) {
-				if ap := apStatus(name, country); ap != nil {
+				// CACHED, never a round trip on the request path. See apRead.
+				if ap := e.apStatusCached(name, country); ap != nil {
 					in.AP = ap
 					in.Role = RoleAP
 				}
@@ -365,9 +374,110 @@ func regDomain() string {
 	return ""
 }
 
+/*
+ * Reading the access point WITHOUT waiting for it.
+ *
+ * apStatus below talks to hostapd, and hostapd stops answering for minutes at a
+ * time -- after a power cut the mt7921u driver re-initialises and every command
+ * hits its 2s deadline. That is survivable in a background job and fatal on a
+ * request path: /api/bridge is polled about once a second by the interface, so
+ * a mute radio turned the whole page into a queue of stalled requests. Measured
+ * 2026-09-05: 31ms healthy, unusable for two minutes after an outage, reported
+ * as "switching off the adapter has broken the web interface".
+ *
+ * The fix is not to ask faster or to shorten the deadline. It is to stop asking
+ * on the request path at all.
+ */
+
+// apTTL is how long a reading is served without going to look again. Roughly
+// the interface's own poll interval: shorter buys nothing, because nothing
+// consumes it faster than that, and it would refresh on every request.
+const apTTL = 3 * time.Second
+
+// apReading is one answer from hostapd, and when it arrived.
+type apReading struct {
+	ap *APStatus
+	at time.Time
+}
+
+// apStatusCached serves the last thing hostapd said, and refreshes in the
+// background when that has gone stale. It NEVER blocks on the control socket.
+//
+// A stale reading is served rather than withheld, and this is the deliberate
+// part. The alternative -- returning nil until a fresh answer arrives -- makes
+// the radio vanish from the bridge view for the whole two minutes it is
+// unreachable, which is worse than an old answer in every way: it hides the
+// radio exactly when the operator is looking for it, and it does so without
+// saying why. The age rides along in the JSON so the interface can show a
+// reading as old instead of passing it off as current.
+func (e *Engine) apStatusCached(iface, country string) *APStatus {
+	e.mu.RLock()
+	r := e.apRead[iface]
+	e.mu.RUnlock()
+
+	if r != nil && time.Since(r.at) < apTTL {
+		return r.withAge()
+	}
+	e.refreshAP(iface, country)
+	if r != nil {
+		return r.withAge()
+	}
+	// Nothing has ever been read for this radio. Nil rather than a fabricated
+	// entry: the first reading is moments away, and inventing one would put an
+	// access point on screen that nothing has confirmed exists.
+	return nil
+}
+
+// withAge copies the reading and stamps how old it is, so the caller cannot
+// hand out the cached pointer for the UI to mutate, and so the answer carries
+// its own provenance.
+func (r *apReading) withAge() *APStatus {
+	if r.ap == nil {
+		return nil
+	}
+	c := *r.ap
+	c.ReadAgeMs = int(time.Since(r.at).Milliseconds())
+	return &c
+}
+
+// refreshAP starts one background read per radio, at most.
+func (e *Engine) refreshAP(iface, country string) {
+	e.mu.Lock()
+	if e.apRefreshing == nil {
+		e.apRefreshing = map[string]bool{}
+	}
+	if e.apRefreshing[iface] {
+		e.mu.Unlock()
+		return
+	}
+	e.apRefreshing[iface] = true
+	e.mu.Unlock()
+
+	go func() {
+		ap := apStatus(iface, country)
+		e.mu.Lock()
+		defer e.mu.Unlock()
+		delete(e.apRefreshing, iface)
+		if e.apRead == nil {
+			e.apRead = map[string]*apReading{}
+		}
+		// A FAILED read is recorded as a failed read, not discarded.
+		//
+		// apStatus returns nil when hostapd does not answer, and keeping the
+		// previous entry in that case would let a radio go on reporting itself
+		// as serving indefinitely -- the exact shape of issue #182, rebuilt in
+		// the cache. Storing the nil with a fresh timestamp means the age stops
+		// climbing while the answer stays honestly absent, and the bridge view
+		// falls back to what it does for a radio with no access point.
+		e.apRead[iface] = &apReading{ap: ap, at: time.Now()}
+	}()
+}
+
 // apStatus asks hostapd what the AP is doing. Returns nil when the socket is
 // there but the exchange fails, so a radio is never reported as an access point
 // on the strength of a socket alone.
+//
+// BLOCKING, and only ever called from a background refresh. See apStatusCached.
 func apStatus(iface, country string) *APStatus {
 	status, err := hostapdCmd(iface, "STATUS")
 	if err != nil {
