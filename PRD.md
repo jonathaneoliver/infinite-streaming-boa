@@ -127,6 +127,24 @@ Intended for:
   policy in metres would mean a different impairment in a different building —
   and the unit that label is drawn in follows the reader's own locale, so a US
   reader is shown feet without anything downstream knowing it.
+- **The walk itself is a pattern, not just a position.** `walkabout` sweeps the
+  model on a clock: out from beside the access point to the edge of range and
+  back, with the band change driven at the crossing. It is the walk-away-and-back
+  test that this box could not otherwise perform, and it differs from every other
+  built-in pattern in that its keyframes are **computed rather than chosen** —
+  they are the same arithmetic the distance control does, evaluated at a series
+  of levels instead of one.
+- **The walk ends where the model says the link ends**, not at a distance
+  someone picked. It steps outward until one more step would take both
+  directions past the point of holding, and stops there — so the far end is the
+  worst the link can be while still alive. A hand-picked endpoint goes stale
+  silently every time a constant behind the model moves, and each such move
+  slides the cliff along while the endpoint stays put.
+- **The way back is slower than the way out**, because recovery is not
+  degradation reversed. Rate control drops on a few failed frames and climbs
+  back only after sustained success, and a player has a drained buffer to refill
+  before it risks a higher rendition. A symmetric walk reports a recovery that
+  never happened.
 
 ## 4) Users & Use Cases
 
@@ -335,6 +353,15 @@ damages packets, never link state.
   a **pattern lane** beside rate and loss — a deauth at t=120s is exactly
   reproducible, which no packet impairment is, and is the specific event this
   exists for.
+- **Two of them move a client rather than breaking its link.** `evict` asks a
+  device to leave the radio it is on; `gather` asks it to move to a named band.
+  Both are 802.11v requests, so a client is free to refuse and the refusal is
+  the finding. They exist because a modelled walk cannot produce a roam on its
+  own: the real signal never changes while the model runs, so the device has no
+  reason to move and would sit on 5 GHz at a modelled 40 m. Unlike the other
+  three they are **generated rather than drawn** — a gather needs a destination
+  band, and the timeline has no way to ask for one — but they are shown on the
+  timeline wherever a pattern uses them, and can be deleted there.
 - They require the **AP running through hostapd**, which is how both radios are
   now driven — the onboard one as well as a USB adapter — so the controls work
   whichever radio is serving. (They were USB-only while the onboard radio ran

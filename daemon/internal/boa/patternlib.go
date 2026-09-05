@@ -54,6 +54,10 @@ var BuiltinNames = []string{
 	PatternDelayClimb, PatternLossClimb,
 	PatternReorderClimb, PatternCorruptClimb,
 	PatternDropEveryMin, PatternNudgeEveryMin, PatternDeadzoneEveryMin,
+	// Last because it is the odd one out: the only pattern whose keyframes are
+	// computed from a physical model rather than chosen, and the only one that
+	// moves the client between radios. See walkabout.go.
+	PatternWalkabout,
 }
 
 // The impairment ladders each overlay walks.
@@ -308,6 +312,8 @@ func LadderPattern(name string, l Ladder, dwellSec float64) (Pattern, error) {
 		return impairmentClimb(name, reorderClimbSteps, dwellSec), nil
 	case PatternCorruptClimb:
 		return impairmentClimb(name, corruptClimbSteps, dwellSec), nil
+	case PatternWalkabout:
+		return walkabout(name, dwellSec), nil
 	}
 
 	// Every sequence below ends on the value it began with, so a looping run

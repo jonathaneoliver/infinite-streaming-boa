@@ -497,6 +497,72 @@ func (e *Engine) SteerClient(mac, fromIface, toIface string) error {
 	return nil
 }
 
+/*
+ * steerAway is a pattern's evict: leave whichever radio you are on.
+ *
+ * The destination is deliberately not named. A pattern that said "go to
+ * wlan-usb" would be wrong on a box whose adapter is called something else, and
+ * evict does not care where the client lands -- only that it stops being here.
+ */
+func (e *Engine) steerAway(mac string) error {
+	from := e.radioFor(mac)
+	if from == "" {
+		return fmt.Errorf("cannot evict %s: it is not on a radio this box serves", mac)
+	}
+	to := e.OtherRadio(from)
+	if to == "" {
+		return fmt.Errorf(
+			"cannot evict %s from %s: this box serves only one radio, and a "+
+				"transition request needs another access point to name", mac, from)
+	}
+	return e.SteerClient(mac, from, to)
+}
+
+/*
+ * steerToBand is a pattern's gather: move to whichever radio serves this band.
+ *
+ * ALREADY THERE IS SUCCESS, NOT A NO-OP TO HIDE. A walkabout emits a gather
+ * only where its model changes band, but a client can reach that band on its
+ * own -- a real roam, which is the outcome the test was hoping for. Asking it
+ * to move to where it already is would be rejected by SteerClient as a steer to
+ * the radio it is already on, turning the best possible result into a logged
+ * error.
+ *
+ * Having nowhere to go IS an error, and a loud one. A box with no radio on the
+ * target band cannot run the second half of this walk, and a silent skip would
+ * leave a pattern that reads as though it moved the client and did not.
+ */
+func (e *Engine) steerToBand(mac string, mhz int) error {
+	to := e.radioOnBand(mhz)
+	if to == "" {
+		return fmt.Errorf(
+			"cannot gather %s to %s: no radio on this box is serving that band",
+			mac, bandOf(mhz))
+	}
+	from := e.radioFor(mac)
+	if from == to {
+		return nil
+	}
+	return e.SteerClient(mac, from, to)
+}
+
+// radioOnBand names the watched radio serving a band, or "" when none is.
+//
+// Serving, not merely present: a radio whose BSS is disabled still reports the
+// channel it will use when it comes back, so tuning alone would name a radio
+// that cannot accept the client. See RadioOn.Serving.
+func (e *Engine) radioOnBand(mhz int) string {
+	want := bandOf(mhz)
+	for _, w := range e.cfg.WlanPorts {
+		r := e.radioOnFor(w)
+		if r == nil || !r.Serving || r.Band != want {
+			continue
+		}
+		return w
+	}
+	return ""
+}
+
 // SteerAll asks every client on one radio to move to the other. Returns how
 // many were asked; how many actually went is a question only the Clients tab
 // can answer, a few seconds later.

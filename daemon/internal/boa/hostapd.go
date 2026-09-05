@@ -159,6 +159,10 @@ func (e *Engine) fireLink(f LinkFire) {
 	switch f.Kind {
 	case LinkDeadzone:
 		err = e.LinkDeadzone(f.MAC, f.DurSec) // clean deny-ACL block
+	case LinkEvict:
+		err = e.steerAway(f.MAC)
+	case LinkGather:
+		err = e.steerToBand(f.MAC, f.ToBandMHz)
 	case LinkNudge:
 		if f.DurSec > 0 {
 			e.LinkFlap(f.MAC, LinkNudge, f.DurSec)

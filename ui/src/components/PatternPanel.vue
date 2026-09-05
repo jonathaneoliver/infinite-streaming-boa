@@ -645,10 +645,26 @@ function setLaneValue(lane: LaneKey, at: number, n: number, ceil: number) {
  * for drop/nudge, a clean outage for deadzone. So every lane edits the same
  * way: click to add, drag to move, drag the right edge to lengthen. See #135.
  */
-const LINK_LANES: { kind: LinkEvent['kind']; label: string }[] = [
-  { kind: 'drop', label: 'drop' },
-  { kind: 'nudge', label: 'nudge' },
-  { kind: 'deadzone', label: 'deadzone' },
+/*
+ * `manual` is whether a lane can be drawn by hand.
+ *
+ * The three link lanes can: a click gives a complete event, because a drop is a
+ * drop. A GATHER cannot -- it needs a destination band, and there is no band
+ * picker here to give it one, so a click would produce an event the validator
+ * rejects. They are generated (by a walkabout) and shown, not authored.
+ *
+ * Shown matters. The lane machinery reveals a lane whenever a pattern uses it,
+ * so leaving these two out would let a walkabout's band moves sit in the stored
+ * pattern and appear nowhere on the timeline -- the walk would read as a plain
+ * rate ramp, with the most interesting moment in it invisible. They stay
+ * deletable, which is the one edit that needs no new input.
+ */
+const LINK_LANES: { kind: LinkEvent['kind']; label: string; manual: boolean }[] = [
+  { kind: 'drop', label: 'drop', manual: true },
+  { kind: 'nudge', label: 'nudge', manual: true },
+  { kind: 'deadzone', label: 'deadzone', manual: true },
+  { kind: 'evict', label: 'evict', manual: false },
+  { kind: 'gather', label: 'gather', manual: false },
 ];
 const PULSE_VIS_SEC = 0.5; // a zero-duration pulse still needs a grabbable width
 const DEFAULT_DEADZONE_SEC = 10;
@@ -657,6 +673,22 @@ const links = computed<LinkEvent[]>(() => props.pattern?.links ?? []);
 
 function laneEvents(kind: string): { ev: LinkEvent; i: number }[] {
   return links.value.map((ev, i) => ({ ev, i })).filter((x) => x.ev.kind === kind);
+}
+/** What a block says on hover. A gather's destination is the only thing about
+ *  it worth reading, and it appears nowhere else on the timeline. */
+function linkBlockTitle(ev: LinkEvent, manual: boolean): string {
+  if (props.run) return ev.kind === 'gather' && ev.to_band_mhz
+    ? `move to ${bandLabel(ev.to_band_mhz)}`
+    : '';
+  const what = ev.kind === 'gather' && ev.to_band_mhz
+    ? `move to ${bandLabel(ev.to_band_mhz)} — `
+    : '';
+  return manual
+    ? `${what}drag to move, drag an edge to resize, double-click or right-click to delete`
+    : `${what}generated; double-click or right-click to delete`;
+}
+function bandLabel(mhz: number): string {
+  return mhz < 3000 ? '2.4GHz' : '5GHz';
 }
 function evVisSec(ev: LinkEvent): number {
   const d = ev.dur_sec ?? 0;
@@ -693,6 +725,8 @@ function linkLanePath(kind: string): string {
 
 function addLink(kind: LinkEvent['kind'], e: MouseEvent) {
   if (props.run) return;
+  // A band move needs a destination this editor cannot ask for; see LINK_LANES.
+  if (!LINK_LANES.find((ll) => ll.kind === kind)?.manual) return;
   const at = timeAt(e.clientX, renderSpan.value);
   const width = kind === 'deadzone' ? DEFAULT_DEADZONE_SEC : PULSE_VIS_SEC;
   // Refuse to stack a block on an existing one of the same kind: overlapping
@@ -980,7 +1014,9 @@ const addFieldChips = computed(() => CHIP_FIELDS.filter((f) => !laneShown(f.key)
 const dropFieldChips = computed(() =>
   CHIP_FIELDS.filter((f) => laneShown(f.key) && !laneUses(f.key)),
 );
-const addLinkChips = computed(() => LINK_LANES.filter((ll) => !linkShown(ll.kind)));
+const addLinkChips = computed(() =>
+  LINK_LANES.filter((ll) => ll.manual && !linkShown(ll.kind)),
+);
 const dropLinkChips = computed(() =>
   LINK_LANES.filter((ll) => linkShown(ll.kind) && !linkUses(ll.kind)),
 );
@@ -1215,7 +1251,7 @@ const status = computed(() => {
         <div
           v-for="ll in shownLinkLanes" :key="ll.kind"
           class="lane linklane" :class="{ grab: !run }"
-          :title="run ? '' : `double-click or right-click to add a ${ll.label}; drag it to move`"
+          :title="run || !ll.manual ? '' : `double-click or right-click to add a ${ll.label}; drag it to move`"
           @dblclick.prevent.stop="addLink(ll.kind, $event)"
           @contextmenu.prevent.stop="addLink(ll.kind, $event)"
           @pointermove="onLinkDrag"
@@ -1229,7 +1265,7 @@ const status = computed(() => {
             v-for="{ ev, i } in laneEvents(ll.kind)" :key="i"
             class="linkblock" :class="ll.kind"
             :style="{ left: evLeftPct(ev) + '%', width: evWidthPct(ev) + '%' }"
-            :title="run ? '' : 'drag to move, drag an edge to resize, double-click or right-click to delete'"
+            :title="linkBlockTitle(ev, ll.manual)"
             @pointerdown.stop="startLinkMove(i, $event)"
             @click.stop
             @dblclick.prevent.stop="removeLink(i)"

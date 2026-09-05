@@ -1345,6 +1345,19 @@ than receiving) with plausible magnitudes rather than measured ones.
   channel spreads the same power over more spectrum, so it dies first — on top
   of the extra path loss at 5 GHz. Every rung of the ladder is scaled this way,
   not only the bottom one.
+- **A DEAD UPLINK DISQUALIFIES A BAND.** Found 2026-09-05 by generating a
+  walkabout and reading its keyframes: between -76 and -80 dBm the model kept a
+  phone on 5 GHz carrying 38 Mbit/s down while its uplink was at 100% loss, then
+  "rescued" it at -80 by moving to 2.4 GHz where both directions were healthy.
+  The choice had scored the downlink alone, so it could not see that the link was
+  already over.
+
+  A device transmits more quietly than the access point, so its uplink reaches
+  the floor several dB before the downlink does — which is exactly when a real
+  client starts looking elsewhere. It also matters more than the traffic split
+  suggests, for the reason recorded above: the uplink carries the downlink's
+  ACKs. Only TOTAL uplink failure disqualifies; a merely weak uplink still does
+  not influence the choice.
 - **A band can be chosen rather than read.** A client on a radio uses that
   radio's band and width, full stop. A client on the **wired** port has no band
   to read, so one is supplied — and with `AutoBand` the model picks, at each
@@ -1352,6 +1365,30 @@ than receiving) with plausible magnitudes rather than measured ones.
   throughput rather than on link quality is what stops 2.4 GHz winning at close
   range, where it is comfortable and slow; a 1.15× clear-win margin stops the two
   bands trading places repeatedly as the ladders interleave.
+
+### Swept on a clock: the walkabout
+
+The `walkabout` pattern is this model evaluated at a series of levels rather
+than one, so it is the same source and needs no separate entry — with three
+things worth stating because they are decisions, not consequences.
+
+- **Its far end is computed, not chosen.** It walks outward until one more step
+  would put both directions past holding, and stops at the last level that
+  holds. A constant far end was tried and was wrong twice inside an hour: at
+  -84 dBm the walk finished delivering 16.9 Mbit/s, which is 4K with room to
+  spare. Worse, every constant behind this model moved while it was being built,
+  and each move slides the cliff along the dBm axis while a hand-picked endpoint
+  stays put.
+- **The keyframes come from the same function the control uses.** `AutoShapesAt`
+  is called by both, so the two cannot drift. `patternlib.go` records what the
+  alternative costs: its climb steps were lifted from the UI's presets "so the
+  two agree", after they had not.
+- **The path-loss exponent has NO EFFECT on a generated walk**, which is
+  counter-intuitive enough to be worth writing down. Converting a level between
+  bands goes through the distance — `RssiAt(DistanceFor(dBm, f0, n), f1, n)` —
+  and `n` cancels exactly, leaving the free-space difference between the two
+  frequencies. So `n` moves the distance LABEL and nothing else: not the
+  impairments, not the band choice, not the timing.
 
 ### Where each number comes from
 

@@ -28,38 +28,39 @@ import "math"
  *
  * WHERE THIS COMES FROM, and where it does not.
  *
- * Two of the three layers are standard and named; the third is invented here,
- * and the difference matters more than either on its own. A reader has to be
- * able to tell which numbers carry the authority of a published relationship
+ * Two of the three layers are taken from their sources and named; the third is
+ * invented here, and the difference matters more than either on its own. A
+ * reader has to be able to tell which numbers carry the authority of a standard
  * and which are a shape someone chose because it looked right.
  *
  *   1. FREE-SPACE LOSS is the Friis transmission equation, in its decibel form
  *      for MHz and metres. Exact, and the constant -27.55 falls out of it
  *      rather than being fitted.
  *
- *   2. LOG-DISTANCE PATH LOSS is the standard indoor propagation model,
- *      PL(d) = PL(d0) + 10*n*log10(d/d0). The 3 dB per doubling of channel
- *      width is thermal noise scaling, 10*log10(2), not an estimate.
+ *   2. THE LADDER AND THE PATH LOSS ARE CITED. Receiver sensitivity per rung is
+ *      IEEE Std 802.11-2020 Table 21-25; the data rates are derived from the
+ *      standard's own OFDM numerology and checked against its published 6.5 /
+ *      65 / 390 Mbit/s anchors rather than recalled; the path-loss exponents are
+ *      ITU-R P.1238's distance power loss coefficient (N = 28 residential,
+ *      N = 31 office). The 3 dB per doubling of channel width is thermal noise
+ *      scaling, 10*log10(2), not an estimate.
  *
- *      The exponent VALUES -- about 2 in free space, 3 in a typical building,
- *      near 4 through several walls -- are conventional figures written from
- *      memory rather than looked up. So are the -82 dBm sensitivity floor, the
- *      PHY ceilings and the per-device dB. NO SOURCE WAS CONSULTED for any
- *      number in this file, which is a weaker claim than "published" and is
- *      why they are all marked unverified in Source S.
+ *      An earlier revision of this file asserted these from memory and SAID SO,
+ *      which was honest but not much use. They were looked up and replaced.
  *
- *   3. THE DEGRADATION CURVE IS OURS. quality() is a logistic, and its
- *      steepness, centre and 30 dB headroom were CHOSEN to put the knee where a
- *      link starts retrying and to make the collapse happen inside about 10 dB.
- *      The rate curve, the corruption and loss thresholds, and the per-device
- *      antenna and transmit figures are all the same: plausible, internally
- *      consistent, and nobody's published result. Frame error rate against SNR
- *      really is a sigmoid; THIS sigmoid is an assertion about its parameters.
+ *   3. WHAT A GIVEN HEADROOM COSTS IS OURS. The ladder says which rung a link
+ *      can hold and nothing about how comfortably, so the layer joining
+ *      headroom to impairment -- the comfort window, the corruption and loss
+ *      curves, the delay, the implementation gain, the MAC efficiency and the
+ *      per-device antenna and transmit figures -- is asserted. It has the two
+ *      properties a real link has, corruption before loss and both negligible
+ *      until the headroom is nearly gone, and beyond that the magnitudes are
+ *      plausible rather than measured.
  *
- * So the model is not ported and is not cited: it is arithmetic over named
- * relationships with a made-up curve joining them, and DATA-CONTRACT Source S
- * carries the same split per number. That is also why every output is labelled
- * typed rather than measured, and why the calibration walk in #221 exists.
+ * So the model is cited where it can be and invented where it cannot, and
+ * DATA-CONTRACT Source S carries that split per number. That is also why every
+ * output is labelled typed rather than measured, and why the calibration walk
+ * in #221 exists.
  *
  * NOT PORTED, deliberately. ns-3 and wmediumd implement the same standard
  * models and are both GPL-2.0; docs/LICENSING.md commits this repo to
@@ -355,6 +356,43 @@ func LevelsFor(pathDbm float64, m RssiModel) (downDbm, upDbm float64) {
 }
 
 /*
+ * PathAtBand re-expresses a stored level as the level the same DISTANCE would
+ * give on another band.
+ *
+ * A level in dBm means nothing without a frequency: the same spot is about
+ * 7.3 dB weaker on 5GHz than on 2.4GHz, purely from the free-space term. The
+ * stored level belongs to the reference band, so anything evaluating a
+ * different one has to convert through the distance -- which is the quantity
+ * both bands agree on -- rather than reuse the number.
+ *
+ * Skipping this is a specific and quiet bug: a band switch would change which
+ * curve is used while feeding it a level belonging to the band just left, so
+ * moving to 2.4GHz would look no better than staying, and the switch would
+ * appear pointless rather than appearing as the relief it is.
+ */
+func PathAtBand(refDbm float64, m RssiModel, freqMHz int) float64 {
+	if freqMHz == ModelBands[0].FreqMHz || freqMHz <= 0 {
+		return refDbm
+	}
+	return RssiAt(DistanceFor(refDbm, ModelBands[0].FreqMHz, m.N), freqMHz, m.N)
+}
+
+/*
+ * AutoShapesAt is the whole model at one level, with the band chosen for it.
+ *
+ * The walkabout replays this at each step and the slider does it under
+ * AutoBand, so it lives in one place. patternlib.go records what the
+ * alternative costs: its climb steps were lifted from the UI's presets
+ * "so the two agree", after they had not.
+ */
+func AutoShapesAt(refDbm float64, m RssiModel) (down, up Shape, freqMHz, widthMHz int) {
+	freqMHz, widthMHz = BestBandFor(refDbm, m)
+	dn, upl := LevelsFor(PathAtBand(refDbm, m, freqMHz), m)
+	down, up = ShapeForLevels(dn, upl, freqMHz, widthMHz)
+	return down, up, freqMHz, widthMHz
+}
+
+/*
  * DefaultDeltaDb is how much quieter a typical client is than the access point.
  *
  * A phone transmits around 13-15 dBm against an AP's 20, and it has a smaller
@@ -513,6 +551,36 @@ func BestBandFor(refDbm float64, m RssiModel) (freqMHz, widthMHz int) {
 		 */
 		q := shapeAtLevel(lvl, b.FreqMHz, b.WidthMHz).RateMbps
 		/*
+		 * A BAND WHOSE UPLINK IS DEAD IS NOT A BAND, whatever its downlink says.
+		 *
+		 * Found by generating a walkabout and reading it: between -76 and -80
+		 * dBm the model kept a phone on 5GHz carrying 38 Mbit/s down while its
+		 * uplink was at 100% loss, then "rescued" it at -80 by moving to 2.4GHz
+		 * where BOTH directions were healthy. The band choice had scored the
+		 * downlink alone, so it could not see that the link was already over.
+		 *
+		 * A device transmits more quietly than the access point, so its uplink
+		 * reaches the floor several dB before the downlink does -- which is
+		 * precisely when a real client starts looking for somewhere better, and
+		 * so is exactly the moment the switch should happen rather than several
+		 * steps after it.
+		 *
+		 * It also matters more than the traffic split suggests, for the reason
+		 * DATA-CONTRACT Source S records: the uplink carries the DOWNLINK's
+		 * ACKs, so a dead uplink delivers no downlink goodput regardless of what
+		 * the downlink rate says.
+		 *
+		 * Scoring it zero rather than skipping the band keeps the existing
+		 * shape: any band with a live uplink now beats it, and if both are dead
+		 * they tie at zero and fall through to the level tie-break below.
+		 *
+		 * The limit, stated: only TOTAL uplink failure disqualifies. A merely
+		 * weak uplink still does not influence the choice.
+		 */
+		if shapeAtLevel(lvl-m.TxDb, b.FreqMHz, b.WidthMHz).LossPct >= 100 {
+			q = 0
+		}
+		/*
 		 * A CHALLENGER MUST BE CLEARLY BETTER, not merely ahead.
 		 *
 		 * Rates are now a staircase off the MCS ladder rather than a smooth
@@ -603,8 +671,7 @@ func RssiShapesFor(c Client) (down, up Shape, freqMHz int, ok bool) {
 	// level feeding it.
 	path := m.Dbm
 	if m.AutoBand && (c.RadioOn == nil || c.RadioOn.Channel == 0) {
-		dist := DistanceFor(m.Dbm, ModelBands[0].FreqMHz, m.N)
-		path = RssiAt(dist, freqMHz, m.N)
+		path = PathAtBand(m.Dbm, *m, freqMHz)
 	}
 	dn, upl := LevelsFor(path, *m)
 	down, up = ShapeForLevels(dn, upl, freqMHz, width)
@@ -624,8 +691,7 @@ func rssiViewFor(c Client) *RssiView {
 	// moves the two figures the way a real band change would.
 	path := m.Dbm
 	if m.AutoBand && (c.RadioOn == nil || c.RadioOn.Channel == 0) {
-		dist := DistanceFor(m.Dbm, ModelBands[0].FreqMHz, m.N)
-		path = RssiAt(dist, freq, m.N)
+		path = PathAtBand(m.Dbm, *m, freq)
 	}
 	dn, upl := LevelsFor(path, *m)
 	return &RssiView{

@@ -64,6 +64,21 @@ const (
 	LinkDrop     = "drop"     // deauthenticate: hard link-down pulse
 	LinkNudge    = "nudge"    // disassociate: softer link-down pulse
 	LinkDeadzone = "deadzone" // deauth held for DurSec: the client cannot stay on
+
+	/*
+	 * BAND MOVES. Unlike the three above, these do not break the link -- they
+	 * ASK the client to move, over 802.11v, and the client is entitled to say
+	 * no. That refusal is a result rather than a failure: whether a given phone
+	 * honours a transition request is exactly what a test wants to find out.
+	 *
+	 * They exist because a modelled walk cannot produce a roam on its own. The
+	 * real signal never changes while the model runs, so the client has no
+	 * reason to move and will sit on 5GHz at -34 dBm at a modelled 40 m. The
+	 * band change has to be driven, or the most interesting moment in the walk
+	 * simply never happens.
+	 */
+	LinkEvict  = "evict"  // ask this client to leave whichever radio it is on
+	LinkGather = "gather" // ask this client to move to the band named below
 )
 
 // LinkEvent is one entry on a pattern's link lane. A pulse (drop/nudge) fires
@@ -73,15 +88,36 @@ type LinkEvent struct {
 	AtSec  float64 `json:"at_sec"`
 	Kind   string  `json:"kind"`
 	DurSec float64 `json:"dur_sec,omitempty"` // deadzone only
+
+	/*
+	 * ToBandMHz is where a gather sends the client -- named as a BAND, not as
+	 * an interface.
+	 *
+	 * A pattern is a stored, shareable artifact and interface names are box
+	 * configuration: `wlan-usb` means nothing on a box whose adapter is called
+	 * something else, and a pattern naming it would silently target the wrong
+	 * radio or none. A band is a physical fact both boxes agree on, so the
+	 * pattern says 2462 and the box decides which of its radios that is.
+	 *
+	 * It also matches what the model actually chooses. BestBandFor returns a
+	 * frequency, so a walkabout emitting one is passing on its own decision
+	 * rather than translating it into a name and back.
+	 *
+	 * Resolution can fail -- a box with no radio on that band has nowhere to
+	 * send the client -- and that is logged rather than swallowed. See
+	 * Engine.fireLink.
+	 */
+	ToBandMHz int `json:"to_band_mhz,omitempty"` // gather only
 }
 
 // LinkFire is a link action the Player determined should happen this tick,
 // handed back to the Engine to execute against hostapd (outside the Player
 // lock, since it does network I/O).
 type LinkFire struct {
-	MAC    string
-	Kind   string
-	DurSec float64 // deadzone only
+	MAC       string
+	Kind      string
+	DurSec    float64 // deadzone only
+	ToBandMHz int     // gather only
 }
 
 // Pattern is an ordered list of keyframes plus how to leave the end of it.
@@ -288,8 +324,20 @@ func validPattern(p Pattern) error {
 			if ev.DurSec <= 0 || ev.DurSec > maxPatternSec {
 				return fmt.Errorf("link event %d: deadzone needs a duration of 1-%ds", i, maxPatternSec)
 			}
+		case LinkEvict:
+			// Nowhere to name: the target is "whatever else is serving", which
+			// only the box knows and only at the moment it fires.
+			if ev.ToBandMHz != 0 {
+				return fmt.Errorf("link event %d: evict takes no band -- it means leave, and where to is the box's answer. Use gather to name a destination", i)
+			}
+		case LinkGather:
+			// A gather with no destination is a no-op that looks like a move,
+			// which is the kind of silence this repo has been bitten by.
+			if !knownBand(ev.ToBandMHz) {
+				return fmt.Errorf("link event %d: gather needs a band to move to -- 2412-2484 or 5150-5895 MHz, not %d", i, ev.ToBandMHz)
+			}
 		default:
-			return fmt.Errorf("link event %d: unknown kind %q (want drop, nudge or deadzone)", i, ev.Kind)
+			return fmt.Errorf("link event %d: unknown kind %q (want drop, nudge, deadzone, evict or gather)", i, ev.Kind)
 		}
 		if ev.AtSec < 0 || ev.AtSec > maxPatternSec {
 			return fmt.Errorf("link event %d: at %gs is out of range", i, ev.AtSec)
@@ -475,7 +523,9 @@ func (p Pattern) linkFires(mac string, prev, pos float64, looped bool, dur float
 		if crossed(prev, pos, looped, dur, ev.AtSec) {
 			// deadzone carries its duration; the Engine holds the client off
 			// with a deny-ACL ban rather than re-firing each tick.
-			out = append(out, LinkFire{MAC: mac, Kind: ev.Kind, DurSec: ev.DurSec})
+			out = append(out, LinkFire{
+				MAC: mac, Kind: ev.Kind, DurSec: ev.DurSec, ToBandMHz: ev.ToBandMHz,
+			})
 		}
 	}
 	return out
@@ -532,4 +582,17 @@ func (p *Player) View(mac string) *PatternView {
 		Laps: r.laps, Index: r.idx, Down: r.down, Up: r.up,
 		Reason: r.reason, StartedAt: r.startedAt.UnixMilli(),
 	}
+}
+
+/*
+ * knownBand is a sanity check on a gather's destination, not a channel plan.
+ *
+ * It asks only whether the number is a Wi-Fi frequency at all, because whether
+ * THIS box has a radio there is a question about the box and not about the
+ * pattern -- and the answer can change between saving a pattern and running it,
+ * when a USB adapter is unplugged. So the validator rejects 1234 and accepts
+ * 5745; the fire path decides whether 5745 is reachable today.
+ */
+func knownBand(mhz int) bool {
+	return (mhz >= 2412 && mhz <= 2484) || (mhz >= 5150 && mhz <= 5895)
 }

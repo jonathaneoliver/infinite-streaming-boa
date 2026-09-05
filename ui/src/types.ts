@@ -148,14 +148,21 @@ export interface Keyframe {
  * during playback.
  */
 /** A link-lane event: a per-client Wi-Fi impairment on the pattern timeline.
- *  `kind` is "drop" (deauth), "nudge" (disassoc) or "deadzone" (a held outage).
+ *  `kind` is "drop" (deauth), "nudge" (disassoc), "deadzone" (a held outage),
+ *  or one of the two BAND MOVES -- "evict" (leave this radio) and "gather" (move
+ *  to `to_band_mhz`). The band moves do not break the link: they ASK, over
+ *  802.11v, and a client is entitled to refuse. That refusal is a result rather
+ *  than a failure, which is why they are on this lane at all.
  *  `dur_sec` is the block width: 0 = a single pulse (fired on the rising edge),
  *  >0 = the disturbance holds for that long — a flap for drop/nudge, a clean
  *  block for deadzone. See #135. */
 export interface LinkEvent {
   at_sec: number;
-  kind: 'drop' | 'nudge' | 'deadzone';
+  kind: 'drop' | 'nudge' | 'deadzone' | 'evict' | 'gather';
   dur_sec?: number;
+  /** Destination band for a gather, in MHz. A band and not an interface name:
+   *  a pattern is shareable and interface names are box configuration. */
+  to_band_mhz?: number;
 }
 
 export interface Pattern {
