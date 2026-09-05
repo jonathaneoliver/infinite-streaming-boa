@@ -210,7 +210,15 @@ function degraded(i: IfaceInfo): boolean {
                it was TOLD. Power is rfkill and says nothing; this closes the
                BSS with the transmitter still on, so the departure is announced.
                Side by side is what makes them read as a choice of mechanism
-               rather than two unrelated ways to break the same thing. -->
+               rather than two unrelated ways to break the same thing.
+
+               VERBS, not states. These first read "AP up" / "AP down", which
+               name the action the same way "switch on" / "switch off" do -- but
+               those two are unmistakably imperative and these two are not. "AP
+               up" on a radio whose access point is DOWN parses as a status
+               label announcing the opposite of the truth, which is worse than
+               ambiguous on a control an operator reaches for precisely when
+               they are unsure what state a radio is in. -->
           <button
             class="ghost" :class="{ accent: r.powered && r.ap && !r.ap.enabled }"
             :disabled="busy || !r.powered || !r.ap"
@@ -219,7 +227,7 @@ function degraded(i: IfaceInfo): boolean {
 Clients ARE told it has gone, unlike a power cut.`
               : `Bring ${r.name}'s access point back up.`"
             @click="bridge.setAPEnabled(r.name, !r.ap?.enabled)"
-          >{{ r.ap?.enabled === false ? 'AP up' : 'AP down' }}</button>
+          >{{ r.ap?.enabled === false ? 'enable AP' : 'disable AP' }}</button>
           <button
             class="ghost" :disabled="busy || !r.ap?.stations"
             :title="`Deauthenticate all ${r.ap?.stations ?? 0} client(s). They are told, so they reconnect quickly.`"
