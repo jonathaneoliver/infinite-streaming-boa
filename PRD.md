@@ -458,6 +458,22 @@ damages packets, never link state.
   deliberately switched **off** is not reported as a fault: not serving is the
   correct state for a radio that is off, and the power control has already said
   what it did.
+- **An access point that does not survive a power cut is rebuilt, unasked.** A
+  radio can come back from an outage with its driver reset underneath hostapd,
+  which leaves hostapd asserting a BSS that is not on the air: every status
+  source calls the radio healthy and no client can join it, indefinitely. The
+  box detects that by the one thing that separates it from a healthy recovery --
+  hostapd refusing to enable an interface that had just failed to look enabled
+  -- and tears the access point down and builds it again, which is the only
+  measured remedy. It says that it is doing so, and says whether it worked.
+  Clients on that radio are dropped by the rebuild; they have just been dropped
+  by the outage anyway, and the alternative is a radio nobody can join.
+- **"Not answering" is never reported as "not serving".** A radio's control
+  interface can go silent for minutes while its driver re-initialises, and a
+  question that could not be asked has no answer. The box says that it cannot
+  yet confirm the access point rather than asserting it is serving nobody,
+  because a confident wrong answer about a radio is what sends an operator
+  hunting a hardware fault that is not there.
 - The log is **in memory and lossy by design**: a few hundred events, cleared by
   a restart or a deploy. An association event per client per roam, persisted, is
   exactly the steady write that wears an SD card out, and every event still
