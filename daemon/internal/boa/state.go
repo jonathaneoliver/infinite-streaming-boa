@@ -383,6 +383,29 @@ func (e *Engine) desired(clients []Client) []Desired {
 			// Disabled means "do not condition", not "do not measure".
 			down, up = Shape{}, Shape{}
 		}
+		// A distance model replaces both directions with what a link at that
+		// signal level would deliver. Applied here for the same reason the two
+		// below are: the operator's INPUT is what is stored, and the shapes it
+		// implies are derived per tick and never written back, so clearing the
+		// model is all it takes to undo -- and the two can never drift apart,
+		// because only one of them exists on disk.
+		//
+		// The band comes from the client's own RadioOn rather than from an
+		// engine lookup. That is not a style preference: reading radio state
+		// inside the tick once deadlocked the non-reentrant lock and took the
+		// whole API down with it. Everything needed is already on the Client.
+		if m := c.Policy.Rssi; m != nil && c.Policy.Enabled {
+			freq, width := 5745, 80
+			if c.RadioOn != nil {
+				if f := freqForChannel(c.RadioOn.Channel); f > 0 {
+					freq = f
+				}
+				if c.RadioOn.WidthMHz > 0 {
+					width = c.RadioOn.WidthMHz
+				}
+			}
+			down, up = ShapeForRssi(m.Dbm, freq, width)
+		}
 		// A running ladder sweep drives the downlink cap itself, overriding
 		// stored policy for the duration. Applied here rather than written to
 		// the Store, so nothing has to be unwound: the override vanishes with

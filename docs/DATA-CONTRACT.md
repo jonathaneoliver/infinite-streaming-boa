@@ -1288,3 +1288,97 @@ accurate to within one poll rather than to the beacon that carried the change.
 roam as an event with a time; this field records the state each second and lets
 a roam be *seen against the traffic*. They disagree by up to a poll interval and
 neither is wrong — one is an event, the other a sampled state.
+
+---
+
+## Source S — the distance model · what a weaker signal would DO
+
+**TYPED, not measured.** This is the one entry here that is not a reading. Every
+other source describes something the box observed; this one describes something
+it computed, and the distinction is the whole point of recording it.
+
+**Why it exists.** The most useful Wi-Fi test for a player is a walk away from
+the router and back, and this box cannot perform one. Transmit power is not
+settable (#122, #202: `iw ... set txpower` validates and is then ignored) and
+neither is the rate set — measured 2026-09-05, `iw dev <if> set bitrates`
+returns `Operation not supported (-95)` on **both** radios, because
+`mt76/mt792x_core.c:834` sets `HAS_RATE_CONTROL` and `mt7921_ops` implements no
+`.set_bitrate_mask`. The radio cannot be made to look further away, so the model
+in `daemon/internal/boa/distance.go` computes what being further away would do
+and applies it with the impairments that already exist.
+
+### Input
+
+| Field | Meaning | Confidence |
+|---|---|---|
+| `Policy.Rssi.Dbm` | The modelled received level. **Stored**; the operator's intent | certain — it is a setting |
+| `Policy.Rssi.N` | Path-loss exponent, for rendering metres. 2.2 open / 3.0 home / 3.8 through walls | low — a per-building guess |
+| `Client.RadioOn.Channel` | Which band the client is on, so the right curve is used | high — Source K |
+| `Client.RadioOn.WidthMHz` | Channel width, which sets the sensitivity floor | high — Source K |
+
+### The arithmetic
+
+- **Free-space loss at 1 m** is `20*log10(f_MHz) - 27.55`: **47.6 dB at 5745
+  MHz** against **40.3 dB at 2462 MHz**. That 7.3 dB is why 5 GHz has shorter
+  range at equal power, and why the two bands need separate curves rather than
+  one curve with an offset.
+- **Log-distance path loss**: `RSSI(d) = Ptx - FSPL(1m) - 10*n*log10(d)`. At
+  n = 3 every **doubling** of distance costs about 9 dB, which is why any
+  distance control has to be logarithmic — 1→2 m costs what 8→16 m costs.
+- **Ptx is assumed at 20 dBm**, not read. The box cannot read it either: Source Q
+  records the readout as subject to a known driver misreport. It is a constant
+  in a model already labelled typed.
+- **The sensitivity floor moves with width**, about 3 dB per doubling: −82 dBm
+  at 20 MHz, −76 at 80. A wide channel spreads the same power over more
+  spectrum, so it dies first — on top of the extra path loss at 5 GHz.
+
+### Semantics that bite
+
+- **It is a cliff, not a slope.** Frame error rate against SNR is a sigmoid:
+  nearly nothing happens across most of the range, then everything happens
+  inside about 10 dB. That is what a real walk feels like, and a model that
+  degrades linearly with distance is wrong in a way that is hard to name and
+  obvious to anyone who has done one. `TestDegradationIsACliffNotASlope` pins
+  it; do not smooth it to make the control feel better.
+- **Corruption leads, loss follows late and correlated.** A weak signal does not
+  drop IP packets — it damages frames that fail their checksum, having already
+  spent the airtime to send them. So `CorruptPct` rises first, and `LossPct`
+  stays at zero until retries are exhausted, arriving with `LossBurst > 1` so
+  netem runs its Gilbert-Elliott model rather than a per-packet coin flip.
+  `TestCorruptArrivesBeforeLoss` pins the ordering.
+- **Out of range is total loss, NOT a zero rate.** Zero means *unlimited*
+  everywhere else in this codebase, so a rate of zero at the floor would hand
+  the client a perfect link at the exact moment it should have none.
+- **The derived shapes are never stored.** `Policy.Rssi` holds the input;
+  `desired()` computes the shapes each tick and they vanish when the model is
+  cleared. This is deliberate — storing a model's output beside its input is how
+  the two come to disagree, the failure `putLadder`'s provenance reset exists to
+  prevent. `TestTheModelDrivesTheKernelWithoutTouchingTheStore` is the guard.
+- **dBm is stored, metres are shown.** Metres depend on `n`, which is a guess, so
+  a policy in metres would mean a different impairment in a different building.
+  dBm replays identically anywhere.
+- **A hand edit clears the model**, on the same rule that pauses a running
+  pattern: otherwise the model would overwrite the typed value on the next tick
+  and the controls would appear not to work.
+
+### What it does NOT move, and this is the important part
+
+**RSSI, PHY rate, airtime and `tx failed` all keep reporting the real, healthy
+radio.** A client at a modelled 40 m still reads −34 dBm at 961 Mbit/s PHY while
+being handed 6 Mbit/s. The card says so in words rather than leaving it to be
+discovered, because on screen it otherwise looks like a defect.
+
+This is survivable because ABR players adapt on observed throughput and buffer
+level, not on signal strength — the gap bites only for something that reads RSSI
+directly, which includes the client's own band-steering decision. That is why a
+band transition has to be **driven** rather than hoped for.
+
+**Verified on hardware 2026-09-05.** A model of −74 dBm applied to a client on
+`wlan0` (channel 11, 20 MHz) produced an enforced `cap_mbps` of **12.5** while
+the stored policy still read `down.rate_mbps: 0` and `rssi: {dbm: -74, n: 3}`.
+A subsequent hand edit cleared `rssi` and returned the enforced cap to 0.
+
+**Conclusion for the product:** the model is a stand-in for a walk, honest about
+being one. It should be replaced band by band with a measured curve once #106
+records `signal` and airtime over time, and the provenance label is what says
+which of the two you are looking at.

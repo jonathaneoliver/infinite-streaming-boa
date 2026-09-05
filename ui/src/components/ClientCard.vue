@@ -1,7 +1,10 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue';
-import type { Client, Shape, Series, ChartPrefs, Pattern } from '@/types';
-import { CLEAN, DEVELOPER, PRESETS, ntopngUrl, patternFromPolicy } from '@/types';
+import type { Client, Shape, Series, ChartPrefs, Pattern, RssiModel } from '@/types';
+import {
+  CLEAN, DEFAULT_EXPONENT, DEVELOPER, PRESETS,
+  distanceFor, freqForChannel, ntopngUrl, patternFromPolicy,
+} from '@/types';
 import { setShapeAt } from '@/lib/pattern';
 import ShapeSliders from './ShapeSliders.vue';
 import SubClasses from './SubClasses.vue';
@@ -28,6 +31,8 @@ const props = defineProps<{
 const emit = defineEmits<{
   shape: [dir: 'down' | 'up', shape: Shape];
   preset: [down: Shape, up: Shape];
+  /** A modelled signal level, or null to hand control back. */
+  distance: [rssi: RssiModel | null];
   label: [string];
   reset: [];
   forget: [];
@@ -459,6 +464,39 @@ function onPreset(down: Shape, up: Shape) {
   emit('preset', down, up);
 }
 
+/*
+ * The distance model.
+ *
+ * The SLIDER MOVES IN dBm and the LABEL READS IN METRES, which sounds backwards
+ * and is the only arrangement that works. Signal falls with the logarithm of
+ * distance -- at n=3 every doubling costs about 9 dB -- so a slider linear in
+ * metres would spend three quarters of its travel in the dead zone past the
+ * cliff and give one pixel to the entire usable range. Linear in dBm gives even
+ * resolution over the part anyone wants to explore, and metres is what the
+ * operator is actually thinking in, so both are shown.
+ *
+ * The frequency comes from the client's own radio, because the same metres are
+ * a different signal level on each band -- 7.3 dB apart at 1m.
+ */
+const RSSI_NEAR = -40;
+const RSSI_FAR = -90;
+
+const modelFreq = computed(() => freqForChannel(props.client.radio_on?.channel ?? 0));
+const modelN = computed(() => props.client.policy.rssi?.n || DEFAULT_EXPONENT);
+const modelDbm = computed(() => props.client.policy.rssi?.dbm ?? RSSI_NEAR);
+const modelOn = computed(() => !!props.client.policy.rssi);
+const modelMetres = computed(() =>
+  distanceFor(modelDbm.value, modelFreq.value, modelN.value));
+
+function metresLabel(m: number): string {
+  return m < 10 ? `${m.toFixed(1)} m` : `${Math.round(m)} m`;
+}
+
+function onDistance(e: Event) {
+  const dbm = Number((e.target as HTMLInputElement).value);
+  emit('distance', { dbm, n: modelN.value });
+}
+
 // Both a sweep and a pattern drive the cap. The daemon refuses the second one
 // rather than letting them fight; the card says so before the click.
 const patBlocked = computed(() => {
@@ -777,6 +815,43 @@ function fmtBytes(n: number): string {
       </button>
     </div>
 
+    <!-- THE DISTANCE MODEL.
+         Beside the presets because it is the same kind of thing: one input
+         standing for a whole set of impairments. It differs in staying in
+         force -- a preset is a value you then edit, this keeps driving the
+         device until it is switched off or you move a slider by hand. -->
+    <div class="distance" style="padding: 8px 14px 0">
+      <label class="dist-row">
+        <span class="dist-name">distance</span>
+        <input
+          type="range" class="dist-range"
+          :min="RSSI_FAR" :max="RSSI_NEAR" step="1"
+          :value="modelDbm" :disabled="!client.shapeable"
+          title="How far away this device should behave as though it is. Moves the impairments, not the radio."
+          @input="onDistance"
+        />
+        <span class="dist-read num">
+          <template v-if="modelOn">
+            {{ metresLabel(modelMetres) }}
+            <span class="dist-dbm">{{ modelDbm }} dBm</span>
+          </template>
+          <template v-else>off</template>
+        </span>
+        <button
+          v-if="modelOn" class="ghost dist-off"
+          title="Stop modelling distance and hand the controls back"
+          @click="emit('distance', null)"
+        >off</button>
+      </label>
+      <!-- The contradiction, stated where it is visible rather than left to be
+           discovered: the model moves what a player senses and cannot move what
+           the radio reports. -->
+      <p v-if="modelOn" class="meta dist-note">
+        Modelled, not measured — the signal and PHY rate above still report the
+        real radio, which is why they disagree with this.
+      </p>
+    </div>
+
     <div class="dirs" :style="{ marginTop: '10px', gridTemplateColumns: dirCols }">
       <div v-if="chart.showDown" class="dir down">
         <h3>
@@ -1067,6 +1142,23 @@ function fmtBytes(n: number): string {
    and reusing them here would make band look like direction. */
 .badge.band5 { color: #7dd3fc; border-color: color-mix(in srgb, #7dd3fc 40%, var(--line)); }
 .badge.band24 { color: #c4b5fd; border-color: color-mix(in srgb, #c4b5fd 40%, var(--line)); }
+.dist-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.dist-name {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--ink-faint);
+  min-width: 58px;
+}
+.dist-range { flex: 1; max-width: 320px; }
+.dist-read { font-size: 12px; color: var(--ink-dim); min-width: 120px; }
+.dist-dbm { color: var(--ink-faint); margin-left: 6px; font-size: 11px; }
+.dist-off { font-size: 11px; padding: 2px 8px; }
+.dist-note { margin: 4px 0 0; max-width: 62ch; }
 .card-head.folded .val { text-align: right; font-size: 12px; font-weight: 600; }
 .card-head.folded .unit { font-size: 11px; }
 .card-head.folded .spark { display: block; }

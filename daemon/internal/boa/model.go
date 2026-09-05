@@ -253,8 +253,29 @@ type Policy struct {
 	// any. Stored with the policy because it is intent, not telemetry: it is
 	// written when someone edits a keyframe, never once per tick. Storing it
 	// does not run it -- see Player.
-	Pattern  *Pattern `json:"pattern,omitempty"`
-	classMin int      // kernel class minor for the device default class
+	Pattern *Pattern `json:"pattern,omitempty"`
+	// Rssi is the distance model driving this device, if one is. Nil means the
+	// operator is setting Down/Up by hand.
+	//
+	// The INPUT is stored and the derived shapes never are. Storing a model's
+	// output beside its input is how the two come to disagree -- the failure
+	// putLadder's provenance reset exists to prevent -- so the shapes are
+	// computed in desired() each tick and vanish the moment this is cleared.
+	Rssi     *RssiModel `json:"rssi,omitempty"`
+	classMin int        // kernel class minor for the device default class
+}
+
+// RssiModel is a modelled signal level, and the exponent used to render it as a
+// distance.
+//
+// dBm rather than metres is what is stored, deliberately. Metres depend on the
+// path-loss exponent, which is a per-building guess: a policy stored in metres
+// would mean a different impairment in a different building, or after someone
+// changed the exponent. dBm replays identically anywhere, and N is carried only
+// so the interface can show the metres the operator was looking at.
+type RssiModel struct {
+	Dbm float64 `json:"dbm"`
+	N   float64 `json:"n,omitempty"`
 }
 
 // LadderFor returns this device's ladder for one service.

@@ -82,6 +82,32 @@ export function useDevice() {
     });
   }
 
+  /**
+   * The same write, debounced, for a control that is DRAGGED rather than
+   * clicked.
+   *
+   * patchPolicy above is deliberately immediate: a preset button or a rename is
+   * one event and should not wait. A slider is not -- it emits continuously, and
+   * every send bumps `Policy.Rev`, so an undebounced drag races its own
+   * in-flight requests and 409s against the revision it just moved. That is the
+   * same reasoning patchShape carries; this is the whole-object variant of it.
+   *
+   * Keyed per MAC rather than per field, because two policy patches for one
+   * device would collide on the revision even if they touched different fields.
+   */
+  function patchPolicySoon(
+    mac: string,
+    rev: number,
+    patch: Record<string, unknown>,
+  ) {
+    debounced(`${mac}:policy`, () => {
+      void send(`/api/devices/${mac}/policy`, 'PATCH', {
+        base_revision: rev,
+        ...patch,
+      });
+    });
+  }
+
   function addSub(mac: string, rev: number, name: string, match: Match) {
     return send(`/api/devices/${mac}/sub`, 'POST', {
       base_revision: rev,
@@ -207,6 +233,7 @@ export function useDevice() {
     conflict,
     patchShape,
     patchPolicy,
+    patchPolicySoon,
     addSub,
     patchSub,
     deleteSub,

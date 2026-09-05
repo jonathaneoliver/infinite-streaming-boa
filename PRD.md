@@ -78,10 +78,31 @@ Intended for:
   place to start, not a standard.
 - **Attenuation.** boa does not weaken the radio, and on this hardware it could
   not: setting transmit power is accepted by the driver and has no effect,
-  measured across the adapter's entire legal range. A weak signal is produced by
-  distance or obstruction, not from the interface. What the box does instead is
-  condition the link above the radio, and impose real MAC-layer cost through the
-  radio profiles — which change what the radio *is*, never how loudly it talks.
+  measured across the adapter's entire legal range, and the PHY rate set cannot
+  be clamped either — both radios refuse `iw ... set bitrates` outright, because
+  rate selection happens in firmware. A weak signal is produced by distance or
+  obstruction, not from the interface. What the box does instead is condition the
+  link above the radio, impose real MAC-layer cost through the radio profiles —
+  which change what the radio *is*, never how loudly it talks — and **model**
+  what a weaker signal would do, which is the next bullet.
+
+- **A device can be told to behave as though it were further away.** One
+  control per device stands for a distance: it derives a rate, a delay, a jitter,
+  a corruption rate and — only near the edge — correlated loss, from a modelled
+  signal level, and drives the device with them. The curve is a **cliff rather
+  than a slope**, because frame errors against signal are a sigmoid: a real walk
+  is fine, fine, fine, then falls apart within a few steps, and a control that
+  degrades evenly with distance is wrong in a way that is obvious to anyone who
+  has done one. Corruption leads and loss follows late, because a weak signal
+  damages frames that fail their checksum rather than dropping packets, and
+  retries hide the loss until they are exhausted.
+- **The model is labelled as a model, and says what it cannot do.** It moves what
+  a player senses; it cannot move what the radio reports. A device at a modelled
+  40 m still shows its real signal strength and PHY rate, so the two disagree on
+  screen — and the card says so, rather than leaving it to be discovered. The
+  stored value is the signal level in dBm and never the impairments derived from
+  it: one of them is the operator's intent and the other is a consequence, and
+  keeping only the first means they can never drift apart.
 
 ## 4) Users & Use Cases
 

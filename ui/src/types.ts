@@ -223,6 +223,53 @@ export interface Policy {
   sub: SubClass[] | null;
   ladders?: Ladder[] | null;
   pattern?: Pattern | null;
+  /** The distance model driving this device, if one is. Absent means the
+   *  operator is setting down/up by hand. */
+  rssi?: RssiModel | null;
+}
+
+/**
+ * A modelled signal level, and the path-loss exponent used to render it as a
+ * distance.
+ *
+ * dBm is stored rather than metres because metres depend on `n`, which is a
+ * per-building guess: a policy in metres would mean a different impairment in a
+ * different building. See `daemon/internal/boa/distance.go`.
+ */
+export interface RssiModel {
+  dbm: number;
+  n?: number;
+}
+
+/**
+ * Distance and signal level, the same relationship the daemon models.
+ *
+ * Duplicated in TypeScript ONLY for the slider's own labels -- the impairments
+ * are always computed in Go, so the two can never disagree about what a level
+ * does. These two convert for display; `distance.go` decides what it means.
+ */
+const TX_DBM = 20;
+export const DEFAULT_EXPONENT = 3.0;
+
+function freeSpaceAt1m(freqMHz: number): number {
+  return 20 * Math.log10(freqMHz) - 27.55;
+}
+
+export function rssiAt(distanceM: number, freqMHz: number, n = DEFAULT_EXPONENT): number {
+  const d = Math.max(1, distanceM);
+  return TX_DBM - freeSpaceAt1m(freqMHz) - 10 * n * Math.log10(d);
+}
+
+export function distanceFor(rssiDbm: number, freqMHz: number, n = DEFAULT_EXPONENT): number {
+  return Math.pow(10, (TX_DBM - freeSpaceAt1m(freqMHz) - rssiDbm) / (10 * n));
+}
+
+/** The frequency a channel sits on, for turning a client's radio into a curve. */
+export function freqForChannel(ch: number): number {
+  if (ch === 14) return 2484;
+  if (ch >= 1 && ch <= 13) return 2407 + ch * 5;
+  if (ch >= 32 && ch <= 177) return 5000 + ch * 5;
+  return 5745;
 }
 
 export interface SweepLevel {

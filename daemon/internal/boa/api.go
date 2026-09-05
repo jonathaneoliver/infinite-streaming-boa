@@ -1,6 +1,7 @@
 package boa
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io/fs"
@@ -604,6 +605,28 @@ type policyPatch struct {
 	Enabled      *bool   `json:"enabled"`
 	Down         *Shape  `json:"down"`
 	Up           *Shape  `json:"up"`
+	// Rssi drives Down and Up from a modelled signal level instead of setting
+	// them directly.
+	//
+	// RAW rather than *RssiModel, because this field needs THREE states and a
+	// pointer only has two: absent means leave the model alone, an explicit
+	// `null` means clear it, and an object means set it. Decoded into a
+	// pointer, absent and null are both nil and the off switch cannot be
+	// expressed -- which is exactly how it failed the first time.
+	Rssi json.RawMessage `json:"rssi"`
+}
+
+// validRssiModel bounds the modelled level. The range is generous on purpose --
+// it is a model, not a measurement -- but it must stay negative and finite, or
+// the derived shape is meaningless.
+func validRssiModel(m RssiModel) error {
+	switch {
+	case m.Dbm > -10 || m.Dbm < -120:
+		return fmt.Errorf("dbm must be between -120 and -10 (received signal is negative)")
+	case m.N < 0 || m.N > 8:
+		return fmt.Errorf("n must be between 0 (use the default) and 8")
+	}
+	return nil
 }
 
 func validShape(s Shape) error {
@@ -719,6 +742,26 @@ func (a *API) patchPolicy(w http.ResponseWriter, r *http.Request) {
 		}
 		p.Up = *in.Up
 	}
+	rssiTouched := len(in.Rssi) > 0
+	if rssiTouched {
+		if string(bytes.TrimSpace(in.Rssi)) == "null" {
+			p.Rssi = nil
+		} else {
+			var m RssiModel
+			if err := json.Unmarshal(in.Rssi, &m); err != nil {
+				writeErr(w, http.StatusBadRequest, "rssi: "+err.Error())
+				return
+			}
+			if err := validRssiModel(m); err != nil {
+				writeErr(w, http.StatusBadRequest, "rssi: "+err.Error())
+				return
+			}
+			if m.N <= 0 {
+				m.N = DefaultExponent
+			}
+			p.Rssi = &m
+		}
+	}
 	if in.Label != nil {
 		p.Label = strings.TrimSpace(*in.Label)
 	}
@@ -735,6 +778,14 @@ func (a *API) patchPolicy(w http.ResponseWriter, r *http.Request) {
 	if in.Down != nil || in.Up != nil {
 		a.e.Player().Pause(normMAC(r.PathValue("mac")),
 			"paused: you changed this device's controls by hand")
+		// A hand edit also ends the distance model, for the same reason and by
+		// the same rule: the model would overwrite the typed value on the next
+		// tick, so controls would appear not to work. One rule -- touching the
+		// sliders means you are driving manually now. Unless this request set
+		// the model, in which case the shapes it carries ARE the model's.
+		if !rssiTouched {
+			p.Rssi = nil
+		}
 	}
 	a.commit(w, p)
 }
