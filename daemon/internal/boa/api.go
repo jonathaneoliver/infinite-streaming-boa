@@ -62,6 +62,10 @@ func (a *API) Routes() *http.ServeMux {
 	mux.HandleFunc("GET /api/patterns/{name}", a.getPattern)
 	mux.HandleFunc("POST /api/patterns/merge", a.mergePatterns)
 	mux.HandleFunc("POST /api/patterns/scenario", a.playScenario)
+	mux.HandleFunc("GET /api/bridge/pattern", a.getAdapterPattern)
+	mux.HandleFunc("PUT /api/bridge/pattern", a.putAdapterPattern)
+	mux.HandleFunc("POST /api/bridge/pattern/play", a.playAdapterPattern)
+	mux.HandleFunc("DELETE /api/bridge/pattern/play", a.stopAdapterPattern)
 	mux.HandleFunc("PUT /api/patterns/{name}", a.savePattern)
 	mux.HandleFunc("DELETE /api/patterns/{name}", a.deleteSavedPattern)
 	mux.HandleFunc("POST /api/devices/{mac}/pattern/select", a.selectPattern)
@@ -1107,6 +1111,136 @@ func (a *API) playScenario(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusAccepted, map[string]any{
 		"group": id, "started": macs, "pattern": in.Pattern,
 	})
+}
+
+// adapterPatternName is where the box's own timeline lives in the pattern
+// store.
+//
+// A reserved name in the existing library rather than a new store: an adapter
+// pattern is a Pattern, and reusing the store means it is saved, listed,
+// exported and imported by machinery that already works. The name is not
+// authorable through the library, so it cannot be taken by accident.
+const adapterPatternName = "__adapter__"
+
+// getAdapterPattern returns the box's radio timeline, or an empty one.
+func (a *API) getAdapterPattern(w http.ResponseWriter, r *http.Request) {
+	p, ok := a.e.PatternStore().Get(adapterPatternName)
+	if !ok {
+		writeJSON(w, http.StatusOK, map[string]any{"pattern": nil})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"pattern": p})
+}
+
+// putAdapterPattern stores the box's radio timeline.
+//
+// Validated here as well as at play time, so an impossible pattern is refused
+// while the operator is still looking at the editor that produced it -- an
+// outage below the floor being the one that actually happens.
+func (a *API) putAdapterPattern(w http.ResponseWriter, r *http.Request) {
+	var in Pattern
+	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+		writeErr(w, http.StatusBadRequest, "malformed body: "+err.Error())
+		return
+	}
+	in.Name = adapterPatternName
+	// Radios name interfaces, and an interface this box does not have would
+	// fail silently at play time as an event that fired against nothing.
+	for _, ev := range in.Radios {
+		if !a.e.Config().IsWlan(ev.Iface) {
+			writeErr(w, http.StatusBadRequest,
+				"this box has no radio named "+ev.Iface)
+			return
+		}
+	}
+	if err := validPattern(in); err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if err := a.e.PatternStore().Put(in); err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"saved": in.Name, "radios": len(in.Radios), "dur_sec": in.DurSec(),
+	})
+}
+
+// playAdapterPattern runs the box's radio timeline.
+//
+// Bound to BoxBinding rather than a MAC, so every verb the Player already has
+// applies to it -- including the scenario grouping, which is how a radio
+// outage and a client's ladder walk end up on one clock.
+func (a *API) playAdapterPattern(w http.ResponseWriter, r *http.Request) {
+	now := time.Now()
+	if err := a.e.Player().Resume(BoxBinding, now); err == nil {
+		writeJSON(w, http.StatusAccepted, map[string]any{"resumed": BoxBinding})
+		return
+	}
+	p, ok := a.e.PatternStore().Get(adapterPatternName)
+	if !ok || !p.IsAdapterPattern() {
+		writeErr(w, http.StatusBadRequest,
+			"no adapter pattern has been authored; add a radio lane before playing one")
+		return
+	}
+	// Refuse rather than degrade. A pattern that evicts or gathers needs
+	// somewhere to move clients to, and on a one-radio box a bounce is not a
+	// bounce -- it is an outage wearing the wrong name. Same answer, in the
+	// same words, that a steer already gives.
+	needsTwo := false
+	for _, ev := range p.Radios {
+		if ev.Kind == RadioEvict || ev.Kind == RadioGather {
+			needsTwo = true
+		}
+	}
+	serving := 0
+	for _, iface := range a.e.Config().WlanPorts {
+		if a.e.RadioServing(iface) {
+			serving++
+		}
+	}
+	if needsTwo && serving < 2 {
+		writeErr(w, http.StatusServiceUnavailable,
+			"nowhere to steer to: this pattern moves clients between radios and "+
+				"this box is serving only one")
+		return
+	}
+	if err := a.e.Player().Start(BoxBinding, p, now); err != nil {
+		writeErr(w, http.StatusConflict, err.Error())
+		return
+	}
+	a.e.logEvent(EventAction, "", "",
+		"adapter pattern started: %d radio events over %.0fs", len(p.Radios), p.DurSec())
+	writeJSON(w, http.StatusAccepted, map[string]any{
+		"started": BoxBinding, "radios": len(p.Radios), "dur_sec": p.DurSec(),
+	})
+}
+
+// stopAdapterPattern ends the box run.
+//
+// Unlike a device run, forgetting is not enough: a radio taken down by a
+// pattern stays down until its own restore fires, and a stop that left the AP
+// off the air would be #182 by another route. RadioOutage owns that restore and
+// clears the #203 marker, so the wait is bounded -- but the operator is told,
+// because a radio that comes back seconds after a stop looks like a fault.
+func (a *API) stopAdapterPattern(w http.ResponseWriter, r *http.Request) {
+	if err := a.e.Player().Stop(BoxBinding); err != nil {
+		writeErr(w, http.StatusConflict, err.Error())
+		return
+	}
+	var pending []string
+	for _, iface := range a.e.Config().WlanPorts {
+		if on, known := radioPowered(iface); known && !on {
+			pending = append(pending, iface)
+		}
+	}
+	out := map[string]any{"stopped": BoxBinding}
+	if len(pending) > 0 {
+		out["restoring"] = pending
+		out["note"] = "a radio outage was in force; it restores itself when its " +
+			"window ends rather than the moment you stopped the pattern"
+	}
+	writeJSON(w, http.StatusOK, out)
 }
 
 // stopPattern ends a run. The device returns to stored policy on the next tick;

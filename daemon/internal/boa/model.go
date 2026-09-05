@@ -510,6 +510,10 @@ type Snapshot struct {
 	// notice belongs on screen depends on whether it is actionable: an error
 	// buried at the foot of the page is worse than clutter at the top.
 	Notices []Notice `json:"notices,omitempty"`
+	// AdapterRun is the box's own timeline, when one is playing. Carried in the
+	// snapshot for the same reason a device's run is: so the editor can draw a
+	// moving playhead without polling a second endpoint.
+	AdapterRun *PatternView `json:"adapter_run,omitempty"`
 }
 
 // Notice is one message for the operator.

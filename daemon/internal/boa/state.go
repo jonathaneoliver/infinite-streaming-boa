@@ -267,6 +267,15 @@ func (e *Engine) Shaper() *Shaper           { return e.sh }
 func (e *Engine) Sweeper() *Sweeper         { return e.sweep }
 func (e *Engine) Player() *Player           { return e.player }
 
+// Config exposes the running configuration for handlers that must name a
+// radio -- an adapter pattern's lanes are interfaces, and one this box does not
+// have would fire against nothing.
+func (e *Engine) Config() Config { return e.cfg }
+
+// RadioServing reports whether a radio can currently carry clients, which is
+// the question an adapter pattern's precondition asks: a bounce needs two.
+func (e *Engine) RadioServing(iface string) bool { return e.radioReady(iface) == nil }
+
 // Start brings up the kernel scaffolding and the passive listeners, then ticks
 // forever. Shaping failure is reported through capabilities rather than being
 // fatal: a box that serves a UI explaining why conditioning is unavailable is
@@ -735,8 +744,12 @@ func (e *Engine) tick() {
 	}
 	e.sweep.Advance(now, sweepObserver{hist: e.hist, live: live})
 	e.storeSweepResult()
-	for _, f := range e.player.Advance(now) {
+	links, radios := e.player.Advance(now)
+	for _, f := range links {
 		go e.fireLink(f) // network I/O to hostapd; keep it off the tick
+	}
+	for _, f := range radios {
+		go e.fireRadio(f) // rfkill and hostapd; likewise off the tick
 	}
 
 	if ready, _ := e.sh.Ready(); ready {
@@ -872,7 +885,8 @@ func (e *Engine) tick() {
 			LossBurst:   burstOK, LossBurstNote: burstNote,
 			NamesLearned: len(names), NamesByMAC: len(macNames),
 		},
-		Notices: e.notices(ready, reason),
+		Notices:    e.notices(ready, reason),
+		AdapterRun: e.player.View(BoxBinding),
 	}
 	e.snap = snap
 	subs := make([]chan Snapshot, 0, len(e.subs))

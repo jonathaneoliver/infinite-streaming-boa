@@ -535,3 +535,112 @@ func surveyValue(line string) string {
 	}
 	return f[0]
 }
+
+// fireRadio executes one adapter-pattern event.
+//
+// Off the tick, like fireLink: this is rfkill and hostapd control traffic, and
+// a radio that takes a second to come back must not hold the reconciler.
+//
+// Everything here is best effort and everything here REPORTS. A pattern whose
+// radio events silently did nothing is the exact failure this codebase keeps
+// being bitten by -- it would look like a client that did not react.
+func (e *Engine) fireRadio(f RadioFire) {
+	if err := e.radioExists(f.Iface); err != nil {
+		e.logEvent(EventRadio, f.Iface, "",
+			"pattern wanted %s on %s, but %v", f.Kind, f.Iface, err)
+		return
+	}
+
+	switch f.Kind {
+	case RadioOff:
+		// RadioOutage owns the restore, including the #203 marker that stops a
+		// hotplug ending it early and the startup clear that stops a dead
+		// daemon leaving the box dark.
+		if err := e.RadioOutage(f.Iface, f.DurSec); err != nil {
+			e.logEvent(EventRadio, f.Iface, "",
+				"pattern could not take %s down: %v", f.Iface, err)
+		}
+
+	case RadioDeauth:
+		n, err := e.LinkAll(f.Iface, LinkDrop)
+		if err != nil {
+			e.logEvent(EventRadio, f.Iface, "",
+				"pattern could not deauth on %s: %v", f.Iface, err)
+			return
+		}
+		e.logEvent(EventAction, f.Iface, "",
+			"pattern deauthenticated %d client(s) on %s", n, f.Iface)
+
+	case RadioEvict:
+		// Source-named: this radio's clients go elsewhere.
+		//
+		// With two radios "off here" means "onto the other" and the answer is
+		// exact. With three it is not, and OtherRadio would pick the first
+		// serving radio in preference order -- deterministic, but not something
+		// the operator chose, and invisible once it has happened. An adapter
+		// pattern that quietly picked a destination is the silent failure this
+		// codebase keeps being bitten by, so it is refused and says why. The
+		// fix when a third radio arrives is a target on the event; gather needs
+		// none, because it names its destination already.
+		var candidates []string
+		for _, w := range e.cfg.WlanPorts {
+			if w != f.Iface && hostapdReachable(w) {
+				candidates = append(candidates, w)
+			}
+		}
+		switch len(candidates) {
+		case 0:
+			e.logEvent(EventRadio, f.Iface, "",
+				"pattern wanted to evict %s, but there is nowhere to steer to: "+
+					"this box is serving only one radio", f.Iface)
+			return
+		case 1:
+			// The only case an untargeted evict can answer.
+		default:
+			e.logEvent(EventRadio, f.Iface, "",
+				"pattern wanted to evict %s, but %d radios could receive them (%s) "+
+					"and the pattern does not say which; an evict needs a target "+
+					"on a box serving more than two radios",
+				f.Iface, len(candidates), strings.Join(candidates, ", "))
+			return
+		}
+		to := candidates[0]
+		n, err := e.SteerAll(f.Iface, to)
+		if err != nil {
+			e.logEvent(EventRadio, f.Iface, "",
+				"pattern could not evict off %s: %v", f.Iface, err)
+			return
+		}
+		e.logEvent(EventAction, f.Iface, "",
+			"pattern asked %d client(s) to leave %s for %s", n, f.Iface, to)
+
+	case RadioGather:
+		// Destination-named: everyone else comes HERE. The lane it was drawn on
+		// is the target, so there is nothing to guess even with three radios.
+		if !hostapdReachable(f.Iface) {
+			e.logEvent(EventRadio, f.Iface, "",
+				"pattern wanted to gather onto %s, but hostapd is not serving it, "+
+					"so there is nothing to gather to", f.Iface)
+			return
+		}
+		total := 0
+		for _, w := range e.cfg.WlanPorts {
+			if w == f.Iface || !hostapdReachable(w) {
+				continue
+			}
+			n, err := e.SteerAll(w, f.Iface)
+			if err != nil {
+				e.logEvent(EventRadio, w, "",
+					"pattern could not gather %s onto %s: %v", w, f.Iface, err)
+				continue
+			}
+			total += n
+		}
+		e.logEvent(EventAction, f.Iface, "",
+			"pattern asked %d client(s) to gather onto %s", total, f.Iface)
+
+	default:
+		e.logEvent(EventRadio, f.Iface, "",
+			"pattern carried an unknown radio action %q", f.Kind)
+	}
+}
