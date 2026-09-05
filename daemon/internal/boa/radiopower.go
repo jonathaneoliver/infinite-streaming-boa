@@ -302,6 +302,118 @@ func (e *Engine) endRecovery(iface string) {
 	delete(e.recovering, iface)
 }
 
+/*
+ * Taking the ACCESS POINT down, as opposed to the RADIO.
+ *
+ * These are two different impairments and the box now offers both, because the
+ * difference is exactly what an operator testing client behaviour wants to vary:
+ *
+ *	power off   rfkill. The transmitter stops. Nothing can leave, so the client
+ *	            is told NOTHING and has to work the loss out from missing ACKs
+ *	            and absent beacons. Measured on this box at 2-11s to roam.
+ *	AP disable  hostapd tears the BSS down while the radio stays up. The
+ *	            hardware CAN transmit, so whatever hostapd says on the way out
+ *	            actually leaves -- a broadcast deauth by default (#224), and
+ *	            possibly per-station ones.
+ *
+ * Same visible outcome, opposite mechanism: one is a power cut, the other is an
+ * access point closing its doors and saying so. A client that is told behaves
+ * differently from one that discovers, and until now only the first was
+ * reachable from the interface.
+ */
+
+// SetAPEnabled brings this radio's access point up or down, leaving the radio
+// itself powered.
+func (e *Engine) SetAPEnabled(iface string, on bool) error {
+	if err := e.radioExists(iface); err != nil {
+		return err
+	}
+	if e.cfg.Demo {
+		return nil
+	}
+	if !hostapdReachable(iface) {
+		return fmt.Errorf("%s has no hostapd control socket, so its access point "+
+			"cannot be enabled or disabled from here", iface)
+	}
+
+	cmd, verb := "DISABLE", "taken down"
+	if on {
+		cmd, verb = "ENABLE", "brought back up"
+	}
+	// The reply is NOT the answer, for the reason reenableAP documents at
+	// length: hostapd acknowledges ENABLE only once the BSS is up, and on
+	// mt7921u at 80MHz that outlasts the socket's 2s deadline, so a healthy
+	// recovery reports "i/o timeout". The wait below is the verdict.
+	if _, err := hostapdSend(iface, cmd); err != nil {
+		fmt.Printf("infinite-streaming-boa: %s %s: %v\n", iface, cmd, err)
+	}
+	if !waitAPState(iface, 30*time.Second, on) {
+		e.forgetRadioOn()
+		return fmt.Errorf("%s access point did not come %s within 30s", iface,
+			map[bool]string{true: "up", false: "down"}[on])
+	}
+
+	// SAID PLAINLY, and differently from a power cut. The event log is where an
+	// operator later reconstructs what a client was reacting to, and "the AP
+	// went away" and "the AP was switched off" produce different client
+	// behaviour -- so they must not read the same afterwards.
+	if on {
+		e.logEvent(EventRadio, iface, "", "%s access point %s", iface, verb)
+	} else {
+		e.logEvent(EventRadio, iface, "",
+			"%s access point %s — unlike a power cut, the radio is still on and "+
+				"clients are told it has gone", iface, verb)
+	}
+	e.forgetRadioOn()
+	e.syncAPServing(iface)
+	return nil
+}
+
+// hushTeardown asks hostapd to stop broadcasting a deauthentication frame when
+// the access point starts or stops.
+//
+// Not set in the shipped configs, so it defaults to 1 and the box announces
+// itself at both ends of every outage -- including the recovery from one that
+// was deliberately silent. That announcement lands on precisely the clients the
+// measurement is watching: a station that has not noticed the outage yet still
+// thinks it is associated, and the broadcast deauth on AP start is what tells
+// it otherwise. See #224.
+//
+// Best effort and quiet on failure: it is settable at runtime (verified), but
+// on a wedged radio the socket answers nothing and there is no point reporting
+// the same silence twice -- the rebuild is about to say it far more loudly.
+//
+// This governs the BROADCAST frame only. hostapd may still deauthenticate
+// stations individually while flushing them, which cannot be confirmed from
+// this box: proving what leaves the antenna needs a receiver, and both radios
+// here are access points (#136).
+func hushTeardown(iface string) {
+	_, _ = hostapdSend(iface, "SET broadcast_deauth 0")
+}
+
+// hushRadios turns off the start/stop announcement on every radio the box
+// serves, at daemon startup.
+//
+// The shipped config carries the same setting, but a config only takes effect
+// on a reflash and this takes effect on a deploy. Both, deliberately: new
+// images are right by construction, and boxes already built are fixed the next
+// time anything is pushed to them.
+//
+// Radios that cannot be reached are skipped quietly. hostapd may not be up yet
+// -- this runs early in start -- and the setting is re-applied on the next
+// daemon start anyway; a warning here would fire on every boot of a box with a
+// radio it does not serve.
+func (e *Engine) hushRadios() {
+	if e.cfg.Demo {
+		return
+	}
+	for _, w := range e.cfg.WlanPorts {
+		if hostapdReachable(w) {
+			hushTeardown(w)
+		}
+	}
+}
+
 // rebuildBSS tears the access point down and builds it again, which is the one
 // thing measured to clear the wedge.
 //
@@ -325,6 +437,9 @@ func (e *Engine) rebuildBSS(iface string) bool {
 	e.logEvent(EventWarning, iface, "",
 		"%s came back powered but with no access point on the air — rebuilding it",
 		iface)
+	// BEFORE the teardown, so the recovery does not announce itself to clients
+	// still working out that the outage happened. See hushTeardown and #224.
+	hushTeardown(iface)
 	if _, err := hostapdSend(iface, "DISABLE"); err != nil {
 		fmt.Printf("infinite-streaming-boa: %s DISABLE during rebuild: %v\n", iface, err)
 	}

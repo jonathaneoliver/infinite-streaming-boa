@@ -113,6 +113,24 @@ export function useBridge(active: Ref<boolean>) {
         : `${b.iface}: powered OFF — no client was told.`,
     );
 
+  /**
+   * Take the ACCESS POINT down, leaving the radio powered.
+   *
+   * The other half of the pair, and deliberately worded to contrast with
+   * setPower above. Same visible outcome -- the network goes away -- by the
+   * opposite mechanism: rfkill stops the transmitter so nothing can be said,
+   * while this closes the BSS with the transmitter still running, so the
+   * departure is announced and the client acts on being told rather than on
+   * working it out. That difference is the whole reason both controls exist.
+   */
+  const setAPEnabled = (iface: string, on: boolean) =>
+    act(`/api/bridge/radios/${encodeURIComponent(iface)}/ap?on=${on ? 1 : 0}`, (b) =>
+      b.enabled
+        ? `${b.iface}: access point back up. Clients can associate again.`
+        : `${b.iface}: access point DOWN — the radio is still transmitting, so ` +
+          `unlike a power cut the clients were told it went away.`,
+    );
+
   const powerOutage = (iface: string, sec: number) =>
     act(`/api/bridge/radios/${encodeURIComponent(iface)}/power?dur=${sec}`, (b) =>
       `${b.iface}: power cut for ${b.dur_sec}s. Nothing was announced — clients ` +
@@ -293,7 +311,7 @@ export function useBridge(active: Ref<boolean>) {
   return {
     info, survey, scan, error, actionMsg, busy,
     scans, scanSummaries, airtimePct,
-    load, loadSurvey, deauthAll, setPower, powerOutage, scanBand,
+    load, loadSurvey, deauthAll, setPower, setAPEnabled, powerOutage, scanBand,
     applyProfile, setThreshold, evict, gather, linkAll, moveChannel,
   };
 }

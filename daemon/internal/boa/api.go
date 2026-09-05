@@ -44,6 +44,7 @@ func (a *API) Routes() *http.ServeMux {
 	mux.HandleFunc("POST /api/bridge/radios/{iface}/deauth-all", a.postDeauthAll)
 	mux.HandleFunc("POST /api/bridge/radios/{iface}/link-all", a.postLinkAll)
 	mux.HandleFunc("POST /api/bridge/radios/{iface}/power", a.postRadioPower)
+	mux.HandleFunc("POST /api/bridge/radios/{iface}/ap", a.postAPEnabled)
 	mux.HandleFunc("POST /api/bridge/radios/{iface}/scan", a.postScan)
 	mux.HandleFunc("POST /api/bridge/radios/{iface}/profile", a.postRadioProfile)
 	mux.HandleFunc("POST /api/bridge/radios/{iface}/threshold", a.postThreshold)
@@ -478,6 +479,27 @@ func (a *API) postLinkAll(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"iface": iface, "action": "link_all", "kind": kind, "stations": n,
+	})
+}
+
+// postAPEnabled takes this radio's access point down or brings it back, leaving
+// the radio powered.
+//
+// A SEPARATE verb from power, not a mode of it, because the two impairments are
+// different in the way that matters: power is rfkill and the client is told
+// nothing, while this is hostapd closing the BSS with the transmitter still on,
+// so the departure is announced. Folding them into one control would hide the
+// only variable an operator is trying to change.
+func (a *API) postAPEnabled(w http.ResponseWriter, r *http.Request) {
+	iface := r.PathValue("iface")
+	q := r.URL.Query()
+	on := q.Get("on") != "0" && !strings.EqualFold(q.Get("on"), "false")
+	if err := a.e.SetAPEnabled(iface, on); err != nil {
+		writeErr(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"iface": iface, "action": "ap", "enabled": on,
 	})
 }
 

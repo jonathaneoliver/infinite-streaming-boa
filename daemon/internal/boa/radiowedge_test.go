@@ -183,13 +183,19 @@ func TestRebuildBSSWaitsForTheTeardown(t *testing.T) {
 	wedgeEngine().rebuildBSS("wlan-usb")
 
 	cmds := f.commands()
-	if len(cmds) < 2 || cmds[0] != "DISABLE" {
-		t.Fatalf("rebuild did not start by tearing down: %v", cmds)
+	// The hush comes FIRST, before the teardown it is meant to silence: a
+	// broadcast deauth sent on the way down would announce the recovery to
+	// clients still working out that the outage happened (#224).
+	if len(cmds) < 3 || cmds[0] != "SET broadcast_deauth 0" {
+		t.Fatalf("rebuild did not silence the teardown first: %v", cmds)
+	}
+	if cmds[1] != "DISABLE" {
+		t.Fatalf("rebuild did not tear down after hushing: %v", cmds)
 	}
 	// A STATUS between the two proves it waited on the answer rather than on a
 	// sleep chosen to look long enough.
 	var sawStatusBetween bool
-	for _, c := range cmds[1:] {
+	for _, c := range cmds[2:] {
 		if c == "ENABLE" {
 			break
 		}
