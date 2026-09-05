@@ -26,7 +26,12 @@ export function useDevice() {
   const conflict = ref<string | null>(null);
   const timers = new Map<string, number>();
 
-  async function send(path: string, method: string, body: unknown) {
+  async function send(
+    path: string,
+    method: string,
+    body: unknown,
+    retried = false,
+  ): Promise<Policy | null> {
     writing.value = true;
     conflict.value = null;
     try {
@@ -37,9 +42,31 @@ export function useDevice() {
       });
       if (r.status === 409) {
         const j = await r.json();
+        const current = j.current as Policy | undefined;
+        /*
+         * RETRY ONCE against the revision the server just handed back.
+         *
+         * A 409 means two different things wearing one status code. It can be a
+         * real collision -- someone editing this device elsewhere -- and it can
+         * be this tab racing its own previous write, because the revision is
+         * read from the SNAPSHOT and the snapshot lags the store by up to a
+         * tick. The second case is not a conflict with anyone; it is the same
+         * operator, and it happens whenever a debounced control is used twice
+         * inside a second.
+         *
+         * Left alone it fails SILENTLY: the write is dropped, the interface
+         * keeps showing the value that was asked for, and the control reads as
+         * broken. Retrying once with the returned revision settles the
+         * self-race, and a second refusal is a genuine collision, which is
+         * reported.
+         */
+        if (current && !retried) {
+          const b = body as Record<string, unknown>;
+          return send(path, method, { ...b, base_revision: current.rev }, true);
+        }
         conflict.value =
           'This device was changed somewhere else. Showing the current settings.';
-        return j.current as Policy;
+        return current ?? null;
       }
       if (!r.ok) {
         conflict.value = (await r.json()).error ?? `HTTP ${r.status}`;

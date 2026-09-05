@@ -280,8 +280,13 @@ type RssiView struct {
 	// is the whole explanation of why the directions differ.
 	DownDbm float64 `json:"down_dbm"`
 	UpDbm   float64 `json:"up_dbm"`
-	Down    Shape   `json:"down"`
-	Up      Shape   `json:"up"`
+	// The radio actually used, which under AutoBand is the model's own choice
+	// and has to be shown -- a control set to "auto" that does not say what it
+	// picked is not reporting, it is hiding.
+	FreqMHz  int   `json:"freq_mhz,omitempty"`
+	WidthMHz int   `json:"width_mhz,omitempty"`
+	Down     Shape `json:"down"`
+	Up       Shape `json:"up"`
 }
 
 // RssiModel is a modelled signal level, and the exponent used to render it as a
@@ -310,6 +315,19 @@ type RssiModel struct {
 	// as capable as the access point -- and an omitted field would be
 	// indistinguishable from someone asking for that.
 	TxDb float64 `json:"tx_db"`
+
+	// FreqMHz and WidthMHz are the radio to model, for a client that is not on
+	// one -- a device on the wired port.
+	//
+	// Ignored when the client IS on a radio: there the band is a fact to be
+	// read, not a choice to be made, and letting it be overridden would let the
+	// interface disagree with the hardware. Only ever consulted as the answer
+	// to "there is no radio here, so which one should this behave like".
+	FreqMHz  int `json:"freq_mhz,omitempty"`
+	WidthMHz int `json:"width_mhz,omitempty"`
+	// AutoBand lets the model choose the radio at each distance, rather than
+	// holding the one it was given. Only meaningful without a real radio.
+	AutoBand bool `json:"auto_band,omitempty"`
 }
 
 // LadderFor returns this device's ladder for one service.

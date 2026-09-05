@@ -319,6 +319,83 @@ func shapeAtLevel(rssiDbm float64, freqMHz, widthMHz int) Shape {
 func round1(v float64) float64 { return math.Round(v*10) / 10 }
 
 /*
+ * The radios a client with none of its own can be modelled as being on.
+ *
+ * Two, because this box runs exactly one of each, and they are the two cases
+ * worth testing: the wide fast one that dies sooner and the narrow slow one
+ * that reaches further. The first is the REFERENCE -- see BestBandFor.
+ */
+var ModelBands = []struct{ FreqMHz, WidthMHz int }{
+	{FreqMHz: 5745, WidthMHz: 80},
+	{FreqMHz: 2462, WidthMHz: 20},
+}
+
+/*
+ * BestBandFor picks the radio that gives the better link at one distance.
+ *
+ * This is the rule a band switch should actually use, and it is deliberately
+ * not "5GHz until some threshold". Quality already accounts for both things
+ * that decide the answer -- 5GHz loses 7.3 dB more to the path at the same
+ * distance, and its wider channel needs 6 dB more signal for the same error
+ * rate -- so comparing the two curves gives the crossover rather than assuming
+ * it. It generalises: with two 5GHz radios of different widths the narrower one
+ * would win further out, which a band-name rule could never express.
+ *
+ * NO HYSTERESIS, and that is not an omission. Hysteresis exists to stop a
+ * jittering input flapping the choice; the input here is a slider a person
+ * moves, so for a given distance the answer is always the same and there is
+ * nothing to flap. A real client roaming on measured RSSI is the case that
+ * needs it, and that is not this.
+ *
+ * The stored level is read as the REFERENCE band's, because a level in dBm is
+ * only meaningful against a frequency -- the same distance is 7.3 dB weaker on
+ * 5GHz. Distance is the band-independent quantity, so the level is converted to
+ * one and both bands are evaluated from there.
+ */
+func BestBandFor(refDbm float64, m RssiModel) (freqMHz, widthMHz int) {
+	ref := ModelBands[0]
+	dist := DistanceFor(refDbm, ref.FreqMHz, m.N)
+	best, bestQ, bestLvl := ref, -1.0, math.Inf(-1) // bestQ is Mbps
+	for _, b := range ModelBands {
+		// The level this band would deliver at that distance, after the
+		// device's own antenna.
+		lvl := RssiAt(dist, b.FreqMHz, m.N) - m.RxDb
+		/*
+		 * Scored on THROUGHPUT, not on quality.
+		 *
+		 * Quality saturates at 1 once a link has margin to spare, and 2.4GHz
+		 * gets there sooner because its narrower channel has a lower floor. So
+		 * comparing quality made 2.4GHz win at every distance including three
+		 * metres, where 5GHz would carry eight times as much -- both links were
+		 * "perfect" and the tie went to the wrong one.
+		 *
+		 * Throughput separates them where quality cannot: it carries the
+		 * ceiling as well as the condition, which is exactly the trade a band
+		 * choice is. It is also what a real client's steering optimises for.
+		 */
+		q := shapeAtLevel(lvl, b.FreqMHz, b.WidthMHz).RateMbps
+		switch {
+		case q > bestQ+1e-9:
+			best, bestQ, bestLvl = b, q, lvl
+		case math.Abs(q-bestQ) <= 1e-9 && q <= 0 && lvl > bestLvl:
+			/*
+			 * BOTH DEAD, so break the tie on raw level.
+			 *
+			 * Quality clamps to zero past the floor, so beyond the range of
+			 * every radio they score the same and the first listed would win by
+			 * default -- which sent a walk back to 5GHz once it was out of
+			 * range of everything, a second crossover on the way out. Choosing
+			 * the stronger level keeps it on the radio that will recover first
+			 * coming back, and makes the walk cross over exactly once. There is
+			 * a test for the count.
+			 */
+			best, bestLvl = b, lvl
+		}
+	}
+	return best.FreqMHz, best.WidthMHz
+}
+
+/*
  * RssiShapesFor resolves one client's distance model to the shapes it implies.
  *
  * ONE resolver, used by both the tick that applies the shapes and the snapshot
@@ -336,29 +413,46 @@ func RssiShapesFor(c Client) (down, up Shape, freqMHz int, ok bool) {
 		return Shape{}, Shape{}, 0, false
 	}
 	/*
-	 * WI-FI ONLY, and this is a refusal rather than a default.
+	 * The radio to model: READ from the client when it is on one, CHOSEN when
+	 * it is not.
 	 *
-	 * Distance is a property of a radio link. A device on lan0 is on a cable,
-	 * where being further away costs nothing a model could express, so there is
-	 * no honest curve to apply -- exactly as drop, nudge and deadzone are
-	 * absent for a wired client because it has no association to disturb.
+	 * On a Wi-Fi client the band is a fact, and letting it be overridden would
+	 * let the interface disagree with the hardware. On the wired port there is
+	 * no fact to read, so the operator names the radio to imitate -- which is a
+	 * legitimate test: it is the Wi-Fi degradation profile with none of a real
+	 * radio's variability underneath, so a run repeats exactly.
 	 *
-	 * This used to fall back to 5GHz at 80MHz when a client had no radio, which
-	 * meant a wired device could be handed a 5GHz curve it has nothing to do
-	 * with. Refusing leaves the shapes clean and the control absent.
+	 * What is NOT allowed is a silent default. This once fell back to 5GHz at
+	 * 80MHz whenever a client had no radio, which handed wired devices a curve
+	 * they had nothing to do with and said nothing about it. With neither a
+	 * radio nor a choice, there is no honest curve and the model is refused.
 	 */
-	if c.RadioOn == nil || c.RadioOn.Channel == 0 {
-		return Shape{}, Shape{}, 0, false
+	var width int
+	switch {
+	case c.RadioOn != nil && c.RadioOn.Channel != 0:
+		freqMHz = freqForChannel(c.RadioOn.Channel)
+		width = c.RadioOn.WidthMHz
+	case m.AutoBand:
+		freqMHz, width = BestBandFor(m.Dbm, *m)
+	case m.FreqMHz > 0:
+		freqMHz, width = m.FreqMHz, m.WidthMHz
 	}
-	freqMHz = freqForChannel(c.RadioOn.Channel)
 	if freqMHz == 0 {
 		return Shape{}, Shape{}, 0, false
 	}
-	width := c.RadioOn.WidthMHz
 	if width <= 0 {
 		width = 20
 	}
-	dn, upl := LevelsFor(m.Dbm, *m)
+	// Under AutoBand the stored level belongs to the reference band, so it is
+	// re-expressed against whichever band was chosen before the shapes are
+	// derived. Otherwise a switch would change the curve without changing the
+	// level feeding it.
+	path := m.Dbm
+	if m.AutoBand && (c.RadioOn == nil || c.RadioOn.Channel == 0) {
+		dist := DistanceFor(m.Dbm, ModelBands[0].FreqMHz, m.N)
+		path = RssiAt(dist, freqMHz, m.N)
+	}
+	dn, upl := LevelsFor(path, *m)
 	down, up = ShapeForLevels(dn, upl, freqMHz, width)
 	return down, up, freqMHz, true
 }
@@ -372,13 +466,35 @@ func rssiViewFor(c Client) *RssiView {
 		return nil
 	}
 	m := c.Policy.Rssi
-	dn, upl := LevelsFor(m.Dbm, *m)
+	// The level is quoted against the band actually in use, so an auto switch
+	// moves the two figures the way a real band change would.
+	path := m.Dbm
+	if m.AutoBand && (c.RadioOn == nil || c.RadioOn.Channel == 0) {
+		dist := DistanceFor(m.Dbm, ModelBands[0].FreqMHz, m.N)
+		path = RssiAt(dist, freq, m.N)
+	}
+	dn, upl := LevelsFor(path, *m)
 	return &RssiView{
-		Dbm:       m.Dbm,
-		DistanceM: round1(DistanceFor(m.Dbm, freq, m.N)),
+		Dbm:       round1(path),
+		DistanceM: round1(DistanceFor(m.Dbm, ModelBands[0].FreqMHz, m.N)),
 		DownDbm:   round1(dn),
 		UpDbm:     round1(upl),
+		FreqMHz:   freq,
+		WidthMHz:  widthOf(c, m, freq),
 		Down:      down,
 		Up:        up,
 	}
+}
+
+// widthOf reports the width that went with the resolved frequency, for display.
+func widthOf(c Client, m *RssiModel, freqMHz int) int {
+	if c.RadioOn != nil && c.RadioOn.Channel != 0 {
+		return c.RadioOn.WidthMHz
+	}
+	for _, b := range ModelBands {
+		if b.FreqMHz == freqMHz {
+			return b.WidthMHz
+		}
+	}
+	return m.WidthMHz
 }

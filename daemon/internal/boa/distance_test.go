@@ -279,6 +279,92 @@ func TestTheAntennaIsReciprocalAndTheTransmitterIsNot(t *testing.T) {
 	}
 }
 
+/*
+ * AUTO picks the radio that is actually better at that distance, and the
+ * crossover falls out of the model rather than being a threshold someone typed.
+ *
+ * Close in, the wide fast radio wins on throughput. Far out, 2.4GHz wins twice
+ * over -- 7.3 dB less path loss at the same distance, and 6 dB more margin from
+ * the narrower channel -- so it is still carrying traffic where 80MHz has hit
+ * its floor.
+ */
+func TestAutoPicksTheBetterRadioAtEachDistance(t *testing.T) {
+	m := RssiModel{N: DefaultExponent}
+	ref := ModelBands[0] // 5GHz 80MHz
+
+	near := RssiAt(3, ref.FreqMHz, m.N)
+	if f, _ := BestBandFor(near, m); f != ref.FreqMHz {
+		t.Errorf("close in, the fast radio should win, got %d MHz", f)
+	}
+
+	/*
+	 * And it must still win for a device with losses of its own.
+	 *
+	 * This is the case that exposed scoring on quality rather than throughput:
+	 * quality saturates once a link has margin, and 2.4GHz saturates sooner, so
+	 * a phone at 4m had both bands "perfect" and the tie went to the slower
+	 * one. Only the ceiling separates them there.
+	 */
+	phone := RssiModel{N: DefaultExponent, RxDb: DefaultRxDb, TxDb: DefaultTxDb}
+	if f, _ := BestBandFor(RssiAt(4, ref.FreqMHz, phone.N), phone); f != ref.FreqMHz {
+		t.Errorf("a phone at 4m should still be on the fast radio, got %d MHz", f)
+	}
+
+	far := RssiAt(80, ref.FreqMHz, m.N)
+	if f, _ := BestBandFor(far, m); f != 2462 {
+		t.Errorf("far out, 2.4GHz should win, got %d MHz", f)
+	}
+}
+
+/*
+ * The choice is DETERMINISTIC, which is what makes hysteresis unnecessary.
+ *
+ * Hysteresis exists to stop a jittering input flapping the choice. This input
+ * is a slider a person moves, so the same distance must always give the same
+ * radio -- and a walk outwards must cross over exactly once, never oscillate.
+ */
+func TestAutoCrossesOverExactlyOnce(t *testing.T) {
+	m := RssiModel{N: DefaultExponent}
+	ref := ModelBands[0]
+	var flips int
+	prev, _ := BestBandFor(RssiAt(1, ref.FreqMHz, m.N), m)
+	for d := 1.0; d <= 300; d += 0.5 {
+		f, _ := BestBandFor(RssiAt(d, ref.FreqMHz, m.N), m)
+		if f != prev {
+			flips++
+			prev = f
+		}
+	}
+	if flips != 1 {
+		t.Errorf("a walk from 1m to 300m should change radio exactly once, got %d changes", flips)
+	}
+}
+
+// Auto is only for a client with no radio of its own: where there is a real
+// one, the band is a fact rather than a choice.
+func TestAutoIsIgnoredWhenTheClientHasARadio(t *testing.T) {
+	c := Client{
+		MAC: "aa:bb:cc:dd:ee:10", IP: "192.168.0.70", Present: true,
+		RadioOn: &RadioOn{Channel: 11, WidthMHz: 20}, // a real 2.4GHz radio
+		Policy: Policy{
+			MAC: "aa:bb:cc:dd:ee:10", Enabled: true,
+			// Auto set, and a 5GHz choice that must both be ignored.
+			Rssi: &RssiModel{
+				Dbm: -60, N: DefaultExponent, AutoBand: true,
+				FreqMHz: 5745, WidthMHz: 80,
+			},
+		},
+	}
+	_, _, freq, ok := RssiShapesFor(c)
+	if !ok {
+		t.Fatal("a client on a radio should still resolve")
+	}
+	if freq != 2462 {
+		t.Errorf("the client's own radio must win over auto and over a stored "+
+			"choice, got %d MHz", freq)
+	}
+}
+
 // Both directions cross the SAME channel, so a wider channel or a different
 // band moves them together. Only the transmit power differs.
 func TestBothDirectionsShareTheChannel(t *testing.T) {

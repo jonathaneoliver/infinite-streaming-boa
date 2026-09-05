@@ -2,7 +2,8 @@
 import { computed, ref, watch } from 'vue';
 import type { Client, Shape, Series, ChartPrefs, Pattern, RssiModel } from '@/types';
 import {
-  CLEAN, DEFAULT_EXPONENT, DEFAULT_RX_DB, DEFAULT_TX_DB, DEVELOPER, DEVICE_KINDS, PRESETS,
+  CLEAN, DEFAULT_EXPONENT, DEFAULT_RX_DB, DEFAULT_TX_DB, DEVELOPER, DEVICE_KINDS,
+  MODEL_BANDS, PRESETS,
   distanceFor, freqForChannel, ntopngUrl, patternFromPolicy,
 } from '@/types';
 import { setShapeAt } from '@/lib/pattern';
@@ -507,7 +508,30 @@ function dbmForPos(pos: number): number {
   return RSSI_NEAR - (pos - 1);
 }
 
-const modelFreq = computed(() => freqForChannel(props.client.radio_on?.channel ?? 0));
+/*
+ * The radio being modelled: the client's own when it has one, the chosen one
+ * when it does not.
+ *
+ * A wired device has no band to read, so it has to be named -- and naming it is
+ * a legitimate test rather than a fudge: it is the Wi-Fi profile without a real
+ * radio's variability underneath, which is what makes a run repeat exactly.
+ */
+const onRadio = computed(() => !!props.client.radio_on?.channel);
+const modelAuto = computed(() => !!props.client.policy.rssi?.auto_band);
+/* Under auto the daemon decides, so its answer is the one to show -- otherwise
+   the label and the conditioning could name different radios. */
+const modelFreq = computed(() =>
+  onRadio.value
+    ? freqForChannel(props.client.radio_on!.channel!)
+    : props.client.rssi_run?.freq_mhz
+      ?? props.client.policy.rssi?.freq_mhz
+      ?? MODEL_BANDS[0].freq);
+const modelWidth = computed(() =>
+  onRadio.value
+    ? props.client.radio_on!.width_mhz ?? 20
+    : props.client.policy.rssi?.width_mhz ?? MODEL_BANDS[0].width);
+const modelBand = computed(() =>
+  MODEL_BANDS.find((b) => b.freq === modelFreq.value)?.key);
 const modelN = computed(() => props.client.policy.rssi?.n || DEFAULT_EXPONENT);
 const modelRx = computed(() => props.client.policy.rssi?.rx_db ?? DEFAULT_RX_DB);
 const modelTx = computed(() => props.client.policy.rssi?.tx_db ?? DEFAULT_TX_DB);
@@ -550,6 +574,34 @@ function onDistance(e: Event) {
   emit('distance', {
     dbm: dbmForPos(pos), n: modelN.value,
     rx_db: modelRx.value, tx_db: modelTx.value,
+    ...bandFields(),
+  });
+}
+
+/* The chosen radio travels with the model only when there is no real one to
+   read, so a Wi-Fi client can never carry a band that contradicts its own. */
+function bandFields() {
+  if (onRadio.value) return {};
+  return modelAuto.value
+    ? { auto_band: true }
+    : { freq_mhz: modelFreq.value, width_mhz: modelWidth.value };
+}
+
+function onBand(freq: number, width: number) {
+  emit('distance', {
+    dbm: modelDbm.value, n: modelN.value,
+    rx_db: modelRx.value, tx_db: modelTx.value,
+    freq_mhz: freq, width_mhz: width,
+  });
+}
+
+/** Hand the choice to the model, which picks whichever radio is better at each
+ *  distance -- the crossover then comes out of the curves rather than a rule. */
+function onAutoBand() {
+  emit('distance', {
+    dbm: modelDbm.value, n: modelN.value,
+    rx_db: modelRx.value, tx_db: modelTx.value,
+    auto_band: true,
   });
 }
 
@@ -557,6 +609,7 @@ function onDistance(e: Event) {
 function onKind(rx: number, tx: number) {
   emit('distance', {
     dbm: modelDbm.value, n: modelN.value, rx_db: rx, tx_db: tx,
+    ...bandFields(),
   });
 }
 
@@ -917,12 +970,12 @@ function fmtBytes(n: number): string {
          standing for a whole set of impairments. It differs in staying in
          force -- a preset is a value you then edit, this keeps driving the
          device until it is switched off or you move a slider by hand. -->
-    <!-- WI-FI ONLY. Distance is a property of a radio link; a device on lan0
-         is on a cable, where being further away costs nothing this could
-         express. Absent rather than disabled, on the same reasoning the link
-         events use for a wired client -- there is no association to disturb,
-         and no air to cross. -->
-    <div v-if="client.medium === 'wifi'" class="distance" style="padding: 8px 14px 0">
+    <!-- Shown for a wired client too. The impairments are netem either way, so
+         a device on lan0 can be given Wi-Fi conditions -- and there is a real
+         reason to: it is the same degradation profile with none of a radio's
+         own variability underneath, so the run repeats exactly. What it cannot
+         do is INFER the band, which is why that becomes a choice below. -->
+    <div class="distance" style="padding: 8px 14px 0">
       <label class="dist-row">
         <span class="dist-name">distance</span>
         <input
@@ -947,6 +1000,30 @@ function fmtBytes(n: number): string {
            them is that a client transmits more quietly than an access point --
            which is why its uplink fails first. Named for the device rather than
            the dB, because that is how anyone thinks about it. -->
+      <!-- Only when there is no radio to read it from. On a Wi-Fi client the
+           band is a fact, and offering to change it would invite the interface
+           to disagree with the hardware. -->
+      <div v-if="modelOn && !onRadio" class="dist-kinds">
+        <span class="dist-name">radio</span>
+        <button
+          v-for="b in MODEL_BANDS" :key="b.key"
+          class="ghost" :class="{ on: !modelAuto && modelBand === b.key }"
+          :title="b.note"
+          @click="onBand(b.freq, b.width)"
+        >{{ b.label }}</button>
+        <button
+          class="ghost" :class="{ on: modelAuto }"
+          title="Let the model choose: whichever radio gives the better link at this distance. 5 GHz is faster close in; 2.4 GHz reaches further, so it takes over further out."
+          @click="onAutoBand"
+        >auto</button>
+        <span v-if="modelAuto" class="dist-why meta">
+          on {{ modelBand === '5' ? '5 GHz' : '2.4 GHz' }} at this distance
+        </span>
+        <span v-else class="dist-why meta">
+          this device is on a cable; these are Wi-Fi conditions imposed on it
+        </span>
+      </div>
+
       <div v-if="modelOn" class="dist-kinds">
         <span class="dist-name">device</span>
         <button
@@ -982,8 +1059,15 @@ function fmtBytes(n: number): string {
            change what the radio reports. -->
       <p v-if="modelOn" class="meta dist-note">
         The sliders below show what this distance implies — move one and you
-        take over from here. Modelled, not measured: the signal and PHY rate
-        still report the real radio, which is why they disagree with this.
+        take over from here.
+        <template v-if="onRadio">
+          Modelled, not measured: the signal and PHY rate still report the real
+          radio, which is why they disagree with this.
+        </template>
+        <template v-else>
+          Modelled, not measured: this device is on a cable, so nothing here is
+          reading a radio at all.
+        </template>
       </p>
     </div>
 

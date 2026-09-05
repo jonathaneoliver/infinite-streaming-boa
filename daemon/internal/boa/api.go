@@ -629,6 +629,11 @@ func validRssiModel(m RssiModel) error {
 		return fmt.Errorf("rx_db must be between 0 and %g", MaxDeviceDb)
 	case m.TxDb < 0 || m.TxDb > MaxDeviceDb:
 		return fmt.Errorf("tx_db must be between 0 and %g", MaxDeviceDb)
+	case m.FreqMHz != 0 && channelForFreq(m.FreqMHz) == 0:
+		return fmt.Errorf("freq_mhz %d is not a channel this box recognises", m.FreqMHz)
+	case m.WidthMHz != 0 && m.WidthMHz != 20 && m.WidthMHz != 40 &&
+		m.WidthMHz != 80 && m.WidthMHz != 160:
+		return fmt.Errorf("width_mhz must be 20, 40, 80 or 160")
 	}
 	return nil
 }

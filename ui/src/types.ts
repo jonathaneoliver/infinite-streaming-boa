@@ -243,7 +243,25 @@ export interface RssiModel {
   rx_db: number;
   /** The additional loss on uplink only, from transmitting more quietly. */
   tx_db: number;
+  /** The radio to imitate, for a client that is not on one. Ignored when it is. */
+  freq_mhz?: number;
+  width_mhz?: number;
+  /** Let the model choose the radio at each distance. */
+  auto_band?: boolean;
 }
+
+/**
+ * The radios a wired client can be modelled as being on.
+ *
+ * Two, because this box runs exactly one of each and they are the two cases
+ * worth testing: the wide fast one that dies sooner, and the narrow slow one
+ * that reaches further. The widths are what `wlan-usb` and `wlan0` actually
+ * run, so "5 GHz" means the same thing here as it does in the rack.
+ */
+export const MODEL_BANDS = [
+  { key: '5', label: '5 GHz', freq: 5745, width: 80, note: 'As if on the 5 GHz radio: 80 MHz, faster and shorter-ranged.' },
+  { key: '2.4', label: '2.4 GHz', freq: 2462, width: 20, note: 'As if on the 2.4 GHz radio: 20 MHz, slower and longer-ranged.' },
+] as const;
 
 /**
  * How loud a client is, named for the reason rather than the number.
@@ -294,6 +312,9 @@ export interface RssiView {
    *  and transmit power come off the path. Both move when either control does. */
   down_dbm: number;
   up_dbm: number;
+  /** The radio actually used — under `auto_band` this is the model's choice. */
+  freq_mhz?: number;
+  width_mhz?: number;
   down: Shape;
   up: Shape;
 }
