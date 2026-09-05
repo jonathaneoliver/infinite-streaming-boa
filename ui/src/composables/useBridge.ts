@@ -1,4 +1,5 @@
 import { computed, ref, watch, onUnmounted, type Ref } from 'vue';
+import { onStream, transport } from '@/composables/useStream';
 import type { BridgeInfo, ScanResult, SurveyResult } from '@/types';
 
 /**
@@ -24,33 +25,6 @@ export function useBridge(active: Ref<boolean>) {
   const actionMsg = ref('');
   const busy = ref(false);
   let timer = 0;
-
-  /**
-   * Look again shortly after an action, twice.
-   *
-   * The single reload that follows a command is honest but early. Controls
-   * return as soon as the command is ACCEPTED -- deliberately, so a switch does
-   * not hold the operator's hand down while a radio re-initialises -- which
-   * means the state they change has usually not changed yet when that reload
-   * happens. The daemon confirms in the background a moment later, and the
-   * interface would otherwise not ask again until its next poll, five seconds
-   * on. Pressing "disable AP" and watching the row go on saying "enabled" for
-   * five seconds reads as a control that did not work.
-   *
-   * Two follow-ups rather than a faster poll: this is a burst of interest right
-   * after a press, not a reason to triple the request rate for a page that is
-   * usually just being watched. 1.2s catches an access point going up or down
-   * -- measured at under a second on both radios -- and 4s catches the slower
-   * confirmations, a power-on among them.
-   *
-   * Timers are not cancelled if another action follows. A second press
-   * schedules its own pair, and an extra reload of a small cached endpoint
-   * costs less than the bookkeeping to prevent it.
-   */
-  function settle() {
-    window.setTimeout(load, 1200);
-    window.setTimeout(load, 4000);
-  }
 
   async function load() {
     try {
@@ -85,8 +59,12 @@ export function useBridge(active: Ref<boolean>) {
         return false;
       }
       actionMsg.value = describe(body);
+      // One reload, and it is honest but early: controls return as soon as a
+      // command is ACCEPTED, so the state they change has usually not changed
+      // yet. The daemon confirms a moment later and the change arrives on the
+      // stream. This used to be followed by reloads at 1.2s and 4s -- guesses
+      // at how long the box would take, made when nothing pushed.
       await load();
-      settle();
       return true;
     } catch (e) {
       error.value = String(e);
@@ -343,16 +321,57 @@ export function useBridge(active: Ref<boolean>) {
     }
   }
 
+  /**
+   * The view arrives on the stream when it CHANGES, and is polled otherwise.
+   *
+   * The daemon rebuilds this every couple of seconds and emits only when the
+   * content actually differs, so an idle box is quiet and a radio going down
+   * shows up within a second instead of on the next five-second tick. That is
+   * what let the post-action reload timers go: they were guesses at how long
+   * the box would take, needed only because nothing pushed.
+   *
+   * Polling stays as the fallback and is not a legacy path. Conditioning a link
+   * means the operator may have just made their own connection to this box
+   * unreliable on purpose, and the interface has to keep working while they do
+   * -- so when the stream is not up, this behaves exactly as it did before.
+   */
+  let unsubscribe: (() => void) | undefined;
+
   function start() {
     void load();
+    if (!unsubscribe) {
+      unsubscribe = onStream('bridge', (data) => {
+        // Only while this view is on screen; the connection is shared and
+        // stays open for the snapshot regardless.
+        if (active.value) {
+          info.value = data as BridgeInfo;
+          error.value = '';
+        }
+      });
+    }
+    syncPolling();
+  }
+
+  function syncPolling() {
+    if (!active.value || transport.value === 'sse') {
+      if (timer) window.clearInterval(timer);
+      timer = 0;
+      return;
+    }
     if (!timer) timer = window.setInterval(load, POLL_MS);
   }
+
   function stop() {
     if (timer) window.clearInterval(timer);
     timer = 0;
+    unsubscribe?.();
+    unsubscribe = undefined;
   }
 
   watch(active, (on) => (on ? start() : stop()), { immediate: true });
+  // The stream can come and go under a page that stays put, so the decision to
+  // poll is re-made whenever the transport changes rather than only on mount.
+  watch(transport, syncPolling);
   onUnmounted(stop);
 
   return {

@@ -777,12 +777,54 @@ func (a *API) stream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// THE BRIDGE VIEW RIDES THE SAME CONNECTION, as a named event.
+	//
+	// A named frame does not reach the client's onmessage handler, so snapshot
+	// frames are untouched and an older interface simply ignores these. One
+	// connection rather than a second EventSource: browsers cap around six per
+	// origin on HTTP/1.1, and the reconnect-and-fallback logic is the part that
+	// must not be got wrong on a box whose purpose is making links unreliable --
+	// duplicating it would mean keeping two copies of it in step.
+	//
+	// Sent on CHANGE, never on a timer. The view is rebuilt every couple of
+	// seconds regardless; emitting each rebuild would push a payload that
+	// changes on the timescale of somebody plugging a cable in, at the rate of
+	// something that changes constantly. See storeBridge.
+	sendBridge := func() bool {
+		raw, err := json.Marshal(a.e.BridgeState())
+		if err != nil {
+			return true
+		}
+		if _, err := fmt.Fprintf(w, "event: bridge\ndata: %s\n\n", raw); err != nil {
+			return false
+		}
+		fl.Flush()
+		return true
+	}
+	lastBridge := a.e.BridgeVersion()
+	if !sendBridge() {
+		return
+	}
+	// Checked on a ticker rather than subscribed to, because the producer is a
+	// timer already: a rebuild happens every couple of seconds and this only
+	// has to notice that one of them differed. A second's granularity is well
+	// inside the time it takes an operator to look up from a button.
+	bridgeCheck := time.NewTicker(time.Second)
+	defer bridgeCheck.Stop()
+
 	keepalive := time.NewTicker(20 * time.Second)
 	defer keepalive.Stop()
 	for {
 		select {
 		case <-r.Context().Done():
 			return
+		case <-bridgeCheck.C:
+			if v := a.e.BridgeVersion(); v != lastBridge {
+				lastBridge = v
+				if !sendBridge() {
+					return
+				}
+			}
 		case s, ok := <-ch:
 			if !ok || !send(s) {
 				return

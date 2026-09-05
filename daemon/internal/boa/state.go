@@ -186,6 +186,16 @@ type Engine struct {
 	// that away to begin the same work again.
 	recovering map[string]bool
 
+	// bridgeVer counts CHANGES to the bridge view, not rebuilds of it.
+	//
+	// The view is rebuilt every couple of seconds whether or not anything
+	// happened, so a rebuild is not news. A version that only moves when the
+	// content actually differs is what lets the stream stay quiet on an idle
+	// box and fire immediately when a radio changes -- less traffic than the
+	// five-second poll it replaces, not more. See storeBridge.
+	bridgeVer  uint64
+	bridgeHash [32]byte
+
 	// bridgeSnap is the WHOLE bridge view, built on a timer and served from
 	// memory, because nothing in that view may be computed on a request.
 	//

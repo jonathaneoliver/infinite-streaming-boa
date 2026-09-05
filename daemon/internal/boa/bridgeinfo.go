@@ -1,6 +1,7 @@
 package boa
 
 import (
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"os/exec"
@@ -195,9 +196,7 @@ func (e *Engine) BridgeState() BridgeInfo {
 		// cache, so this cannot become the blocking path the rest of this
 		// comment is about.
 		built := e.buildBridgeState()
-		e.mu.Lock()
-		e.bridgeSnap, e.bridgeSnapAt = &built, time.Now()
-		e.mu.Unlock()
+		e.storeBridge(built)
 		return built
 	}
 
@@ -210,9 +209,9 @@ func (e *Engine) BridgeState() BridgeInfo {
 			// for the whole two minutes -- which is the pile-up this exists to
 			// prevent.
 			go func() {
-				built := e.buildBridgeState()
+				e.storeBridge(e.buildBridgeState())
 				e.mu.Lock()
-				e.bridgeSnap, e.bridgeSnapAt, e.bridgeSnapGo = &built, time.Now(), false
+				e.bridgeSnapGo = false
 				e.mu.Unlock()
 			}()
 		}
@@ -222,6 +221,46 @@ func (e *Engine) BridgeState() BridgeInfo {
 	out := *snap
 	out.ReadAgeMs = int(time.Since(at).Milliseconds())
 	return out
+}
+
+// storeBridge records a freshly built view and reports whether it CHANGED.
+//
+// One place, because there are three callers -- the first inline build, the
+// background refresh, and freshenBridge after an action -- and a version that
+// moved in some of them and not others would leave the stream silent exactly
+// when it mattered.
+//
+// Compared by hashing the marshalled view rather than by field. The payload is
+// small, the comparison runs every couple of seconds on a background goroutine,
+// and a field-by-field diff would need updating every time the struct grows --
+// which is precisely the sort of maintenance that silently stops working.
+//
+// ReadAgeMs is not part of the hash because it is computed at serve time and is
+// different on every read by definition; hashing it would report a change on
+// every rebuild and defeat the whole mechanism.
+func (e *Engine) storeBridge(built BridgeInfo) bool {
+	var h [32]byte
+	if raw, err := json.Marshal(built); err == nil {
+		h = sha256.Sum256(raw)
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	changed := h != e.bridgeHash
+	if changed {
+		e.bridgeHash = h
+		e.bridgeVer++
+	}
+	e.bridgeSnap, e.bridgeSnapAt = &built, time.Now()
+	return changed
+}
+
+// BridgeVersion is the number of CHANGES the view has been through. A reader
+// that remembers the last value it saw can tell whether anything happened
+// without comparing payloads itself.
+func (e *Engine) BridgeVersion() uint64 {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return e.bridgeVer
 }
 
 // freshenBridge rebuilds the view NOW, off the caller's goroutine, so that a
@@ -243,10 +282,7 @@ func (e *Engine) freshenBridge() {
 	e.bridgeSnapAt = time.Time{}
 	e.mu.Unlock()
 	go func() {
-		built := e.buildBridgeState()
-		e.mu.Lock()
-		e.bridgeSnap, e.bridgeSnapAt = &built, time.Now()
-		e.mu.Unlock()
+		e.storeBridge(e.buildBridgeState())
 	}()
 }
 
