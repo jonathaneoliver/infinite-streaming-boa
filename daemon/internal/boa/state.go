@@ -176,6 +176,33 @@ type Engine struct {
 	// that away to begin the same work again.
 	recovering map[string]bool
 
+	// bridgeSnap is the WHOLE bridge view, built on a timer and served from
+	// memory, because nothing in that view may be computed on a request.
+	//
+	// Caching the two obvious offenders was not enough, and the reason is the
+	// kernel rather than this code: while a USB radio reloads its firmware the
+	// driver holds rtnl_lock, so EVERY netlink call blocks behind it -- `ip
+	// addr show` and `iw` alike. There is no subset of this view that can be
+	// made safe by fixing one call site; the request path simply must not touch
+	// the kernel. Measured 2026-09-05: five consecutive polls stalled for the
+	// full 15s test timeout with the per-call caches already in place, while
+	// /api/state, which touches no netlink, answered in 10ms throughout.
+	bridgeSnap   *BridgeInfo
+	bridgeSnapAt time.Time
+	bridgeSnapGo bool
+
+	// regDom caches the regulatory domain, which is read by every bridge
+	// request and changes essentially never.
+	//
+	// `iw reg get` is an nl80211 round trip, and one that BLOCKS while a device
+	// re-initialises: with it on the request path, a single bridge poll during
+	// a radio's recovery hung for over fifteen seconds. Caching the AP status
+	// alone did not fix the freeze, because this was the other subprocess in
+	// the same handler. Issue #223.
+	regDom   string
+	regDomAt time.Time
+	regDomGo bool
+
 	// apRead caches what hostapd last said about each radio's access point,
 	// because the bridge view must NOT wait on hostapd to answer.
 	//

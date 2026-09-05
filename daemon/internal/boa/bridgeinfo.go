@@ -127,6 +127,14 @@ type BridgeInfo struct {
 	// per-channel summary travels here, never the access point list -- that is
 	// hundreds of entries on a busy band, and this payload is polled.
 	Scans map[string]ScanSummary `json:"scans,omitempty"`
+	// ReadAgeMs is how long ago this view was actually built, in milliseconds.
+	//
+	// It is built on a timer rather than per request, so it can be a couple of
+	// seconds old normally and minutes old while a radio holds rtnl_lock
+	// through a firmware reload. A view that describes a moment must say which
+	// moment, or a stale one passes for current -- and during a radio recovery
+	// that is exactly when it would mislead.
+	ReadAgeMs int `json:"read_age_ms,omitempty"`
 	// Airtime is the busy fraction of each radio's operating channel, as a
 	// percentage, for the radios whose driver reports one.
 	//
@@ -156,13 +164,74 @@ type ScanSummary struct {
 // BridgeState assembles the inventory. Best-effort by design: a box with no
 // radio, no hostapd or no USB ethernet is a normal box, and every absent piece
 // simply yields a smaller list rather than an error.
+// bridgeTTL is how old the served view may be before a refresh is started.
+// Close to the interface's own poll interval: it is what makes the view feel
+// live, and a shorter one would rebuild it more often than anyone reads it.
+const bridgeTTL = 2 * time.Second
+
+// BridgeState serves the last built view and never blocks.
+//
+// The build itself walks every interface and shells out to `ip`, `iw` and
+// hostapd. All of that is fine on a timer and fatal on a request: while a USB
+// radio reloads its firmware the driver holds rtnl_lock, so every one of those
+// calls stalls, and with the build inline the whole interface stalled with it
+// -- reported as "switching off the adapter has broken the web interface".
+//
+// The operator's requirement is the design here: the page must stay usable
+// enough to switch a downed radio back ON. That means the view may be a couple
+// of seconds old, and may be MINUTES old while a radio is wedged -- both of
+// which are better than a page that does not render. The age is reported so
+// the interface can say which it is looking at.
 func (e *Engine) BridgeState() BridgeInfo {
 	if e.cfg.Demo {
 		return demoBridgeState(e.cfg)
 	}
+
+	e.mu.RLock()
+	snap, at, running := e.bridgeSnap, e.bridgeSnapAt, e.bridgeSnapGo
+	e.mu.RUnlock()
+
+	if snap == nil {
+		// FIRST CALL ONLY: build it inline so the first page load is not empty.
+		// Nothing is wedged at startup, and every later call is served from the
+		// cache, so this cannot become the blocking path the rest of this
+		// comment is about.
+		built := e.buildBridgeState()
+		e.mu.Lock()
+		e.bridgeSnap, e.bridgeSnapAt = &built, time.Now()
+		e.mu.Unlock()
+		return built
+	}
+
+	if time.Since(at) >= bridgeTTL && !running {
+		e.mu.Lock()
+		if !e.bridgeSnapGo {
+			e.bridgeSnapGo = true
+			// One refresh at a time. Without the guard a build stuck behind
+			// rtnl_lock would be started again by every poll -- once a second,
+			// for the whole two minutes -- which is the pile-up this exists to
+			// prevent.
+			go func() {
+				built := e.buildBridgeState()
+				e.mu.Lock()
+				e.bridgeSnap, e.bridgeSnapAt, e.bridgeSnapGo = &built, time.Now(), false
+				e.mu.Unlock()
+			}()
+		}
+		e.mu.Unlock()
+	}
+
+	out := *snap
+	out.ReadAgeMs = int(time.Since(at).Milliseconds())
+	return out
+}
+
+// buildBridgeState does the actual work. BLOCKING, and only ever called from
+// BridgeState's first call or its background refresh.
+func (e *Engine) buildBridgeState() BridgeInfo {
 	bi := BridgeInfo{Bridge: e.cfg.Bridge}
 	addrs := ipAddrs()
-	country := regDomain()
+	country := e.regDomainCached()
 
 	for _, name := range netInterfaces() {
 		if name == "lo" {
@@ -358,6 +427,47 @@ func parseIPAddrs(raw []byte) map[string]ifAddrs {
 // regDomain reads the GLOBAL regulatory domain. hostapd reports no country code
 // even when configured with one, so this is the only source. It is not
 // per-interface: one answer covers the box.
+// regDomainCached serves the last regulatory domain and refreshes it in the
+// background, so `iw reg get` never runs on a request.
+//
+// A long TTL because the answer is a property of the box, not of a moment: it
+// is set at boot and changes only when somebody reconfigures the country. The
+// point is not freshness, it is that a bridge request must not wait on
+// nl80211 -- which stalls, along with everything else on that interface, while
+// a USB radio reloads its firmware.
+//
+// An empty answer is cached like any other. `iw reg get` failing is itself
+// stable -- the binary is missing, or the call is refused -- and retrying it on
+// every request would reintroduce exactly the subprocess this removes.
+const regDomTTL = 5 * time.Minute
+
+func (e *Engine) regDomainCached() string {
+	e.mu.RLock()
+	v, at, running := e.regDom, e.regDomAt, e.regDomGo
+	e.mu.RUnlock()
+
+	if !at.IsZero() && time.Since(at) < regDomTTL {
+		return v
+	}
+	if !running {
+		e.mu.Lock()
+		if !e.regDomGo {
+			e.regDomGo = true
+			go func() {
+				got := regDomain()
+				e.mu.Lock()
+				e.regDom, e.regDomAt, e.regDomGo = got, time.Now(), false
+				e.mu.Unlock()
+			}()
+		}
+		e.mu.Unlock()
+	}
+	// The previous answer while a refresh runs, and "" on the very first call.
+	// The country is a display field; an empty one for a few milliseconds at
+	// startup is not worth blocking a page for.
+	return v
+}
+
 func regDomain() string {
 	raw, err := exec.Command("iw", "reg", "get").Output()
 	if err != nil {
