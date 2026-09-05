@@ -265,6 +265,19 @@ type Policy struct {
 	classMin int        // kernel class minor for the device default class
 }
 
+// RssiView is what a distance model is imposing right now: the level asked for,
+// the distance that implies on the band this client is actually on, and the
+// shapes derived from it.
+//
+// The same relationship to RssiModel that PatternView has to Pattern -- one is
+// the intent, stored; the other is what is happening, computed each tick.
+type RssiView struct {
+	Dbm       float64 `json:"dbm"`
+	DistanceM float64 `json:"distance_m"`
+	Down      Shape   `json:"down"`
+	Up        Shape   `json:"up"`
+}
+
 // RssiModel is a modelled signal level, and the exponent used to render it as a
 // distance.
 //
@@ -406,6 +419,16 @@ type Client struct {
 	// Sweep is the ladder sweep running on this device, or the outcome of the
 	// last one. Absent when the device has never been swept this daemon run.
 	Sweep *SweepView `json:"sweep,omitempty"`
+
+	// RssiRun is what the distance model is imposing on this device, if one is
+	// set. Filled per tick and never persisted -- the stored side is
+	// Policy.Rssi, which holds only the operator's dBm.
+	//
+	// It exists so the controls can show what is ACTUALLY in force. Without it
+	// the sliders would read the stored policy, which under a model is
+	// untouched, and a device being handed 12 Mbit/s with corruption would show
+	// four sliders at zero.
+	RssiRun *RssiView `json:"rssi_run,omitempty"`
 
 	// PatternRun is the pattern playing on this device, if one is. Named apart
 	// from Policy.Pattern deliberately: that is the timeline as authored, this

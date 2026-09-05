@@ -207,13 +207,36 @@ func phyCeilingMbps(freqMHz, widthMHz int) float64 {
  *   - DELAY RISES WITH RETRIES, and jitter with it: a retried frame arrives
  *     late, and how late varies.
  *
- * Uplink is modelled as the same link seen from the other end. It is NOT
- * symmetric in reality -- a phone transmits at far lower power than an AP, so
- * uplink degrades first -- but boa's uplink shaping lives on the WAN port and
- * conditions traffic leaving the box, so a strictly-worse uplink here would
- * impose an asymmetry the test does not want. Kept proportional instead.
+ * UPLINK IS THE SAME AIR, HEARD FROM A QUIETER TRANSMITTER. Both directions
+ * cross one channel, so they share the loss, corruption and delay of that
+ * channel -- but the client is not as loud as the access point, so its frames
+ * arrive weaker and its direction fails FIRST. That is modelled by evaluating
+ * the same curve at a level offset by the power deficit, which is the honest
+ * asymmetry.
+ *
+ * It replaces a rate multiplier that was here first and was wrong: scaling
+ * uplink to a fraction of downlink models an ISP's asymmetric plan, which has
+ * nothing to do with distance and is what the named presets are for. It also
+ * had the asymmetry backwards, giving uplink a smaller pipe on an equally good
+ * link rather than an equally sized pipe on a worse one.
  */
 func ShapeForRssi(rssiDbm float64, freqMHz, widthMHz int) (down, up Shape) {
+	return shapeAtLevel(rssiDbm, freqMHz, widthMHz),
+		shapeAtLevel(rssiDbm-clientTxDeficitDb, freqMHz, widthMHz)
+}
+
+/*
+ * clientTxDeficitDb is how much quieter a client is than the access point.
+ *
+ * A phone transmits around 13-15 dBm against an AP's 20, and it has a smaller
+ * antenna. Six dB is the middle of that and is what makes uplink cross the
+ * sensitivity floor before downlink does -- so on a modelled walk the device
+ * loses the ability to be heard before it loses the ability to hear, which is
+ * the order a real walk fails in.
+ */
+const clientTxDeficitDb = 6.0
+
+func shapeAtLevel(rssiDbm float64, freqMHz, widthMHz int) Shape {
 	if widthMHz <= 0 {
 		widthMHz = 20
 	}
@@ -227,8 +250,7 @@ func ShapeForRssi(rssiDbm float64, freqMHz, widthMHz int) (down, up Shape) {
 	// zero rate, because a rate of 0 means UNLIMITED everywhere else in this
 	// codebase and would read as "no cap" rather than "nothing gets through".
 	if q <= 0 {
-		down = Shape{LossPct: 100, LossBurst: 8}
-		return down, down
+		return Shape{LossPct: 100, LossBurst: 8}
 	}
 
 	// Throughput tracks the MCS ladder, which is roughly linear in quality once
@@ -253,7 +275,7 @@ func ShapeForRssi(rssiDbm float64, freqMHz, widthMHz int) (down, up Shape) {
 	delay := 2 + 55*(1-q)*(1-q)
 	jitter := delay * 0.45
 
-	down = Shape{
+	return Shape{
 		RateMbps:   round1(rate),
 		DelayMs:    round1(delay),
 		JitterMs:   round1(jitter),
@@ -261,12 +283,54 @@ func ShapeForRssi(rssiDbm float64, freqMHz, widthMHz int) (down, up Shape) {
 		LossBurst:  burst,
 		CorruptPct: round2(corrupt),
 	}
-	// Uplink gets the same conditions on a smaller pipe, which is what the
-	// asymmetry of a home link looks like without inventing a second model.
-	up = down
-	up.RateMbps = round1(rate * 0.35)
-	return down, up
 }
 
 // round1 sits beside sweep.go's round2/round3 rather than duplicating them.
 func round1(v float64) float64 { return math.Round(v*10) / 10 }
+
+/*
+ * RssiShapesFor resolves one client's distance model to the shapes it implies.
+ *
+ * ONE resolver, used by both the tick that applies the shapes and the snapshot
+ * that shows them. They were briefly separate and that is exactly how a control
+ * comes to display something other than what it is enforcing -- the interface
+ * would have been lying about a number it had itself computed.
+ *
+ * The band comes from the client's own RadioOn rather than from an engine
+ * lookup: reading radio state inside the tick once deadlocked the non-reentrant
+ * lock and took the API down with it, and everything needed is already here.
+ */
+func RssiShapesFor(c Client) (down, up Shape, freqMHz int, ok bool) {
+	m := c.Policy.Rssi
+	if m == nil || !c.Policy.Enabled {
+		return Shape{}, Shape{}, 0, false
+	}
+	freqMHz, width := 5745, 80
+	if c.RadioOn != nil {
+		if f := freqForChannel(c.RadioOn.Channel); f > 0 {
+			freqMHz = f
+		}
+		if c.RadioOn.WidthMHz > 0 {
+			width = c.RadioOn.WidthMHz
+		}
+	}
+	down, up = ShapeForRssi(m.Dbm, freqMHz, width)
+	return down, up, freqMHz, true
+}
+
+// rssiViewFor is what the snapshot shows: the model's own numbers plus the
+// shapes it is imposing, so the interface never has to recompute them and so
+// the two can never disagree.
+func rssiViewFor(c Client) *RssiView {
+	down, up, freq, ok := RssiShapesFor(c)
+	if !ok {
+		return nil
+	}
+	m := c.Policy.Rssi
+	return &RssiView{
+		Dbm:       m.Dbm,
+		DistanceM: round1(DistanceFor(m.Dbm, freq, m.N)),
+		Down:      down,
+		Up:        up,
+	}
+}

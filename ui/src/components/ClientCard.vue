@@ -485,8 +485,12 @@ const modelFreq = computed(() => freqForChannel(props.client.radio_on?.channel ?
 const modelN = computed(() => props.client.policy.rssi?.n || DEFAULT_EXPONENT);
 const modelDbm = computed(() => props.client.policy.rssi?.dbm ?? RSSI_NEAR);
 const modelOn = computed(() => !!props.client.policy.rssi);
+// The daemon's figure when there is one: it resolves the band the client is
+// actually on. The local computation is the live label while dragging, before
+// the write has come back.
 const modelMetres = computed(() =>
-  distanceFor(modelDbm.value, modelFreq.value, modelN.value));
+  props.client.rssi_run?.distance_m
+  ?? distanceFor(modelDbm.value, modelFreq.value, modelN.value));
 
 function metresLabel(m: number): string {
   return m < 10 ? `${m.toFixed(1)} m` : `${Math.round(m)} m`;
@@ -527,17 +531,32 @@ const patBlocked = computed(() => {
  * and loss for the duration -- so those read zero, because that is what the
  * kernel has.
  */
+/*
+ * What the sliders show is what is ENFORCED, not what is stored.
+ *
+ * A sweep, a pattern and a distance model all drive the device without writing
+ * to the policy, so binding these to the stored shape would leave the sliders
+ * reading zero while the kernel handed the device 12 Mbit/s with corruption on
+ * it. It also makes the second-tier impairments appear on their own: the rule
+ * for showing one is that it is doing something, so feeding the derived shape
+ * through reveals exactly the controls a model drives and no others --
+ * corruption yes, reorder no, because the model never touches reorder.
+ */
 const downShape = computed<Shape>(() => {
   if (sweeping.value) {
     return { ...CLEAN, rate_mbps: downCap.value };
   }
   if (playing.value) return patRun.value!.down;
-  return editKey.value ? editKey.value.down : props.client.policy.down;
+  if (editKey.value) return editKey.value.down;
+  if (props.client.rssi_run) return props.client.rssi_run.down;
+  return props.client.policy.down;
 });
 
 const upShape = computed<Shape>(() => {
   if (playing.value) return patRun.value!.up;
-  return editKey.value ? editKey.value.up : props.client.policy.up;
+  if (editKey.value) return editKey.value.up;
+  if (props.client.rssi_run) return props.client.rssi_run.up;
+  return props.client.policy.up;
 });
 
 const conditioned = computed(() => {
@@ -846,9 +865,14 @@ function fmtBytes(n: number): string {
       <!-- The contradiction, stated where it is visible rather than left to be
            discovered: the model moves what a player senses and cannot move what
            the radio reports. -->
+      <!-- Two things that are easy to mistake for bugs, said where they
+           apply. The sliders below move on their own because the model is
+           driving them; the radio readings do not, because nothing here can
+           change what the radio reports. -->
       <p v-if="modelOn" class="meta dist-note">
-        Modelled, not measured — the signal and PHY rate above still report the
-        real radio, which is why they disagree with this.
+        The sliders below show what this distance implies — move one and you
+        take over from here. Modelled, not measured: the signal and PHY rate
+        still report the real radio, which is why they disagree with this.
       </p>
     </div>
 

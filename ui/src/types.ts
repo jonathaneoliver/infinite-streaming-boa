@@ -242,6 +242,22 @@ export interface RssiModel {
 }
 
 /**
+ * What a distance model is imposing right now.
+ *
+ * The same relationship to `RssiModel` that `PatternView` has to `Pattern`: one
+ * is the intent, stored; this is what is happening, computed by the daemon each
+ * tick. The card feeds these shapes to the sliders so the controls show what is
+ * actually in force -- including the impairments that stay hidden until they do
+ * something, which under a model would otherwise be enforced invisibly.
+ */
+export interface RssiView {
+  dbm: number;
+  distance_m: number;
+  down: Shape;
+  up: Shape;
+}
+
+/**
  * Distance and signal level, the same relationship the daemon models.
  *
  * Duplicated in TypeScript ONLY for the slider's own labels -- the impairments
@@ -341,6 +357,8 @@ export interface Client {
   medium: string;
   port?: string;
   radio_on?: RadioOn;
+  /** What the distance model is imposing, when one is set. */
+  rssi_run?: RssiView | null;
   /** The radio this client could be ASKED to move to (802.11v), or absent
    *  when there is nowhere to send it: a wired client, one not currently
    *  associated, or a box serving a single radio. Computed by the daemon so

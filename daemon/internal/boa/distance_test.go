@@ -180,6 +180,58 @@ func TestOutOfRangeIsLossNotAnUnlimitedRate(t *testing.T) {
 	}
 }
 
+/*
+ * Uplink fails FIRST, because the client is the quieter transmitter.
+ *
+ * This is the direction of the asymmetry, and it is easy to get backwards: an
+ * earlier version scaled uplink to a fraction of downlink's rate, which models
+ * an ISP's asymmetric plan rather than distance, and gave uplink a smaller pipe
+ * on an equally good link instead of an equally sized pipe on a worse one.
+ */
+func TestUplinkDegradesBeforeDownlink(t *testing.T) {
+	const f, w = 5745, 80
+	// Somewhere in the middle of the cliff, where both are alive but unequal.
+	d, u := ShapeForRssi(-68, f, w)
+	if u.RateMbps >= d.RateMbps {
+		t.Errorf("uplink %v should be slower than downlink %v at the same distance",
+			u.RateMbps, d.RateMbps)
+	}
+	if u.CorruptPct <= d.CorruptPct {
+		t.Errorf("uplink should be the more damaged direction: corrupt %v vs %v",
+			u.CorruptPct, d.CorruptPct)
+	}
+
+	// And it should reach the floor sooner: a level exists where the client can
+	// still hear the AP but can no longer be heard.
+	var found bool
+	for dbm := -60.0; dbm > -85; dbm -= 0.5 {
+		dd, uu := ShapeForRssi(dbm, f, w)
+		if uu.LossPct == 100 && dd.LossPct < 100 {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("no level where uplink is gone but downlink survives; " +
+			"the client should lose the ability to be heard first")
+	}
+}
+
+// Both directions cross the SAME channel, so a wider channel or a different
+// band moves them together. Only the transmit power differs.
+func TestBothDirectionsShareTheChannel(t *testing.T) {
+	narrowD, narrowU := ShapeForRssi(-60, 2462, 20)
+	wideD, wideU := ShapeForRssi(-60, 5745, 80)
+	if !(wideD.RateMbps > narrowD.RateMbps) {
+		t.Errorf("80MHz downlink should out-run 20MHz: %v vs %v",
+			wideD.RateMbps, narrowD.RateMbps)
+	}
+	if !(wideU.RateMbps > narrowU.RateMbps) {
+		t.Errorf("uplink should follow the same channel: %v vs %v",
+			wideU.RateMbps, narrowU.RateMbps)
+	}
+}
+
 // A strong link must be indistinguishable from no conditioning at all.
 func TestAStrongLinkIsClean(t *testing.T) {
 	d, u := ShapeForRssi(-38, 5745, 80)

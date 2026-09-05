@@ -394,17 +394,8 @@ func (e *Engine) desired(clients []Client) []Desired {
 		// engine lookup. That is not a style preference: reading radio state
 		// inside the tick once deadlocked the non-reentrant lock and took the
 		// whole API down with it. Everything needed is already on the Client.
-		if m := c.Policy.Rssi; m != nil && c.Policy.Enabled {
-			freq, width := 5745, 80
-			if c.RadioOn != nil {
-				if f := freqForChannel(c.RadioOn.Channel); f > 0 {
-					freq = f
-				}
-				if c.RadioOn.WidthMHz > 0 {
-					width = c.RadioOn.WidthMHz
-				}
-			}
-			down, up = ShapeForRssi(m.Dbm, freq, width)
+		if d, u, _, ok := RssiShapesFor(c); ok {
+			down, up = d, u
 		}
 		// A running ladder sweep drives the downlink cap itself, overriding
 		// stored policy for the duration. Applied here rather than written to
@@ -804,6 +795,11 @@ func (e *Engine) tick() {
 		c := &clients[i]
 		c.Sweep = e.sweep.View(c.MAC)
 		c.PatternRun = e.player.View(c.MAC)
+		// What the distance model is imposing, alongside what a pattern run
+		// imposes. The card shows these in the sliders themselves, so the
+		// normally-hidden impairments a model drives -- corruption especially
+		// -- appear on their own rather than being enforced invisibly.
+		c.RssiRun = rssiViewFor(*c)
 		if m, ok := e.sh.MinorFor(c.MAC); ok {
 			c.DownCounters = readPort(e.sh.DownPortFor(c.MAC))[m]
 			c.DownCounters.ThroughputMbps = e.rate(
