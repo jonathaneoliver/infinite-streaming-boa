@@ -126,8 +126,21 @@ const pending = ref('');
 
 <template>
   <div class="bridge-view">
-    <div v-if="bridge.error.value" class="notice bad">{{ bridge.error.value }}</div>
-    <div v-if="bridge.actionMsg.value" class="notice">{{ bridge.actionMsg.value }}</div>
+    <!-- RESERVED, not inserted.
+         Every action here reports its outcome, and a row that appears on press
+         pushed the whole page down under the cursor -- so the next click landed
+         on whatever slid into place. In this rack that is a real hazard: the
+         button two along from `evict` is `switch off`, which takes the radio
+         down and drops every client on it. Measured on the bench: an intended
+         gather became a switch off, and the radio went dark.
+         The same reasoning as `scrollbar-gutter: stable` in style.css, which is
+         here because a scrollbar appearing shifted every right-aligned column
+         by 15px. Keep the space whether or not there is anything in it. -->
+    <div class="msg-slot">
+      <div v-if="bridge.error.value" class="notice bad">{{ bridge.error.value }}</div>
+      <div v-else-if="bridge.actionMsg.value" class="notice">{{ bridge.actionMsg.value }}</div>
+      <div v-else class="notice placeholder" aria-hidden="true">&nbsp;</div>
+    </div>
 
     <!-- Standing facts about what is and is not being conditioned. An
          unwatched radio is an error-level notice: its clients pass traffic
@@ -288,6 +301,10 @@ const pending = ref('');
 }
 
 .notice.inline { margin: 8px 0 0; }
+/* Holds the row's height open when there is nothing to say. Not visibility:
+   hidden on the slot -- a real notice has to be readable -- so an empty one is
+   drawn transparent instead, keeping the exact metrics of the real thing. */
+.placeholder { visibility: hidden; }
 .disabled-note { padding: 0 14px 12px; }
 
 .soon { opacity: 0.9; }

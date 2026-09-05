@@ -322,87 +322,110 @@ const legend = computed(() => charts.value[0].bands);
 
 <template>
   <div class="stack">
-    <!-- "in the last 5m", not "yet". Both states reach here and they are
-         different facts: a page just opened has no record, and an adapter that
-         has gone quiet has had its record age out of the window. Saying "yet"
-         claimed the first in both cases, which on an adapter you had been
-         watching a minute earlier reads as the chart having lost the data
-         rather than the traffic having stopped. -->
-    <p v-if="empty" class="none">
-      No traffic on {{ iface }} in the last {{ span }} — either nothing has been
-      on it, or whatever was has gone quiet long enough to scroll off.
-    </p>
-
-    <template v-else>
-      <div class="pair">
-        <div
-          v-for="(c, i) in charts" :key="c.dir" class="one"
-          :ref="(el) => { if (i === 0) col = el as HTMLElement }"
-        >
-          <div class="head">
-            <!-- NAMED, not coloured. Direction is blue and orange everywhere
-                 else in this interface; here colour has been given to the
-                 devices, so the heading carries the direction on its own. -->
-            <span class="dir">{{ c.title }}</span>
-            <span class="stats num">
-              peak {{ fmt(c.peak) }} · avg {{ fmt(c.avg) }} · {{ span }}
-            </span>
-          </div>
-          <svg :width="chartW" :height="H" class="plot" role="img"
-            :aria-label="`${iface} ${c.title}, stacked by device`">
-            <g class="grid">
-              <template v-for="t in c.ticks" :key="t.key">
-                <line :x1="PAD.l" :x2="PAD.l + plotW" :y1="t.y" :y2="t.y" />
-                <text :x="PAD.l - 8" :y="t.y + 3" text-anchor="end" class="num">
-                  {{ t.label }}
-                </text>
-              </template>
-            </g>
-            <path
-              v-for="(b, n) in c.bands" :key="b.mac"
-              :d="area(c.bands, n, c.max)"
-              :fill="b.colour" fill-opacity="0.85"
-            />
-            <!-- The current total, at the right-hand edge where the client
-                 charts put their endpoint value. -->
-            <text :x="PAD.l + plotW + 6" :y="yAt(c.now, c.max) + 4" class="now num">
-              {{ fmt(c.now) }}
-            </text>
-            <!-- The time axis, in the band below the plot, exactly where a
-                 client chart puts it. -->
-            <g class="xaxis num">
-              <text :x="PAD.l" :y="H - 6">−{{ span }}</text>
-              <text :x="PAD.l + plotW" :y="H - 6" text-anchor="end">now</text>
-            </g>
-          </svg>
+    <div class="pair" :class="{ quiet: empty }">
+      <div
+        v-for="(c, i) in charts" :key="c.dir" class="one"
+        :ref="(el) => { if (i === 0) col = el as HTMLElement }"
+      >
+        <div class="head">
+          <!-- NAMED, not coloured. Direction is blue and orange everywhere
+               else in this interface; here colour has been given to the
+               devices, so the heading carries the direction on its own. -->
+          <span class="dir">{{ c.title }}</span>
+          <span class="stats num">
+            peak {{ fmt(c.peak) }} · avg {{ fmt(c.avg) }} · {{ span }}
+          </span>
         </div>
+        <svg :width="chartW" :height="H" class="plot" role="img"
+          :aria-label="`${iface} ${c.title}, stacked by device`">
+          <g class="grid">
+            <template v-for="t in c.ticks" :key="t.key">
+              <line :x1="PAD.l" :x2="PAD.l + plotW" :y1="t.y" :y2="t.y" />
+              <text :x="PAD.l - 8" :y="t.y + 3" text-anchor="end" class="num">
+                {{ t.label }}
+              </text>
+            </template>
+          </g>
+          <path
+            v-for="(b, n) in c.bands" :key="b.mac"
+            :d="area(c.bands, n, c.max)"
+            :fill="b.colour" fill-opacity="0.85"
+          />
+          <!-- The current total, at the right-hand edge where the client
+               charts put their endpoint value. -->
+          <text :x="PAD.l + plotW + 6" :y="yAt(c.now, c.max) + 4" class="now num">
+            {{ fmt(c.now) }}
+          </text>
+          <!-- The time axis, in the band below the plot, exactly where a
+               client chart puts it. -->
+          <g class="xaxis num">
+            <text :x="PAD.l" :y="H - 6">−{{ span }}</text>
+            <text :x="PAD.l + plotW" :y="H - 6" text-anchor="end">now</text>
+          </g>
+        </svg>
       </div>
 
-      <!-- The legend is not optional here. Colour is doing identity work, and a
-           band nobody can name is a colour with no meaning attached. -->
-      <div class="legend">
-        <span v-for="b in legend" :key="b.mac" class="key">
-          <span class="chip" :style="{ background: b.colour }" />
-          {{ b.label }}
-        </span>
-      </div>
-    </template>
+      <!-- OVER the plots, not INSTEAD of them.
+
+           "in the last 5m", not "yet". Both states reach here and they are
+           different facts: a page just opened has no record, and an adapter
+           that has gone quiet has had its record age out of the window. Saying
+           "yet" claimed the first in both cases, which on an adapter you had
+           been watching a minute earlier reads as the chart having lost the
+           data rather than the traffic having stopped.
+
+           Same words as before; what changed is that saying them no longer
+           resizes the fold. -->
+      <p v-if="empty" class="none">
+        No traffic on {{ iface }} in the last {{ span }} — either nothing has
+        been on it, or whatever was has gone quiet long enough to scroll off.
+      </p>
+    </div>
+
+    <!-- The legend is not optional here. Colour is doing identity work, and a
+         band nobody can name is a colour with no meaning attached.
+
+         Its box is held open even while there is nothing to name, for the same
+         reason the plots are: a device appearing is exactly when the legend
+         gains its first row, and that is exactly when the operator is reading
+         the chart above it. -->
+    <div class="legend">
+      <span v-for="b in legend" :key="b.mac" class="key">
+        <span class="chip" :style="{ background: b.colour }" />
+        {{ b.label }}
+      </span>
+    </div>
   </div>
 </template>
 
 <style scoped>
 .stack { margin: 8px 0 2px; }
+/* Centred OVER the pair rather than in the flow, so an adapter falling quiet
+   and an adapter picking up traffic both leave every pixel below this
+   component exactly where it was. The chart is the thing whose height must not
+   depend on whether it has content -- a fold that grows by ~160px when a
+   device starts talking pushes the cards under it down the page, and an
+   operator halfway through pressing something on one of them hits the wrong
+   control. Reserving the space is the whole point; the message just moves. */
 .none {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  display: grid;
+  place-items: center;
   margin: 0;
+  padding: 0 16px;
+  text-align: center;
   font-size: 12px;
   color: var(--ink-faint);
-  max-width: 62ch;
+  pointer-events: none;
 }
 /* The client cards' own `.dirs` rule, deliberately identical: `1fr 1fr` with a
    1px gap on the line colour, so the hairline between download and upload is
    the same hairline in a fold as on a card, and the two collapse to one column
    at the same width rather than at two nearby ones. */
 .pair {
+  position: relative;
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 1px;
@@ -415,6 +438,10 @@ const legend = computed(() => charts.value[0].bands);
   margin-right: -10px;
 }
 @media (max-width: 860px) { .pair { grid-template-columns: 1fr; } }
+/* Drawn, but plainly not carrying anything. An empty pane at full strength
+   reads as a radio carrying nothing -- the exact misreading the message above
+   exists to prevent -- so the frame recedes and the words lead. */
+.quiet .plot { opacity: 0.3; }
 /* `.dir`'s padding, to the pixel: the chart is inset from its column by the
    same amount on a card and in a fold, which is the other half of the two
    plots coming out the same width. */
@@ -442,8 +469,11 @@ const legend = computed(() => charts.value[0].bands);
 .legend {
   display: flex;
   flex-wrap: wrap;
+  align-items: center;
   gap: 4px 12px;
   margin-top: 6px;
+  /* One row's worth, held whether or not there is a row. */
+  min-height: 15px;
   font-size: 11px;
   color: var(--ink-dim);
 }

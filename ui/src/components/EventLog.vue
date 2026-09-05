@@ -39,6 +39,21 @@ watch(log.events, () => {
 const shown = computed(() =>
   open.value ? log.events.value : log.events.value.slice(0, PREVIEW),
 );
+
+/**
+ * How many blank rows to hold the closed log open with.
+ *
+ * The comment below promised "a fixed handful of rows, so the page below it
+ * sits at the same height whatever has just happened", and slice() only ever
+ * delivered a CAP: with fewer than PREVIEW events the panel was shorter and
+ * grew as they arrived, shifting everything under it -- most visibly after a
+ * restart clears the ring and it grows from nothing four times over.
+ *
+ * Padding to PREVIEW makes the promise true. Blank rows rather than a
+ * min-height, so the reserved space is exactly a row tall however the type
+ * metrics land.
+ */
+const padRows = computed(() => (open.value ? 0 : Math.max(0, PREVIEW - shown.value.length)));
 const hidden = computed(() => log.events.value.length - shown.value.length);
 
 /**
@@ -95,6 +110,11 @@ function clock(ms: number): string {
         <span class="dot" :class="e.kind" />
         <span class="text">{{ e.text }}</span>
       </p>
+      <!-- Holds the closed log at its full height when it has less to say, so
+           nothing below it moves as events arrive. See padRows. -->
+      <p v-for="i in padRows" :key="`pad${i}`" class="row pad" aria-hidden="true">
+        <span class="t">&nbsp;</span>
+      </p>
     </div>
   </section>
 </template>
@@ -148,12 +168,15 @@ function clock(ms: number): string {
   border-top: 1px solid var(--line-soft);
   padding: 4px 10px 6px;
 }
-/* Only the open log scrolls. Collapsed it is a fixed handful of rows, so the
-   page below it sits at the same height whatever has just happened. */
+/* Only the open log scrolls. Collapsed it is padded to a fixed handful of
+   rows -- see padRows -- so the page below it sits at the same height whatever
+   has just happened. Capping alone did not do that: with fewer events the
+   panel was shorter and grew as they arrived. */
 .rows.scroll {
   max-height: 220px;
   overflow-y: auto;
 }
+.row.pad { visibility: hidden; }
 .row {
   display: flex;
   align-items: baseline;
