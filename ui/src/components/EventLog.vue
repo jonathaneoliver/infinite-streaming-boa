@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue';
+import { computed, nextTick, onMounted, ref, watch } from 'vue';
 import { useEvents } from '@/composables/useEvents';
 
 /**
@@ -34,10 +34,62 @@ onMounted(log.start);
 // they are, by definition, seen.
 watch(log.events, () => {
   if (open.value) log.markSeen();
+  stickToBottom();
 });
 
+// Opening the panel should show the live end, not the top of the history.
+watch(open, (v) => {
+  if (v) {
+    following.value = true;
+    stickToBottom();
+  }
+});
+
+onMounted(stickToBottom);
+
+/**
+ * The scrolling area, so the newest line can be kept in view.
+ */
+const rows = ref<HTMLElement | null>(null);
+
+/**
+ * Whether to follow the bottom.
+ *
+ * TRUE until the operator scrolls away, and true again the moment they come
+ * back. A log that always jumps to the end fights anyone reading back through
+ * it -- which on this box is exactly when it matters, because reading back is
+ * how a run is reconstructed afterwards. A log that never follows makes them
+ * scroll for every new line.
+ *
+ * "Near enough" rather than exactly at the end: a couple of pixels of rounding,
+ * a partially visible row, or a scroll that lands one pixel short would
+ * otherwise turn following off silently and for good.
+ */
+const NEAR = 24;
+const following = ref(true);
+
+function onScroll() {
+  const el = rows.value;
+  if (!el) return;
+  following.value = el.scrollHeight - el.scrollTop - el.clientHeight <= NEAR;
+}
+
+function stickToBottom() {
+  if (!following.value) return;
+  const el = rows.value;
+  if (!el) return;
+  // After the DOM has the new row, or this scrolls to where the list used to
+  // end and stops one line short every time.
+  nextTick(() => {
+    el.scrollTop = el.scrollHeight;
+  });
+}
+
 const shown = computed(() =>
-  open.value ? log.events.value : log.events.value.slice(0, PREVIEW),
+  // The LAST few when closed, not the first: the list is chronological now, so
+  // the newest lines are at the end and those are the ones a collapsed panel
+  // exists to show.
+  open.value ? log.events.value : log.events.value.slice(-PREVIEW),
 );
 
 /**
@@ -96,7 +148,7 @@ function clock(ms: number): string {
       <span v-if="!open && unseenHidden" class="badge">{{ unseenHidden }}</span>
     </button>
 
-    <div class="rows" :class="{ scroll: open }">
+    <div ref="rows" class="rows" :class="{ scroll: open }" @scroll="onScroll">
       <!-- The failure is shown IN the log rather than beside it: an activity
            panel that has silently stopped polling looks exactly like a quiet
            box, and that is the one lie it must not tell. -->
@@ -105,15 +157,18 @@ function clock(ms: number): string {
         Nothing has happened since the daemon started. Joins, roams between
         radios, channel changes and anything pressed here land in this list.
       </p>
+      <!-- ABOVE the rows, not below. The newest line sits at the bottom edge,
+           so a short log has to grow downwards from the top like a terminal
+           does -- pads underneath would leave the live end floating in the
+           middle of the panel. Holds the closed log at its full height either
+           way, so nothing below it moves as events arrive. See padRows. -->
+      <p v-for="i in padRows" :key="`pad${i}`" class="row pad" aria-hidden="true">
+        <span class="t">&nbsp;</span>
+      </p>
       <p v-for="e in shown" :key="e.seq" class="row">
         <span class="t">{{ clock(e.at) }}</span>
         <span class="dot" :class="e.kind" />
         <span class="text">{{ e.text }}</span>
-      </p>
-      <!-- Holds the closed log at its full height when it has less to say, so
-           nothing below it moves as events arrive. See padRows. -->
-      <p v-for="i in padRows" :key="`pad${i}`" class="row pad" aria-hidden="true">
-        <span class="t">&nbsp;</span>
       </p>
     </div>
   </section>

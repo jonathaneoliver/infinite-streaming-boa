@@ -64,21 +64,29 @@ export function useEvents(pollMs = 3000) {
       // Within one run the sequence only grows, so latest < since cannot mean
       // anything else. Everything held is dropped, because those events belong
       // to a run that has ended.
-      if (body.latest !== undefined && body.latest < since) {
-        since = 0;
-        events.value = [];
-        unseen.value = 0;
-      }
-      if (body.events.length) {
-        since = body.events[body.events.length - 1].seq;
-        // Newest first: the interesting event is the one that just happened,
-        // and a log that has to be scrolled to reach it is a log nobody reads.
-        events.value = [...body.events]
-          .reverse()
-          .concat(events.value)
-          .slice(0, KEEP);
-        unseen.value += body.events.length;
-      }
+    if (body.latest !== undefined && body.latest < since) {
+      since = 0;
+      events.value = [];
+      unseen.value = 0;
+    }
+    if (body.events.length) {
+      since = body.events[body.events.length - 1].seq;
+      // CHRONOLOGICAL, oldest first, newest at the end.
+      //
+      // This was reversed, on the argument that "the interesting event is the
+      // one that just happened, and a log that has to be scrolled to reach it
+      // is a log nobody reads". The premise was right and the remedy was
+      // wrong: the fix for that is to keep the newest line in view, which the
+      // panel now does by following the bottom, and not to invert time.
+      //
+      // Reading order matters here because these lines are a CAUSAL sequence --
+      // "asked to go down", then "is down", then "left wlan-usb", then "joined
+      // wlan0" -- and reversed, every story on this box was told backwards.
+      // Oldest at the top, scrolling up and off, is how every log an operator
+      // has ever read behaves.
+      events.value = events.value.concat(body.events).slice(-KEEP);
+      unseen.value += body.events.length;
+    }
     err.value = '';
   }
 
