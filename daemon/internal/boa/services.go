@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"os/exec"
 	"strings"
+	"sync"
+	"time"
 )
 
 /*
@@ -58,17 +60,48 @@ func serviceRunning(unit string) bool {
 	return strings.TrimSpace(string(out)) == "active"
 }
 
+/*
+ * Cached, because the bridge view is rebuilt every second and these are not.
+ *
+ * Each reading costs a `systemctl is-active` subprocess per service, and the
+ * answer changes only when somebody presses one of the two buttons that change
+ * it -- which invalidates this cache directly, so a press still shows up at
+ * once. Asking twice a second for a value that changes twice a day is the kind
+ * of waste that matters on a box already sharing four cores with ntopng.
+ */
+var svcCache struct {
+	mu   sync.Mutex
+	at   time.Time
+	vals []ServiceInfo
+}
+
+const svcTTL = 10 * time.Second
+
+// invalidateServices forces the next read to ask systemd again. Called when the
+// box itself changes a service, so a button press is never waiting on a TTL.
+func invalidateServices() {
+	svcCache.mu.Lock()
+	svcCache.at = time.Time{}
+	svcCache.mu.Unlock()
+}
+
 // serviceStates reports every controllable service, in a stable order.
 //
 // Ordered explicitly rather than by ranging the map, because Go randomises map
 // iteration and the buttons would swap places between polls -- the same
 // moving-target fault that has been fixed twice elsewhere in this interface.
 func serviceStates() []ServiceInfo {
+	svcCache.mu.Lock()
+	defer svcCache.mu.Unlock()
+	if time.Since(svcCache.at) < svcTTL && svcCache.vals != nil {
+		return svcCache.vals
+	}
 	names := []string{"ntopng", "glances"}
 	out := make([]ServiceInfo, 0, len(names))
 	for _, n := range names {
 		out = append(out, ServiceInfo{Name: n, Running: serviceRunning(controllable[n])})
 	}
+	svcCache.vals, svcCache.at = out, time.Now()
 	return out
 }
 
@@ -99,7 +132,9 @@ func (e *Engine) SetService(name string, on bool) error {
 	} else {
 		e.logEvent(EventAction, "", "", "%s stopped — it is no longer competing for CPU", name)
 	}
-	// So the row the operator just pressed agrees with what they see next.
+	// So the row the operator just pressed agrees with what they see next --
+	// the cache above would otherwise hold the old answer for up to its TTL.
+	invalidateServices()
 	e.freshenBridge()
 	return nil
 }

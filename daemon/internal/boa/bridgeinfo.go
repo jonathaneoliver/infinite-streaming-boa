@@ -163,10 +163,20 @@ type ScanSummary struct {
 // BridgeState assembles the inventory. Best-effort by design: a box with no
 // radio, no hostapd or no USB ethernet is a normal box, and every absent piece
 // simply yields a smaller list rather than an error.
-// bridgeTTL is how old the served view may be before a refresh is started.
-// Close to the interface's own poll interval: it is what makes the view feel
-// live, and a shorter one would rebuild it more often than anyone reads it.
-const bridgeTTL = 2 * time.Second
+// bridgeTTL is how old the served view may be before a refresh is started, and
+// therefore how quickly a change reaches the stream.
+//
+// One second. It was two, chosen when the view was polled every five and a
+// faster rebuild would have been rebuilding it more often than anyone read it.
+// Now that changes are pushed the moment they are noticed, this interval IS the
+// latency an operator sees, and the argument runs the other way.
+//
+// The cost was checked rather than assumed. A rebuild spawns `ip -j addr show`
+// and an `iw station dump` per radio; the two `systemctl is-active` calls that
+// used to ride along are now cached for ten seconds and invalidated on a press,
+// because service state changes when somebody clicks and not otherwise. Daemon
+// CPU measured before and after on a four-core Pi already running ntopng.
+const bridgeTTL = time.Second
 
 // BridgeState serves the last built view and never blocks.
 //
