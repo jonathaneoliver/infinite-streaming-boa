@@ -25,6 +25,33 @@ export function useBridge(active: Ref<boolean>) {
   const busy = ref(false);
   let timer = 0;
 
+  /**
+   * Look again shortly after an action, twice.
+   *
+   * The single reload that follows a command is honest but early. Controls
+   * return as soon as the command is ACCEPTED -- deliberately, so a switch does
+   * not hold the operator's hand down while a radio re-initialises -- which
+   * means the state they change has usually not changed yet when that reload
+   * happens. The daemon confirms in the background a moment later, and the
+   * interface would otherwise not ask again until its next poll, five seconds
+   * on. Pressing "disable AP" and watching the row go on saying "enabled" for
+   * five seconds reads as a control that did not work.
+   *
+   * Two follow-ups rather than a faster poll: this is a burst of interest right
+   * after a press, not a reason to triple the request rate for a page that is
+   * usually just being watched. 1.2s catches an access point going up or down
+   * -- measured at under a second on both radios -- and 4s catches the slower
+   * confirmations, a power-on among them.
+   *
+   * Timers are not cancelled if another action follows. A second press
+   * schedules its own pair, and an extra reload of a small cached endpoint
+   * costs less than the bookkeeping to prevent it.
+   */
+  function settle() {
+    window.setTimeout(load, 1200);
+    window.setTimeout(load, 4000);
+  }
+
   async function load() {
     try {
       const r = await fetch('/api/bridge');
@@ -59,6 +86,7 @@ export function useBridge(active: Ref<boolean>) {
       }
       actionMsg.value = describe(body);
       await load();
+      settle();
       return true;
     } catch (e) {
       error.value = String(e);
