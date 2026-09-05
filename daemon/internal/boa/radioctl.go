@@ -572,16 +572,39 @@ func (e *Engine) fireRadio(f RadioFire) {
 			"pattern deauthenticated %d client(s) on %s", n, f.Iface)
 
 	case RadioEvict:
-		// Source-named: this radio's clients go elsewhere. OtherRadio supplies
-		// the destination, and refuses when there is nowhere -- which is the
-		// same answer a steer already gives, in the same words.
-		to := e.OtherRadio(f.Iface)
-		if to == "" {
+		// Source-named: this radio's clients go elsewhere.
+		//
+		// With two radios "off here" means "onto the other" and the answer is
+		// exact. With three it is not, and OtherRadio would pick the first
+		// serving radio in preference order -- deterministic, but not something
+		// the operator chose, and invisible once it has happened. An adapter
+		// pattern that quietly picked a destination is the silent failure this
+		// codebase keeps being bitten by, so it is refused and says why. The
+		// fix when a third radio arrives is a target on the event; gather needs
+		// none, because it names its destination already.
+		var candidates []string
+		for _, w := range e.cfg.WlanPorts {
+			if w != f.Iface && hostapdReachable(w) {
+				candidates = append(candidates, w)
+			}
+		}
+		switch len(candidates) {
+		case 0:
 			e.logEvent(EventRadio, f.Iface, "",
 				"pattern wanted to evict %s, but there is nowhere to steer to: "+
 					"this box is serving only one radio", f.Iface)
 			return
+		case 1:
+			// The only case an untargeted evict can answer.
+		default:
+			e.logEvent(EventRadio, f.Iface, "",
+				"pattern wanted to evict %s, but %d radios could receive them (%s) "+
+					"and the pattern does not say which; an evict needs a target "+
+					"on a box serving more than two radios",
+				f.Iface, len(candidates), strings.Join(candidates, ", "))
+			return
 		}
+		to := candidates[0]
 		n, err := e.SteerAll(f.Iface, to)
 		if err != nil {
 			e.logEvent(EventRadio, f.Iface, "",
