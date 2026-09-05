@@ -367,6 +367,11 @@ func (e *Engine) Start() {
 	// Clear any deadzone ban left in hostapd's deny list by a daemon that died
 	// mid-outage, so a client is never stranded off the AP across a restart.
 	e.clearDenyACL()
+	// Stop the radios announcing themselves when an access point starts or
+	// stops. Set here as well as in the shipped config, because the config only
+	// reaches a box that is reflashed and this reaches one that is deployed to
+	// -- which is every box already in the field. See hushTeardown and #224.
+	e.hushRadios()
 	e.restoreRadioPower()
 	// A monitor connection per radio, for the messages hostapd sends unasked.
 	// Everything else here talks to hostapd in request/reply, which cannot see

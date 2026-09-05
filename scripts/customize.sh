@@ -665,6 +665,26 @@ channel=${_chan}
 ssid=${_ssid}
 ignore_broadcast_ssid=$([ "$AP_HIDDEN" = "true" ] && echo 1 || echo 0)
 wmm_enabled=1
+# Do NOT announce the access point starting or stopping.
+#
+# hostapd defaults this to 1 and broadcasts a deauthentication frame at both
+# ends of every AP start and stop. On this box that undoes the thing the
+# product exists to do: an outage is cut at the rfkill level SPECIFICALLY so
+# that nothing can be said to the client and it has to notice for itself -- and
+# then the access point came back and told everyone anyway. The announcement
+# lands on exactly the clients being measured, because a station that has not
+# yet noticed the outage still believes it is associated, and this frame is
+# what informs it. Issue #224.
+#
+# It also fires on a band scan, a channel move and a profile change, each of
+# which drops the BSS and puts it back, so any of those run mid-measurement
+# told every client on the radio something.
+#
+# This governs the BROADCAST frame. Whether hostapd still deauthenticates
+# stations individually while flushing them is unverified -- proving what
+# leaves the antenna needs a receiver, and both radios here are access points
+# (#136). So this reduces the announcement; it is not yet known to remove it.
+broadcast_deauth=0
 # Advertise 802.11v BSS Transition Management, which the steer control needs.
 #
 # The control already sends the request and hostapd already accepts it -- but
