@@ -1338,25 +1338,26 @@ Every other source here rates its confidence per field because it is reading
 something. This one is *computing*, so the equivalent question is which numbers
 carry the authority of a standard relationship and which are ours.
 
-**No source was consulted while writing this.** The two relationships named
-below are standard and were written out from knowledge of them; every *number*
-was recalled rather than looked up, and none has been checked against a
-publication or against this hardware. That is a weaker provenance than "typed"
-usually implies here, and it is the reason the calibration walk in #221 is not
-optional if anyone wants to rely on the output.
+The rungs and the propagation model are now **taken from their sources** —
+IEEE Std 802.11-2020 Table 21-25 for receiver sensitivity, ITU-R P.1238 for the
+path loss coefficient — rather than recalled, which is what an earlier revision
+of this entry admitted to. What remains ours is the layer joining them: how much
+impairment a given headroom above the floor implies. That part is asserted, and
+the calibration walk in #221 is what would replace it.
 
 | Quantity | Origin | Standing |
 |---|---|---|
-| `20*log10(f_MHz) - 27.55` | **Friis transmission equation**, decibel form for MHz and metres | exact; the constant falls out of the equation |
-| `RSSI(d) = Ptx - FSPL(1m) - 10*n*log10(d)` | **log-distance path loss**, the standard indoor model | exact given `n` |
-| `n` = 2.2 / 3.0 / 3.8 | conventional indoor exponents, **recalled not looked up** | **unverified**; and a per-building guess even if right |
-| 3 dB per doubling of channel width | thermal noise scaling, `10*log10(2)` | exact |
-| Floor −82 dBm at 20 MHz | approximately 802.11 minimum sensitivity for the lowest rung, **recalled not looked up** | **unverified** |
-| `Ptx` = 20 dBm | the common regulatory ceiling for these bands | **assumed**; the box cannot read its own (Source Q) |
-| PHY ceilings 600 / 72 Mbit/s etc. | 802.11 MCS rates for that width, **recalled not looked up** | **unverified**, rounded |
-| **The logistic in `quality()`** — steepness 9, centre 0.32, 30 dB headroom | **ours** | **asserted.** The sigmoid *family* is right; these parameters are a choice |
-| **The rate curve** `0.06 + 0.94*q²` | **ours** | asserted, not fitted |
-| **Corruption and loss thresholds** | **ours** | asserted; the ORDERING is principled, the numbers are not |
+| `20*log10(f_MHz) - 27.55` | **Friis transmission equation**, decibel form for MHz and metres | exact |
+| `RSSI(d) = Ptx - FSPL(1m) - 10*n*log10(d)` | **log-distance path loss**, the form ITU-R P.1238 uses | exact given `n` |
+| `n` = 2.8 residential, 3.1 office | **ITU-R P.1238**, which tabulates the distance power loss coefficient N = 28 and N = 31 (N is 10n) | **cited.** The recommendation itself says site-calibrated values are needed |
+| `n` = 3.8 obstructed | **ours.** ITU models walls and floors as a separate additive term `Lf(n)`, not by raising N | asserted, and named as a stand-in |
+| MCS sensitivity ladder, −82 … −57 dBm at 20 MHz | **IEEE Std 802.11-2020, Table 21-25** | **cited**, exact |
+| +3 dB per doubling of channel width | the standard's own scaling, and thermal noise `10*log10(2)` | **cited**, exact |
+| MCS data rates | computed from the standard's OFDM parameters: subcarriers × bits × coding ÷ 4 µs | **derived**, and checked against the published 6.5 / 65 / 390 Mbit/s anchors |
+| `Ptx` = 20 dBm | the common regulatory ceiling | **assumed**; the box cannot read its own (Source Q) |
+| **Implementation gain, 6 dB** | **ours** | asserted, and the number doing the most work — Table 21-25 states the *worst* a conforming receiver may be, and real silicon beats it |
+| **MAC efficiency, 0.65** | **ours** | asserted; preambles, spacing, block acks and contention as a flat fraction |
+| **The comfort window and impairment curves** | **ours** | asserted. The ORDERING is principled — corruption before loss — the numbers are not |
 | **Device figures** laptop 0/3, phone 2/4, watch 5/6 dB | **ours** | asserted, and unmeasurable here — see below |
 
 The device figures deserve their own note, because they look more solid than

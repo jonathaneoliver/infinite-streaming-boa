@@ -68,19 +68,28 @@ import "math"
  * implementation of it is.
  */
 
-// Path-loss exponents, for turning a distance into a signal level. The only
-// free parameter in the whole model, and the reason distance is a LABEL here
-// rather than the stored value: it is a per-building guess, so a policy stored
-// in metres would mean a different impairment in a different building.
+/*
+ * Path-loss exponents, from ITU-R P.1238's distance power loss coefficient N.
+ *
+ * The recommendation tabulates N (which is 10n in the exponent form used here):
+ * N = 28 for residential construction, and N = 31 for a 5 GHz office. It also
+ * says plainly that site-calibrated values are needed for real link planning,
+ * which is the same thing #221's walk exists to produce.
+ *
+ * ITU handles walls and floors as a SEPARATE additive term Lf(n) rather than by
+ * inflating N, so the old "through walls 3.8" here was conflating two effects.
+ * It is kept as a coarse stand-in for a heavily obstructed path and named as
+ * such, rather than pretending to be a tabulated figure.
+ */
 const (
-	ExponentOpen  = 2.2 // open plan, few obstructions
-	ExponentHome  = 3.0 // a typical home: some walls, some furniture
-	ExponentWalls = 3.8 // through several walls
+	ExponentResidential = 2.8 // ITU-R P.1238, N = 28
+	ExponentOffice      = 3.1 // ITU-R P.1238, N = 31 at 5 GHz
+	ExponentObstructed  = 3.8 // OURS: a stand-in for what ITU models as floor loss
 )
 
-// DefaultExponent is what the interface offers until someone calibrates their
-// own building against a measured walk.
-const DefaultExponent = ExponentHome
+// DefaultExponent is the residential figure, this being a box for testing in
+// the places people actually watch video.
+const DefaultExponent = ExponentResidential
 
 // freqForChannel is the inverse of channelForFreq (radiopower.go:1219) and is
 // deliberately written to mirror it, so the two cannot disagree about where the
@@ -146,84 +155,147 @@ func DistanceFor(rssiDbm float64, freqMHz int, n float64) float64 {
 }
 
 /*
- * The sensitivity floor, per band and width.
+ * THE MCS LADDER, from IEEE Std 802.11-2020 Table 21-25.
  *
- * A wider channel spreads the same power over more spectrum, so it needs a
- * stronger signal for the same error rate: about 3 dB per doubling of width.
- * This is why a 5GHz 80MHz link dies before a 2.4GHz 20MHz one at the same
- * distance, on top of the 7.3 dB of extra path loss.
+ * This replaces a made-up sensitivity floor and a made-up rate curve with the
+ * standard's own numbers. Each rung carries the minimum receiver sensitivity
+ * the standard requires at 20 MHz, and the two OFDM parameters needed to
+ * compute its data rate at any width.
+ *
+ * Sensitivities (MCS 0..9 at 20 MHz, dBm):
+ *   -82, -79, -77, -74, -70, -66, -65, -64, -59, -57
+ *
+ * They are not evenly spaced, and that unevenness is the cliff: MCS 5, 6 and 7
+ * sit within 2 dB of each other, so a link crossing that stretch loses three
+ * rungs almost at once. The made-up logistic was an attempt to imitate this
+ * shape; the ladder simply has it.
  */
-func floorDbm(widthMHz int) float64 {
-	base := -82.0 // roughly MCS0 at 20MHz on commodity silicon
-	switch {
-	case widthMHz >= 160:
-		return base + 9
-	case widthMHz >= 80:
-		return base + 6
-	case widthMHz >= 40:
-		return base + 3
-	}
-	return base
+type mcsRung struct {
+	Index  int
+	Sens20 float64 // minimum sensitivity at 20 MHz, dBm
+	Bits   float64 // coded bits per subcarrier: BPSK 1, QPSK 2, 16-QAM 4, 64-QAM 6, 256-QAM 8
+	Coding float64 // FEC rate
 }
 
-// headroomDb is how far above the floor a link is completely untroubled. Inside
-// this margin nothing at all should be imposed: a strong link is strong.
-const headroomDb = 30.0
+var vhtLadder = []mcsRung{
+	{0, -82, 1, 1.0 / 2},
+	{1, -79, 2, 1.0 / 2},
+	{2, -77, 2, 3.0 / 4},
+	{3, -74, 4, 1.0 / 2},
+	{4, -70, 4, 3.0 / 4},
+	{5, -66, 6, 2.0 / 3},
+	{6, -65, 6, 3.0 / 4},
+	{7, -64, 6, 5.0 / 6},
+	{8, -59, 8, 3.0 / 4},
+	{9, -57, 8, 5.0 / 6},
+}
 
 /*
- * quality maps a signal level onto 0 (unusable) .. 1 (untroubled).
+ * Data subcarriers per channel width, from the standard's OFDM numerology.
  *
- * A SIGMOID, not a ramp, and this is the single most important property in the
- * file. Frame error rate against SNR does not slope: almost nothing happens
- * across most of the range and then everything happens inside about 10 dB. That
- * is the cliff every real walk has -- fine, fine, fine, then it falls apart over
- * a few steps -- and a model that degrades linearly with distance feels wrong in
- * a way that is hard to name and obvious to anyone who has done the walk.
- *
- * Do not "fix" this into a slope to make the control feel smoother. The
- * unevenness is the fidelity.
+ * With the 4 us long-guard-interval symbol these reproduce the published rates
+ * exactly, which is the check that the derivation is right rather than
+ * remembered: MCS0 at 20 MHz gives 52*1*0.5/4 = 6.5 Mbit/s, MCS7 at 20 MHz
+ * gives 65, and MCS9 at 80 MHz gives 234*8*(5/6)/4 = 390. All three are the
+ * well-known values.
  */
-func quality(rssiDbm float64, widthMHz int) float64 {
-	floor := floorDbm(widthMHz)
-	// Distance above the floor, normalised over the headroom.
-	x := (rssiDbm - floor) / headroomDb
-	if x <= 0 {
-		return 0
-	}
-	if x >= 1 {
-		return 1
-	}
-	// CHOSEN, not derived and not cited. The logistic shape is the right family
-	// -- frame error rate against SNR really does turn over sharply -- but these
-	// two numbers are an assertion about where and how sharply, picked to put
-	// the knee where a link starts retrying rather than in the middle of the
-	// usable range. Replaced by a fitted curve when #221's walk is recorded.
-	const steepness = 9.0
-	const centre = 0.32
-	q := 1 / (1 + math.Exp(-steepness*(x-centre)))
-	// Rescale so the ends are exactly 0 and 1 rather than the logistic's
-	// asymptotes, which would otherwise impose a little loss on a perfect link.
-	lo := 1 / (1 + math.Exp(steepness*centre))
-	hi := 1 / (1 + math.Exp(-steepness*(1-centre)))
-	return (q - lo) / (hi - lo)
-}
-
-// phyCeilingMbps is roughly what the radio negotiates at full signal, per band
-// and width. Typed, not measured: replaced by a calibration walk once #106
-// records signal and airtime over time.
-func phyCeilingMbps(freqMHz, widthMHz int) float64 {
-	if freqMHz < 3000 { // 2.4GHz, in practice 20MHz 802.11n on this box
-		return 72
-	}
+func dataSubcarriers(widthMHz int) float64 {
 	switch {
 	case widthMHz >= 160:
-		return 1200
+		return 468
 	case widthMHz >= 80:
-		return 600
+		return 234
 	case widthMHz >= 40:
-		return 300
+		return 108
+	default:
+		return 52
 	}
-	return 150
+}
+
+// symbolMicros is the long guard interval symbol: 3.2 us of data plus 0.8 us of
+// guard. Short GI is not modelled -- it is a 10% difference and the rest of the
+// model is not that precise.
+const symbolMicros = 4.0
+
+// rungRate is one spatial stream at that rung and width, in Mbit/s.
+func rungRate(r mcsRung, widthMHz int) float64 {
+	return dataSubcarriers(widthMHz) * r.Bits * r.Coding / symbolMicros
+}
+
+/*
+ * rungSensitivity scales the 20 MHz figure for wider channels.
+ *
+ * +3 dB per doubling, which the standard's own scaling uses and which
+ * independent write-ups on 802.11ac sensitivity state in the same words: "for
+ * every doubling of channel width, you require 3 dB better signal to achieve
+ * the same MCS rate". It is also just thermal noise: 10*log10(2).
+ */
+func rungSensitivity(r mcsRung, widthMHz int) float64 {
+	return r.Sens20 + 10*math.Log10(float64(widthMHz)/20)
+}
+
+/*
+ * topRung caps the ladder for a band that cannot reach the higher rungs.
+ *
+ * The 2.4 GHz radio on this box runs 802.11n, whose HT ladder stops at MCS 7 --
+ * 256-QAM arrived with 802.11ac. Modelling it up to MCS 9 would hand it rates
+ * the hardware cannot produce.
+ */
+func topRung(freqMHz int) int {
+	if freqMHz < 3000 {
+		return 7
+	}
+	return 9
+}
+
+/*
+ * IMPLEMENTATION GAIN: real radios beat the standard's minimum.
+ *
+ * Table 21-25 states the WORST a conforming receiver may be, at 10% packet
+ * error for a 4096-octet frame. Commodity silicon is several dB better than the
+ * requirement, so taking the table literally would put every rung about 6 dB
+ * further out than it belongs and make -60 dBm on an 80 MHz channel look
+ * marginal when in practice it is comfortable.
+ *
+ * Six dB is ours, and it is the single number doing the most work in this file.
+ */
+const implGainDb = 6.0
+
+// rungNeed is the level this hardware is assumed to need for that rung.
+func rungNeed(r mcsRung, widthMHz int) float64 {
+	return rungSensitivity(r, widthMHz) - implGainDb
+}
+
+// bestRung is rate control: the highest rung this level can hold.
+func bestRung(levelDbm float64, freqMHz, widthMHz int) (rung mcsRung, ok bool) {
+	top := topRung(freqMHz)
+	for i := len(vhtLadder) - 1; i >= 0; i-- {
+		r := vhtLadder[i]
+		if r.Index > top {
+			continue
+		}
+		if levelDbm >= rungNeed(r, widthMHz) {
+			return r, true
+		}
+	}
+	return vhtLadder[0], false
+}
+
+/*
+ * headroomDb is how far above LOSING THE LINK ENTIRELY this level sits.
+ *
+ * Measured against the bottom of the ladder rather than against the rung
+ * currently held, and that choice matters. Margin above the current rung
+ * sawtooths -- it resets to zero every time rate control steps down -- so
+ * impairment derived from it would fall as a link got weaker, which is both
+ * wrong and exactly what the tests caught.
+ *
+ * Distance from the floor is monotonic, so the RATE steps down the ladder while
+ * corruption, loss and delay rise smoothly. That is also what a real link does:
+ * the rung changes discretely, the error rate does not.
+ */
+func headroomDb(levelDbm float64, widthMHz int) float64 {
+	return levelDbm - rungNeed(vhtLadder[0], widthMHz)
 }
 
 /*
@@ -312,39 +384,65 @@ func shapeAtLevel(rssiDbm float64, freqMHz, widthMHz int) Shape {
 	if freqMHz <= 0 {
 		freqMHz = 5745
 	}
-	q := quality(rssiDbm, widthMHz)
-	ceiling := phyCeilingMbps(freqMHz, widthMHz)
 
-	// Out of range: the link is gone. Expressed as total loss rather than a
-	// zero rate, because a rate of 0 means UNLIMITED everywhere else in this
-	// codebase and would read as "no cap" rather than "nothing gets through".
-	if q <= 0 {
+	rung, ok := bestRung(rssiDbm, freqMHz, widthMHz)
+
+	// Below the lowest rung the link does not hold. Expressed as total loss
+	// rather than a zero rate, because a rate of 0 means UNLIMITED everywhere
+	// else in this codebase and would read as "no cap" rather than "nothing
+	// gets through".
+	if !ok {
 		return Shape{LossPct: 100, LossBurst: 8}
 	}
 
-	// Throughput tracks the MCS ladder, which is roughly linear in quality once
-	// the link is usable at all, with a floor at the lowest rung rather than at
-	// zero -- a barely-connected client still passes a trickle.
-	//
-	// The exact curve is ours: the shape is asserted, not fitted to anything.
-	rate := ceiling * (0.06 + 0.94*q*q)
+	// The rung's own rate, from the standard's OFDM parameters. Two thirds of
+	// it reaches the application: 802.11 spends the rest on preambles, inter
+	// frame spacing, block acks and contention, and that overhead is roughly a
+	// constant fraction. Ours, and the roundest number in the file.
+	const macEfficiency = 0.65
+	rate := rungRate(rung, widthMHz) * macEfficiency
 
-	// Corruption is the leading indicator, rising as the floor approaches.
-	corrupt := 0.0
-	if q < 0.55 {
-		corrupt = 12 * (0.55 - q) * (0.55 - q) / (0.55 * 0.55)
+	/*
+	 * WHAT THE HEADROOM COSTS -- everything from here down is ours.
+	 *
+	 * The ladder says which rung a link can hold and nothing about how
+	 * comfortably. Minimum sensitivity is defined at 10% packet error, so a
+	 * link near the bottom of the ladder is already losing frames and one well
+	 * above it is not. Impairment is therefore a function of HEADROOM above
+	 * losing the link, not of absolute level.
+	 *
+	 * The shape is asserted rather than fitted. It has the two properties a
+	 * real link has -- corruption arrives before loss, and both are negligible
+	 * until the headroom is nearly gone -- and beyond that the numbers are
+	 * plausible rather than measured. See DATA-CONTRACT Source S.
+	 */
+	const comfortDb = 10.0 // above this much headroom, nothing is imposed
+	head := headroomDb(rssiDbm, widthMHz)
+	shortfall := 0.0
+	if head < comfortDb {
+		shortfall = (comfortDb - head) / comfortDb // 0 comfortable .. 1 at the floor
 	}
 
-	// Loss only once retries are being exhausted, and always in bursts.
+	// Corruption leads: a weak signal damages frames that fail their checksum
+	// having already spent the airtime. Rising towards the standard's own 10%
+	// at the floor, since that is what the sensitivity figure means.
+	corrupt := 10 * shortfall * shortfall
+
+	// Loss follows late and correlated, once retries are being exhausted.
 	loss, burst := 0.0, 0.0
-	if q < 0.22 {
-		loss = 18 * (0.22 - q) / 0.22
+	if shortfall > 0.75 {
+		loss = 20 * (shortfall - 0.75) / 0.25
 		burst = 6
 	}
 
 	// Retries cost time before they cost delivery.
-	delay := 2 + 55*(1-q)*(1-q)
-	jitter := delay * 0.45
+	delay := 2 + 40*shortfall*shortfall
+	// Jitter is a QUARTER of the delay, not the 45% this used to carry.
+	// netem's jitter reorders packets, and reordered ACKs make TCP see
+	// duplicates and collapse its window -- so an over-large jitter does far
+	// more damage than its milliseconds suggest, and 45% of the mean was not
+	// defensible at any signal level.
+	jitter := delay * 0.25
 
 	return Shape{
 		RateMbps:   round1(rate),
@@ -356,7 +454,6 @@ func shapeAtLevel(rssiDbm float64, freqMHz, widthMHz int) Shape {
 	}
 }
 
-// round1 sits beside sweep.go's round2/round3 rather than duplicating them.
 func round1(v float64) float64 { return math.Round(v*10) / 10 }
 
 /*
@@ -415,8 +512,24 @@ func BestBandFor(refDbm float64, m RssiModel) (freqMHz, widthMHz int) {
 		 * choice is. It is also what a real client's steering optimises for.
 		 */
 		q := shapeAtLevel(lvl, b.FreqMHz, b.WidthMHz).RateMbps
+		/*
+		 * A CHALLENGER MUST BE CLEARLY BETTER, not merely ahead.
+		 *
+		 * Rates are now a staircase off the MCS ladder rather than a smooth
+		 * curve, and two staircases interleave: near the crossing the slower
+		 * band briefly leads each time the faster one steps down, then loses
+		 * again on the next step. A walk outwards changed band three times
+		 * because of it.
+		 *
+		 * Requiring a clear win collapses those near-ties to the one real
+		 * crossing, and does it without hysteresis -- the answer still depends
+		 * only on distance, so the same distance always gives the same radio.
+		 * The first band listed is the incumbent, which is why the reference is
+		 * the wide fast one.
+		 */
+		const clearWin = 1.15
 		switch {
-		case q > bestQ+1e-9:
+		case q > bestQ*clearWin:
 			best, bestQ, bestLvl = b, q, lvl
 		case math.Abs(q-bestQ) <= 1e-9 && q <= 0 && lvl > bestLvl:
 			/*

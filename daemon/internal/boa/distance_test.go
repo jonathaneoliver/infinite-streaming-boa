@@ -73,7 +73,10 @@ func TestDegradationIsACliffNotASlope(t *testing.T) {
 	mid, _ := ShapeForLevels(-60, (-60)-DefaultTxDb, f, w)
 	weak, _ := ShapeForLevels(-73, (-73)-DefaultTxDb, f, w)
 
-	ceiling := phyCeilingMbps(f, w)
+	// The top rung this band and width can reach, which is what a strong link
+	// should be near. Derived from the ladder rather than a separate constant.
+	top, _ := bestRung(-30, f, w)
+	ceiling := rungRate(top, w) * 0.65
 	if strong.RateMbps < ceiling*0.9 {
 		t.Errorf("a strong link should be near the ceiling, got %v of %v", strong.RateMbps, ceiling)
 	}
@@ -190,8 +193,10 @@ func TestOutOfRangeIsLossNotAnUnlimitedRate(t *testing.T) {
  */
 func TestUplinkDegradesBeforeDownlink(t *testing.T) {
 	const f, w = 5745, 80
-	// Somewhere in the middle of the cliff, where both are alive but unequal.
-	d, u := ShapeForLevels(-68, (-68)-DefaultTxDb, f, w)
+	// Inside the cliff, where both are alive but unequal. The ladder puts that
+	// stretch lower than the old invented curve did: an 80MHz link holds its
+	// bottom rung to about -82 dBm.
+	d, u := ShapeForLevels(-76, (-76)-DefaultTxDb, f, w)
 	if u.RateMbps >= d.RateMbps {
 		t.Errorf("uplink %v should be slower than downlink %v at the same distance",
 			u.RateMbps, d.RateMbps)
@@ -480,11 +485,11 @@ func TestADisabledDeviceIgnoresTheModel(t *testing.T) {
 /*
  * The client's OWN radio decides which curve it gets.
  *
- * -76 dBm is chosen because it straddles the two floors: it is exactly the
- * sensitivity floor for an 80MHz channel and still 6 dB of margin for a 20MHz
- * one. So the same modelled level must leave the wide link dead and the narrow
- * link working -- which is both the width rule and proof that RadioOn is being
- * consulted at all rather than a default being applied to everyone.
+ * -84 dBm straddles the two floors: an 80MHz channel gives up at about -82,
+ * while a 20MHz one holds on to roughly -88, so the same modelled level must
+ * leave the wide link dead and the narrow link working. That is both the width
+ * rule and proof that RadioOn is consulted at all rather than a default being
+ * applied to everyone.
  */
 func TestTheBandComesFromTheClientsOwnRadio(t *testing.T) {
 	e := &Engine{cfg: Config{WlanPorts: []string{"wlan-usb", "wlan0"}},
@@ -495,7 +500,7 @@ func TestTheBandComesFromTheClientsOwnRadio(t *testing.T) {
 			RadioOn: &RadioOn{Channel: ch, WidthMHz: width},
 			Policy: Policy{
 				MAC: mac, Enabled: true,
-				Rssi: &RssiModel{Dbm: -76, N: DefaultExponent},
+				Rssi: &RssiModel{Dbm: -84, N: DefaultExponent},
 			},
 		}
 		for _, d := range e.desired([]Client{c}) {
@@ -510,10 +515,10 @@ func TestTheBandComesFromTheClientsOwnRadio(t *testing.T) {
 	narrow := shapeFor("aa:bb:cc:dd:ee:03", 11, 20)
 
 	if wide.LossPct != 100 {
-		t.Errorf("80MHz at its floor should be out of range, got loss %v", wide.LossPct)
+		t.Errorf("80MHz below its floor should be out of range, got loss %v", wide.LossPct)
 	}
 	if narrow.LossPct == 100 {
-		t.Error("20MHz still has 6 dB of margin at -76 and should not be out of range")
+		t.Error("20MHz still has margin at -84 and should not be out of range")
 	}
 	if narrow.RateMbps <= 0 {
 		t.Errorf("the narrow link should still be passing traffic, got %v", narrow.RateMbps)
