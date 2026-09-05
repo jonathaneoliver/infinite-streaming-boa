@@ -4,7 +4,7 @@ import type { Client, Shape, Series, ChartPrefs, Pattern, RssiModel } from '@/ty
 import {
   CLEAN, DEFAULT_EXPONENT, DEFAULT_RX_DB, DEFAULT_TX_DB, DEVELOPER, DEVICE_KINDS,
   MODEL_BANDS, PRESETS,
-  distanceFor, freqForChannel, ntopngUrl, patternFromPolicy,
+  distanceFor, formatDistance, freqForChannel, ntopngUrl, patternFromPolicy,
 } from '@/types';
 import { setShapeAt } from '@/lib/pattern';
 import ShapeSliders from './ShapeSliders.vue';
@@ -561,9 +561,7 @@ const modelMetres = computed(() =>
   props.client.rssi_run?.distance_m
   ?? distanceFor(modelDbm.value, modelFreq.value, modelN.value));
 
-function metresLabel(m: number): string {
-  return m < 10 ? `${m.toFixed(1)} m` : `${Math.round(m)} m`;
-}
+
 
 function onDistance(e: Event) {
   const pos = Number((e.target as HTMLInputElement).value);
@@ -614,6 +612,16 @@ function onKind(rx: number, tx: number) {
 }
 
 /** Which named device the current pair corresponds to, for the pressed state. */
+/** What "modelled" means here, kept out of the card and behind the word. */
+const modelNote = computed(() =>
+  'The sliders below show what this distance implies — move one and you take '
+  + 'over from here. '
+  + (onRadio.value
+    ? 'Modelled, not measured: the signal and PHY rate above still report the '
+      + 'real radio, which is why they disagree with this.'
+    : 'Modelled, not measured: this device is on a cable, so nothing here is '
+      + 'reading a radio at all.'));
+
 const modelKind = computed(() =>
   DEVICE_KINDS.find((k) => k.rx === modelRx.value && k.tx === modelTx.value)?.key);
 
@@ -986,7 +994,7 @@ function fmtBytes(n: number): string {
           @input="onDistance"
         />
         <span class="dist-read num">
-          <template v-if="modelOn">{{ metresLabel(modelMetres) }}</template>
+          <template v-if="modelOn">{{ formatDistance(modelMetres) }}</template>
           <template v-else>off</template>
         </span>
         <button
@@ -1043,32 +1051,24 @@ function fmtBytes(n: number): string {
            output and the reason the two directions differ. -->
       <div v-if="modelOn" class="dist-levels num">
         <span class="dist-name">signal</span>
-        <span class="lvl">
-          <span class="lvl-dir">hears</span>{{ modelDownDbm }} dBm
+        <span class="lvl" title="Signal arriving AT the device, from the access point. This is what its downlink is built from.">
+          <span class="lvl-dir">to device</span>{{ modelDownDbm }} dBm
         </span>
-        <span class="lvl">
-          <span class="lvl-dir">is heard</span>{{ modelUpDbm }} dBm
+        <span class="lvl" title="Signal arriving at the access point, FROM the device. Weaker, because the device is the quieter transmitter — which is why its uplink fails first.">
+          <span class="lvl-dir">from device</span>{{ modelUpDbm }} dBm
         </span>
         <span class="dist-why meta">
           both move with distance; the device moves them by different amounts
         </span>
+        <!-- The word stays on screen and the explanation moves to a hover.
+             It was a paragraph on every card, which is a lot of text to read
+             once and then scroll past for ever -- but it cannot simply go:
+             these numbers contradict the signal and PHY rate shown a few
+             centimetres above them, and a reader who does not know why has
+             found a bug rather than a model. One word carries the claim; the
+             tooltip carries the reason. -->
+        <span class="dist-tag" :title="modelNote">modelled</span>
       </div>
-      <!-- Two things that are easy to mistake for bugs, said where they
-           apply. The sliders below move on their own because the model is
-           driving them; the radio readings do not, because nothing here can
-           change what the radio reports. -->
-      <p v-if="modelOn" class="meta dist-note">
-        The sliders below show what this distance implies — move one and you
-        take over from here.
-        <template v-if="onRadio">
-          Modelled, not measured: the signal and PHY rate still report the real
-          radio, which is why they disagree with this.
-        </template>
-        <template v-else>
-          Modelled, not measured: this device is on a cable, so nothing here is
-          reading a radio at all.
-        </template>
-      </p>
     </div>
 
     <div class="dirs" :style="{ marginTop: '10px', gridTemplateColumns: dirCols }">
@@ -1377,7 +1377,17 @@ function fmtBytes(n: number): string {
 .dist-read { font-size: 12px; color: var(--ink-dim); min-width: 120px; }
 .dist-dbm { color: var(--ink-faint); margin-left: 6px; font-size: 11px; }
 .dist-off { font-size: 11px; padding: 2px 8px; }
-.dist-note { margin: 4px 0 0; max-width: 62ch; }
+/* Dotted underline: the standard signal that a word is hiding an explanation,
+   so the caveat is findable without being read aloud on every card. */
+.dist-tag {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--ink-faint);
+  border-bottom: 1px dotted var(--line);
+  cursor: help;
+  margin-left: 2px;
+}
 .dist-kinds {
   display: flex;
   align-items: center;

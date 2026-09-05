@@ -1397,6 +1397,11 @@ the implementations left alone.
 - **dBm is stored, metres are shown.** Metres depend on `n`, which is a guess, so
   a policy in metres would mean a different impairment in a different building.
   dBm replays identically anywhere.
+- **The wire is metric; the interface is not necessarily.** `RssiView.DistanceM`
+  is always metres — one unit on the wire, as everywhere else here. The reader's
+  own unit is chosen in the browser from its locale, so a US reader is shown feet
+  without anything downstream knowing. Nothing is stored or transmitted in feet,
+  and no comparison anywhere depends on the displayed unit.
 - **A hand edit clears the model**, on the same rule that pauses a running
   pattern: otherwise the model would overwrite the typed value on the next tick
   and the controls would appear not to work.

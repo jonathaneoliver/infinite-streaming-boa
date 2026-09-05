@@ -342,6 +342,55 @@ export function distanceFor(rssiDbm: number, freqMHz: number, n = DEFAULT_EXPONE
   return Math.pow(10, (TX_DBM - freeSpaceAt1m(freqMHz) - rssiDbm) / (10 * n));
 }
 
+/*
+ * DISTANCE IS SHOWN IN THE READER'S OWN UNITS, and only shown -- the model
+ * stores a signal level in dBm and the wire carries metres, so this is a
+ * formatting decision and nothing downstream depends on it.
+ *
+ * Detected rather than configured. A tester reading "24 m" in a country that
+ * does not use metres has to convert in their head every time, which is exactly
+ * the kind of friction that makes a control feel foreign; and a unit setting is
+ * a preference nobody wants to be asked for when the browser already knows.
+ *
+ * Intl's measurement system is the direct answer where it exists. It is a
+ * relatively recent addition and is exposed inconsistently -- a getter in some
+ * engines, a method in others -- so both are tried, and the region falls back to
+ * the three countries that do not use the metric system for everyday distance.
+ */
+function usesImperialDistance(): boolean {
+  try {
+    const loc = new Intl.Locale(navigator.language) as Intl.Locale & {
+      measurementSystem?: string;
+      getMeasurementSystem?: () => string;
+    };
+    const ms = loc.measurementSystem ?? loc.getMeasurementSystem?.();
+    if (ms) return ms !== 'metric';
+    return ['US', 'LR', 'MM'].includes(loc.region ?? '');
+  } catch {
+    return false; // an engine without Intl.Locale gets metres, the wider default
+  }
+}
+
+/** Resolved once: the locale does not change while the page is open. */
+export const IMPERIAL_DISTANCE = usesImperialDistance();
+
+const FEET_PER_METRE = 3.28084;
+
+/**
+ * A distance in metres, rendered in whichever unit the reader uses.
+ *
+ * One decimal close in and whole units further out, because the precision that
+ * is useful at arm's length is noise at the far end of a modelled walk -- and
+ * the model's own accuracy does not justify a decimal at 80 feet.
+ */
+export function formatDistance(metres: number): string {
+  if (IMPERIAL_DISTANCE) {
+    const ft = metres * FEET_PER_METRE;
+    return ft < 20 ? `${ft.toFixed(1)} ft` : `${Math.round(ft)} ft`;
+  }
+  return metres < 10 ? `${metres.toFixed(1)} m` : `${Math.round(metres)} m`;
+}
+
 /** The frequency a channel sits on, for turning a client's radio into a curve. */
 export function freqForChannel(ch: number): number {
   if (ch === 14) return 2484;
