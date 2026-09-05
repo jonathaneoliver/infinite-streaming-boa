@@ -1,7 +1,11 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue';
-import type { Client, Shape, Series, ChartPrefs, Pattern } from '@/types';
-import { CLEAN, DEVELOPER, PRESETS, ntopngUrl, patternFromPolicy } from '@/types';
+import type { Client, Shape, Series, ChartPrefs, Pattern, RssiModel } from '@/types';
+import {
+  CLEAN, DEFAULT_EXPONENT, DEFAULT_RX_DB, DEFAULT_TX_DB, DEVELOPER, DEVICE_KINDS,
+  MODEL_BANDS, PRESETS,
+  distanceFor, formatDistance, freqForChannel, ntopngUrl, patternFromPolicy,
+} from '@/types';
 import { setShapeAt } from '@/lib/pattern';
 import ShapeSliders from './ShapeSliders.vue';
 import SubClasses from './SubClasses.vue';
@@ -28,6 +32,8 @@ const props = defineProps<{
 const emit = defineEmits<{
   shape: [dir: 'down' | 'up', shape: Shape];
   preset: [down: Shape, up: Shape];
+  /** A modelled signal level, or null to hand control back. */
+  distance: [rssi: RssiModel | null];
   label: [string];
   reset: [];
   forget: [];
@@ -459,6 +465,181 @@ function onPreset(down: Shape, up: Shape) {
   emit('preset', down, up);
 }
 
+/*
+ * The distance model.
+ *
+ * The SLIDER MOVES IN dBm and the LABEL READS IN METRES, which sounds backwards
+ * and is the only arrangement that works. Signal falls with the logarithm of
+ * distance -- at n=3 every doubling costs about 9 dB -- so a slider linear in
+ * metres would spend three quarters of its travel in the dead zone past the
+ * cliff and give one pixel to the entire usable range. Linear in dBm gives even
+ * resolution over the part anyone wants to explore, and metres is what the
+ * operator is actually thinking in, so both are shown.
+ *
+ * The frequency comes from the client's own radio, because the same metres are
+ * a different signal level on each band -- 7.3 dB apart at 1m.
+ */
+const RSSI_NEAR = -40;
+const RSSI_FAR = -90;
+
+/*
+ * The slider is a POSITION, not a level: 0 is off and every step right is one
+ * dB further away.
+ *
+ * Off sits at the left end rather than in a separate button because it belongs
+ * on the same axis -- no model is the same situation as standing next to the
+ * access point, so the control reads left to right as "here, and then walking
+ * away". Sliding off the left end is how you hand the controls back.
+ *
+ * Uniform in dB and therefore LOGARITHMIC in metres, which is the only honest
+ * spacing: signal falls with the log of distance, so at n=3 every 9 dB is a
+ * doubling. Uniform metres would give three quarters of the travel to the dead
+ * ground past the cliff and a few pixels to everything worth exploring. It is
+ * why the metre labels run 1, 2, 4, 8, 16, 33, 84 rather than evenly.
+ */
+const DIST_STEPS = RSSI_NEAR - RSSI_FAR; // 50 one-dB positions past "off"
+
+/** Slider position for the model in force: 0 when off, 1 at the nearest. */
+const sliderPos = computed(() =>
+  modelOn.value ? RSSI_NEAR - modelDbm.value + 1 : 0);
+
+/** Position back to a level. Position 0 has no level -- it is off. */
+function dbmForPos(pos: number): number {
+  return RSSI_NEAR - (pos - 1);
+}
+
+/*
+ * The radio being modelled: the client's own when it has one, the chosen one
+ * when it does not.
+ *
+ * A wired device has no band to read, so it has to be named -- and naming it is
+ * a legitimate test rather than a fudge: it is the Wi-Fi profile without a real
+ * radio's variability underneath, which is what makes a run repeat exactly.
+ */
+const onRadio = computed(() => !!props.client.radio_on?.channel);
+const modelAuto = computed(() => !!props.client.policy.rssi?.auto_band);
+/* Under auto the daemon decides, so its answer is the one to show -- otherwise
+   the label and the conditioning could name different radios. */
+const modelFreq = computed(() =>
+  onRadio.value
+    ? freqForChannel(props.client.radio_on!.channel!)
+    : props.client.rssi_run?.freq_mhz
+      ?? props.client.policy.rssi?.freq_mhz
+      ?? MODEL_BANDS[0].freq);
+const modelWidth = computed(() =>
+  onRadio.value
+    ? props.client.radio_on!.width_mhz ?? 20
+    : props.client.policy.rssi?.width_mhz ?? MODEL_BANDS[0].width);
+const modelBand = computed(() =>
+  MODEL_BANDS.find((b) => b.freq === modelFreq.value)?.key);
+const modelN = computed(() => props.client.policy.rssi?.n || DEFAULT_EXPONENT);
+const modelRx = computed(() => props.client.policy.rssi?.rx_db ?? DEFAULT_RX_DB);
+const modelTx = computed(() => props.client.policy.rssi?.tx_db ?? DEFAULT_TX_DB);
+
+/*
+ * The two levels that actually arrive.
+ *
+ * The slider sets the PATH -- what a device with no losses of its own would see
+ * at that distance -- and the device kind takes its antenna off both directions
+ * and its transmit power off the uplink as well. So both figures move when
+ * either control moves, which is what makes the pair worth showing.
+ *
+ * Taken from the daemon when it has computed them, so the label and the
+ * conditioning cannot disagree; derived locally only for the live label while
+ * dragging, before the write has come back.
+ */
+const modelDownDbm = computed(() =>
+  props.client.rssi_run?.down_dbm ?? modelDbm.value - modelRx.value);
+const modelUpDbm = computed(() =>
+  props.client.rssi_run?.up_dbm ?? modelDbm.value - modelRx.value - modelTx.value);
+const modelDbm = computed(() => props.client.policy.rssi?.dbm ?? RSSI_NEAR);
+const modelOn = computed(() => !!props.client.policy.rssi);
+// The daemon's figure when there is one: it resolves the band the client is
+// actually on. The local computation is the live label while dragging, before
+// the write has come back.
+const modelMetres = computed(() =>
+  props.client.rssi_run?.distance_m
+  ?? distanceFor(modelDbm.value, modelFreq.value, modelN.value));
+
+
+
+function onDistance(e: Event) {
+  const pos = Number((e.target as HTMLInputElement).value);
+  if (pos <= 0) {
+    emit('distance', null);
+    return;
+  }
+  emit('distance', {
+    dbm: dbmForPos(pos), n: modelN.value,
+    rx_db: modelRx.value, tx_db: modelTx.value,
+    ...bandFields(),
+  });
+}
+
+/* The chosen radio travels with the model only when there is no real one to
+   read, so a Wi-Fi client can never carry a band that contradicts its own. */
+function bandFields() {
+  if (onRadio.value) return {};
+  return modelAuto.value
+    ? { auto_band: true }
+    : { freq_mhz: modelFreq.value, width_mhz: modelWidth.value };
+}
+
+function onBand(freq: number, width: number) {
+  emit('distance', {
+    dbm: modelDbm.value, n: modelN.value,
+    rx_db: modelRx.value, tx_db: modelTx.value,
+    freq_mhz: freq, width_mhz: width,
+  });
+}
+
+/** Hand the choice to the model, which picks whichever radio is better at each
+ *  distance -- the crossover then comes out of the curves rather than a rule. */
+function onAutoBand() {
+  emit('distance', {
+    dbm: modelDbm.value, n: modelN.value,
+    rx_db: modelRx.value, tx_db: modelTx.value,
+    auto_band: true,
+  });
+}
+
+/** Choosing a device changes what it costs itself, never where it is. */
+function onKind(rx: number, tx: number) {
+  emit('distance', {
+    dbm: modelDbm.value, n: modelN.value, rx_db: rx, tx_db: tx,
+    ...bandFields(),
+  });
+}
+
+/** Which named device the current pair corresponds to, for the pressed state. */
+/** What "modelled" means here, kept out of the card and behind the word. */
+const modelNote = computed(() =>
+  'The sliders below show what this distance implies — move one and you take '
+  + 'over from here. '
+  + (onRadio.value
+    ? 'Modelled, not measured: the signal and PHY rate above still report the '
+      + 'real radio, which is why they disagree with this.'
+    : 'Modelled, not measured: this device is on a cable, so nothing here is '
+      + 'reading a radio at all.'));
+
+const modelKind = computed(() =>
+  DEVICE_KINDS.find((k) => k.rx === modelRx.value && k.tx === modelTx.value)?.key);
+
+/*
+ * Everything a distance model can reach, held open while one is driving.
+ *
+ * Deliberately what the model CAN drive rather than what it currently is:
+ * corruption starts partway down the curve and loss only near the floor, so a
+ * list of what is active right now would pop controls in and out as the slider
+ * moves. `reorder` is absent because the model never touches it -- the point is
+ * to stop the set changing, not to show everything.
+ *
+ * jitter rides with delay and burst with loss, so naming the two parents is
+ * enough.
+ */
+const MODEL_DRIVES = ['delay_ms', 'loss_pct', 'corrupt_pct'] as const;
+const modelFields = computed(() => (modelOn.value ? MODEL_DRIVES : undefined));
+
 // Both a sweep and a pattern drive the cap. The daemon refuses the second one
 // rather than letting them fight; the card says so before the click.
 const patBlocked = computed(() => {
@@ -489,17 +670,32 @@ const patBlocked = computed(() => {
  * and loss for the duration -- so those read zero, because that is what the
  * kernel has.
  */
+/*
+ * What the sliders show is what is ENFORCED, not what is stored.
+ *
+ * A sweep, a pattern and a distance model all drive the device without writing
+ * to the policy, so binding these to the stored shape would leave the sliders
+ * reading zero while the kernel handed the device 12 Mbit/s with corruption on
+ * it. It also makes the second-tier impairments appear on their own: the rule
+ * for showing one is that it is doing something, so feeding the derived shape
+ * through reveals exactly the controls a model drives and no others --
+ * corruption yes, reorder no, because the model never touches reorder.
+ */
 const downShape = computed<Shape>(() => {
   if (sweeping.value) {
     return { ...CLEAN, rate_mbps: downCap.value };
   }
   if (playing.value) return patRun.value!.down;
-  return editKey.value ? editKey.value.down : props.client.policy.down;
+  if (editKey.value) return editKey.value.down;
+  if (props.client.rssi_run) return props.client.rssi_run.down;
+  return props.client.policy.down;
 });
 
 const upShape = computed<Shape>(() => {
   if (playing.value) return patRun.value!.up;
-  return editKey.value ? editKey.value.up : props.client.policy.up;
+  if (editKey.value) return editKey.value.up;
+  if (props.client.rssi_run) return props.client.rssi_run.up;
+  return props.client.policy.up;
 });
 
 const conditioned = computed(() => {
@@ -777,6 +973,104 @@ function fmtBytes(n: number): string {
       </button>
     </div>
 
+    <!-- THE DISTANCE MODEL.
+         Beside the presets because it is the same kind of thing: one input
+         standing for a whole set of impairments. It differs in staying in
+         force -- a preset is a value you then edit, this keeps driving the
+         device until it is switched off or you move a slider by hand. -->
+    <!-- Shown for a wired client too. The impairments are netem either way, so
+         a device on lan0 can be given Wi-Fi conditions -- and there is a real
+         reason to: it is the same degradation profile with none of a radio's
+         own variability underneath, so the run repeats exactly. What it cannot
+         do is INFER the band, which is why that becomes a choice below. -->
+    <div class="distance" style="padding: 8px 14px 0">
+      <label class="dist-row">
+        <span class="dist-name">distance</span>
+        <input
+          type="range" class="dist-range"
+          min="0" :max="DIST_STEPS" step="1"
+          :value="sliderPos" :disabled="!client.shapeable"
+          title="How far away this device should behave as though it is. Off at the left, further away to the right. Moves the impairments, not the radio."
+          @input="onDistance"
+        />
+        <span class="dist-read num">
+          <template v-if="modelOn">{{ formatDistance(modelMetres) }}</template>
+          <template v-else>off</template>
+        </span>
+        <button
+          v-if="modelOn" class="ghost dist-off"
+          title="Stop modelling distance and hand the controls back"
+          @click="emit('distance', null)"
+        >off</button>
+      </label>
+      <!-- HOW LOUD the device is, as distinct from how far away it is.
+           Both directions cross the same air, so the only thing separating
+           them is that a client transmits more quietly than an access point --
+           which is why its uplink fails first. Named for the device rather than
+           the dB, because that is how anyone thinks about it. -->
+      <!-- Only when there is no radio to read it from. On a Wi-Fi client the
+           band is a fact, and offering to change it would invite the interface
+           to disagree with the hardware. -->
+      <div v-if="modelOn && !onRadio" class="dist-kinds">
+        <span class="dist-name">radio</span>
+        <button
+          v-for="b in MODEL_BANDS" :key="b.key"
+          class="ghost" :class="{ on: !modelAuto && modelBand === b.key }"
+          :title="b.note"
+          @click="onBand(b.freq, b.width)"
+        >{{ b.label }}</button>
+        <button
+          class="ghost" :class="{ on: modelAuto }"
+          title="Let the model choose: whichever radio gives the better link at this distance. 5 GHz is faster close in; 2.4 GHz reaches further, so it takes over further out."
+          @click="onAutoBand"
+        >auto</button>
+        <span v-if="modelAuto" class="dist-why meta">
+          on {{ modelBand === '5' ? '5 GHz' : '2.4 GHz' }} at this distance
+        </span>
+        <span v-else class="dist-why meta">
+          this device is on a cable; these are Wi-Fi conditions imposed on it
+        </span>
+      </div>
+
+      <div v-if="modelOn" class="dist-kinds">
+        <span class="dist-name">device</span>
+        <button
+          v-for="k in DEVICE_KINDS" :key="k.key"
+          class="ghost" :class="{ on: modelKind === k.key }"
+          :title="k.note"
+          @click="onKind(k.rx, k.tx)"
+        >{{ k.label }}</button>
+      </div>
+
+      <!-- THE TWO LEVELS, TOGETHER AND IN ORDER.
+           They were on separate rows, which is what made this unreadable: the
+           uplink figure sat beside the device buttons with nothing to compare
+           it against, so "-53 dBm" had no referent and the arithmetic joining
+           it to the distance was invisible. Both levels, on one line, with the
+           subtraction shown, is the whole explanation -- this is the model's
+           output and the reason the two directions differ. -->
+      <div v-if="modelOn" class="dist-levels num">
+        <span class="dist-name">signal</span>
+        <span class="lvl" title="Signal arriving AT the device, from the access point. This is what its downlink is built from.">
+          <span class="lvl-dir">to device</span>{{ modelDownDbm }} dBm
+        </span>
+        <span class="lvl" title="Signal arriving at the access point, FROM the device. Weaker, because the device is the quieter transmitter — which is why its uplink fails first.">
+          <span class="lvl-dir">from device</span>{{ modelUpDbm }} dBm
+        </span>
+        <span class="dist-why meta">
+          both move with distance; the device moves them by different amounts
+        </span>
+        <!-- The word stays on screen and the explanation moves to a hover.
+             It was a paragraph on every card, which is a lot of text to read
+             once and then scroll past for ever -- but it cannot simply go:
+             these numbers contradict the signal and PHY rate shown a few
+             centimetres above them, and a reader who does not know why has
+             found a bug rather than a model. One word carries the claim; the
+             tooltip carries the reason. -->
+        <span class="dist-tag" :title="modelNote">modelled</span>
+      </div>
+    </div>
+
     <div class="dirs" :style="{ marginTop: '10px', gridTemplateColumns: dirCols }">
       <div v-if="chart.showDown" class="dir down">
         <h3>
@@ -816,7 +1110,7 @@ function fmtBytes(n: number): string {
           settings — those are untouched and return when it ends.
         </p>
         <ShapeSliders
-          :shape="downShape" dir="down"
+          :shape="downShape" dir="down" :always="modelFields"
           :disabled="!client.shapeable || sweeping || playing"
           @update="(s) => onShape('down', s)"
         />
@@ -847,7 +1141,7 @@ function fmtBytes(n: number): string {
           :window-ms="chartProps.windowMs" :now="chartProps.now"
         />
         <ShapeSliders
-          :shape="upShape" dir="up"
+          :shape="upShape" dir="up" :always="modelFields"
           :disabled="!client.shapeable || playing"
           @update="(s) => onShape('up', s)"
         />
@@ -1067,6 +1361,63 @@ function fmtBytes(n: number): string {
    and reusing them here would make band look like direction. */
 .badge.band5 { color: #7dd3fc; border-color: color-mix(in srgb, #7dd3fc 40%, var(--line)); }
 .badge.band24 { color: #c4b5fd; border-color: color-mix(in srgb, #c4b5fd 40%, var(--line)); }
+.dist-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.dist-name {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--ink-faint);
+  min-width: 58px;
+}
+.dist-range { flex: 1; max-width: 320px; }
+.dist-read { font-size: 12px; color: var(--ink-dim); min-width: 120px; }
+.dist-dbm { color: var(--ink-faint); margin-left: 6px; font-size: 11px; }
+.dist-off { font-size: 11px; padding: 2px 8px; }
+/* Dotted underline: the standard signal that a word is hiding an explanation,
+   so the caveat is findable without being read aloud on every card. */
+.dist-tag {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--ink-faint);
+  border-bottom: 1px dotted var(--line);
+  cursor: help;
+  margin-left: 2px;
+}
+.dist-kinds {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 6px;
+}
+.dist-kinds .ghost { font-size: 11px; padding: 2px 8px; }
+.dist-kinds .ghost.on {
+  border-color: var(--accent);
+  color: var(--ink);
+}
+.dist-why { margin-left: 4px; }
+/* The two levels read as one sentence, so they are spaced as one rather than
+   as three separate figures. */
+.dist-levels {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin-top: 6px;
+  font-size: 12px;
+  color: var(--ink-dim);
+}
+.lvl-dir {
+  color: var(--ink-faint);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  margin-right: 5px;
+}
+.lvl-op { color: var(--ink-faint); font-size: 11px; }
 .card-head.folded .val { text-align: right; font-size: 12px; font-weight: 600; }
 .card-head.folded .unit { font-size: 11px; }
 .card-head.folded .spark { display: block; }

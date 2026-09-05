@@ -383,6 +383,20 @@ func (e *Engine) desired(clients []Client) []Desired {
 			// Disabled means "do not condition", not "do not measure".
 			down, up = Shape{}, Shape{}
 		}
+		// A distance model replaces both directions with what a link at that
+		// signal level would deliver. Applied here for the same reason the two
+		// below are: the operator's INPUT is what is stored, and the shapes it
+		// implies are derived per tick and never written back, so clearing the
+		// model is all it takes to undo -- and the two can never drift apart,
+		// because only one of them exists on disk.
+		//
+		// The band comes from the client's own RadioOn rather than from an
+		// engine lookup. That is not a style preference: reading radio state
+		// inside the tick once deadlocked the non-reentrant lock and took the
+		// whole API down with it. Everything needed is already on the Client.
+		if d, u, _, ok := RssiShapesFor(c); ok {
+			down, up = d, u
+		}
 		// A running ladder sweep drives the downlink cap itself, overriding
 		// stored policy for the duration. Applied here rather than written to
 		// the Store, so nothing has to be unwound: the override vanishes with
@@ -781,6 +795,11 @@ func (e *Engine) tick() {
 		c := &clients[i]
 		c.Sweep = e.sweep.View(c.MAC)
 		c.PatternRun = e.player.View(c.MAC)
+		// What the distance model is imposing, alongside what a pattern run
+		// imposes. The card shows these in the sliders themselves, so the
+		// normally-hidden impairments a model drives -- corruption especially
+		// -- appear on their own rather than being enforced invisibly.
+		c.RssiRun = rssiViewFor(*c)
 		if m, ok := e.sh.MinorFor(c.MAC); ok {
 			c.DownCounters = readPort(e.sh.DownPortFor(c.MAC))[m]
 			c.DownCounters.ThroughputMbps = e.rate(

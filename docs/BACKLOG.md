@@ -23,6 +23,18 @@ and documented so they are not rediscovered.
 - **No per-station RSSI.** The Pi 5's Broadcom radio reports no `signal` line in
   `iw station dump` in AP mode. The UI shows `tx-fail` as the link-quality proxy
   instead. Not fixable in software.
+- **The PHY rate cannot be clamped from the host, on either radio.** Measured
+  2026-09-05: `iw dev wlan-usb set bitrates vht-mcs-5 2:0-2` and
+  `iw dev wlan0 set bitrates ht-mcs-2.4 0 1 2` both return
+  `Operation not supported (-95)`. `mt76/mt792x_core.c:834` sets
+  `HAS_RATE_CONTROL` and `mt7921_ops` implements no `.set_bitrate_mask`, so the
+  firmware picks the rate and nothing on the host may overrule it; `brcmfmac` is
+  fullmac and never could. `CONFIG_MAC80211_DEBUGFS` is off as well
+  (`/sys/kernel/debug/ieee80211/phy2/` holds only `mt76/`), so the per-station
+  `rc_rateidx_mask_*` route does not exist either. Together with tx power
+  (#122, #202) this means **PHY rate is an observation on this box and never a
+  control** — every impairment has to sit above the radio, which is what the
+  distance model in `distance.go` does instead.
 - **ntopng is a source build.** No apt security updates; rebuild by hand. It is
   deliberately kept out of `customize.sh` as a compile — only the prebuilt
   artifact is grafted in.

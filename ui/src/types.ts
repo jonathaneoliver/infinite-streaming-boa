@@ -223,6 +223,191 @@ export interface Policy {
   sub: SubClass[] | null;
   ladders?: Ladder[] | null;
   pattern?: Pattern | null;
+  /** The distance model driving this device, if one is. Absent means the
+   *  operator is setting down/up by hand. */
+  rssi?: RssiModel | null;
+}
+
+/**
+ * A modelled signal level, and the path-loss exponent used to render it as a
+ * distance.
+ *
+ * dBm is stored rather than metres because metres depend on `n`, which is a
+ * per-building guess: a policy in metres would mean a different impairment in a
+ * different building. See `daemon/internal/boa/distance.go`.
+ */
+export interface RssiModel {
+  dbm: number;
+  n?: number;
+  /** What this device's antenna costs it, in BOTH directions. */
+  rx_db: number;
+  /** The additional loss on uplink only, from transmitting more quietly. */
+  tx_db: number;
+  /** The radio to imitate, for a client that is not on one. Ignored when it is. */
+  freq_mhz?: number;
+  width_mhz?: number;
+  /** Let the model choose the radio at each distance. */
+  auto_band?: boolean;
+}
+
+/**
+ * The radios a wired client can be modelled as being on.
+ *
+ * Two, because this box runs exactly one of each and they are the two cases
+ * worth testing: the wide fast one that dies sooner, and the narrow slow one
+ * that reaches further. The widths are what `wlan-usb` and `wlan0` actually
+ * run, so "5 GHz" means the same thing here as it does in the rack.
+ */
+export const MODEL_BANDS = [
+  { key: '5', label: '5 GHz', freq: 5745, width: 80, note: 'As if on the 5 GHz radio: 80 MHz, faster and shorter-ranged.' },
+  { key: '2.4', label: '2.4 GHz', freq: 2462, width: 20, note: 'As if on the 2.4 GHz radio: 20 MHz, slower and longer-ranged.' },
+] as const;
+
+/**
+ * How loud a client is, named for the reason rather than the number.
+ *
+ * Nobody thinks "this device is 6 dB quieter"; they think "it is a phone". So
+ * the control names the case, the same move PRESETS makes for link conditions —
+ * and shows the dB, because a label asserts more confidence than a number does
+ * and these figures are typed rather than measured.
+ *
+ * They are not measurable from this box either: `station dump` gives the AP's
+ * view of the client, and nothing gives the client's view of the AP, so the
+ * difference between them can only be assumed.
+ *
+ * A bigger radio with more antennas is heard better at the same distance, so a
+ * larger delta means the uplink dies sooner.
+ */
+export const DEVICE_KINDS = [
+  {
+    key: 'laptop', label: 'laptop', rx: 0, tx: 3,
+    note: 'Big antennas and more of them. The reference: it hears about as well as an access point does, and is heard nearly as well.',
+  },
+  {
+    key: 'phone', label: 'phone', rx: 2, tx: 4,
+    note: 'A smaller antenna costs it 2 dB in both directions, and lower transmit power costs another 4 dB on the way back.',
+  },
+  {
+    key: 'watch', label: 'watch', rx: 5, tx: 6,
+    note: 'A tiny antenna and a small battery: 5 dB worse in both directions, and 6 dB worse again on the way back.',
+  },
+] as const;
+
+export const DEFAULT_RX_DB = 2;
+export const DEFAULT_TX_DB = 4;
+
+/**
+ * What a distance model is imposing right now.
+ *
+ * The same relationship to `RssiModel` that `PatternView` has to `Pattern`: one
+ * is the intent, stored; this is what is happening, computed by the daemon each
+ * tick. The card feeds these shapes to the sliders so the controls show what is
+ * actually in force -- including the impairments that stay hidden until they do
+ * something, which under a model would otherwise be enforced invisibly.
+ */
+export interface RssiView {
+  dbm: number;
+  distance_m: number;
+  /** The levels each direction actually arrives at, after the device's antenna
+   *  and transmit power come off the path. Both move when either control does. */
+  down_dbm: number;
+  up_dbm: number;
+  /** The radio actually used — under `auto_band` this is the model's choice. */
+  freq_mhz?: number;
+  width_mhz?: number;
+  down: Shape;
+  up: Shape;
+}
+
+/**
+ * Distance and signal level, the same relationship the daemon models.
+ *
+ * Duplicated in TypeScript ONLY for the slider's own labels -- the impairments
+ * are always computed in Go, so the two can never disagree about what a level
+ * does. These two convert for display; `distance.go` decides what it means.
+ */
+const TX_DBM = 20;
+/*
+ * Must track ExponentResidential in distance.go, which is ITU-R P.1238's
+ * residential coefficient (N = 28). It was 3.0 -- a remembered round number --
+ * until the model's constants were replaced with cited ones, and this copy was
+ * missed, so a new model was seeded with an exponent matching none of the three
+ * the daemon offers.
+ *
+ * It moves the LABEL only: the slider maps position straight to dBm, and dBm is
+ * what drives the impairment. A given position conditions traffic identically
+ * whatever this says; it only changes the distance printed beside it.
+ */
+export const DEFAULT_EXPONENT = 2.8;
+
+function freeSpaceAt1m(freqMHz: number): number {
+  return 20 * Math.log10(freqMHz) - 27.55;
+}
+
+export function rssiAt(distanceM: number, freqMHz: number, n = DEFAULT_EXPONENT): number {
+  const d = Math.max(1, distanceM);
+  return TX_DBM - freeSpaceAt1m(freqMHz) - 10 * n * Math.log10(d);
+}
+
+export function distanceFor(rssiDbm: number, freqMHz: number, n = DEFAULT_EXPONENT): number {
+  return Math.pow(10, (TX_DBM - freeSpaceAt1m(freqMHz) - rssiDbm) / (10 * n));
+}
+
+/*
+ * DISTANCE IS SHOWN IN THE READER'S OWN UNITS, and only shown -- the model
+ * stores a signal level in dBm and the wire carries metres, so this is a
+ * formatting decision and nothing downstream depends on it.
+ *
+ * Detected rather than configured. A tester reading "24 m" in a country that
+ * does not use metres has to convert in their head every time, which is exactly
+ * the kind of friction that makes a control feel foreign; and a unit setting is
+ * a preference nobody wants to be asked for when the browser already knows.
+ *
+ * Intl's measurement system is the direct answer where it exists. It is a
+ * relatively recent addition and is exposed inconsistently -- a getter in some
+ * engines, a method in others -- so both are tried, and the region falls back to
+ * the three countries that do not use the metric system for everyday distance.
+ */
+function usesImperialDistance(): boolean {
+  try {
+    const loc = new Intl.Locale(navigator.language) as Intl.Locale & {
+      measurementSystem?: string;
+      getMeasurementSystem?: () => string;
+    };
+    const ms = loc.measurementSystem ?? loc.getMeasurementSystem?.();
+    if (ms) return ms !== 'metric';
+    return ['US', 'LR', 'MM'].includes(loc.region ?? '');
+  } catch {
+    return false; // an engine without Intl.Locale gets metres, the wider default
+  }
+}
+
+/** Resolved once: the locale does not change while the page is open. */
+export const IMPERIAL_DISTANCE = usesImperialDistance();
+
+const FEET_PER_METRE = 3.28084;
+
+/**
+ * A distance in metres, rendered in whichever unit the reader uses.
+ *
+ * One decimal close in and whole units further out, because the precision that
+ * is useful at arm's length is noise at the far end of a modelled walk -- and
+ * the model's own accuracy does not justify a decimal at 80 feet.
+ */
+export function formatDistance(metres: number): string {
+  if (IMPERIAL_DISTANCE) {
+    const ft = metres * FEET_PER_METRE;
+    return ft < 20 ? `${ft.toFixed(1)} ft` : `${Math.round(ft)} ft`;
+  }
+  return metres < 10 ? `${metres.toFixed(1)} m` : `${Math.round(metres)} m`;
+}
+
+/** The frequency a channel sits on, for turning a client's radio into a curve. */
+export function freqForChannel(ch: number): number {
+  if (ch === 14) return 2484;
+  if (ch >= 1 && ch <= 13) return 2407 + ch * 5;
+  if (ch >= 32 && ch <= 177) return 5000 + ch * 5;
+  return 5745;
 }
 
 export interface SweepLevel {
@@ -294,6 +479,8 @@ export interface Client {
   medium: string;
   port?: string;
   radio_on?: RadioOn;
+  /** What the distance model is imposing, when one is set. */
+  rssi_run?: RssiView | null;
   /** The radio this client could be ASKED to move to (802.11v), or absent
    *  when there is nowhere to send it: a wired client, one not currently
    *  associated, or a box serving a single radio. Computed by the daemon so

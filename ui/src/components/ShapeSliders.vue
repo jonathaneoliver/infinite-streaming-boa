@@ -37,6 +37,18 @@ const props = defineProps<{
   shape: Shape;
   dir: 'down' | 'up';
   disabled?: boolean;
+  /**
+   * Fields to keep on screen regardless of whether they are currently doing
+   * anything.
+   *
+   * For a control that DRIVES these values rather than setting them once. The
+   * usual rule -- show a field while it is in force -- makes controls appear
+   * and vanish under the operator's hand as a distance model crosses each
+   * field's threshold, which reads as the interface glitching rather than as
+   * the model working. When something is driving the shape, everything it can
+   * reach stays visible for as long as it is driving.
+   */
+  always?: readonly string[];
 }>();
 const emit = defineEmits<{ update: [Shape] }>();
 
@@ -164,11 +176,17 @@ function active(key: keyof Shape): boolean {
   return v(key) > 0;
 }
 function shown(key: string): boolean {
-  return active(key as keyof Shape) || revealed.value.has(key);
+  return active(key as keyof Shape)
+    || revealed.value.has(key)
+    || !!props.always?.includes(key);
 }
 const shownExtras = computed(() => EXTRA_IMPAIRMENTS.filter((e) => shown(e.key)));
 const addChips = computed(() => COLLAPSIBLE.filter((f) => !shown(f.key)));
-const dropChips = computed(() => COLLAPSIBLE.filter((f) => shown(f.key) && !active(f.key)));
+const dropChips = computed(() =>
+  COLLAPSIBLE.filter(
+    (f) => shown(f.key) && !active(f.key) && !props.always?.includes(f.key),
+  ),
+);
 
 // netem rejects `reorder` outright when there is no delay to reorder against,
 // and a rejected command installs no qdisc at all -- so this would not merely

@@ -467,6 +467,15 @@ Two more things that will mislead you here:
   this box**: to test a weak link, move the device or put something in the way.
   See [Source Q](docs/DATA-CONTRACT.md) for the full method and the trap in it.
 
+  What the box offers instead is a **distance model** — tell a device to behave
+  as though it were further away, and it is handed the rate, delay, jitter and
+  corruption that signal level implies. It does not move the radio, so the
+  reported signal and PHY rate keep describing the real one and will disagree
+  with it on screen. That is stated rather than hidden, and it is survivable
+  because players adapt on throughput and buffer, not on signal strength. See
+  [Source S](docs/DATA-CONTRACT.md) for what is taken from a standard and what
+  is asserted.
+
 ## Wired downstream performance
 
 A USB ethernet adapter becomes `lan0` and is conditioned exactly like a wireless

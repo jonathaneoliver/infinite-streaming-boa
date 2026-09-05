@@ -1288,3 +1288,189 @@ accurate to within one poll rather than to the beacon that carried the change.
 roam as an event with a time; this field records the state each second and lets
 a roam be *seen against the traffic*. They disagree by up to a poll interval and
 neither is wrong — one is an event, the other a sampled state.
+
+---
+
+## Source S — the distance model · what a weaker signal would DO
+
+**TYPED, not measured.** This is the one entry here that is not a reading. Every
+other source describes something the box observed; this one describes something
+it computed, and the distinction is the whole point of recording it.
+
+**Why it exists.** The most useful Wi-Fi test for a player is a walk away from
+the router and back, and this box cannot perform one. Transmit power is not
+settable (#122, #202: `iw ... set txpower` validates and is then ignored) and
+neither is the rate set — measured 2026-09-05, `iw dev <if> set bitrates`
+returns `Operation not supported (-95)` on **both** radios, because
+`mt76/mt792x_core.c:834` sets `HAS_RATE_CONTROL` and `mt7921_ops` implements no
+`.set_bitrate_mask`. The radio cannot be made to look further away, so the model
+in `daemon/internal/boa/distance.go` computes what being further away would do
+and applies it with the impairments that already exist.
+
+### Input
+
+| Field | Meaning | Confidence |
+|---|---|---|
+| `Policy.Rssi.Dbm` | The modelled level on the **path**, before either end's antenna. **Stored**; the operator's intent | certain — it is a setting |
+| `Policy.Rssi.N` | Path-loss exponent, used **only** to render the distance label. 2.8 residential / 3.1 office / 3.8 obstructed | low — a per-building guess; the first two are ITU-R P.1238 |
+| `Policy.Rssi.RxDb` | What this device's antenna costs it, in **both** directions | ours — a device-kind constant, asserted |
+| `Policy.Rssi.TxDb` | Further loss on **uplink only**, from transmitting more quietly than the AP | ours — same |
+| `Client.RadioOn.Channel` / `.WidthMHz` | The band and width the client is really on. Authoritative whenever it exists | high — Source K |
+| `Policy.Rssi.FreqMHz` / `.WidthMHz` | Which band to model for a client with **no** radio — one on the wired port. Ignored when a real radio is present, so the interface can never disagree with the hardware | certain — a setting |
+| `Policy.Rssi.AutoBand` | Let the model choose the band at each distance instead of holding one. Only meaningful without a real radio | certain — a setting |
+
+**Two levels come out of one slider, and that is deliberate.** Antenna gain is
+reciprocal — the small antenna that transmits poorly also receives poorly — so
+`RxDb` moves both directions together, while `TxDb` moves only the uplink. A
+phone is therefore heard **more** faintly than it hears, which is why its uplink
+degrades first, and why the card names the two directions rather than showing one
+number. Both figures are per device kind and both are ours: they are the right
+SHAPE (a watch is worse than a laptop at both ends, and worse at transmitting
+than receiving) with plausible magnitudes rather than measured ones.
+
+### The arithmetic
+
+- **Free-space loss at 1 m** is `20*log10(f_MHz) - 27.55`: **47.6 dB at 5745
+  MHz** against **40.3 dB at 2462 MHz**. That 7.3 dB is why 5 GHz has shorter
+  range at equal power, and why the two bands need separate curves rather than
+  one curve with an offset.
+- **Log-distance path loss**: `RSSI(d) = Ptx - FSPL(1m) - 10*n*log10(d)`. At
+  n = 3 every **doubling** of distance costs about 9 dB, which is why any
+  distance control has to be logarithmic — 1→2 m costs what 8→16 m costs.
+- **Ptx is assumed at 20 dBm**, not read. The box cannot read it either: Source Q
+  records the readout as subject to a known driver misreport. It is a constant
+  in a model already labelled typed.
+- **Sensitivity moves with width**, +3 dB per doubling, which is just thermal
+  noise: `10*log10(2)`. MCS 0 needs −82 dBm at 20 MHz and −76 at 80. A wide
+  channel spreads the same power over more spectrum, so it dies first — on top
+  of the extra path loss at 5 GHz. Every rung of the ladder is scaled this way,
+  not only the bottom one.
+- **A band can be chosen rather than read.** A client on a radio uses that
+  radio's band and width, full stop. A client on the **wired** port has no band
+  to read, so one is supplied — and with `AutoBand` the model picks, at each
+  distance, whichever band yields the higher **throughput**. Scoring on
+  throughput rather than on link quality is what stops 2.4 GHz winning at close
+  range, where it is comfortable and slow; a 1.15× clear-win margin stops the two
+  bands trading places repeatedly as the ladders interleave.
+
+### Where each number comes from
+
+Every other source here rates its confidence per field because it is reading
+something. This one is *computing*, so the equivalent question is which numbers
+carry the authority of a standard relationship and which are ours.
+
+The rungs and the propagation model are now **taken from their sources** —
+IEEE Std 802.11-2020 Table 21-25 for receiver sensitivity, ITU-R P.1238 for the
+path loss coefficient — rather than recalled, which is what an earlier revision
+of this entry admitted to. What remains ours is the layer joining them: how much
+impairment a given headroom above the floor implies. That part is asserted, and
+the calibration walk in #221 is what would replace it.
+
+| Quantity | Origin | Standing |
+|---|---|---|
+| `20*log10(f_MHz) - 27.55` | **Friis transmission equation**, decibel form for MHz and metres | exact |
+| `RSSI(d) = Ptx - FSPL(1m) - 10*n*log10(d)` | **log-distance path loss**, the form ITU-R P.1238 uses | exact given `n` |
+| `n` = 2.8 residential, 3.1 office | **ITU-R P.1238**, which tabulates the distance power loss coefficient N = 28 and N = 31 (N is 10n) | **cited.** The recommendation itself says site-calibrated values are needed |
+| `n` = 3.8 obstructed | **ours.** ITU models walls and floors as a separate additive term `Lf(n)`, not by raising N | asserted, and named as a stand-in |
+| MCS sensitivity ladder, −82 … −57 dBm at 20 MHz | **IEEE Std 802.11-2020, Table 21-25** | **cited**, exact |
+| +3 dB per doubling of channel width | the standard's own scaling, and thermal noise `10*log10(2)` | **cited**, exact |
+| MCS data rates | computed from the standard's OFDM parameters: subcarriers × bits × coding ÷ 4 µs | **derived**, and checked against the published 6.5 / 65 / 390 Mbit/s anchors |
+| `Ptx` = 20 dBm | the common regulatory ceiling | **assumed**; the box cannot read its own (Source Q) |
+| **Implementation gain, 6 dB** | **ours** | asserted, and the number doing the most work — Table 21-25 states the *worst* a conforming receiver may be, and real silicon beats it |
+| **MAC efficiency, 0.65** | **ours** | asserted; preambles, spacing, block acks and contention as a flat fraction |
+| **The comfort window and impairment curves** | **ours** | asserted. The ORDERING is principled — corruption before loss — the numbers are not |
+| **Device figures** laptop 0/3, phone 2/4, watch 5/6 dB | **ours** | asserted, and unmeasurable here — see below |
+
+The device figures deserve their own note, because they look more solid than
+they are — they are named after real device classes, which lends them an
+authority nothing earned. `station dump` gives the AP's view of a client, and nothing gives the
+client's view of the AP, so the difference between the two directions **cannot
+be measured from this box at all**. They are plausible for the device classes
+named and nothing more.
+
+**Nothing here is ported.** ns-3 and wmediumd implement the same standard
+models and are both GPL-2.0, while `docs/LICENSING.md` commits this repo to
+containing only its own MIT code. A physical relationship is not anyone's to
+license; an implementation of one is, so the relationships were written out and
+the implementations left alone.
+
+### Semantics that bite
+
+- **It is a cliff, not a slope.** Frame error rate against SNR is a sigmoid:
+  nearly nothing happens across most of the range, then everything happens
+  inside about 10 dB. That is what a real walk feels like, and a model that
+  degrades linearly with distance is wrong in a way that is hard to name and
+  obvious to anyone who has done one. `TestDegradationIsACliffNotASlope` pins
+  it; do not smooth it to make the control feel better.
+- **Corruption leads, loss follows late and correlated.** A weak signal does not
+  drop IP packets — it damages frames that fail their checksum, having already
+  spent the airtime to send them. So `CorruptPct` rises first, and `LossPct`
+  stays at zero until retries are exhausted, arriving with `LossBurst > 1` so
+  netem runs its Gilbert-Elliott model rather than a per-packet coin flip.
+  `TestCorruptArrivesBeforeLoss` pins the ordering.
+- **Out of range is total loss, NOT a zero rate.** Zero means *unlimited*
+  everywhere else in this codebase, so a rate of zero at the floor would hand
+  the client a perfect link at the exact moment it should have none.
+- **The derived shapes are never stored.** `Policy.Rssi` holds the input;
+  `desired()` computes the shapes each tick and they vanish when the model is
+  cleared. This is deliberate — storing a model's output beside its input is how
+  the two come to disagree, the failure `putLadder`'s provenance reset exists to
+  prevent. `TestTheModelDrivesTheKernelWithoutTouchingTheStore` is the guard.
+- **JITTER REORDERS, AND ON THE ACK PATH THAT IS RUINOUS.** MEASURED
+  2026-09-05, and the most expensive assumption in this feature. netem applies
+  jitter by scheduling each packet independently, so a packet with less jitter
+  overtakes one with more — the delivery order changes without `reorder` being
+  set at all. On a data path that costs some throughput; on the ACK path it is
+  catastrophic, because reordered ACKs reach the sender as duplicate ACKs, which
+  is TCP's signal for loss. The window collapses and the sender never recovers
+  while the jitter continues.
+
+  An earlier version of this model set jitter to **45% of the delay at every
+  signal level**, giving 9.1 ms on a 20.2 ms uplink at a modelled 53 ft. A real
+  player on a real phone sat at **360p**. Changing only the jitter — to 25% of a
+  2 ms delay — moved the same player to **2160p** at the same modelled distance.
+  Nothing else was touched.
+
+  Two consequences beyond this model. The uplink matters far more than its
+  share of the traffic suggests, because it carries the ACKs for the downlink.
+  And **the jitter slider has this property too**: a hand-set jitter that is
+  large relative to its delay will wreck TCP throughput for reasons the number
+  on screen does not suggest.
+
+  It also explains why an `iperf3 -R` against the box did NOT reveal the
+  problem: that traffic terminates at the box, so its ACKs never reach the WAN
+  port where uplink shaping lives. Testing this feature requires traffic that
+  crosses the WAN.
+- **dBm is stored, metres are shown.** Metres depend on `n`, which is a guess, so
+  a policy in metres would mean a different impairment in a different building.
+  dBm replays identically anywhere.
+- **The wire is metric; the interface is not necessarily.** `RssiView.DistanceM`
+  is always metres — one unit on the wire, as everywhere else here. The reader's
+  own unit is chosen in the browser from its locale, so a US reader is shown feet
+  without anything downstream knowing. Nothing is stored or transmitted in feet,
+  and no comparison anywhere depends on the displayed unit.
+- **A hand edit clears the model**, on the same rule that pauses a running
+  pattern: otherwise the model would overwrite the typed value on the next tick
+  and the controls would appear not to work.
+
+### What it does NOT move, and this is the important part
+
+**RSSI, PHY rate, airtime and `tx failed` all keep reporting the real, healthy
+radio.** A client at a modelled 40 m still reads −34 dBm at 961 Mbit/s PHY while
+being handed 6 Mbit/s. The card says so in words rather than leaving it to be
+discovered, because on screen it otherwise looks like a defect.
+
+This is survivable because ABR players adapt on observed throughput and buffer
+level, not on signal strength — the gap bites only for something that reads RSSI
+directly, which includes the client's own band-steering decision. That is why a
+band transition has to be **driven** rather than hoped for.
+
+**Verified on hardware 2026-09-05.** A model of −74 dBm applied to a client on
+`wlan0` (channel 11, 20 MHz) produced an enforced `cap_mbps` of **12.5** while
+the stored policy still read `down.rate_mbps: 0` and `rssi: {dbm: -74, n: 3}`.
+A subsequent hand edit cleared `rssi` and returned the enforced cap to 0.
+
+**Conclusion for the product:** the model is a stand-in for a walk, honest about
+being one. It should be replaced band by band with a measured curve once #106
+records `signal` and airtime over time, and the provenance label is what says
+which of the two you are looking at.
