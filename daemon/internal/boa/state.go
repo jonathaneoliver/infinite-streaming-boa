@@ -160,6 +160,16 @@ type Engine struct {
 	// radio; guaranteed with two.
 	radioOnAt map[string]time.Time
 
+	// deadzones are the bans currently held in hostapd's deny lists.
+	//
+	// Tracked because those lists are RUNTIME state: they are set over the
+	// control socket, no deny_mac_file backs them, and restarting hostapd
+	// therefore erases every one of them. The wedge recovery restarts hostapd,
+	// so without this a deadzone set for sixty seconds would simply end early
+	// and nothing would say it had -- the exact silent failure this codebase
+	// keeps being bitten by, introduced by the fix for a different one.
+	deadzones map[string]*deadzoneBan
+
 	// recovering guards ONE access-point recovery per radio at a time.
 	//
 	// Every power-on starts a background watch, and that watch can run for
@@ -202,26 +212,6 @@ type Engine struct {
 	regDom   string
 	regDomAt time.Time
 	regDomGo bool
-
-	// apRead caches what hostapd last said about each radio's access point,
-	// because the bridge view must NOT wait on hostapd to answer.
-	//
-	// The control socket goes silent for around two minutes after a power cut
-	// while mt7921u re-initialises, and every call carries a 2s deadline. With
-	// the read on the request path, each poll of /api/bridge burned its full
-	// deadline and the browser piled up connections behind it -- an endpoint
-	// that answers in 31ms healthy became a page that looked dead, at exactly
-	// the moment an operator needs it to switch the radio back on. Issue #223.
-	//
-	// So the request serves the last reading and never blocks; a refresh runs
-	// in the background. The age of the reading travels WITH it, so a stale
-	// answer can say it is stale rather than passing for current.
-	apRead map[string]*apReading
-	// apRefreshing guards one background refresh per radio. Without it, a
-	// stuck read would be started again by every request that found the entry
-	// stale -- once a second, per radio, for the whole two minutes it is
-	// unreachable, which is the pile-up this cache exists to prevent.
-	apRefreshing map[string]bool
 
 	// scanSeen is the last band scan per radio, kept so the interface can
 	// colour its channel controls from a measurement rather than a guess. In

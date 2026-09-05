@@ -5,6 +5,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 /*
@@ -308,5 +309,64 @@ func TestRecoveryGuardIsReleased(t *testing.T) {
 	e.endRecovery("wlan-usb")
 	if !e.startRecovery("wlan-usb") {
 		t.Fatal("the guard was not released")
+	}
+}
+
+// A deadzone must survive the restart that recovers a wedged radio.
+//
+// Deny lists are runtime state: set over the control socket, backed by no
+// deny_mac_file, and erased when hostapd is replaced. The wedge recovery
+// replaces hostapd, so without this a ban set for sixty seconds would just end
+// early -- the client quietly allowed back mid-outage, and the measurement it
+// belonged to wrong in a way nothing on screen could show.
+func TestDeadzonesAreRestoredAfterARestart(t *testing.T) {
+	f := &fakeAP{enabled: true}
+	withFakeAP(t, f)
+	e := wedgeEngine()
+
+	e.noteDeadzone("aa:bb:cc:dd:ee:ff", []string{"wlan-usb"}, 60*time.Second)
+	e.reapplyDeadzones("wlan-usb")
+
+	var added bool
+	for _, c := range f.commands() {
+		if strings.HasPrefix(c, "DENY_ACL ADD_MAC aa:bb:cc:dd:ee:ff") {
+			added = true
+		}
+	}
+	if !added {
+		t.Fatalf("the ban was not put back: %v", f.commands())
+	}
+}
+
+// A ban that has already run its course must NOT be reinstated: putting it back
+// would strand a client that was due to be let in.
+func TestExpiredDeadzonesAreNotRestored(t *testing.T) {
+	f := &fakeAP{enabled: true}
+	withFakeAP(t, f)
+	e := wedgeEngine()
+
+	e.noteDeadzone("aa:bb:cc:dd:ee:ff", []string{"wlan-usb"}, -1*time.Second)
+	e.reapplyDeadzones("wlan-usb")
+
+	for _, c := range f.commands() {
+		if strings.HasPrefix(c, "DENY_ACL ADD_MAC") {
+			t.Fatalf("an expired ban was reinstated: %v", f.commands())
+		}
+	}
+}
+
+// A ban covering only the OTHER radio is left alone when this one restarts.
+func TestDeadzonesOnOtherRadiosAreLeftAlone(t *testing.T) {
+	f := &fakeAP{enabled: true}
+	withFakeAP(t, f)
+	e := wedgeEngine()
+
+	e.noteDeadzone("aa:bb:cc:dd:ee:ff", []string{"wlan0"}, 60*time.Second)
+	e.reapplyDeadzones("wlan-usb")
+
+	for _, c := range f.commands() {
+		if strings.HasPrefix(c, "DENY_ACL ADD_MAC") {
+			t.Fatalf("another radio's ban was applied here: %v", f.commands())
+		}
 	}
 }

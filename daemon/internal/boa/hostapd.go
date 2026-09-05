@@ -321,9 +321,12 @@ func (e *Engine) LinkDeadzone(mac string, durSec float64, scope string) error {
 			return fmt.Errorf("deadzone on %s: %w", w, err)
 		}
 	}
+	// Registered so a hostapd restart can put it back. See Engine.deadzones.
+	e.noteDeadzone(mac, on, time.Duration(durSec*float64(time.Second)))
 	_ = e.LinkDeauth(mac, 0) // kick it off now; the ACL keeps it off
 	go func() {
 		time.Sleep(time.Duration(durSec * float64(time.Second)))
+		e.forgetDeadzone(mac)
 		for _, w := range on {
 			if err := e.denyACLOn(w, "DEL", mac); err != nil {
 				log.Printf("deadzone lift %s on %s: %v", mac, w, err)
@@ -331,6 +334,66 @@ func (e *Engine) LinkDeadzone(mac string, durSec float64, scope string) error {
 		}
 	}()
 	return nil
+}
+
+// deadzoneBan is one ban in force: which radios it covers and when it ends.
+type deadzoneBan struct {
+	radios []string
+	until  time.Time
+}
+
+func (e *Engine) noteDeadzone(mac string, radios []string, d time.Duration) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.deadzones == nil {
+		e.deadzones = map[string]*deadzoneBan{}
+	}
+	e.deadzones[mac] = &deadzoneBan{
+		radios: append([]string(nil), radios...),
+		until:  time.Now().Add(d),
+	}
+}
+
+func (e *Engine) forgetDeadzone(mac string) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	delete(e.deadzones, mac)
+}
+
+// reapplyDeadzones puts back any ban covering this radio that has not expired.
+//
+// Called after hostapd is restarted, which erases its deny lists. Silence here
+// would end a deadzone early: the client would quietly be allowed back on
+// mid-outage, and the measurement it was part of would be wrong in a way
+// nothing on screen could show.
+func (e *Engine) reapplyDeadzones(iface string) {
+	e.mu.RLock()
+	type job struct {
+		mac  string
+		left time.Duration
+	}
+	var jobs []job
+	for mac, b := range e.deadzones {
+		if left := time.Until(b.until); left > 0 {
+			for _, w := range b.radios {
+				if w == iface {
+					jobs = append(jobs, job{mac: mac, left: left})
+					break
+				}
+			}
+		}
+	}
+	e.mu.RUnlock()
+
+	for _, j := range jobs {
+		if err := e.denyACLOn(iface, "ADD", j.mac); err != nil {
+			e.logEvent(EventWarning, iface, j.mac,
+				"could not restore the deadzone on %s after a restart: %v", iface, err)
+			continue
+		}
+		e.logEvent(EventAction, iface, j.mac,
+			"deadzone restored on %s after a restart, %.0fs left", iface, j.left.Seconds())
+	}
 }
 
 // deadzoneRadios resolves scope to the radios a deadzone must deny on, in the
