@@ -327,7 +327,18 @@ export interface RssiView {
  * does. These two convert for display; `distance.go` decides what it means.
  */
 const TX_DBM = 20;
-export const DEFAULT_EXPONENT = 3.0;
+/*
+ * Must track ExponentResidential in distance.go, which is ITU-R P.1238's
+ * residential coefficient (N = 28). It was 3.0 -- a remembered round number --
+ * until the model's constants were replaced with cited ones, and this copy was
+ * missed, so a new model was seeded with an exponent matching none of the three
+ * the daemon offers.
+ *
+ * It moves the LABEL only: the slider maps position straight to dBm, and dBm is
+ * what drives the impairment. A given position conditions traffic identically
+ * whatever this says; it only changes the distance printed beside it.
+ */
+export const DEFAULT_EXPONENT = 2.8;
 
 function freeSpaceAt1m(freqMHz: number): number {
   return 20 * Math.log10(freqMHz) - 27.55;

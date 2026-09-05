@@ -1311,10 +1311,22 @@ and applies it with the impairments that already exist.
 
 | Field | Meaning | Confidence |
 |---|---|---|
-| `Policy.Rssi.Dbm` | The modelled received level. **Stored**; the operator's intent | certain — it is a setting |
-| `Policy.Rssi.N` | Path-loss exponent, for rendering metres. 2.2 open / 3.0 home / 3.8 through walls | low — a per-building guess |
-| `Client.RadioOn.Channel` | Which band the client is on, so the right curve is used | high — Source K |
-| `Client.RadioOn.WidthMHz` | Channel width, which sets the sensitivity floor | high — Source K |
+| `Policy.Rssi.Dbm` | The modelled level on the **path**, before either end's antenna. **Stored**; the operator's intent | certain — it is a setting |
+| `Policy.Rssi.N` | Path-loss exponent, used **only** to render the distance label. 2.8 residential / 3.1 office / 3.8 obstructed | low — a per-building guess; the first two are ITU-R P.1238 |
+| `Policy.Rssi.RxDb` | What this device's antenna costs it, in **both** directions | ours — a device-kind constant, asserted |
+| `Policy.Rssi.TxDb` | Further loss on **uplink only**, from transmitting more quietly than the AP | ours — same |
+| `Client.RadioOn.Channel` / `.WidthMHz` | The band and width the client is really on. Authoritative whenever it exists | high — Source K |
+| `Policy.Rssi.FreqMHz` / `.WidthMHz` | Which band to model for a client with **no** radio — one on the wired port. Ignored when a real radio is present, so the interface can never disagree with the hardware | certain — a setting |
+| `Policy.Rssi.AutoBand` | Let the model choose the band at each distance instead of holding one. Only meaningful without a real radio | certain — a setting |
+
+**Two levels come out of one slider, and that is deliberate.** Antenna gain is
+reciprocal — the small antenna that transmits poorly also receives poorly — so
+`RxDb` moves both directions together, while `TxDb` moves only the uplink. A
+phone is therefore heard **more** faintly than it hears, which is why its uplink
+degrades first, and why the card names the two directions rather than showing one
+number. Both figures are per device kind and both are ours: they are the right
+SHAPE (a watch is worse than a laptop at both ends, and worse at transmitting
+than receiving) with plausible magnitudes rather than measured ones.
 
 ### The arithmetic
 
@@ -1328,9 +1340,18 @@ and applies it with the impairments that already exist.
 - **Ptx is assumed at 20 dBm**, not read. The box cannot read it either: Source Q
   records the readout as subject to a known driver misreport. It is a constant
   in a model already labelled typed.
-- **The sensitivity floor moves with width**, about 3 dB per doubling: −82 dBm
-  at 20 MHz, −76 at 80. A wide channel spreads the same power over more
-  spectrum, so it dies first — on top of the extra path loss at 5 GHz.
+- **Sensitivity moves with width**, +3 dB per doubling, which is just thermal
+  noise: `10*log10(2)`. MCS 0 needs −82 dBm at 20 MHz and −76 at 80. A wide
+  channel spreads the same power over more spectrum, so it dies first — on top
+  of the extra path loss at 5 GHz. Every rung of the ladder is scaled this way,
+  not only the bottom one.
+- **A band can be chosen rather than read.** A client on a radio uses that
+  radio's band and width, full stop. A client on the **wired** port has no band
+  to read, so one is supplied — and with `AutoBand` the model picks, at each
+  distance, whichever band yields the higher **throughput**. Scoring on
+  throughput rather than on link quality is what stops 2.4 GHz winning at close
+  range, where it is comfortable and slow; a 1.15× clear-win margin stops the two
+  bands trading places repeatedly as the ladders interleave.
 
 ### Where each number comes from
 

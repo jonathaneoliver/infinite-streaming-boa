@@ -95,14 +95,38 @@ Intended for:
   degrades evenly with distance is wrong in a way that is obvious to anyone who
   has done one. Corruption leads and loss follows late, because a weak signal
   damages frames that fail their checksum rather than dropping packets, and
-  retries hide the loss until they are exhausted.
+  retries hide the loss until they are exhausted. The rungs it steps down are
+  **the standard's own** — the receiver sensitivities 802.11 requires, and the
+  data rates its OFDM parameters give — rather than a curve shaped to look
+  right; what remains invented is how much impairment a given amount of headroom
+  above the bottom rung implies.
+- **The device is half of the link, so its kind is a control.** A watch does not
+  hear what a laptop hears from the same access point at the same distance.
+  Picking a device kind moves both directions, because antenna gain is
+  reciprocal — the small antenna that transmits poorly also receives poorly —
+  and moves the uplink further still, because a phone answers more quietly than
+  a mains-powered access point asks. So the card shows **two** signal levels
+  rather than one, names which way each points, and the uplink is always the
+  weaker: that asymmetry is why a marginal link usually fails upward first.
+- **A device on a cable can be told to behave like a device on a radio.** The
+  model is Wi-Fi physics, and a wired client has no band for it to read — so one
+  is chosen instead, either fixed or left on **auto**. On auto the model picks,
+  at each distance, whichever band would actually deliver more throughput, which
+  reproduces the thing a real walk ends with: 5 GHz while it is fast, 2.4 GHz
+  once it is not. A client that *is* on a radio never gets this choice; there the
+  band is a fact to be read, and letting it be overridden would let the interface
+  disagree with the hardware.
 - **The model is labelled as a model, and says what it cannot do.** It moves what
   a player senses; it cannot move what the radio reports. A device at a modelled
   40 m still shows its real signal strength and PHY rate, so the two disagree on
   screen — and the card says so, rather than leaving it to be discovered. The
   stored value is the signal level in dBm and never the impairments derived from
   it: one of them is the operator's intent and the other is a consequence, and
-  keeping only the first means they can never drift apart.
+  keeping only the first means they can never drift apart. **Distance is a label,
+  not the stored quantity** — it depends on a per-building path-loss guess, so a
+  policy in metres would mean a different impairment in a different building —
+  and the unit that label is drawn in follows the reader's own locale, so a US
+  reader is shown feet without anything downstream knowing it.
 
 ## 4) Users & Use Cases
 
