@@ -129,19 +129,19 @@ export function useBridge(active: Ref<boolean>) {
    * departure is announced and the client acts on being told rather than on
    * working it out. That difference is the whole reason both controls exist.
    */
-  const setAPEnabled = (iface: string, on: boolean, notify = '') =>
+  const setAPEnabled = (iface: string, on: boolean, deauth = false) =>
     act(
       `/api/bridge/radios/${encodeURIComponent(iface)}/ap?on=${on ? 1 : 0}` +
-        (notify ? `&notify=${notify}` : ''),
+        `&deauth=${deauth ? 1 : 0}`,
       (b) =>
         b.enabled
-          ? b.notify
+          ? b.deauth
             ? `${b.iface}: access point back up, and its return was ANNOUNCED — ` +
               `any client still holding a stale association was told to start ` +
               `again rather than left to notice.`
             : `${b.iface}: access point back up. Clients can associate again.`
-          : b.notify
-            ? `${b.iface}: clients were told to leave (${b.notify}), then the ` +
+          : b.deauth
+            ? `${b.iface}: clients were told to leave (${b.deauth}), then the ` +
               `access point went down. The goodbye is explicit here, rather ` +
               `than whatever hostapd does on its own — and it is the same ` +
               `frame type the AP broadcasts on its way back up.`
@@ -278,69 +278,66 @@ export function useBridge(active: Ref<boolean>) {
     );
 
   /*
-   * EVICT and GATHER are the same endpoint read in opposite directions.
+   * EVICT and GATHER are the same endpoint, and they make OPPOSITE promises.
    *
    * `POST /radios/{iface}/steer?to={other}` asks everyone on `iface` to move to
    * `other`. Evicting a radio is that call named on the radio being emptied;
    * gathering to a radio is the same call named on the radio being filled, with
-   * the two interfaces swapped. There is no second endpoint and no new daemon
-   * code -- `to` has always been a parameter, and only the button was missing.
+   * the two interfaces swapped.
    *
-   * Both are REQUESTS. 802.11v hands the decision to the client, and whether a
-   * given phone honours it is the behaviour this box exists to test: a steer
-   * that is refused is a result, not a failure.
+   * What differs is `insist`, and it is not a preference:
+   *
+   *   - EVICT says "get off this radio" and names no destination. A client that
+   *     will not go is disassociated and then picks for itself, which is
+   *     precisely what the control claims. `insist=1`.
+   *   - GATHER says "come to THIS radio". Forcing a refusing client sends it
+   *     wherever it likes while the interface claims it went where it was told
+   *     -- observed 2026-09-06 as "gather to wlan-usb" landing a device on
+   *     wlan0, three times running. So gather asks, and a refusal is an answer.
+   *
+   * Both remain REQUESTS in the 802.11v sense: the decision is the client's, and
+   * whether a given phone honours it is the behaviour this box exists to test.
+   * A steer that is refused is a result, not a failure.
    */
   const evict = (iface: string) =>
-    act(`/api/bridge/radios/${encodeURIComponent(iface)}/steer`, (b) =>
-      `${b.iface}: asked ${b.asked} client(s) to move to ${b.to}. They may ` +
-      `refuse — 802.11v is a suggestion. Watch the stations counts to see who went.`,
+    act(`/api/bridge/radios/${encodeURIComponent(iface)}/evict`, (b) =>
+      b.moved
+        ? `${iface}: pushed ${b.moved} client(s) off and denied them here, so ` +
+          `they cannot come straight back. Each ban lifts the moment that ` +
+          `client lands somewhere, or after ${b.pin_sec}s. Where each one goes ` +
+          `is its own choice — that is what an evict is.`
+        : `${iface}: nothing to evict — no clients here.`,
     );
 
   /**
-   * Gather from EVERY other radio, not one of them.
+   * Gather: PIN every other radio's clients onto this one.
    *
-   * The steer endpoint moves the clients of a single source, so gathering onto
-   * a radio means asking each of the others in turn. With two radios "the other
-   * one" was the whole answer and a single call looked correct; with three it
-   * silently addressed one peer and ignored the rest -- and since the button
-   * was also disabled on that one peer's station count, a box whose only client
-   * sat on the third radio had gather greyed out everywhere and no way to say
-   * why.
+   * One call, not one per source radio, because this is no longer a steer sent
+   * to each. The daemon denies each client on every radio except the
+   * destination and then moves it off the one it is on, so its own rescan has a
+   * single access point left to choose. See gather.go.
    *
-   * Sequential rather than parallel: these are 802.11v requests to real
-   * devices, and firing them at once at every radio makes the log harder to
-   * read for no gain. The count reported is what was ASKED, which is the only
-   * thing this control can honestly claim -- a client may refuse.
+   * That is a different promise from the one this button used to make. Asking
+   * could not keep it: 802.11 has no request that PLACES a station on a BSS, so
+   * a client that refused — or that was disassociated and rescanned — picked for
+   * itself, and "gather to wlan-usb" was observed putting a device on wlan0.
+   * Removing the alternatives is the only deterministic answer.
+   *
+   * The cost, stated plainly because it is real: this stops being a measurement
+   * of whether the device honours a transition request. It cannot refuse what it
+   * was never asked. The per-client `steer` button on the Clients tab is still
+   * the control for that question.
    */
-  async function gatherAll(iface: string, froms: string[]) {
-    let asked = 0;
-    for (const from of froms) {
-      const ok = await act(
-        `/api/bridge/radios/${encodeURIComponent(from)}/steer` +
-          `?to=${encodeURIComponent(iface)}`,
-        (b) => {
-          asked += Number(b.asked ?? 0);
-          return '';
-        },
-      );
-      if (!ok) return false;
-    }
-    actionMsg.value =
-      `${iface}: asked ${asked} client(s) on ${froms.join(' and ')} to come here. ` +
-      `They may refuse — 802.11v is a suggestion. Watch the stations counts to ` +
-      `see who went.`;
-    return true;
-  }
-
-  /** `from` is the radio being emptied, `iface` the one being filled. */
-  const gather = (iface: string, from: string) =>
+  const gather = (iface: string) =>
     act(
-      `/api/bridge/radios/${encodeURIComponent(from)}/steer` +
-        `?to=${encodeURIComponent(iface)}`,
+      `/api/bridge/radios/${encodeURIComponent(iface)}/gather`,
       (b) =>
-        `${b.to}: asked ${b.asked} client(s) on ${b.iface} to come here. They ` +
-        `may refuse — 802.11v is a suggestion. Watch the stations counts to ` +
-        `see who came.`,
+        b.moved
+          ? `${iface}: moved ${b.moved} client(s) here by denying them on the ` +
+            `other radios. Each ban lifts the moment that client arrives, or ` +
+            `after ${b.pin_sec}s if it never does. They could not refuse — this ` +
+            `removes the alternatives rather than asking.`
+          : `${iface}: nothing to gather — every client is already here.`,
     );
 
   /**
@@ -349,14 +346,14 @@ export function useBridge(active: Ref<boolean>) {
    * Both are ANNOUNCED: the clients are told and reconnect knowing why, which
    * is the whole distinction from switching the radio off.
    */
-  const linkAll = (iface: string, kind: 'drop' | 'nudge') =>
+  const linkAll = (iface: string, kind: 'deauth' | 'disassoc') =>
     act(`/api/bridge/radios/${encodeURIComponent(iface)}/link-all?kind=${kind}`, (b) =>
-      kind === 'drop'
+      kind === 'deauth'
         ? `${b.iface}: ${b.stations} station(s) deauthenticated. They were told, so they reconnect quickly.`
         : `${b.iface}: ${b.stations} station(s) disassociated — the softer transition. Some clients ride it out without a full reconnect.`,
     );
 
-  const deauthAll = (iface: string) => linkAll(iface, 'drop');
+  const deauthAll = (iface: string) => linkAll(iface, 'deauth');
 
   async function loadSurvey(iface: string) {
     try {
@@ -427,7 +424,7 @@ export function useBridge(active: Ref<boolean>) {
     info, survey, scan, error, actionMsg, busy,
     scans, scanSummaries, airtimePct,
     load, loadSurvey, deauthAll, setPower, setAPEnabled, setService, powerOutage,
-    scanBand, gatherAll,
+    scanBand,
     applyProfile, setThreshold, evict, gather, linkAll, moveChannel,
   };
 }

@@ -79,12 +79,38 @@ delay, jitter and loss lanes unused in this run.
   conditioning through a scripted sequence — a rate ladder, a loss burst, an
   outage at a chosen second — so you can watch what a player does *through* a
   transition, not only at steady state.
-- **Conditions the Wi-Fi link itself, not only the packets** — drop
-  (deauthenticate), nudge (disassociate) and a timed deadzone, per client, as
+- **Conditions the Wi-Fi link itself, not only the packets** — deauth,
+  disassoc and a timed deadzone, per client, as
   one-shot buttons or as a lane on a pattern. A phone's path monitor and a
   player's throughput estimator react to the link going *down*, which netem
   cannot express. Needs the USB radio (hostapd); the onboard radio has no
   control interface, so the buttons only appear when it can act.
+- **Moves clients between its radios, and is honest about which moves are
+  guaranteed.** The box serves one SSID from every radio it has, so a client can
+  be pushed around the box the way a real network pushes it around a building.
+  Three controls, three different promises:
+
+  | control | what it does | can the client refuse? |
+  |---|---|---|
+  | **steer** | asks one client to move (802.11v BSS transition) | **yes** — and whether it does is the measurement |
+  | **gather** | denies it on every radio but the destination, then moves it | no — there is nothing to refuse |
+  | **evict** | denies it on the radio being emptied, then moves it | no, but *where* it lands is its own choice |
+
+  802.11 has no request that *places* a station on a BSS, so `gather` and
+  `evict` do not ask: they remove the alternatives with hostapd's deny ACL and
+  let the client's own rescan reach the only answer left. That is how band
+  steering works on real controllers. The bans are timed, lift as soon as every
+  affected client has landed, and a new command supersedes the last one rather
+  than combining with it.
+  `steer` deliberately stays a request, because "does this phone honour a
+  transition?" is a question worth answering and a control that removes the
+  choice cannot answer it.
+- **Takes an access point down and back, silently or with a goodbye.** A router
+  losing power tells nobody, so that is the default: the box suppresses
+  hostapd's start/stop broadcasts, which would otherwise land on exactly the
+  clients a measurement is watching. The `deauth +` variants send one
+  deliberately — individually to associated stations on the way down, by
+  broadcast on the way up to clients still holding a stale association.
 - **Stays invisible.** Clients keep their existing addresses on your existing
   subnet; the Pi is not a hop and does not appear in `traceroute`.
 - **Names devices from mDNS**, so the list reads as devices rather than MACs.

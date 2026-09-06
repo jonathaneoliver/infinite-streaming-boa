@@ -99,8 +99,25 @@ function showClient(mac: string) {
  */
 function warnText(r: IfaceInfo): string {
   if (!r.serving) return 'not serving';
-  if (r.power_known && !r.powered) return 'off';
+  // The STATE, in the same words the pattern lane uses for it: a lane authoring
+  // `radio-off` and a badge reading `off` are the same condition, and a reader
+  // should not have to work that out. The BUTTONS keep their verbs -- a control
+  // does something, a badge and a lane name a condition, and "switch off" is
+  // the action that produces "radio off". See #229.
+  if (r.power_known && !r.powered) return 'radio off';
   if (!r.ap) return 'no AP';
+  // Before "AP disabled", because it IS one as far as `enabled` goes and the
+  // two need opposite actions: a disabled AP is switched back on, whereas this
+  // one has an interface that went away under hostapd and needs hostapd
+  // restarted. Reported as the same thing, an operator presses enable, watches
+  // it claim success, and still cannot join -- which is how twenty minutes went
+  // missing on 2026-09-06.
+  if (r.ap.link_down) return 'link down';
+  // "AP disabled", matching the control that produces it and the pattern lane
+  // that schedules it -- one word family for one thing, which is the whole
+  // point of #229. It read "AP down" briefly, which was a second name for the
+  // same state and sat confusingly next to "link down" above, a genuinely
+  // different fault needing a different fix.
   if (!r.ap.enabled) return 'AP disabled';
   return '';
 }
@@ -144,23 +161,24 @@ function gatherable(r: IfaceInfo): number {
 }
 
 /**
- * Where an eviction sends them: the emptiest access point that is actually up.
+ * Where an eviction sends them: the FIRST access point that is actually up, in
+ * rack order.
  *
- * CHOSEN AND NAMED, rather than left to the daemon. With two radios "away from
- * here" meant "to the other one" and needed no decision. With three it does,
- * and the daemon's own comment says why leaving it there is wrong: OtherRadio
- * "would pick the first serving radio in preference order -- deterministic, but
- * not something the operator chose, and invisible once it has happened".
+ * Named in the tooltip rather than left implicit, so the choice is visible
+ * before it is made rather than inferred from the log afterwards -- but the
+ * rule itself is the daemon's, not a second opinion. OtherRadio in
+ * radioprofile.go takes the first serving radio in WlanPorts order, and this
+ * takes the first in rack order, which lists the same radios the same way.
  *
- * Emptiest rather than first, so repeated evictions spread clients instead of
- * piling them onto whichever radio happens to sort first. The tooltip says
- * which, so the choice is visible before it is made rather than inferred from
- * the log afterwards.
+ * Emptiest-first was tried here and reverted. It spreads clients, which reads
+ * as the better behaviour until you notice it makes the destination depend on
+ * transient state: the same button resolves differently on two runs of one
+ * test, and the client card -- which asks the daemon -- named a different
+ * radio than this did for the same move. One box has to give one answer, and
+ * on a measurement box that answer has to be the predictable one.
  */
 function evictTo(r: IfaceInfo): IfaceInfo | undefined {
-  return otherRadios(r)
-    .filter((o) => o.ap?.enabled)
-    .sort((a, b) => (a.ap?.stations ?? 0) - (b.ap?.stations ?? 0))[0];
+  return otherRadios(r).find((o) => o.ap?.enabled);
 }
 
 /**
@@ -337,7 +355,13 @@ Clients ARE told it has gone, unlike a power cut.`
                come and go with the state of the radio it belongs to. Nothing
                on this row is conditionally rendered any more; state changes
                what a button DOES, never whether it is there. -->
-          <!-- TELL, in whichever direction the radio is going.
+          <!-- DEAUTH +, in whichever direction the radio is going.
+
+               Named for the frame it sends rather than for the intention
+               behind it. It was "tell", which was friendly and hid which frame
+               went out -- the same fault "drop" had for a deauthentication and
+               "nudge" for a disassociation, in an interface whose whole job is
+               to be precise about exactly that. See #229.
 
                The audience differs, which is why this is not one action with a
                sign flipped. Going down it is the stations currently
@@ -354,7 +378,7 @@ Clients ARE told it has gone, unlike a power cut.`
                well as association, so a client must redo the whole handshake --
                and an earlier version sent a disassociation on the way down
                while the way up re-enabled a broadcast DEAUTH. That made the two
-               halves of one control disagree about what "tell" means, which is
+               halves of one control disagree about which frame goes out, which is
                no use to somebody comparing how a device reacts to being told.
                Under WPA2 both force a full reconnect anyway, so the choice
                costs nothing and buys one answer instead of two.
@@ -372,22 +396,22 @@ Clients ARE told it has gone, unlike a power cut.`
               : `Deauthenticate all ${r.ap?.stations ?? 0} client(s), then take `
                 + `${r.name}'s access point down. An explicit goodbye, rather than `
                 + `whatever hostapd does on its own.`"
-            @click="bridge.setAPEnabled(r.name, !apLive(r), apLive(r) ? 'drop' : 'announce')"
-          >{{ apLive(r) ? 'tell &amp; disable' : 'tell &amp; enable' }}</button>
+            @click="bridge.setAPEnabled(r.name, !apLive(r), true)"
+          >{{ apLive(r) ? 'deauth + disable AP' : 'deauth + enable AP' }}</button>
           <button
             class="ghost" :disabled="busy || !apLive(r) || !r.ap?.stations"
             :title="apLive(r)
               ? `Deauthenticate all ${r.ap?.stations ?? 0} client(s). They are told, so they reconnect quickly.`
               : `${r.name} has no access point up, so there is nothing to deauthenticate from.`"
-            @click="bridge.linkAll(r.name, 'drop')"
-          >drop</button>
+            @click="bridge.linkAll(r.name, 'deauth')"
+          >deauth</button>
           <button
             class="ghost" :disabled="busy || !apLive(r) || !r.ap?.stations"
             :title="apLive(r)
               ? 'Disassociate every client — the softer transition.'
               : `${r.name} has no access point up, so there is nobody to disassociate.`"
-            @click="bridge.linkAll(r.name, 'nudge')"
-          >nudge</button>
+            @click="bridge.linkAll(r.name, 'disassoc')"
+          >disassoc</button>
           <!-- EVICT and GATHER: the same 802.11v request in both directions.
                One button called "steer" only ever emptied a radio, which is
                half the question. "Move everyone to the other band" and "bring
@@ -413,11 +437,12 @@ Clients ARE told it has gone, unlike a power cut.`
             :title="!apLive(r)
               ? `${r.name} has no access point up, so it has nobody to move.`
               : !evictTo(r)
-                ? 'No other access point is up to move them to.'
-                : `Ask all ${r.ap?.stations ?? 0} client(s) on ${r.name} to move to `
-                  + `${evictTo(r)!.name}, the emptiest one that is up (802.11v). `
-                  + `They may refuse.`"
-            @click="evictTo(r) && bridge.gather(evictTo(r)!.name, r.name)"
+                ? 'No other access point is up for them to go to.'
+                : `Push all ${r.ap?.stations ?? 0} client(s) off ${r.name} and deny `
+                  + `them here, so they cannot come straight back. Each ban lifts as `
+                  + `soon as that client lands somewhere. Where each one goes is its `
+                  + `own choice — this empties a radio, it does not place anyone.`"
+            @click="bridge.evict(r.name)"
           >evict</button>
           <button
             class="ghost"
@@ -426,13 +451,12 @@ Clients ARE told it has gone, unlike a power cut.`
               ? `${r.name} has no access point up, so there is nowhere here to gather them to.`
               : !otherRadios(r).length
                 ? 'No other radio on this box to gather from.'
-                : `Ask all ${gatherable(r)} client(s) on `
-                  + `${otherRadios(r).map((o) => o.name).join(' and ')} to move here `
-                  + `to ${r.name} (802.11v). They may refuse.`"
-            @click="bridge.gatherAll(
-              r.name,
-              otherRadios(r).filter((o) => o.ap?.stations).map((o) => o.name),
-            )"
+                : `Move all ${gatherable(r)} client(s) on `
+                  + `${otherRadios(r).map((o) => o.name).join(' and ')} here by denying `
+                  + `them on the others. Each ban lifts as soon as that client arrives. `
+                  + `They cannot refuse — this removes the alternatives rather than `
+                  + `asking. Use steer on a client to test whether it honours a request.`"
+            @click="bridge.gather(r.name)"
           >gather</button>
           <button
             class="ghost" :disabled="busy || !apLive(r)"

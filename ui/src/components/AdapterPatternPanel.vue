@@ -67,8 +67,9 @@ const KINDS: { kind: Kind; hint: string }[] = [
   // the two-minute recovery a wedged USB radio costs, so it is the one that
   // should be reached for by default. Filtered below rather than removed:
   // a silent outage is a real experiment, just not the default tool.
-  { kind: 'off', hint: 'switch off: power cut, silent, client must notice' },
-  { kind: 'apdown', hint: 'disable AP: BSS closed, radio up, client is told' },
+  { kind: 'radio-off', hint: 'radio off: power cut, silent, client must notice' },
+  { kind: 'disable-ap', hint: 'disable AP: BSS closed, radio still up, nothing announced — the client must notice' },
+  { kind: 'deauth-disable-ap', hint: 'deauth + disable AP: clients deauthenticated first, so they know at once' },
   { kind: 'gather', hint: 'everyone comes here' },
   { kind: 'evict', hint: "this radio's clients leave" },
   { kind: 'deauth', hint: 'thrown off, come back here' },
@@ -78,17 +79,17 @@ const KINDS: { kind: Kind; hint: string }[] = [
 /**
  * Which kinds occupy TIME rather than firing once.
  *
- * Asked in six places, and previously each one asked `kind === 'off'` for
+ * Asked in six places, and previously each one asked `kind === 'radio-off'` for
  * itself -- so adding a second block kind would have half-worked in five of
  * them and been wrong in the sixth, silently. The lane geometry, the overlap
  * check, the folded status line and the validity test all mean the same thing
  * by "block", so they now ask the same question.
  */
-const BLOCK_KINDS = new Set<Kind>(['off', 'apdown']);
+const BLOCK_KINDS = new Set<Kind>(['radio-off', 'disable-ap', 'deauth-disable-ap']);
 const isBlock = (k: Kind) => BLOCK_KINDS.has(k);
 
 /** The floor for each block kind, and the duration a fresh one opens at. */
-const minFor = (k: Kind) => (k === 'off' ? MIN_RADIO_OFF_SEC : MIN_AP_DOWN_SEC);
+const minFor = (k: Kind) => (k === 'radio-off' ? MIN_RADIO_OFF_SEC : MIN_AP_DOWN_SEC);
 
 const events = ref<RadioEvent[]>([]);
 const loop = ref(true);
@@ -129,25 +130,55 @@ const laneUses = (iface: string, kind: Kind) =>
  * that it takes a radio off the air.
  */
 const laneShown = (iface: string, kind: Kind) =>
-  laneUses(iface, kind) || revealed.value.has(kind);
+  // An orphan earns its lane only by having something on it. Revealing an empty
+  // lane for a radio that is not here would be offering a place to draw
+  // something that could never run.
+  laneUses(iface, kind) ||
+  (revealed.value.has(kind) && !orphaned.value.includes(iface));
 const kindShown = (kind: Kind) =>
   revealed.value.has(kind) || props.radios.some((iface) => laneUses(iface, kind));
+
+/**
+ * Radios this pattern still names that the box no longer has.
+ *
+ * Told to us by the daemon rather than worked out here, because the daemon has
+ * already tried to REMAP them onto a newly arrived adapter and these are what
+ * was left over -- see patternradios.go. Deriving it again from props.radios
+ * would disagree with that the moment a swap happened.
+ */
+const orphaned = ref<string[]>([]);
+
+/**
+ * Every radio a lane may be drawn for: the ones the box has, plus the ones this
+ * pattern still names.
+ *
+ * The orphans are the point. Lanes used to come from props.radios alone, so an
+ * event naming a departed radio produced NO LANE -- it could not be seen, could
+ * not be deleted, was still saved, and was still sent at play time to be
+ * skipped one by one. A pattern that looks empty and is not is the worst
+ * outcome available here, and it happened every time an adapter moved to a
+ * different USB socket, because a name here is bound to the socket.
+ */
+const laneRadios = computed(() => [...props.radios, ...orphaned.value]);
+
+/** A lane whose radio is gone: shown, greyed, and not drawable on. */
+const isOrphan = (iface: string) => orphaned.value.includes(iface);
 
 const lanes = computed(() =>
   groupBy.value === 'effect'
     ? kindsAllowed.value.flatMap((k) =>
-        props.radios
+        laneRadios.value
           .filter((iface) => laneShown(iface, k.kind))
           .map((iface) => ({ iface, ...k })),
       )
-    : props.radios.flatMap((iface) =>
+    : laneRadios.value.flatMap((iface) =>
         kindsAllowed.value
           .filter((k) => laneShown(iface, k.kind))
           .map((k) => ({ iface, ...k })),
       ),
 );
 /** The kinds this operator may author. See the note on KINDS. */
-const kindsAllowed = computed(() => KINDS.filter((k) => k.kind !== 'off' || DEVELOPER));
+const kindsAllowed = computed(() => KINDS.filter((k) => k.kind !== 'radio-off' || DEVELOPER));
 const addChips = computed(() => kindsAllowed.value.filter((k) => !kindShown(k.kind)));
 const dropChips = computed(() => KINDS.filter((k) => kindShown(k.kind) && !kindUses(k.kind)));
 
@@ -486,25 +517,54 @@ const ticks = computed(() => {
  * silent-but-unnoticed outage the daemon would reject.
  */
 const PRESETS = computed(() => {
-  const [a, b] = props.radios;
-  const two = props.radios.length >= 2;
+  const rs = props.radios;
+  const n = rs.length;
+  const a = rs[0];
+  const two = n >= 2;
+  /** The i-th stop of a rotation, wrapping. One radio or five, same rule. */
+  const at = (i: number) => rs[i % n];
+  /** Two full circuits, so every radio is visited twice however many there are. */
+  const circuits = (stops: number) => Array.from({ length: stops }, (_, i) => i);
+  const list = (xs: string[]) =>
+    xs.length < 2 ? xs.join('') : `${xs.slice(0, -1).join(', ')} and ${xs[xs.length - 1]}`;
+
   const out: { name: string; note: string; build: () => RadioEvent[] }[] = [];
 
   if (two) {
     out.push({
       name: 'bounce',
       note:
-        `herd everyone onto ${b}, then back to ${a}, twice — a forced roam the ` +
+        `herd everyone around ${list(rs)} and back, twice — a forced roam the ` +
         'client cannot decline, with nothing ever off the air',
-      build: () => [
-        { at_sec: 20, iface: b, kind: 'gather' },
-        { at_sec: 65, iface: a, kind: 'gather' },
-        { at_sec: 110, iface: b, kind: 'gather' },
-        { at_sec: 155, iface: a, kind: 'gather' },
-      ],
+      build: () =>
+        circuits(n * 2).map((i) => ({
+          at_sec: 20 + i * 45,
+          iface: at(i + 1),
+          kind: 'gather' as const,
+        })),
+    });
+    // The evict counterpart of bounce, and the reason both exist.
+    //
+    // bounce NAMES where each client goes; this one only says "not here" and
+    // lets the device choose. On a two-radio box those are the same move and
+    // the pair looks redundant. On three they are not, and the difference is
+    // the measurement: whether a device sent away from one radio picks the
+    // radio you would have picked for it.
+    out.push({
+      name: 'round robin',
+      note:
+        `push everyone off ${list(rs)} in turn — unlike bounce, nothing says ` +
+        'where they should go, so each device picks for itself and where it ' +
+        'lands is the result',
+      build: () =>
+        circuits(n * 2).map((i) => ({
+          at_sec: 20 + i * 40,
+          iface: at(i),
+          kind: 'evict' as const,
+        })),
     });
     // A MATCHED PAIR, for comparing what a device does when it is TOLD against
-    // what it does when it has to notice. Same shape, same alternation, exactly
+    // what it does when it has to notice. Same shape, same rotation, exactly
     // one radio unavailable at a time in both: the client always has somewhere
     // to go, so what is being measured is how fast it goes there.
     //
@@ -517,30 +577,42 @@ const PRESETS = computed(() => {
     out.push({
       name: 'musical chairs',
       note:
-        `${a} then ${b} close their doors, 15s each from 15s — there is always ` +
-        'one seat free and the client is TOLD to take it, so it should move in ' +
-        `milliseconds. The announced half of the pair with "rolling blackout"`,
-      build: () => [
+        `${list(rs)} close their doors in turn, 15s each from 15s — there is ` +
+        'always a seat free and the client is TOLD to take it, so it should ' +
+        'move in milliseconds. The announced half of the pair with "rolling ' +
+        'blackout"',
+      build: () =>
         // Only ever ONE radio unavailable at a time, and that is the whole
         // design: the client must always have somewhere to go, or this stops
-        // being a bounce and becomes an outage. The second block starts exactly
-        // as the first ends, so there is no window with both up in which the
-        // client might settle back, and none with both down at all.
-        { at_sec: 15, iface: a, kind: 'apdown', dur_sec: 15 },
-        { at_sec: 30, iface: b, kind: 'apdown', dur_sec: 15 },
-      ],
+        // being a bounce and becomes an outage. Each block starts exactly as
+        // the last ends, so there is no window with everything up in which the
+        // client might settle back, and none with everything down at all.
+        //
+        // Rotated across EVERY radio rather than the first two. On a
+        // three-radio box the old version alternated two and left the third
+        // untouched, so a client could sit out the whole run on a radio the
+        // pattern never disturbed -- measuring nothing while looking busy.
+        circuits(n).map((i) => ({
+          at_sec: 15 + i * 15,
+          iface: at(i),
+          kind: 'deauth-disable-ap' as const,
+          dur_sec: 15,
+        })),
     });
     out.push({
       name: 'rolling blackout',
       note:
-        `${a} then ${b} lose power, 30s each from 15s — the same alternation ` +
+        `${list(rs)} lose power in turn, 30s each from 15s — the same rotation ` +
         'with nothing announced, so the client has to notice for itself. 30s ' +
         'rather than 15 because a shorter cut is below what a device takes to ' +
         'notice one, and that floor is exactly what this pair measures',
-      build: () => [
-        { at_sec: 15, iface: a, kind: 'off', dur_sec: 30 },
-        { at_sec: 45, iface: b, kind: 'off', dur_sec: 30 },
-      ],
+      build: () =>
+        circuits(n).map((i) => ({
+          at_sec: 15 + i * 30,
+          iface: at(i),
+          kind: 'radio-off' as const,
+          dur_sec: 30,
+        })),
     });
     out.push({
       name: 'graceful shutdown',
@@ -549,7 +621,7 @@ const PRESETS = computed(() => {
         'because the eviction already moved them',
       build: () => [
         { at_sec: 30, iface: a, kind: 'evict' },
-        { at_sec: 60, iface: a, kind: 'off', dur_sec: 60 },
+        { at_sec: 60, iface: a, kind: 'radio-off', dur_sec: 60 },
       ],
     });
   }
@@ -557,33 +629,36 @@ const PRESETS = computed(() => {
   out.push({
     name: 'scan every 30s',
     note: two
-      ? `survey the band from ${a} every 30s — each one costs ${a} a few ` +
-        `seconds off the air, so its clients spend them on ${b} and come back`
+      ? `survey the band from each of ${list(rs)} in turn every 30s — each scan ` +
+        'costs that radio a few seconds off the air, so its clients spend them ' +
+        'elsewhere and come back'
       : 'survey the band every 30s — each one costs the radio a few seconds off the air',
-    build: () => [0, 30, 60, 90, 120, 150].map((t) => ({
-      at_sec: t,
-      iface: a,
-      kind: 'scan' as const,
-    })),
+    build: () =>
+      [0, 30, 60, 90, 120, 150].map((t, i) => ({
+        at_sec: t,
+        iface: at(i),
+        kind: 'scan' as const,
+      })),
   });
 
   out.push({
     name: 'outage',
     note: two
-      ? 'every radio down together for 45s — the only state that is a real outage, ' +
-        'since one radio down is a roam'
+      ? `all ${n} radios down together for 45s — the only state that is a real ` +
+        'outage, since one radio down is a roam'
       : 'the radio down for 45s',
     build: () =>
-      props.radios.map((iface) => ({ at_sec: 60, iface, kind: 'off' as const, dur_sec: 45 })),
+      rs.map((iface) => ({ at_sec: 60, iface, kind: 'radio-off' as const, dur_sec: 45 })),
   });
   out.push({
     name: 'flap',
     note:
       `${a} down twice for 40s — silent, so the client discovers it by missing ` +
-      'beacons rather than being told',
+      'beacons rather than being told. One radio on purpose: this is about a ' +
+      'single link coming and going, not about the box',
     build: () => [
-      { at_sec: 20, iface: a, kind: 'off', dur_sec: 40 },
-      { at_sec: 110, iface: a, kind: 'off', dur_sec: 40 },
+      { at_sec: 20, iface: a, kind: 'radio-off', dur_sec: 40 },
+      { at_sec: 110, iface: a, kind: 'radio-off', dur_sec: 40 },
     ],
   });
   out.push({
@@ -593,7 +668,7 @@ const PRESETS = computed(() => {
       'come back within a second or two',
     build: () =>
       [20, 60, 100, 140].flatMap((at_sec) =>
-        props.radios.map((iface) => ({ iface, kind: 'deauth' as const, at_sec })),
+        rs.map((iface) => ({ iface, kind: 'deauth' as const, at_sec })),
       ),
   });
 
@@ -610,7 +685,7 @@ const PRESETS = computed(() => {
   // does not and sat below it. This way a preset added later is gated by what
   // it does, and nobody has to remember.
   if (DEVELOPER) return out;
-  return out.filter((p) => !p.build().some((e) => e.kind === 'off'));
+  return out.filter((p) => !p.build().some((e) => e.kind === 'radio-off'));
 });
 
 /** Applying a preset REPLACES the timeline. Merging would produce something
@@ -666,9 +741,9 @@ const herdsWithoutReset = computed(() => {
 const incoherent = computed(() =>
   events.value.filter(
     (e) =>
-      e.kind !== 'off' &&
+      e.kind !== 'radio-off' &&
       events.value.some(
-        (o) => o.kind === 'off' && o.iface === e.iface && e.at_sec >= o.at_sec && e.at_sec < endOf(o),
+        (o) => o.kind === 'radio-off' && o.iface === e.iface && e.at_sec >= o.at_sec && e.at_sec < endOf(o),
       ),
   ),
 );
@@ -697,6 +772,7 @@ async function load() {
   const body = await call('/api/bridge/pattern');
   const p: Pattern | null = body?.pattern ?? null;
   if (!p) return;
+  orphaned.value = (body?.orphaned as string[] | undefined) ?? [];
   events.value = [...(p.radios ?? [])].sort((a, b) => a.at_sec - b.at_sec);
   loop.value = p.loop;
   tail.value = p.keys?.[p.keys.length - 1]?.at_sec ?? 0;
@@ -843,10 +919,14 @@ watch(
 
           <div
             v-for="l in lanes" :key="`${l.iface}/${l.kind}`"
-            class="lane" :class="`k-${l.kind}`"
-            :title="playing ? '' : `double-click or right-click to add a ${l.kind} on ${l.iface}`"
-            @dblclick.prevent.stop="add(l.iface, l.kind, $event)"
-            @contextmenu.prevent.stop="add(l.iface, l.kind, $event)"
+            class="lane" :class="[`k-${l.kind}`, { orphan: isOrphan(l.iface) }]"
+            :title="isOrphan(l.iface)
+              ? `${l.iface} is not on this box any more, so these events cannot run. `
+                + `They are kept and shown so you can see and delete them — plug the `
+                + `adapter back in, or clear the lane.`
+              : playing ? '' : `double-click or right-click to add a ${l.kind} on ${l.iface}`"
+            @dblclick.prevent.stop="isOrphan(l.iface) || add(l.iface, l.kind, $event)"
+            @contextmenu.prevent.stop="isOrphan(l.iface) || add(l.iface, l.kind, $event)"
           >
             <svg :viewBox="`0 0 1000 ${VB}`" preserveAspectRatio="none">
               <path :d="lanePath(l.iface, l.kind)" class="line" vector-effect="non-scaling-stroke" />
@@ -859,7 +939,7 @@ watch(
               v-for="{ e, i } in laneEvents(l.iface, l.kind)" :key="i"
               class="hit"
               :style="{ left: pct(e.at_sec), width: widthPct(visSec(e)) }"
-              :title="e.kind === 'off'
+              :title="e.kind === 'radio-off'
                 ? `${l.iface} off the air ${e.at_sec}s–${e.at_sec + (e.dur_sec ?? 0)}s`
                 : `${l.kind} on ${l.iface} at ${e.at_sec}s`"
               @pointerdown.stop="startDrag(i, 'move', $event)"
@@ -867,11 +947,11 @@ watch(
               @contextmenu.prevent.stop="remove(i)"
             >
               <span
-                v-if="e.kind === 'off'" class="kf l" title="drag the rising edge"
+                v-if="e.kind === 'radio-off'" class="kf l" title="drag the rising edge"
                 @pointerdown.stop="startDrag(i, 'resizeL', $event)"
               ></span>
               <span
-                v-if="e.kind === 'off'" class="kf r" title="drag the falling edge"
+                v-if="e.kind === 'radio-off'" class="kf r" title="drag the falling edge"
                 @pointerdown.stop="startDrag(i, 'resize', $event)"
               ></span>
               <span v-else class="kf l"></span>
@@ -1027,6 +1107,10 @@ button.primary { background: var(--down); border-color: var(--down); color: #fff
 
 .lane { position: relative; height: 40px; border-bottom: 1px solid var(--line-soft); }
 .lane:first-of-type { border-top: 1px solid var(--line-soft); }
+/* A lane whose radio has left the box. Shown rather than hidden -- its events
+   are still in the saved pattern and would otherwise be invisible, unfindable
+   and undeletable -- but plainly not live, and not drawable on. */
+.lane.orphan { opacity: 0.4; filter: grayscale(1); cursor: not-allowed; }
 .lane svg { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
 .line { fill: none; stroke: currentColor; stroke-width: 1.5; }
 

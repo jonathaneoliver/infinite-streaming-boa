@@ -144,6 +144,19 @@ $_vht
 # Advertise 802.11v BSS Transition Management, or a steer request is sent to a
 # client that was never told the AP supports one (#192).
 bss_transition=1
+# 802.11k radio measurement, so the box can ask a client what IT can see (#228).
+#
+# rrm_beacon_report is the one that matters here: it lets the AP send a beacon
+# request and receive the client's own RCPI for a BSS it is not associated to,
+# which is the only way to learn the signal of a radio a client is NOT using.
+# Without it a steer can be refused and never explained.
+#
+# rrm_neighbor_report advertises the capability alongside it. Both are
+# advertised in the beacon, so a client decides whether to honour a request on
+# what it saw when it associated -- turning these on does not reach a client
+# that is already connected until it re-associates.
+rrm_neighbor_report=1
+rrm_beacon_report=1
 # Do NOT announce the access point starting or stopping (#224): hostapd
 # broadcasts a deauthentication frame at both ends by default, which lands on
 # exactly the clients a measurement is watching.

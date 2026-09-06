@@ -356,7 +356,7 @@ func (e *Engine) endRecovery(iface string) {
 // of THIS transition. An operator comparing how a device reacts to being told
 // against how it reacts to working it out wants to vary it between one press
 // and the next, not configure it once.
-func (e *Engine) SetAPEnabled(iface string, on bool, notify string) error {
+func (e *Engine) SetAPEnabled(iface string, on bool, deauth bool) error {
 	if err := e.radioExists(iface); err != nil {
 		return err
 	}
@@ -376,8 +376,16 @@ func (e *Engine) SetAPEnabled(iface string, on bool, notify string) error {
 	// BEFORE the teardown, and only on the way down. Reported with a count
 	// because "told 2 clients" and "told nobody" are different events and the
 	// second is worth noticing -- a goodbye nobody heard is not a goodbye.
-	if !on && notify != "" {
-		n, err := e.LinkAll(iface, notify)
+	if !on && deauth {
+		// ALWAYS a deauthentication, never a choice between two frames.
+		//
+		// The caller used to pass which frame to send, and the interface only
+		// ever offered one of them -- so the parameter described a decision
+		// nobody made, in a vocabulary ("drop"/"nudge") that meant a third
+		// thing elsewhere. Coming back up it is a broadcast deauthentication
+		// and cannot be anything else, so making the way down match is what
+		// lets one word mean one thing at every layer. See #229.
+		n, err := e.LinkAll(iface, LinkDeauth)
 		if err != nil {
 			// Not fatal: the access point is still going down, and refusing to
 			// take it down because the announcement failed would leave the
@@ -387,8 +395,8 @@ func (e *Engine) SetAPEnabled(iface string, on bool, notify string) error {
 				iface, err)
 		} else {
 			e.logEvent(EventAction, iface, "",
-				"%s told %d client(s) to leave (%s) before its access point goes down",
-				iface, n, notify)
+				"%s deauthenticated %d client(s) before its access point went down",
+				iface, n)
 		}
 	}
 
@@ -409,7 +417,7 @@ func (e *Engine) SetAPEnabled(iface string, on bool, notify string) error {
 	// not when the command arrives. Restored once the access point is up, in
 	// confirmAPState, so the suppression from #224 is the standing state and
 	// this is an exception for one start.
-	announced := on && notify != ""
+	announced := on && deauth
 	if announced {
 		if _, err := hostapdSend(iface, "SET broadcast_deauth 1"); err != nil {
 			fmt.Printf("infinite-streaming-boa: %s announce-on-start: %v\n", iface, err)

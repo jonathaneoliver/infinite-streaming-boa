@@ -356,6 +356,19 @@ type Client struct {
 	// not currently associated, and a box with one radio.
 	SteerTo string `json:"steer_to,omitempty"`
 
+	// BeaconReports is what THIS CLIENT last reported hearing, per BSS, from an
+	// 802.11k beacon request -- strongest first. See #228.
+	//
+	// The client's own measurement, taken at the client, which is the whole
+	// point: every other signal number in this struct is measured at the access
+	// point and exists only for the radio the client is associated to. These are
+	// the only numbers the box has for a radio the client is NOT on, and so the
+	// only ones that can say why a steer to it was refused.
+	//
+	// Empty until somebody asks. A beacon request is a request, and a client is
+	// free to decline it or to answer "not available".
+	BeaconReports []BeaconReport `json:"beacon_reports,omitempty"`
+
 	// Present means currently associated to the radio. A DHCP lease alone does
 	// NOT set this: leases outlive the clients that held them.
 	Present bool `json:"present"`

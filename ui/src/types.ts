@@ -148,13 +148,14 @@ export interface Keyframe {
  * during playback.
  */
 /** A link-lane event: a per-client Wi-Fi impairment on the pattern timeline.
- *  `kind` is "drop" (deauth), "nudge" (disassoc) or "deadzone" (a held outage).
+ *  `kind` names the 802.11 frame it sends — "deauth" or "disassoc" — or
+ *  "deadzone", a held outage that is a composition rather than a frame. See #229.
  *  `dur_sec` is the block width: 0 = a single pulse (fired on the rising edge),
  *  >0 = the disturbance holds for that long — a flap for drop/nudge, a clean
  *  block for deadzone. See #135. */
 export interface LinkEvent {
   at_sec: number;
-  kind: 'drop' | 'nudge' | 'deadzone';
+  kind: 'deauth' | 'disassoc' | 'deadzone';
   dur_sec?: number;
   /** deadzone only. Which radios the ban covers:
    *  - `current` (the default when absent) denies on the radio the client is
@@ -173,7 +174,14 @@ export interface LinkEvent {
 export interface RadioEvent {
   at_sec: number;
   iface: string;
-  kind: 'gather' | 'evict' | 'deauth' | 'off' | 'apdown' | 'scan';
+  kind:
+    | 'gather'
+    | 'evict'
+    | 'deauth'
+    | 'radio-off'
+    | 'disable-ap'
+    | 'deauth-disable-ap'
+    | 'scan';
   /** `off` only — how long the radio stays down. The rest are pulses. */
   dur_sec?: number;
 }
@@ -347,6 +355,11 @@ export interface Client {
    *  associated, or a box serving a single radio. Computed by the daemon so
    *  the interface does not have to infer the box's radio topology. */
   steer_to?: string;
+  /** What THIS CLIENT reported hearing, per BSS, from an 802.11k beacon
+   *  request — strongest first. Measured at the client, not at the access
+   *  point, which is what makes it the only signal figure available for a
+   *  radio the client is NOT on. Empty until somebody asks. See #228. */
+  beacon_reports?: BeaconReport[];
   present: boolean;
   shapeable: boolean;
   station?: Station;
@@ -392,8 +405,13 @@ export interface APStatus {
   /** DERIVED: hostapd has no width field. See apWidth in radioctl.go. */
   width_mhz?: number;
   mode?: string;
-  /** True only when hostapd says state=ENABLED, i.e. actually beaconing. */
+  /** hostapd says state=ENABLED AND the interface is up. Both, because
+   *  hostapd's state survives the interface being taken out from under it. */
   enabled: boolean;
+  /** hostapd claims enabled but the kernel says the interface is down, so
+   *  nothing is on air. Needs hostapd restarted, not the AP re-enabled — a
+   *  different action from a plain disabled AP, hence a different state. */
+  link_down?: boolean;
   stations: number;
   beacon_int_ms?: number;
   dtim_period?: number;
@@ -1211,4 +1229,23 @@ export function phyCeilingMbps(mode: string, widthMHz: number): number {
 export function phyCeilingLabel(mode: string, widthMHz: number): string {
   const n = phyCeilingMbps(mode, widthMHz);
   return n ? `up to ${Math.round(n)} Mb/s` : '';
+}
+
+/** One client's own measurement of one BSS, from an 802.11k beacon report. */
+export interface BeaconReport {
+  bssid: string;
+  /** Our interface owning that BSSID, absent when the client measured a BSS
+   *  that is not ours — which is worth showing, not hiding: a device naming a
+   *  neighbour's access point is saying where it would rather be. */
+  iface?: string;
+  channel: number;
+  rcpi: number;
+  signal_dbm: number;
+  /** False when the client answered "not available". Without this a failed
+   *  measurement reads as a real one at 0 dBm. */
+  has_signal: boolean;
+  rsni_db?: number;
+  has_rsni?: boolean;
+  at_ms: number;
+  requested: boolean;
 }

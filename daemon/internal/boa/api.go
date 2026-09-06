@@ -50,6 +50,8 @@ func (a *API) Routes() *http.ServeMux {
 	mux.HandleFunc("POST /api/bridge/radios/{iface}/profile", a.postRadioProfile)
 	mux.HandleFunc("POST /api/bridge/radios/{iface}/threshold", a.postThreshold)
 	mux.HandleFunc("POST /api/bridge/radios/{iface}/steer", a.postSteer)
+	mux.HandleFunc("POST /api/bridge/radios/{iface}/gather", a.postGather)
+	mux.HandleFunc("POST /api/bridge/radios/{iface}/evict", a.postEvict)
 	mux.HandleFunc("PATCH /api/devices/{mac}/policy", a.patchPolicy)
 	mux.HandleFunc("POST /api/devices/{mac}/sub", a.postSub)
 	mux.HandleFunc("PATCH /api/devices/{mac}/sub/{id}", a.patchSub)
@@ -80,6 +82,7 @@ func (a *API) Routes() *http.ServeMux {
 	mux.HandleFunc("POST /api/devices/{mac}/link/disassoc", a.linkDisassoc)
 	mux.HandleFunc("POST /api/devices/{mac}/link/deadzone", a.linkDeadzone)
 	mux.HandleFunc("POST /api/devices/{mac}/link/steer", a.linkSteer)
+	mux.HandleFunc("POST /api/devices/{mac}/link/measure", a.linkMeasure)
 	mux.HandleFunc("DELETE /api/devices/{mac}", a.forgetDevice)
 	mux.Handle("/", cacheHeaders(http.FileServer(http.FS(a.ui))))
 	return mux
@@ -467,12 +470,12 @@ func (a *API) postLinkAll(w http.ResponseWriter, r *http.Request) {
 	}
 	kind := strings.TrimSpace(r.URL.Query().Get("kind"))
 	if kind == "" {
-		kind = LinkDrop
+		kind = LinkDeauth
 	}
 	n, err := a.e.LinkAll(iface, kind)
 	if err != nil {
 		code := http.StatusBadGateway
-		if kind != LinkDrop && kind != LinkNudge {
+		if kind != LinkDeauth && kind != LinkDisassoc {
 			code = http.StatusBadRequest
 		}
 		writeErr(w, code, err.Error())
@@ -517,29 +520,32 @@ func (a *API) postAPEnabled(w http.ResponseWriter, r *http.Request) {
 	// announces the start to clients still holding a stale association. See
 	// SetAPEnabled. Validated rather than passed through, so a typo becomes a
 	// message instead of a silent no-op.
-	notify := strings.TrimSpace(q.Get("notify"))
-	switch {
-	case notify == "":
-	case on && notify == "announce":
-	case !on && (notify == LinkNudge || notify == LinkDrop):
+	// One flag, named for the frame it sends.
+	//
+	// It used to take "drop" or "nudge" going down and "announce" coming up,
+	// behind a button labelled "tell" -- four words for one decision, in a
+	// vocabulary that named the same frames differently elsewhere. Both
+	// directions send a deauthentication, so the only real question is whether
+	// one goes out at all, and the parameter says so. See #229.
+	deauthRaw := strings.TrimSpace(q.Get("deauth"))
+	deauth := false
+	switch deauthRaw {
+	case "", "0", "false":
+	case "1", "true":
+		deauth = true
 	default:
-		if on {
-			writeErr(w, http.StatusBadRequest,
-				`coming up, notify must be "announce": there are no associated `+
-					`stations to address individually, only a broadcast to clients `+
-					`still holding a stale association`)
-			return
-		}
 		writeErr(w, http.StatusBadRequest,
-			fmt.Sprintf("going down, notify must be %q or %q", LinkNudge, LinkDrop))
+			`deauth must be "1" or "0": with it the clients are `+
+				`deauthenticated so they know, without it the access point `+
+				`changes state in silence and they have to notice`)
 		return
 	}
-	if err := a.e.SetAPEnabled(iface, on, notify); err != nil {
+	if err := a.e.SetAPEnabled(iface, on, deauth); err != nil {
 		writeErr(w, http.StatusBadGateway, err.Error())
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"iface": iface, "action": "ap", "enabled": on, "notify": notify,
+		"iface": iface, "action": "ap", "enabled": on, "deauth": deauth,
 	})
 }
 
@@ -681,11 +687,19 @@ func (a *API) postThreshold(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// postSteer asks clients to move to the other radio via 802.11v.
+// postSteer asks clients to move to another radio via 802.11v.
 //
 // A REQUEST, not an instruction: the decision stays with the client, and
 // whether a given phone honours it is exactly the behaviour worth testing.
 // `?mac=` steers one; omitted, it asks everyone on the radio.
+//
+// `?insist=1` disassociates a client that will not go, which is what EVICT
+// means -- "get off this radio", with no claim about where it lands. Without it
+// a refusal is taken for an answer, which is what GATHER means, because a
+// gather names its destination and a forced client picks its own. See
+// steerMode: the same frame carries a different promise depending on which
+// control sent it, and conflating them is what made "gather to wlan-usb" put a
+// device on wlan0.
 func (a *API) postSteer(w http.ResponseWriter, r *http.Request) {
 	from := r.PathValue("iface")
 	if err := a.e.radioReady(from); err != nil {
@@ -702,23 +716,45 @@ func (a *API) postSteer(w http.ResponseWriter, r *http.Request) {
 				"transition request needs another access point to name")
 		return
 	}
+	mode := steerSuggest
+	insist := strings.TrimSpace(r.URL.Query().Get("insist"))
+	switch insist {
+	case "", "0", "false":
+	case "1", "true":
+		mode = steerInsist
+	default:
+		writeErr(w, http.StatusBadRequest,
+			`insist must be "1" or "0": with it a client that refuses is `+
+				`disassociated and chooses its own destination, without it a `+
+				`refusal leaves the client where it is`)
+		return
+	}
+	if mode == steerInsist {
+		// An evict tells a client to leave and lets it choose. A deny list left
+		// over from a gather takes that choice away and can leave it nothing to
+		// choose AT ALL -- evicted off the one radio it is still allowed on.
+		// The new command supersedes the old one. See clearPins.
+		a.e.clearPins("superseded by an evict")
+	}
 	if mac := strings.TrimSpace(r.URL.Query().Get("mac")); mac != "" {
-		if err := a.e.SteerClient(mac, from, to); err != nil {
+		if err := a.e.SteerClient(mac, from, to, mode); err != nil {
 			writeErr(w, http.StatusBadGateway, err.Error())
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{
-			"iface": from, "action": "steer", "to": to, "asked": 1, "mac": normMAC(mac),
+			"iface": from, "action": "steer", "to": to, "asked": 1,
+			"mac": normMAC(mac), "insist": mode == steerInsist,
 		})
 		return
 	}
-	n, err := a.e.SteerAll(from, to)
+	n, err := a.e.SteerAll(from, to, mode)
 	if err != nil {
 		writeErr(w, http.StatusBadGateway, err.Error())
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"iface": from, "action": "steer", "to": to, "asked": n,
+		"insist": mode == steerInsist,
 	})
 }
 
@@ -1084,6 +1120,12 @@ func (a *API) putPattern(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "pattern is required")
 		return
 	}
+	// An imported file, or a client built before #229, may still carry "drop",
+	// "nudge", "off" or "apdown". Upgraded rather than refused: the pattern is
+	// perfectly valid, it just uses names this box has stopped writing.
+	if next, changed := NormalisePattern(*in.Pattern); changed {
+		in.Pattern = &next
+	}
 	if err := validPattern(*in.Pattern); err != nil {
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
@@ -1294,13 +1336,46 @@ func (a *API) playScenario(w http.ResponseWriter, r *http.Request) {
 const adapterPatternName = "__adapter__"
 
 // getAdapterPattern returns the box's radio timeline, or an empty one.
+//
+// RECONCILED against the radios the box has now, and saved back when that
+// changes anything. An interface name here is bound to a USB socket, so
+// swapping a dongle renames it and leaves the pattern pointing at something
+// gone -- the events survive, are still sent at play time, and are skipped one
+// by one, while the editor draws no lane for them at all. See patternradios.go.
+//
+// Done on the read path rather than only at startup: the daemon does restart
+// when the radio set changes, so startup would usually be enough, and "usually"
+// is how a pattern ends up quietly naming a radio that left weeks ago.
+// Idempotent, so repeating it costs nothing.
 func (a *API) getAdapterPattern(w http.ResponseWriter, r *http.Request) {
 	p, ok := a.e.PatternStore().Get(adapterPatternName)
 	if !ok {
 		writeJSON(w, http.StatusOK, map[string]any{"pattern": nil})
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"pattern": p})
+	have := a.e.Config().WlanPorts
+	if next, notes, changed := reconcileAdapterPattern(p, have); changed {
+		if err := a.e.PatternStore().Put(next); err != nil {
+			// Reported, not swallowed: the operator would otherwise be editing a
+			// pattern whose radios were renamed in memory and not on disk, and
+			// the next save would silently undo the rename.
+			a.e.logEvent(EventWarning, "", "",
+				"could not save the adapter pattern after remapping it onto the "+
+					"radios this box has now: %v", err)
+		} else {
+			p = next
+			for _, n := range notes {
+				a.e.logEvent(EventAction, "", "", "adapter pattern: %s", n)
+			}
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"pattern": p,
+		// Radios the pattern still names that this box does not have. The
+		// editor greys these lanes rather than hiding them, so events that
+		// cannot run are visible and deletable instead of invisible and saved.
+		"orphaned": OrphanedRadios(p, have),
+	})
 }
 
 // putAdapterPattern stores the box's radio timeline.
@@ -1315,6 +1390,9 @@ func (a *API) putAdapterPattern(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	in.Name = adapterPatternName
+	// Same upgrade as putPattern: an older client may still send "off" or
+	// "apdown". See #229.
+	in, _ = NormalisePattern(in)
 	// Radios name interfaces, and an interface this box does not have would
 	// fail silently at play time as an event that fired against nothing.
 	for _, ev := range in.Radios {
@@ -2298,7 +2376,10 @@ func (a *API) linkSteer(w http.ResponseWriter, r *http.Request) {
 				"transition request needs another access point to name")
 		return
 	}
-	if err := a.e.SteerClient(mac, from, to); err != nil {
+	// steerSuggest: this control names the radio it is sending the client to,
+	// so a refusal has to leave it where it is. Forcing would send it wherever
+	// it liked while the interface said it had gone to the named one.
+	if err := a.e.SteerClient(mac, from, to, steerSuggest); err != nil {
 		writeErr(w, http.StatusBadGateway, err.Error())
 		return
 	}
@@ -2434,4 +2515,107 @@ func (a *API) forgetDevice(w http.ResponseWriter, r *http.Request) {
 	}
 	a.e.BumpControl()
 	writeJSON(w, http.StatusOK, map[string]string{"forgotten": mac})
+}
+
+// linkMeasure asks one client to measure the box's OTHER radios and report what
+// it hears (802.11k beacon request). See #228.
+//
+// Returns how many measurements were REQUESTED, not how many came back: the
+// reports arrive asynchronously through the monitor connection and land on the
+// client's own record, exactly as a steer's answer does. A client is free to
+// decline, and a decline is itself reported.
+func (a *API) linkMeasure(w http.ResponseWriter, r *http.Request) {
+	mac := normMAC(r.PathValue("mac"))
+	if !validMAC(mac) {
+		writeErr(w, http.StatusBadRequest, "not a MAC address: "+mac)
+		return
+	}
+	asked, err := a.e.RequestBeaconReports(mac)
+	if err != nil && asked == 0 {
+		// 503 rather than 400: on a box with another radio serving, the same
+		// request would work. Nothing about the MAC is wrong.
+		writeErr(w, http.StatusServiceUnavailable, err.Error())
+		return
+	}
+	out := map[string]any{"mac": mac, "action": "measure", "asked": asked}
+	if err != nil {
+		// Partial success is reported as such rather than rounded to either
+		// end: some radios were asked and some could not be, and saying only
+		// "3 asked" would hide a radio that is silently never measured.
+		out["partial"] = err.Error()
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+// postGather moves every client on the other radios onto this one and PINS them
+// there, by denying them everywhere else for a while.
+//
+// A separate endpoint from steer rather than a flag on it, because it is a
+// different kind of act. A steer is a request the client may refuse; this
+// removes the alternatives and then moves the client, so there is nothing to
+// refuse. Sharing an endpoint would put two different promises behind one name.
+//
+// `?pin=<sec>` sets how long the deny lists are held. See gather.go.
+func (a *API) postGather(w http.ResponseWriter, r *http.Request) {
+	iface := r.PathValue("iface")
+	if err := a.e.radioReady(iface); err != nil {
+		writeErr(w, http.StatusServiceUnavailable, err.Error())
+		return
+	}
+	pin := float64(gatherPinSec)
+	if v := strings.TrimSpace(r.URL.Query().Get("pin")); v != "" {
+		n, err := strconv.ParseFloat(v, 64)
+		if err != nil {
+			writeErr(w, http.StatusBadRequest, "pin must be a number of seconds")
+			return
+		}
+		pin = n
+	}
+	moved, err := a.e.GatherTo(iface, pin)
+	if err != nil && moved == 0 {
+		writeErr(w, http.StatusServiceUnavailable, err.Error())
+		return
+	}
+	out := map[string]any{
+		"iface": iface, "action": "gather", "moved": moved, "pin_sec": pin,
+	}
+	if err != nil {
+		out["partial"] = err.Error()
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+// postEvict empties one radio and denies it, so the departure sticks.
+//
+// The mirror of postGather. Both remove a choice rather than making a request:
+// gather leaves the client one radio it may join, evict leaves it every radio
+// but one. Neither is refusable, which is the point, and neither claims to be a
+// measurement of what the device would have chosen.
+func (a *API) postEvict(w http.ResponseWriter, r *http.Request) {
+	iface := r.PathValue("iface")
+	if err := a.e.radioReady(iface); err != nil {
+		writeErr(w, http.StatusServiceUnavailable, err.Error())
+		return
+	}
+	pin := float64(gatherPinSec)
+	if v := strings.TrimSpace(r.URL.Query().Get("pin")); v != "" {
+		n, err := strconv.ParseFloat(v, 64)
+		if err != nil {
+			writeErr(w, http.StatusBadRequest, "pin must be a number of seconds")
+			return
+		}
+		pin = n
+	}
+	moved, err := a.e.EvictFrom(iface, pin)
+	if err != nil && moved == 0 {
+		writeErr(w, http.StatusServiceUnavailable, err.Error())
+		return
+	}
+	out := map[string]any{
+		"iface": iface, "action": "evict", "moved": moved, "pin_sec": pin,
+	}
+	if err != nil {
+		out["partial"] = err.Error()
+	}
+	writeJSON(w, http.StatusOK, out)
 }

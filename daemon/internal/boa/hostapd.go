@@ -172,15 +172,15 @@ func (e *Engine) fireLink(f LinkFire) {
 	switch f.Kind {
 	case LinkDeadzone:
 		err = e.LinkDeadzone(f.MAC, f.DurSec, f.Scope) // clean deny-ACL block
-	case LinkNudge:
+	case LinkDisassoc:
 		if f.DurSec > 0 {
-			e.LinkFlap(f.MAC, LinkNudge, f.DurSec)
+			e.LinkFlap(f.MAC, LinkDisassoc, f.DurSec)
 		} else {
 			err = e.LinkDisassoc(f.MAC, 0)
 		}
 	default: // drop
 		if f.DurSec > 0 {
-			e.LinkFlap(f.MAC, LinkDrop, f.DurSec)
+			e.LinkFlap(f.MAC, LinkDeauth, f.DurSec)
 		} else {
 			err = e.LinkDeauth(f.MAC, 0)
 		}
@@ -206,7 +206,7 @@ func (e *Engine) LinkFlap(mac, kind string, durSec float64) {
 		deadline := time.Now().Add(time.Duration(durSec * float64(time.Second)))
 		for time.Now().Before(deadline) {
 			var err error
-			if kind == LinkNudge {
+			if kind == LinkDisassoc {
 				err = e.LinkDisassoc(mac, 0)
 			} else {
 				err = e.LinkDeauth(mac, 0)
@@ -326,12 +326,11 @@ func (e *Engine) LinkDeadzone(mac string, durSec float64, scope string) error {
 	_ = e.LinkDeauth(mac, 0) // kick it off now; the ACL keeps it off
 	go func() {
 		time.Sleep(time.Duration(durSec * float64(time.Second)))
+		// Forget FIRST, so releaseDeny sees only the other claim: the deny list
+		// is the OR of this deadzone and any gather or evict pin, and neither
+		// may delete the other's entry. See stillDenied.
 		e.forgetDeadzone(mac)
-		for _, w := range on {
-			if err := e.denyACLOn(w, "DEL", mac); err != nil {
-				log.Printf("deadzone lift %s on %s: %v", mac, w, err)
-			}
-		}
+		e.releaseDeny(mac, on)
 	}()
 	return nil
 }

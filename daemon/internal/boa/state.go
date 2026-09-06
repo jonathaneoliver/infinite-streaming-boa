@@ -183,6 +183,24 @@ type Engine struct {
 	// keeps being bitten by, introduced by the fix for a different one.
 	deadzones map[string]*deadzoneBan
 
+	// pins maps a client to the movement operation currently holding it, so an
+	// association event can find the ban that was waiting for it. Several MACs
+	// point at the SAME pinOp: a gather is not finished until every client it
+	// covers has landed, and the bans come off together. Held separately from
+	// deadzones because they end on an EVENT rather than purely on a clock.
+	pins map[string]*pinOp
+
+	// beacons holds what each client last reported hearing, from 802.11k
+	// beacon requests. Its own store rather than a field on Client because the
+	// answers arrive asynchronously through the monitor connection, between
+	// ticks, and a tick that rebuilt Client would otherwise drop them.
+	beacons beaconStore
+
+	// apLinkDown remembers, per radio, whether hostapd's state and the kernel's
+	// last disagreed, so the warning is raised on the transition rather than on
+	// every rebuild of the bridge view. See noteAPLinkDown.
+	apLinkDown map[string]bool
+
 	// recovering guards ONE access-point recovery per radio at a time.
 	//
 	// Every power-on starts a background watch, and that watch can run for
@@ -834,6 +852,7 @@ func (e *Engine) tick() {
 			// client is already sitting on.
 			c.SteerTo = e.OtherRadio(w)
 		}
+		c.BeaconReports = e.beacons.get(mac)
 		clients = append(clients, c)
 	}
 	// What CHANGED since the last tick, raised now that both the associations
@@ -1009,7 +1028,7 @@ func (e *Engine) tick() {
 			// port on every address, so a listener in the table is the whole
 			// answer and costs no connection.
 			Glances: PortListening(glancesPort), GlancesPort: glancesPort,
-			Services: serviceStates(),
+			Services:    serviceStates(),
 			LinkControl: e.anyLinkControl(),
 			LossBurst:   burstOK, LossBurstNote: burstNote,
 			NamesLearned: len(names), NamesByMAC: len(macNames),

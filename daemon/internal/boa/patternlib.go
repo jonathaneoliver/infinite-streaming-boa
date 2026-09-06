@@ -296,9 +296,9 @@ func LadderPattern(name string, l Ladder, dwellSec float64) (Pattern, error) {
 	case PatternBlackhole:
 		return blackhole(), nil
 	case PatternDropEveryMin:
-		return linkPattern(name, LinkEvent{AtSec: 30, Kind: LinkDrop}), nil
+		return linkPattern(name, LinkEvent{AtSec: 30, Kind: LinkDeauth}), nil
 	case PatternNudgeEveryMin:
-		return linkPattern(name, LinkEvent{AtSec: 30, Kind: LinkNudge}), nil
+		return linkPattern(name, LinkEvent{AtSec: 30, Kind: LinkDisassoc}), nil
 	case PatternDeadzoneEveryMin:
 		// ScopeAll, explicitly: this is described below as the link-level
 		// sibling of blackhole, and blackhole is a blackout. Left at the
@@ -725,7 +725,109 @@ func MergePatterns(name string, pats []Pattern) (Pattern, error) {
 	}
 	sort.Slice(links, func(a, b int) bool { return links[a].AtSec < links[b].AtSec })
 
-	return Pattern{Name: name, Keys: keys, Links: links, Loop: true}, nil
+	// The radio lane, through the same repeat and stretch.
+	//
+	// Left behind until #230, which was the same fault as #207 one lane over:
+	// a merge returned Keys and Links and dropped every gather, evict,
+	// disable-ap and scan on the floor, then handed the result back as a merge.
+	// Silent, and it looked like it worked -- the words the #207 comment above
+	// uses, because it is the same bug.
+	//
+	// REPEATED like links rather than fired once, for the reason that comment
+	// gives: a merged pattern loops, so an event that did not repeat would fire
+	// in the first cycle of a four-cycle merge and never again, which is not
+	// what anybody drew.
+	radios, err := mergeRadioLanes(pats, durs, reps, total)
+	if err != nil {
+		return Pattern{}, err
+	}
+
+	return Pattern{Name: name, Keys: keys, Links: links, Radios: radios, Loop: true}, nil
+}
+
+// mergeRadioLanes lays every source's radio events into merged time, and
+// refuses a result whose blocks would fight.
+//
+// The refusal is the interesting part. Two blocks overlapping ON THE SAME RADIO
+// is not a busier timeline, it is an incoherent one: each block owns a restore
+// timer, so the first to expire brings the access point back while the second
+// still believes it is holding it down. The pattern then says "down" while the
+// radio is up, for a stretch nothing on screen accounts for.
+//
+// Refused rather than merged-and-clamped for the reason deadzone scope is
+// refused rather than half-applied: a merge that silently dropped or truncated
+// one of two blocks would produce a timeline the operator did not author and
+// cannot see is different from the one they did.
+//
+// Radios NAMED BY THE SOURCES are carried through untouched, including names
+// this box does not have. That is deliberate: a merge is an edit, not a
+// deployment, and reconcileAdapterPattern already remaps or greys an absent
+// radio when the pattern is loaded. Rejecting here would make two patterns
+// unmergeable on the box that did not happen to hold both adapters.
+func mergeRadioLanes(pats []Pattern, durs []float64, reps []int, total float64) ([]RadioEvent, error) {
+	var out []RadioEvent
+	for i, p := range pats {
+		if len(p.Radios) == 0 {
+			continue
+		}
+		f := total / (float64(reps[i]) * durs[i])
+		for r := 0; r < reps[i]; r++ {
+			for _, ev := range p.Radios {
+				at := round2((float64(r)*durs[i] + ev.AtSec) * f)
+				// The seam repeats the start, as every pattern does, so an
+				// event landing exactly on it would fire twice a lap.
+				if at < 0 || at >= total {
+					continue
+				}
+				ev.AtSec = at
+				if ev.DurSec > 0 {
+					// Stretches with everything else, and ENLARGING is the safe
+					// direction: these effects have minimum durations, not
+					// maximum ones, so a block that grew by 9% still measures
+					// what it was drawn to measure while one that shrank might
+					// fall under the floor.
+					ev.DurSec = round2(ev.DurSec * f)
+				}
+				out = append(out, ev)
+			}
+		}
+	}
+	sort.Slice(out, func(a, b int) bool {
+		if out[a].AtSec != out[b].AtSec {
+			return out[a].AtSec < out[b].AtSec
+		}
+		return out[a].Iface < out[b].Iface
+	})
+	if err := noOverlappingBlocks(out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// noOverlappingBlocks rejects two timed blocks that cover the same radio at the
+// same moment. Pulses are exempt: a gather and a deauth at the same second are
+// two things happening at once, not two things disagreeing.
+func noOverlappingBlocks(evs []RadioEvent) error {
+	type span struct {
+		kind     string
+		from, to float64
+	}
+	open := map[string]span{} // iface -> the block currently held
+	for _, ev := range evs {
+		if ev.DurSec <= 0 {
+			continue // a pulse holds nothing
+		}
+		if held, ok := open[ev.Iface]; ok && ev.AtSec < held.to {
+			return fmt.Errorf(
+				"these patterns cannot be merged: %s would be held down by %q from "+
+					"%gs to %gs and by %q from %gs at once. Each block restores the "+
+					"radio when it ends, so the first to finish would bring it back "+
+					"while the second still thinks it is holding it",
+				ev.Iface, held.kind, held.from, held.to, ev.Kind, ev.AtSec)
+		}
+		open[ev.Iface] = span{kind: ev.Kind, from: ev.AtSec, to: ev.AtSec + ev.DurSec}
+	}
+	return nil
 }
 
 // maxMergeRun bounds how much longer a merge may run than its longest source.

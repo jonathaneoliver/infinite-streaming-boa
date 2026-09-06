@@ -55,9 +55,24 @@ type APStatus struct {
 	WidthMHz int `json:"width_mhz,omitempty"`
 	// Mode is the highest enabled generation, e.g. "802.11ax".
 	Mode string `json:"mode,omitempty"`
-	// Enabled is true only when hostapd reports state=ENABLED, i.e. actually
-	// beaconing rather than merely configured.
-	Enabled  bool `json:"enabled"`
+	// Enabled means hostapd reports state=ENABLED AND the interface is up.
+	//
+	// BOTH, because hostapd's state alone is not the whole answer and once
+	// claimed to be. MEASURED 2026-09-06: NetworkManager handed wlan-usb2 from
+	// managed to unmanaged, wpa_supplicant deinit'd the interface on its way
+	// out, and hostapd logged INTERFACE-DISABLED -- while its STATUS went on
+	// answering state=ENABLED for twenty minutes. Nothing was on air, the SSID
+	// vanished from every client's list, and the rack showed the radio serving
+	// the whole time. hostapd's state survives the interface being taken out
+	// from under it, so a radio reported on the strength of that state alone is
+	// a radio reported on hostapd's memory of what it last set up.
+	Enabled bool `json:"enabled"`
+	// LinkDown records exactly that disagreement: hostapd says ENABLED, the
+	// kernel says the interface is down. Separate from a plain "not serving"
+	// because the two need different actions -- a disabled AP is enabled again,
+	// whereas this one needs hostapd restarted, and an operator who cannot tell
+	// them apart will press the wrong control and conclude the box is broken.
+	LinkDown bool `json:"link_down,omitempty"`
 	Stations int  `json:"stations"`
 	// BeaconIntMs and DTIMPeriod are the power-save timing knobs. Shown
 	// because a phone's downlink behaviour between segment fetches is governed
@@ -329,6 +344,14 @@ func (e *Engine) buildBridgeState() BridgeInfo {
 				// say it had happened and the row go on claiming otherwise.
 				// One cache, one age.
 				if ap := apStatus(name, country); ap != nil {
+					// Reconciled against the KERNEL, not taken on hostapd's
+					// word. See APStatus.Enabled for the twenty minutes this
+					// cost when it was taken on hostapd's word.
+					if ap.Enabled && !in.Up {
+						ap.Enabled = false
+						ap.LinkDown = true
+					}
+					e.noteAPLinkDown(name, ap.LinkDown)
 					in.AP = ap
 					in.Role = RoleAP
 				}
@@ -572,6 +595,37 @@ func regDomain() string {
  * The fix is not to ask faster or to shorten the deadline. It is to stop asking
  * on the request path at all.
  */
+
+// noteAPLinkDown logs the hostapd/kernel disagreement ONCE per occurrence.
+//
+// Once, because buildBridgeState runs on a timer: logging every rebuild would
+// put a line a second into the activity log for as long as the fault lasted,
+// which is the same as not logging it. Logged at all, because the alternative
+// is what happened before -- the radio quietly read as serving, and the first
+// anybody knew was a client that could not join.
+func (e *Engine) noteAPLinkDown(iface string, down bool) {
+	e.mu.Lock()
+	if e.apLinkDown == nil {
+		e.apLinkDown = map[string]bool{}
+	}
+	was := e.apLinkDown[iface]
+	e.apLinkDown[iface] = down
+	e.mu.Unlock()
+
+	if down == was {
+		return
+	}
+	if down {
+		e.logEvent(EventWarning, iface, "",
+			"%s: hostapd reports the access point enabled, but the interface is "+
+				"down -- nothing is on air. Something took the interface out from "+
+				"under hostapd; restarting its hostapd will rebuild the BSS.",
+			iface)
+		return
+	}
+	e.logEvent(EventAction, iface, "",
+		"%s: interface back up and the access point is on air again", iface)
+}
 
 // apStatus asks hostapd what the AP is doing. Returns nil when the socket is
 // there but the exchange fails, so a radio is never reported as an access point

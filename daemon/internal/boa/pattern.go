@@ -59,11 +59,20 @@ type Keyframe struct {
 	Ease string `json:"ease,omitempty"`
 }
 
-// Link event kinds. drop and nudge are instant pulses; deadzone is a held
-// outage with a duration. See issue #135.
+// Link event kinds.
+//
+// NAMED FOR THE FRAME THEY SEND, because each is exactly one 802.11 frame and
+// the reader of this box already knows what those are. They were "drop" and
+// "nudge", which described the felt effect rather than the action and left the
+// same deauthentication called three different things across the interface,
+// the API and the code. See #229.
+//
+// deadzone keeps an invented name on purpose: it is a deny ACL plus a deauth
+// plus a timer, which is nothing in the standard, and giving it a
+// standard-sounding name would imply a frame that does not exist.
 const (
-	LinkDrop     = "drop"     // deauthenticate: hard link-down pulse
-	LinkNudge    = "nudge"    // disassociate: softer link-down pulse
+	LinkDeauth   = "deauth"   // 802.11 deauthentication: the harder pulse
+	LinkDisassoc = "disassoc" // 802.11 disassociation: the softer pulse
 	LinkDeadzone = "deadzone" // deauth held for DurSec: the client cannot stay on
 )
 
@@ -120,7 +129,7 @@ const (
 	// RadioOff cuts this radio's power for DurSec. The one SILENT impairment:
 	// the client is told nothing and has to notice the beacons stopped, which
 	// takes it tens of seconds. See minRadioOffSec.
-	RadioOff = "off"
+	RadioOff = "radio-off"
 	// RadioAPDown takes this radio's ACCESS POINT down for DurSec, leaving the
 	// radio powered.
 	//
@@ -136,7 +145,21 @@ const (
 	// minRadioOffSec floor for the same reason: the floor exists because a
 	// silent outage shorter than a client's beacon timeout measures nothing,
 	// and an announced one is noticed immediately.
-	RadioAPDown = "apdown"
+	// Two lanes, because the button has two forms and a lane that did one
+	// while being named the other is how "client is told" ended up on a lane
+	// that told nobody.
+	//
+	// RadioAPDown closes the BSS in silence. #224 turns off hostapd's own
+	// start/stop broadcast globally, so nothing goes out and the client
+	// discovers it by missing beacons -- tens of seconds. That is a real field
+	// condition and the safe way to reproduce it: unlike a power cut it cannot
+	// wedge the radio (#182), so it needs no developer gate.
+	//
+	// RadioAPDownTell deauthenticates the associated stations first, so they
+	// know at once and move in milliseconds. The difference between the two IS
+	// the measurement the "musical chairs" preset exists to make.
+	RadioAPDown     = "disable-ap"
+	RadioAPDownTell = "deauth-disable-ap"
 	// RadioScan surveys the band from this radio.
 	//
 	// A pulse with a real cost, unlike the other three pulses: a beaconing
@@ -410,7 +433,7 @@ func validPattern(p Pattern) error {
 	}
 	for i, ev := range p.Links {
 		switch ev.Kind {
-		case LinkDrop, LinkNudge:
+		case LinkDeauth, LinkDisassoc:
 			// 0 = a single pulse; >0 = flap (repeat) for that many seconds.
 			if ev.DurSec < 0 || ev.DurSec > maxPatternSec {
 				return fmt.Errorf("link event %d: %s duration must be 0 (a pulse) to %ds", i, ev.Kind, maxPatternSec)
@@ -458,12 +481,16 @@ func validPattern(p Pattern) error {
 			if ev.DurSec > maxPatternSec {
 				return fmt.Errorf("radio event %d: outage must be at most %ds", i, maxPatternSec)
 			}
-		case RadioAPDown:
-			// NO minRadioOffSec floor, deliberately. That floor exists because
-			// a silent outage shorter than a client's beacon timeout measures
-			// nothing; this one is announced and acted on in tens of
-			// milliseconds, so a short block is a real experiment rather than
-			// an outage nobody notices.
+		case RadioAPDown, RadioAPDownTell:
+			// NO minRadioOffSec floor for EITHER, and the reason differs.
+			//
+			// The announced lane is acted on in tens of milliseconds, so a short
+			// block is a real experiment. The silent one closes the BSS without
+			// cutting power, so unlike a power cut it costs nothing to undo --
+			// the radio never leaves, and hostapd brings the BSS straight back.
+			// The floor on RadioOff exists because an rfkill'd mt7921u can take
+			// two minutes to return (#182), which is a different hazard from a
+			// client not noticing.
 			//
 			// A lower bound all the same: the access point has to come down and
 			// go back up, and hostapd's own COUNTRY_UPDATE -> HT_SCAN -> ENABLED
@@ -481,9 +508,9 @@ func validPattern(p Pattern) error {
 			}
 		default:
 			return fmt.Errorf(
-				"radio event %d: unknown kind %q (want %s, %s, %s, %s, %s or %s)",
+				"radio event %d: unknown kind %q (want %s, %s, %s, %s, %s, %s or %s)",
 				i, ev.Kind, RadioGather, RadioEvict, RadioDeauth, RadioOff,
-				RadioAPDown, RadioScan)
+				RadioAPDown, RadioAPDownTell, RadioScan)
 		}
 		if ev.AtSec < 0 || ev.AtSec > maxPatternSec {
 			return fmt.Errorf("radio event %d: at %gs is out of range", i, ev.AtSec)

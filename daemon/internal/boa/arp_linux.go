@@ -88,7 +88,7 @@ type Learner struct {
 	// itself twice, in different words, and without this the interface flipped
 	// between the two spellings as it re-announced.
 	macNameSrc map[string]int
-	names    map[string]string
+	names      map[string]string
 }
 
 type learned struct {
