@@ -1345,6 +1345,22 @@ than receiving) with plausible magnitudes rather than measured ones.
   channel spreads the same power over more spectrum, so it dies first — on top
   of the extra path loss at 5 GHz. Every rung of the ladder is scaled this way,
   not only the bottom one.
+- **A DEAD UPLINK DISQUALIFIES A BAND.** Found 2026-09-06 by sweeping the model
+  and reading the output: between -76 and -80 dBm a modelled phone was kept on
+  5 GHz carrying 38 Mbit/s down while its uplink sat at 100% loss, then
+  "rescued" at -80 by a move to 2.4 GHz where both directions were healthy. The
+  choice had scored the downlink alone, so it could not see that the link was
+  already over.
+
+  A device transmits more quietly than the access point, so its uplink reaches
+  the floor several dB before the downlink does — which is exactly when a real
+  client starts looking elsewhere. It also matters more than the traffic split
+  suggests, for the reason recorded above: the uplink carries the downlink's
+  ACKs, so a dead uplink delivers no downlink goodput whatever the downlink rate
+  says.
+
+  The limit, stated: only TOTAL uplink failure disqualifies a band. A merely
+  weak uplink still does not influence the choice.
 - **A band can be chosen rather than read.** A client on a radio uses that
   radio's band and width, full stop. A client on the **wired** port has no band
   to read, so one is supplied — and with `AutoBand` the model picks, at each
