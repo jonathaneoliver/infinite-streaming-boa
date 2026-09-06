@@ -664,6 +664,7 @@ const LINK_LANES: { kind: LinkEvent['kind']; label: string; manual: boolean }[] 
   { kind: 'disassoc', label: 'disassoc', manual: true },
   { kind: 'deadzone', label: 'deadzone', manual: true },
   { kind: 'pin', label: 'pin', manual: false },
+  { kind: 'evict', label: 'evict', manual: true },
 ];
 const PULSE_VIS_SEC = 0.5; // a zero-duration pulse still needs a grabbable width
 const DEFAULT_DEADZONE_SEC = 10;

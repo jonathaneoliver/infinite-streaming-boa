@@ -157,14 +157,17 @@ export interface Keyframe {
  *  then refused by an iPhone whose real signal was excellent, so a control that
  *  names a destination keeps its word by removing the alternatives instead.
  *  Named `pin` rather than `gather` because gathering describes filling a radio,
- *  which one client cannot do; there is no client-scope `evict`, because that is
- *  `deadzone` with `scope: "current"`.
+ *  which one client cannot do. `evict` is its pair: it denies only the radio the
+ *  client is leaving, so where it goes next is its own choice. That is NOT the
+ *  same as `deadzone` with `scope: "current"` — a deadzone holds its ban for the
+ *  full duration whatever the client does, while an evict lifts the moment it
+ *  lands somewhere else, so the duration is a deadline rather than a dose.
  *  `dur_sec` is the block width: 0 = a single pulse (fired on the rising edge),
  *  >0 = the disturbance holds for that long — a flap for deauth/disassoc, a
  *  clean block for deadzone, and how long a pin's ban may be held. See #135. */
 export interface LinkEvent {
   at_sec: number;
-  kind: 'deauth' | 'disassoc' | 'deadzone' | 'pin';
+  kind: 'deauth' | 'disassoc' | 'deadzone' | 'pin' | 'evict';
   dur_sec?: number;
   /** deadzone only. Which radios the ban covers:
    *  - `current` (the default when absent) denies on the radio the client is

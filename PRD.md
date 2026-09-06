@@ -387,11 +387,17 @@ damages packets, never link state.
   a **pattern lane** beside rate and loss — a deauth at t=120s is exactly
   reproducible, which no packet impairment is, and is the specific event this
   exists for.
-- **One of them moves a client rather than breaking its link, and it does not
-  ask.** `pin` holds a device on a named band for the rest of a run, by denying
-  it on every radio serving another band — the radio lane's `gather`, run over a
-  single client. There is no client-scope `evict`: "leave your radio" is already
-  `deadzone` with `scope: current`.
+- **Two of them move a client rather than breaking its link, and neither asks.**
+  `pin` holds a device on a named band by denying it on every radio serving
+  another; `evict` denies only the radio it is leaving, so where it goes next is
+  its own choice. They are the pair the radio lane already has, one scope down,
+  and they run the same mechanism over a single client.
+- **An evict is not a deadzone, though both deny the radio a client is on.** A
+  deadzone holds its ban for the full duration whatever the client does — that
+  is what makes it an outage, and why its block has a width worth reading. An
+  evict lifts the moment the client lands somewhere else, so its duration is a
+  deadline rather than a dose: five seconds of deadzone costs five seconds of
+  service, five seconds of evict usually costs a fraction of one.
 - **Asking was tried and measured failing.** A transition request is a
   suggestion, and on this box an iPhone ignored a same-band one outright and
   then refused a cross-band one, offering its own candidate list. It was right
@@ -404,9 +410,10 @@ damages packets, never link state.
   serving two radios in one band: resolving "5 GHz" to a radio picks one of
   them, and comparing that to where the client is would move it sideways
   between two equally good radios on every lap of a looping walk.
-- Unlike the other three, a pin is **generated rather than drawn** — it needs a
-  destination band and the timeline has no way to ask for one — but it is shown
-  wherever a pattern uses it, and can be deleted there.
+- A **pin** is **generated rather than drawn** — it needs a destination band and
+  the timeline has no way to ask for one — but it is shown wherever a pattern
+  uses it, and can be deleted there. An **evict** names nothing, so it is drawn
+  by hand like the other lanes.
 - They require the **AP running through hostapd**, which is how both radios are
   now driven — the onboard one as well as a USB adapter — so the controls work
   whichever radio is serving. (They were USB-only while the onboard radio ran

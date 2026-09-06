@@ -76,14 +76,22 @@ const (
 	LinkDeadzone = "deadzone" // deauth held for DurSec: the client cannot stay on
 
 	/*
-	 * ONE kind, not two, and it does not ASK.
+	 * TWO kinds, and NEITHER ASKS.
 	 *
-	 * "Leave your radio" needed no new kind at all: that is deadzone with
-	 * ScopeCurrent, which denies the client on the radio it is on and nothing
-	 * else, so it lands elsewhere and cannot decline. Adding an evict here would
-	 * have been a second spelling of a shipped control.
+	 * The same pair the radio lane has, one scope down: pin names a destination
+	 * and removes every other choice; evict names none and removes only the
+	 * radio being left. Both run gather.go's mechanism over a single client.
 	 *
-	 * "Be on THIS band" has no equivalent, and it cannot be built by asking.
+	 * EVICT IS NOT deadzone WITH ScopeCurrent, though they look alike and an
+	 * earlier draft dropped it as a duplicate. Both deny the client where it is
+	 * sitting; what follows differs. A deadzone holds its ban for the full
+	 * duration whatever the client does -- that is what makes it an outage, and
+	 * why its block has a width you can read. An evict lifts the moment the
+	 * client lands somewhere else, so its duration is a deadline rather than a
+	 * dose: five seconds of deadzone costs five seconds of service, five seconds
+	 * of evict usually costs a fraction of one.
+	 *
+	 * Neither can be built by asking.
 	 * MEASURED 2026-09-06: an iPhone ignored a same-band transition request and
 	 * then refused a cross-band one, offering its own candidate list. It was
 	 * right to -- the distance model does not move real RSSI, so its 5GHz signal
@@ -96,7 +104,8 @@ const (
 	 * a RADIO, which one client cannot do; pin is what gather.go already calls
 	 * the mechanism throughout.
 	 */
-	LinkPin = "pin" // hold this client on the band named below
+	LinkPin   = "pin"   // hold this client on the band named below
+	LinkEvict = "evict" // push this client off the radio it is on
 )
 
 // Deadzone scope: which radios a deadzone holds a client off.
@@ -493,6 +502,16 @@ func validPattern(p Pattern) error {
 				return fmt.Errorf("link event %d: deadzone scope must be %q or %q (got %q)",
 					i, ScopeCurrent, ScopeAll, ev.Scope)
 			}
+		case LinkEvict:
+			// Nowhere to name: an evict says where the client may NOT be, and
+			// where it goes is its own choice. A band here would be a promise
+			// this kind does not make.
+			if ev.ToBandMHz != 0 {
+				return fmt.Errorf("link event %d: evict takes no band -- it means leave, and where to is the client's answer. Use pin to name a destination", i)
+			}
+			if ev.DurSec < 0 || ev.DurSec > 300 {
+				return fmt.Errorf("link event %d: evict duration must be 0 (the default) to 300s", i)
+			}
 		case LinkPin:
 			// A pin with no destination is a no-op that looks like a move, which
 			// is the kind of silence this repo has been bitten by.
@@ -506,7 +525,7 @@ func validPattern(p Pattern) error {
 				return fmt.Errorf("link event %d: pin duration must be 0 (the default) to 300s", i)
 			}
 		default:
-			return fmt.Errorf("link event %d: unknown kind %q (want deauth, disassoc, deadzone or pin)", i, ev.Kind)
+			return fmt.Errorf("link event %d: unknown kind %q (want deauth, disassoc, deadzone, pin or evict)", i, ev.Kind)
 		}
 		if ev.Scope != "" && ev.Kind != LinkDeadzone {
 			return fmt.Errorf("link event %d: scope is deadzone only, not %s", i, ev.Kind)

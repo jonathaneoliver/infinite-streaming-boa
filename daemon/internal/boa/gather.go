@@ -431,6 +431,72 @@ func (e *Engine) GatherClientTo(mac, iface string, durSec float64) error {
 	return err
 }
 
+/*
+ * EvictClient pushes ONE client off the radio it is on. The mirror of
+ * GatherClientTo, and the same pair the radio lane already has.
+ *
+ * NOT A DUPLICATE OF deadzone WITH ScopeCurrent, though the two look alike and
+ * an earlier draft of this dropped it as one. Both deny the client on the radio
+ * it is sitting on; what happens next differs, and for a pattern the difference
+ * is the whole point:
+ *
+ *   - a DEADZONE holds the ban for its full duration whatever the client does.
+ *     That is what makes it an outage, and why the block on the timeline has a
+ *     width you can read.
+ *   - an EVICT lifts the moment the client lands somewhere else. It is a move,
+ *     not an outage, and its duration is a deadline rather than a dose.
+ *
+ * So a five-second deadzone costs five seconds of service. A five-second evict
+ * usually costs a fraction of one, and only a client that refuses to go
+ * anywhere experiences the five.
+ *
+ * Where it goes is explicitly not this box's decision -- that is what separates
+ * an evict from a pin, at either scope.
+ */
+func (e *Engine) EvictClient(mac string, durSec float64) error {
+	if !e.LinkControlAvailable() {
+		return fmt.Errorf("link control unavailable: hostapd is not serving the AP")
+	}
+	m := normMAC(mac)
+	if !validMAC(m) {
+		return fmt.Errorf("not a MAC address: %s", mac)
+	}
+	if durSec <= 0 {
+		durSec = gatherPinSec
+	}
+	if durSec < 1 || durSec > 300 {
+		return fmt.Errorf("pin duration must be 1-300 seconds")
+	}
+	from := e.radioFor(m)
+	if from == "" {
+		return fmt.Errorf("cannot evict %s: it is not on a radio this box serves", m)
+	}
+
+	// Somewhere to go, or this is an outage wearing an evict's name.
+	var elsewhere []string
+	for _, w := range e.cfg.WlanPorts {
+		if w != from && hostapdReachable(w) {
+			elsewhere = append(elsewhere, w)
+		}
+	}
+	if len(elsewhere) == 0 {
+		return fmt.Errorf(
+			"%s is the only radio serving, so an evict would put %s off the box "+
+				"altogether rather than onto another radio", from, m)
+	}
+	if e.cfg.Demo {
+		return nil
+	}
+	e.clearPins("superseded by an evict")
+	// to is deliberately empty: this ban says where it may NOT go.
+	_, err := e.runPin(&pinOp{deny: []string{from}}, []string{m}, from, elsewhere[0], durSec,
+		"evicting %d client(s) off %s: denied there so it cannot come back, and "+
+			"free to pick any other radio (%s is only the hint in the request). The "+
+			"ban lifts once it has landed, or after %.0fs. Where it goes is its own "+
+			"choice — that is what an evict is")
+	return err
+}
+
 // EvictFrom empties one radio and makes the departure stick.
 //
 // The mirror of GatherTo, built from the same parts. A gather denies every radio
