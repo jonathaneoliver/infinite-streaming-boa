@@ -561,6 +561,43 @@ func (e *Engine) fireRadio(f RadioFire) {
 				"pattern could not take %s down: %v", f.Iface, err)
 		}
 
+	case RadioAPDown:
+		// The access point goes, the radio stays. Restored by a timer here
+		// rather than by the player, so a pattern that is stopped mid-block
+		// cannot leave a BSS down -- the same reason RadioOutage owns its own
+		// restore.
+		if err := e.SetAPEnabled(f.Iface, false); err != nil {
+			e.logEvent(EventRadio, f.Iface, "",
+				"pattern could not take the access point down on %s: %v", f.Iface, err)
+			return
+		}
+		go func(iface string, d float64) {
+			time.Sleep(time.Duration(d * float64(time.Second)))
+			if err := e.SetAPEnabled(iface, true); err != nil {
+				e.logEvent(EventWarning, iface, "",
+					"pattern could not bring the access point back on %s: %v", iface, err)
+			}
+		}(f.Iface, f.DurSec)
+
+	case RadioScan:
+		// apply=false: survey only. A pattern that MOVED the radio to the
+		// quietest channel it found would be changing the thing under test
+		// while testing it, and the operator would have no way to tell a
+		// client's reaction to the scan from its reaction to the move.
+		//
+		// In the background because a scan takes the BSS down for a few
+		// seconds, and the player's tick must not be held while it does.
+		go func(iface string) {
+			r, err := e.ScanBand(iface, false)
+			if err != nil {
+				e.logEvent(EventWarning, iface, "",
+					"pattern could not scan from %s: %v", iface, err)
+				return
+			}
+			e.logEvent(EventAction, iface, "",
+				"pattern scanned the band from %s: %d channel(s) heard", iface, len(r.Channels))
+		}(f.Iface)
+
 	case RadioDeauth:
 		n, err := e.LinkAll(f.Iface, LinkDrop)
 		if err != nil {

@@ -173,7 +173,7 @@ export interface LinkEvent {
 export interface RadioEvent {
   at_sec: number;
   iface: string;
-  kind: 'gather' | 'evict' | 'deauth' | 'off';
+  kind: 'gather' | 'evict' | 'deauth' | 'off' | 'apdown' | 'scan';
   /** `off` only — how long the radio stays down. The rest are pulses. */
   dur_sec?: number;
 }
@@ -186,6 +186,18 @@ export interface RadioEvent {
  *  `deauth` for a short, announced disturbance. Kept in step with
  *  minRadioOffSec in the daemon. */
 export const MIN_RADIO_OFF_SEC = 30;
+
+/** The shortest access-point block a pattern may author.
+ *
+ *  Far below MIN_RADIO_OFF_SEC on purpose. That floor is about how long a
+ *  client takes to NOTICE silence; an access point going down is announced, so
+ *  the client acts at once -- measured at 45ms from the BSS going down to the
+ *  client appearing on the other radio. What sets this floor is the box
+ *  instead: hostapd walks DISABLED -> COUNTRY_UPDATE -> HT_SCAN -> ENABLED to
+ *  put a BSS back, about a second on these radios, so a shorter block would ask
+ *  for the access point back before it had finished leaving. Kept in step with
+ *  minAPDownSec in the daemon. */
+export const MIN_AP_DOWN_SEC = 3;
 
 export interface Pattern {
   name: string;

@@ -121,6 +121,34 @@ const (
 	// the client is told nothing and has to notice the beacons stopped, which
 	// takes it tens of seconds. See minRadioOffSec.
 	RadioOff = "off"
+	// RadioAPDown takes this radio's ACCESS POINT down for DurSec, leaving the
+	// radio powered.
+	//
+	// The announced counterpart of RadioOff, and the difference is the whole
+	// reason both exist. Power is cut at the rfkill level so nothing can be
+	// transmitted and the client must work the loss out for itself -- measured
+	// on this box at 0.5 to 11 seconds. This closes the BSS with the
+	// transmitter still running, so the departure is announced and the client
+	// acts on being told: measured at 45ms from the access point going down to
+	// the client arriving on the other radio.
+	//
+	// That speed is what makes a short cycle worth authoring at all. It has no
+	// minRadioOffSec floor for the same reason: the floor exists because a
+	// silent outage shorter than a client's beacon timeout measures nothing,
+	// and an announced one is noticed immediately.
+	RadioAPDown = "apdown"
+	// RadioScan surveys the band from this radio.
+	//
+	// A pulse with a real cost, unlike the other three pulses: a beaconing
+	// radio cannot listen to other channels, so ScanBand takes the BSS down,
+	// looks, and puts it back -- a few seconds during which this radio serves
+	// nobody. On a two-radio box the clients land on the other band and return
+	// afterwards, which is what makes it affordable to author at all.
+	//
+	// Worth having on a timeline because the interesting question is not what
+	// the band looks like once, it is what it looks like repeatedly while
+	// something else is happening to it.
+	RadioScan = "scan"
 )
 
 // minRadioOffSec is the shortest radio outage a pattern may author.
@@ -133,6 +161,19 @@ const (
 // announced and immediate.
 const minRadioOffSec = 30
 
+// minAPDownSec is the shortest access-point block a pattern may author.
+//
+// Far below minRadioOffSec, and for a reason rather than by oversight: that
+// floor is about how long a client takes to NOTICE silence, and this
+// impairment is announced, so the client acts at once -- measured at 45ms from
+// the access point going down to the client appearing on the other radio.
+//
+// What sets this floor instead is the box, not the client. hostapd walks
+// DISABLED -> COUNTRY_UPDATE -> HT_SCAN -> ENABLED to bring a BSS back, about a
+// second on both radios here, so a shorter block would ask for the access point
+// back before it had finished going away.
+const minAPDownSec = 3
+
 // RadioEvent is one entry on an adapter pattern's radio lanes.
 //
 // Iface names the radio the event acts ON, and that is the whole grammar: an
@@ -143,8 +184,9 @@ type RadioEvent struct {
 	AtSec float64 `json:"at_sec"`
 	Iface string  `json:"iface"`
 	Kind  string  `json:"kind"`
-	// DurSec is RadioOff only: how long the radio stays down. The other three
-	// are pulses and fire once as the playhead crosses them.
+	// DurSec is RadioOff and RadioAPDown only: how long the radio, or its
+	// access point, stays down. The other three are pulses and fire once as the
+	// playhead crosses them.
 	DurSec float64 `json:"dur_sec,omitempty"`
 }
 
@@ -398,7 +440,7 @@ func validPattern(p Pattern) error {
 			return fmt.Errorf("radio event %d: no radio named", i)
 		}
 		switch ev.Kind {
-		case RadioGather, RadioEvict, RadioDeauth:
+		case RadioGather, RadioEvict, RadioDeauth, RadioScan:
 			if ev.DurSec != 0 {
 				return fmt.Errorf(
 					"radio event %d: %s is a pulse and takes no duration", i, ev.Kind)
@@ -416,9 +458,32 @@ func validPattern(p Pattern) error {
 			if ev.DurSec > maxPatternSec {
 				return fmt.Errorf("radio event %d: outage must be at most %ds", i, maxPatternSec)
 			}
+		case RadioAPDown:
+			// NO minRadioOffSec floor, deliberately. That floor exists because
+			// a silent outage shorter than a client's beacon timeout measures
+			// nothing; this one is announced and acted on in tens of
+			// milliseconds, so a short block is a real experiment rather than
+			// an outage nobody notices.
+			//
+			// A lower bound all the same: the access point has to come down and
+			// go back up, and hostapd's own COUNTRY_UPDATE -> HT_SCAN -> ENABLED
+			// walk takes about a second on these radios. A block shorter than
+			// that would ask for the BSS back before it had finished leaving.
+			if ev.DurSec < minAPDownSec {
+				return fmt.Errorf(
+					"radio event %d: an access-point block of %gs is shorter than the %ds "+
+						"hostapd takes to put the BSS back, so the radio would be asked "+
+						"to return before it had finished leaving",
+					i, ev.DurSec, minAPDownSec)
+			}
+			if ev.DurSec > maxPatternSec {
+				return fmt.Errorf("radio event %d: block must be at most %ds", i, maxPatternSec)
+			}
 		default:
-			return fmt.Errorf("radio event %d: unknown kind %q (want %s, %s, %s or %s)",
-				i, ev.Kind, RadioGather, RadioEvict, RadioDeauth, RadioOff)
+			return fmt.Errorf(
+				"radio event %d: unknown kind %q (want %s, %s, %s, %s, %s or %s)",
+				i, ev.Kind, RadioGather, RadioEvict, RadioDeauth, RadioOff,
+				RadioAPDown, RadioScan)
 		}
 		if ev.AtSec < 0 || ev.AtSec > maxPatternSec {
 			return fmt.Errorf("radio event %d: at %gs is out of range", i, ev.AtSec)

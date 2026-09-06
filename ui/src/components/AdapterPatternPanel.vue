@@ -45,7 +45,7 @@
  */
 import { computed, onMounted, ref, watch } from 'vue';
 import type { Pattern, PatternView, RadioEvent } from '@/types';
-import { MIN_RADIO_OFF_SEC } from '@/types';
+import { MIN_AP_DOWN_SEC, MIN_RADIO_OFF_SEC } from '@/types';
 
 const props = defineProps<{
   /** The radios this box watches, in preference order. */
@@ -55,12 +55,35 @@ const props = defineProps<{
 }>();
 
 type Kind = RadioEvent['kind'];
+/**
+ * Named after the buttons on the adapter row wherever there is one, because an
+ * operator who has just pressed `disable AP` should not have to work out which
+ * lane authors the same thing. `off` is the power switch -- what `switch off`
+ * does -- and its hint says so, since the word alone did not.
+ */
 const KINDS: { kind: Kind; hint: string }[] = [
-  { kind: 'off', hint: 'radio down, silent' },
+  { kind: 'off', hint: 'switch off: power cut, silent, client must notice' },
+  { kind: 'apdown', hint: 'disable AP: BSS closed, radio up, client is told' },
   { kind: 'gather', hint: 'everyone comes here' },
   { kind: 'evict', hint: "this radio's clients leave" },
   { kind: 'deauth', hint: 'thrown off, come back here' },
+  { kind: 'scan', hint: 'survey the band; costs this radio a few seconds' },
 ];
+
+/**
+ * Which kinds occupy TIME rather than firing once.
+ *
+ * Asked in six places, and previously each one asked `kind === 'off'` for
+ * itself -- so adding a second block kind would have half-worked in five of
+ * them and been wrong in the sixth, silently. The lane geometry, the overlap
+ * check, the folded status line and the validity test all mean the same thing
+ * by "block", so they now ask the same question.
+ */
+const BLOCK_KINDS = new Set<Kind>(['off', 'apdown']);
+const isBlock = (k: Kind) => BLOCK_KINDS.has(k);
+
+/** The floor for each block kind, and the duration a fresh one opens at. */
+const minFor = (k: Kind) => (k === 'off' ? MIN_RADIO_OFF_SEC : MIN_AP_DOWN_SEC);
 
 const events = ref<RadioEvent[]>([]);
 const loop = ref(true);
@@ -125,8 +148,8 @@ const laneEvents = (iface: string, kind: Kind) =>
 /** A zero-duration pulse still needs a visible, grabbable width. Same value
  *  PatternPanel uses, so a spike here is the width of a spike there. */
 const PULSE_VIS_SEC = 0.5;
-const visSec = (e: RadioEvent) => (e.kind === 'off' ? e.dur_sec ?? 0 : PULSE_VIS_SEC);
-const endOf = (e: RadioEvent) => e.at_sec + (e.kind === 'off' ? e.dur_sec ?? 0 : 0);
+const visSec = (e: RadioEvent) => (isBlock(e.kind) ? e.dur_sec ?? 0 : PULSE_VIS_SEC);
+const endOf = (e: RadioEvent) => e.at_sec + (isBlock(e.kind) ? e.dur_sec ?? 0 : 0);
 
 /* ----------------------------------------------------------------- time -- */
 
@@ -259,7 +282,7 @@ const foldedStatus = computed(() => {
   const down = props.radios.filter((iface) =>
     events.value.some(
       (e) =>
-        e.kind === 'off' &&
+        isBlock(e.kind) &&
         e.iface === iface &&
         props.run!.pos_sec >= e.at_sec &&
         props.run!.pos_sec < endOf(e),
@@ -313,9 +336,11 @@ function keyScrub(ev: KeyboardEvent) {
 function add(iface: string, kind: Kind, ev: MouseEvent) {
   if (playing.value) return;
   const e: RadioEvent = { at_sec: timeAt(ev.clientX), iface, kind };
-  // An outage opens at the floor, so the shortest thing you can draw is already
-  // the shortest thing that works.
-  if (kind === 'off') e.dur_sec = MIN_RADIO_OFF_SEC;
+  // A block opens at its floor, so the shortest thing you can draw is already
+  // the shortest thing that works -- and the floor differs by kind, because a
+  // silent outage has to outlast a client's beacon timeout while an announced
+  // one only has to outlast hostapd putting the BSS back.
+  if (isBlock(kind)) e.dur_sec = minFor(kind);
   events.value = [...events.value, e].sort((a, b) => a.at_sec - b.at_sec);
 }
 
@@ -415,7 +440,7 @@ const blackouts = computed(() => {
   if (props.radios.length < 2) return [] as [number, number][];
   const spans = props.radios.map((iface) =>
     events.value
-      .filter((e) => e.iface === iface && e.kind === 'off')
+      .filter((e) => e.iface === iface && isBlock(e.kind))
       .map((e) => [e.at_sec, endOf(e)] as [number, number]),
   );
   return spans.reduce((acc, list) =>
@@ -469,6 +494,55 @@ const PRESETS = computed(() => {
         { at_sec: 155, iface: a, kind: 'gather' },
       ],
     });
+    // A MATCHED PAIR, for comparing what a device does when it is TOLD against
+    // what it does when it has to notice. Same shape, same alternation, exactly
+    // one radio unavailable at a time in both: the client always has somewhere
+    // to go, so what is being measured is how fast it goes there.
+    //
+    // They cannot run at the same cadence, and that is a result rather than an
+    // inconvenience. A 15s power cut is refused by the daemon because cutting
+    // power announces nothing and a client discovers it by missing beacons --
+    // tens of seconds -- so a 15s silent outage is one many devices never
+    // notice at all. The announced version is acted on in tens of
+    // milliseconds. The floor difference IS the difference being tested.
+    out.push({
+      name: 'alternate: disable AP',
+      note:
+        `${a} then ${b}, 15s each, starting at 15s — the ANNOUNCED half of the ` +
+        'pair. Compare against "alternate: power off": same shape, but here the ' +
+        'client is told and should move in milliseconds',
+      build: () => [
+        { at_sec: 15, iface: a, kind: 'apdown', dur_sec: 15 },
+        { at_sec: 30, iface: b, kind: 'apdown', dur_sec: 15 },
+      ],
+    });
+    out.push({
+      name: 'alternate: power off',
+      note:
+        `${a} then ${b}, 30s each, starting at 15s — the SILENT half of the ` +
+        'pair. 30s rather than 15 because a shorter power cut is below what a ' +
+        'client takes to notice one; that floor is the thing being compared',
+      build: () => [
+        { at_sec: 15, iface: a, kind: 'off', dur_sec: 30 },
+        { at_sec: 45, iface: b, kind: 'off', dur_sec: 30 },
+      ],
+    });
+    out.push({
+      name: 'ping-pong 15s',
+      note:
+        `${a} and ${b} take turns being unavailable, 15s each — the client is ` +
+        'TOLD each time, so it moves in milliseconds rather than waiting out a ' +
+        'beacon timeout, and it changes band every 15s for as long as this loops',
+      build: () => [
+        // Only ever ONE radio down at a time, and that is the whole design: the
+        // client must always have somewhere to go, or this stops being a bounce
+        // and becomes an outage. The second block starts exactly as the first
+        // ends, so there is no window with both up in which the client might
+        // settle back and no window with both down at all.
+        { at_sec: 0, iface: a, kind: 'apdown', dur_sec: 15 },
+        { at_sec: 15, iface: b, kind: 'apdown', dur_sec: 15 },
+      ],
+    });
     out.push({
       name: 'graceful shutdown',
       note:
@@ -480,6 +554,19 @@ const PRESETS = computed(() => {
       ],
     });
   }
+
+  out.push({
+    name: 'scan every 30s',
+    note: two
+      ? `survey the band from ${a} every 30s — each one costs ${a} a few ` +
+        `seconds off the air, so its clients spend them on ${b} and come back`
+      : 'survey the band every 30s — each one costs the radio a few seconds off the air',
+    build: () => [0, 30, 60, 90, 120, 150].map((t) => ({
+      at_sec: t,
+      iface: a,
+      kind: 'scan' as const,
+    })),
+  });
 
   out.push({
     name: 'outage',
@@ -531,7 +618,7 @@ function clearAll() {
 /* -------------------------------------------------------- validity, io -- */
 
 const tooShort = computed(() =>
-  events.value.some((e) => e.kind === 'off' && (e.dur_sec ?? 0) < MIN_RADIO_OFF_SEC),
+  events.value.some((e) => isBlock(e.kind) && (e.dur_sec ?? 0) < minFor(e.kind)),
 );
 const needsTwoRadios = computed(() =>
   events.value.some((e) => e.kind === 'evict' || e.kind === 'gather'),
@@ -868,7 +955,7 @@ watch(
    everywhere else in boa and must not be borrowed for a radio. */
 /* No box of its own: the rack wrapper around this IS the fold, so a second
    border here would draw a card inside a card. */
-.adapter { --violet: #a78bfa; }
+.adapter { --violet: #a78bfa; --violet-lit: #c084fc; }
 
 /* The rack's collapsed row, not a panel header: same padding, same gap, same
    weight, so this line sits among the adapters rather than beside them. The
@@ -961,10 +1048,18 @@ button.primary { background: var(--down); border-color: var(--down); color: #fff
 .kf.l { left: 0; cursor: ew-resize; }
 .kf.r { left: 100%; cursor: ew-resize; }
 
+/* off and apdown are SIBLING hues, deliberately: both take the access point
+   away and they differ only in whether the client is told, so they should read
+   as two versions of one thing rather than two unrelated impairments. The
+   lighter one is the announced one.
+   scan is the odd one out and is muted to say so -- it is a measurement that
+   happens to cost airtime, not an impairment being applied to anybody. */
 .k-off { color: var(--violet); }
+.k-apdown { color: var(--violet-lit); }
 .k-gather { color: var(--ok); }
 .k-evict { color: var(--down); }
 .k-deauth { color: var(--warn); }
+.k-scan { color: var(--ink-dim); }
 
 .blackout {
   position: absolute; top: 0; z-index: 1; pointer-events: none;
