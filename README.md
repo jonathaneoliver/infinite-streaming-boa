@@ -61,9 +61,6 @@ manipulate what travels over it there.
                     conditioned identically
 ```
 
-![The boa interface: an iPhone streaming while the valley pattern walks the
-downlink cap down through a measured rendition ladder](docs/images/interface.png)
-
 ![The 0.2.0 interface: three adapters with their own timeline, an iPhone being
 walked away from the router by the walkabout pattern, and the activity log
 recording two clients refusing a steer](docs/images/interface-0.2.0.png)
