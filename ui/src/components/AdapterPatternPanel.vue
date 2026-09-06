@@ -506,41 +506,31 @@ const PRESETS = computed(() => {
     // notice at all. The announced version is acted on in tens of
     // milliseconds. The floor difference IS the difference being tested.
     out.push({
-      name: 'alternate: disable AP',
+      name: 'musical chairs',
       note:
-        `${a} then ${b}, 15s each, starting at 15s — the ANNOUNCED half of the ` +
-        'pair. Compare against "alternate: power off": same shape, but here the ' +
-        'client is told and should move in milliseconds',
+        `${a} then ${b} close their doors, 15s each from 15s — there is always ` +
+        'one seat free and the client is TOLD to take it, so it should move in ' +
+        `milliseconds. The announced half of the pair with "rolling blackout"`,
       build: () => [
+        // Only ever ONE radio unavailable at a time, and that is the whole
+        // design: the client must always have somewhere to go, or this stops
+        // being a bounce and becomes an outage. The second block starts exactly
+        // as the first ends, so there is no window with both up in which the
+        // client might settle back, and none with both down at all.
         { at_sec: 15, iface: a, kind: 'apdown', dur_sec: 15 },
         { at_sec: 30, iface: b, kind: 'apdown', dur_sec: 15 },
       ],
     });
     out.push({
-      name: 'alternate: power off',
+      name: 'rolling blackout',
       note:
-        `${a} then ${b}, 30s each, starting at 15s — the SILENT half of the ` +
-        'pair. 30s rather than 15 because a shorter power cut is below what a ' +
-        'client takes to notice one; that floor is the thing being compared',
+        `${a} then ${b} lose power, 30s each from 15s — the same alternation ` +
+        'with nothing announced, so the client has to notice for itself. 30s ' +
+        'rather than 15 because a shorter cut is below what a device takes to ' +
+        'notice one, and that floor is exactly what this pair measures',
       build: () => [
         { at_sec: 15, iface: a, kind: 'off', dur_sec: 30 },
         { at_sec: 45, iface: b, kind: 'off', dur_sec: 30 },
-      ],
-    });
-    out.push({
-      name: 'ping-pong 15s',
-      note:
-        `${a} and ${b} take turns being unavailable, 15s each — the client is ` +
-        'TOLD each time, so it moves in milliseconds rather than waiting out a ' +
-        'beacon timeout, and it changes band every 15s for as long as this loops',
-      build: () => [
-        // Only ever ONE radio down at a time, and that is the whole design: the
-        // client must always have somewhere to go, or this stops being a bounce
-        // and becomes an outage. The second block starts exactly as the first
-        // ends, so there is no window with both up in which the client might
-        // settle back and no window with both down at all.
-        { at_sec: 0, iface: a, kind: 'apdown', dur_sec: 15 },
-        { at_sec: 15, iface: b, kind: 'apdown', dur_sec: 15 },
       ],
     });
     out.push({
