@@ -83,6 +83,11 @@ type Learner struct {
 	// labels devices while the first announcements come in.
 	namesMu  sync.RWMutex
 	macNames map[string]string
+	// macNameSrc records WHICH source last named each MAC, so a weaker source
+	// cannot overwrite a stronger one. See storeNamesFrom: a device announces
+	// itself twice, in different words, and without this the interface flipped
+	// between the two spellings as it re-announced.
+	macNameSrc map[string]int
 	names    map[string]string
 }
 
@@ -514,21 +519,53 @@ func (l *Learner) recordMDNS(mac string, pkt []byte, ifindex int) {
 	l.storeNames(mac, byAddr, sender)
 }
 
+// Where a name came from, and which wins when they disagree.
+//
+// A device announces itself twice, in different words. An iPhone sends DHCP
+// option 12 as "JonathansiPhone" and mDNS as "Jonathans-iPhone" -- the same
+// device, spelled differently, because option 12 is a bare hostname while mDNS
+// carries the name the owner actually typed. Both used to write the same map,
+// so last-writer-won and the interface flipped between the two spellings as the
+// device re-announced: an operator reading a log saw one client under two
+// names, which is exactly what a name is for stopping.
+//
+// mDNS wins because it is the name the device shows its owner, and because
+// option 12 is frequently a flattened version of it. Ranked rather than
+// first-wins so a device that is genuinely renamed still updates, and so the
+// better source can overtake a worse one that happened to arrive first.
+const (
+	nameFromDHCP = 1
+	nameFromMDNS = 2
+)
+
 // storeNames merges one announcement into both tables. mac may be empty, for a
 // path that has no link-layer header to read it from.
 func (l *Learner) storeNames(mac string, byAddr map[string]string, sender string) {
+	l.storeNamesFrom(nameFromMDNS, mac, byAddr, sender)
+}
+
+func (l *Learner) storeNamesFrom(src int, mac string, byAddr map[string]string, sender string) {
 	if len(byAddr) == 0 && sender == "" {
 		return
 	}
 	l.namesMu.Lock()
 	defer l.namesMu.Unlock()
+	if l.macNameSrc == nil {
+		l.macNameSrc = map[string]int{}
+	}
 	for ip, name := range byAddr {
 		if name != "" {
 			l.names[ip] = name
 		}
 	}
 	if mac != "" && sender != "" {
-		l.macNames[normMAC(mac)] = sender
+		m := normMAC(mac)
+		// Equal rank still writes: the same source saying something new is a
+		// rename, not a disagreement.
+		if src >= l.macNameSrc[m] {
+			l.macNames[m] = sender
+			l.macNameSrc[m] = src
+		}
 	}
 	// Bound both tables. Names are a display convenience; an unbounded map fed
 	// by anything on the network is not.
