@@ -186,9 +186,22 @@ The first is that the Wi-Fi behaviour *is* the product. How quickly a streaming
 stick reconnects after the access point disappears, whether a camera backs off
 sensibly or hammers the network, whether a speaker honours a transition request
 or clings to a radio it can barely hear, how a thermostat behaves when the band
-it prefers goes away — those are firmware, driver and silicon decisions that
-ship in the hardware and cannot be patched from a server afterwards. An app can
-be updated on Thursday; a doorbell cannot.
+it prefers goes away — those live in firmware, in the driver and supplicant, and
+partly in the silicon's own limits.
+
+Firmware does ship over the air; that is not the problem. The problem is the
+route it takes. **A fix for a device's Wi-Fi has to travel over that device's
+Wi-Fi**, so the population most in need of it is the population least able to
+receive it — a device that drops its association every few minutes may never
+finish the download that would stop it. Fleet-wide rollouts are staged over
+weeks or months, some units never take one, and a bad radio update is close to
+unrecoverable in a way a bad app release is not, which makes vendors
+appropriately slow to ship them.
+
+So it is not that a doorbell cannot be fixed after it ships. It is that fixing
+it is slower, riskier, and reaches fewer of the devices that need it — which
+makes catching the behaviour beforehand worth much more than it is for an app
+that can be replaced on Thursday.
 
 The second is that **you usually cannot instrument the thing at all.** A TV, a
 console, a set-top box, a camera or a smart speaker takes no proxy setting, no
