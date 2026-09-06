@@ -50,21 +50,41 @@ import (
  * is not a trade this box gets to make on the operator's behalf.
  */
 
-// gatherPinSec is the FALLBACK timeout: how long the deny lists are held when
-// the clients never turn up.
+// How long the deny lists are held when a client does not turn up.
 //
-// A ceiling, not a duration. The bans exist to constrain one decision each --
-// which access point a client picks when it rescans -- and once every client
-// has made that decision they have no further work to do. So a pin is normally
-// lifted by ARRIVAL, and this only applies when somebody never arrives.
+// gatherPinSec is a POLL, not a deadline: every one of these the operation asks
+// whether it can stop. gatherPinMaxSec is the deadline, and exists only so
+// nothing is stranded (#205) rather than as a routine exit.
 //
-// Five seconds, which is short on purpose. Holding a deny list after it has
-// stopped being useful is how a device gets pushed off the network entirely:
-// observed 2026-09-06, both Apple clients left the box altogether after
-// repeated deny-and-deauth cycles, which is their association backoff doing
-// exactly what it is designed to do. The shorter the ban, the less of that the
-// box provokes.
-const gatherPinSec = 5
+// FIVE SECONDS WAS A GUESS, AND IT WAS WRONG. It was chosen to limit how much
+// of Apple's association backoff the box provokes, without measuring what a
+// re-association actually costs. Measured on 2026-09-06 across a reflash, from
+// the deauth to AP-STA-CONNECTED:
+//
+//	MacBook   270ms   (straight back onto the radio it had just left)
+//	iPhone     41s    (same box, same evening)
+//
+// Two orders of magnitude apart, so no single number covers both. A 5s deadline
+// caught the MacBook mid-scan: the bans came off at 18:09:39.129 and it joined
+// wlan-usb2 -- a radio it had been denied -- at 18:09:39.395, 266ms later. It
+// was about to land on the right one.
+//
+// TEN, and no cleverness around it.
+//
+// A conditional hold was tried -- keep waiting while a pending client is
+// associated to nothing, on the reasoning that off the air means still
+// choosing. It failed on its first run, releasing the bans 650ms before the
+// MacBook associated, because the signal it asked was not trustworthy:
+// radioFor falls back to scanning hostapd's station tables, and hostapd still
+// lists a station on a radio it has LEFT. A client mid-rescan therefore reads
+// as associated, and the hold gave up at precisely the wrong moment.
+//
+// The fast path was never this number. Every client landing lifts the bans at
+// once, which is the common case and costs nothing; this only governs how long
+// a straggler is given. Ten comfortably covers the MacBook's measured 5.6s
+// while holding a deny entry for a fraction of the time an outlier would need
+// -- the 41s iPhone will still escape it, and the log says so when it does.
+const gatherPinSec = 10
 
 // pinOp is ONE movement command, covering every client it affects.
 //
@@ -329,10 +349,18 @@ func (e *Engine) GatherTo(iface string, durSec float64) (int, error) {
 	// everywhere -- see clearPins.
 	e.clearPins("superseded by a new gather")
 
+	// DEDUPED. hostapd can still list a station on a radio it has left, so one
+	// client showing on two radios was counted twice, deauthed twice, and
+	// reported as two -- "gathering 3 client(s)" on a box with two devices.
+	seen := map[string]bool{}
 	var move []string
 	for _, w := range deny {
 		for mac := range StationDump(w) {
-			move = append(move, normMAC(mac))
+			m := normMAC(mac)
+			if !seen[m] {
+				seen[m] = true
+				move = append(move, m)
+			}
 		}
 	}
 	if len(move) == 0 {
