@@ -159,6 +159,15 @@ behaviour ships in firmware and cannot be patched from a server, and it
 usually accepts no proxy, certificate or test harness — which is the
 constraint this appliance is designed around.
 
+**One engineer, one box.** boa is a bench instrument for a single operator, not
+shared lab infrastructure. No port authenticates, there is no user model and no
+tenancy, and all policy, pattern and radio state is global to the box — a second
+person changing something changes it for whatever run is in progress. The
+short-lived claim `scripts/deploy.sh` takes on the hardware prevents colliding
+deploys and is a courtesy between colleagues, not access control.
+Scaling to several testers means several boxes, which is why the target is a
+cheap board and a reproducible image rather than a rack appliance.
+
 ### Conditioning the link
 
 - Throttle one device to 3 Mbps and watch a player step down, and time it.
