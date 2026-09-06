@@ -84,7 +84,10 @@ delay, jitter and loss lanes unused in this run.
   one-shot buttons or as a lane on a pattern. A phone's path monitor and a
   player's throughput estimator react to the link going *down*, which netem
   cannot express. Needs the USB radio (hostapd); the onboard radio has no
-  control interface, so the buttons only appear when it can act.
+  control interface, so the buttons only appear when it can act. **Do not run
+  these inside a building with wireless IPS containment** — it transmits the
+  same deauthentication frames uninvited, and a run cannot tell its drops from
+  yours. See the warning under [Hardware](#hardware).
 - **Moves clients between its radios, and is honest about which moves are
   guaranteed.** The box serves one SSID from every radio it has, so a client can
   be pushed around the box the way a real network pushes it around a building.
@@ -240,6 +243,68 @@ netem cannot produce. For proving a service survives a flaky dependency in CI,
 it is the right tool and this one is not.
 
 ## Hardware
+
+> ### ⚠️ Put `eth0` on your own network, never a corporate LAN
+>
+> A transparent bridge putting many MACs onto one switch port is, to enterprise
+> network security, indistinguishable from the thing that security exists to
+> stop. Cable the WAN port to your own upstream, a home router, or a lab VLAN.
+>
+> - **Port security / 802.1X** err-disables the port on seeing a second MAC.
+>   That usually needs a network admin to clear, so the person who plugged the
+>   box in cannot undo it.
+> - **BPDU guard and DHCP snooping** exist to stop exactly this: an unexpected
+>   layer-2 device on the port, and — since clients here depend on upstream
+>   DHCP crossing the bridge — exactly the traffic snooping blocks.
+> - **Wireless IDS** sees an unknown BSSID bridging to the wired side, which is
+>   the textbook rogue-AP signature.
+>
+> **And it corrupts your measurements, which is the part that wastes an
+> afternoon.** Wireless IPS *containment* works by transmitting deauthentication
+> frames at the rogue AP's clients — so a corporate WIPS produces, uninvited and
+> untimed, the same impairment this box produces deliberately. A run inside a
+> contained office shows association drops that look like your pattern firing
+> and are not, with nothing on the box able to tell the two apart. See
+> [Security](#security) for what else stops being true there.
+>
+> **If you need these features at work, put the box on an isolated lab network
+> — and know that a VLAN isolates your bridge, not the air.** The wired side is
+> a policy problem with a policy answer; the radio side is a physics problem
+> that no network configuration touches. Offices are awash in Wi-Fi, and an
+> office belonging to a company that *builds streaming devices* is the worst
+> case there is: every desk carries test hardware, most of it associated to
+> something, much of it on 2.4 GHz.
+>
+> That is not a small correction to a measurement. Airtime is shared, so one
+> near-idle 802.11n client moved a measured downlink between **356 and
+> 717 Mbit/s** on this box while transferring 4 KB of its own traffic — a
+> station linked at 65 Mbit/s holds the channel roughly 18× longer per byte
+> than an 802.11ax one. A room full of them is not a quieter version of that
+> effect; it is the same effect, continuously, from devices you do not control
+> and cannot quiesce.
+>
+> What actually helps, in order:
+>
+> - **Use the wired downstream port when the radio is not the subject.** It is
+>   repeatable to within 1%; nothing over the air comes close.
+> - **Check how busy your channel actually is**, with
+>   `GET /api/bridge/radios/<iface>/survey`. It reports `busy_ms` against
+>   `active_ms` for the **operating channel only** — a radio that is beaconing
+>   never visits the others, so their counters read zero and are omitted. Cheap,
+>   non-disruptive, and the number to quote beside a result.
+> - **To pick a better channel, use `scan and move to the quietest`**, which
+>   rates candidates on *measured airtime* rather than on a count of visible
+>   networks — the distinction that matters when one loud neighbour beats five
+>   idle ones. It **takes the radio down and back up**, so it cannot be done
+>   mid-run and it will disconnect that radio's clients. Do it before a run,
+>   never during one.
+> - **Prefer UNII-3 (149–165) and 80 MHz**, and treat 2.4 GHz in an office as
+>   unusable for measurement rather than merely busy.
+> - **Re-survey between runs of an A/B.** The environment drifts on its own; the
+>   0.1.0 notes recorded the radio baseline moving ~100 Mbit/s over 90 s, which
+>   is larger than most effects worth measuring.
+> - **Capture the box's own event log alongside every run**, so a drop you did
+>   not cause is at least visible as one you did not cause.
 
 What this box was built and measured on. Nothing here is required — it is a
 Raspberry Pi 5 and a USB Wi-Fi adapter — but these are the exact parts behind
@@ -839,6 +904,12 @@ gets past it is someone you would have let on anyway.
 boa is a **bench appliance for a network you already control**, and its whole
 security model is that one assumption — stated here so it is a choice rather than
 a surprise.
+
+**On a corporate LAN that assumption is simply false**, and every consequence
+below stops being contained: every host on that network inherits the ability to
+re-shape or black-hole every device behind the box. None of the items below are
+new bugs; what changes is that the containment argument they rest on evaporates.
+See the warning under [Hardware](#hardware).
 
 - **No login, and plain HTTP.** The interface on `:80` and ntopng on `:3000` have
   no authentication, and neither uses TLS — the box has no domain, so any

@@ -853,6 +853,14 @@ damages packets, never link state.
   never crosses the WAN port.
 - **A shared budget across media is not expressible** while downlink is shaped
   per client port. See the open decision in the issues.
+- **The bridge is indistinguishable from a rogue AP to enterprise network
+  security.** Many MACs on one switch port is what port security, BPDU guard,
+  DHCP snooping and wireless IDS exist to catch, and boa depends on upstream
+  DHCP crossing the bridge — which snooping is built to block. Wireless IPS
+  containment additionally transmits deauthentication frames at the clients,
+  producing the same impairment the box produces deliberately and making a run
+  conducted there unmeasurable rather than merely inadvisable. The WAN port
+  belongs on a network the operator controls.
 - **The Wi-Fi passphrase is the only perimeter.** The AP bridges onto the
   existing LAN and the management interfaces do not authenticate (§5), so
   `AP_PASSWORD` alone gates both access to the network and the ability to
