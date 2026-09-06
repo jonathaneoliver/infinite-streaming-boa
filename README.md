@@ -315,6 +315,42 @@ per-device one, Toxiproxy or a proxy is the right tool and composes with this
 one. And if the device under test is a Mac you already control, Network Link
 Conditioner is free and takes thirty seconds.
 
+### Isn't this RaspAP, or a Pi access point?
+
+The question the table above does not answer, because
+[RaspAP](https://github.com/RaspAP/raspap-webgui) is not a link conditioner and
+does not belong in a list of them — but it *is* the first thing "Raspberry Pi,
+Wi-Fi, web interface" brings to mind, so the difference is worth stating.
+
+RaspAP describes itself as *"the easiest, full-featured wireless router setup
+for Debian-based devices"*, and that is exactly what it is: a management
+interface over `hostapd`, `dnsmasq` and the rest, with DHCP settings,
+WireGuard/Tailscale/OpenVPN, SSL, ad blocking, captive-portal integration and
+themes. It supports a bridged AP as well as the default routed one, so the
+distinction is **not** bridge-versus-router.
+
+The distinction is what the access point is *for*.
+
+| | RaspAP | boa |
+|---|---|---|
+| Purpose | build and run a good access point | exercise and impair a client's connection |
+| The AP is | the product — you want it up | an instrument — half the features exist to take it *down* |
+| Per-device impairment | none | rate, delay, jitter, loss, reorder, corrupt, per direction |
+| Per-device link control | none | deauth, disassoc, steer, gather, evict, deadzone |
+| Scripted behaviour over time | none | patterns and scenarios on a clock |
+| Wants to be your network | yes | emphatically not |
+
+**They are complements, not competitors.** If you want a Raspberry Pi to serve
+Wi-Fi well — for a workshop, a camper van, a spare room — RaspAP is a better
+tool than this one and is not trying to do what this does. boa runs `hostapd`
+too, but everything built on top of it is in service of making a client's life
+difficult on purpose and recording what the client did about it. Its access
+point is not something you would want to depend on, and several of its controls
+exist specifically to destroy it mid-run.
+
+So: if the access point is the goal, use RaspAP. If the access point is the
+apparatus and the client's behaviour is the measurement, that is this.
+
 ### Why a proxy is a different instrument
 
 Charles and Toxiproxy are the two tools most often suggested in place of a box
