@@ -634,6 +634,33 @@ func (e *Engine) tick() {
 			}
 			continue
 		}
+		// THE FORWARDING TABLE MUST NOT RESURRECT A DEPARTED WIRELESS CLIENT.
+		//
+		// The bridge's table is LEARNED, and an entry outlives the association
+		// that created it: the ageing time on this box is 300 seconds, and
+		// nothing removes an entry when a station disassociates while its radio
+		// stays up. So a client that left an access point stayed listed on the
+		// radio it had left, for up to five minutes, until it happened to
+		// appear somewhere else and rewrite the entry.
+		//
+		// That produced exactly the asymmetry an operator noticed: the activity
+		// log says "X left wlan-usb" the instant hostapd reports it, and the
+		// adapter's client list went on showing X on wlan-usb regardless. A
+		// join updated the picture; a leave did not.
+		//
+		// The station table above is authoritative for wireless and was already
+		// consulted first, so reaching here with a wireless port means the MAC
+		// is NOT associated to that radio. Only wired ports are believed on the
+		// strength of the forwarding table alone -- there is no better source
+		// for those, and no equivalent of "associated" to contradict it.
+		//
+		// A device that has left but is still ARPing is picked up below and
+		// listed with no port, which is the honest answer: present on the
+		// network, not on a radio, and not shapeable until something says where
+		// it is.
+		if e.cfg.IsWlan(bp.Port) {
+			continue
+		}
 		merged[mac] = &acc{medium: bp.Medium, port: bp.Port, present: true}
 	}
 	// A device that is ARPing is present. ARP does not reveal the port (see
