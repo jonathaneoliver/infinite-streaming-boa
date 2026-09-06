@@ -155,9 +155,10 @@ Intended for:
 **Primary users:** video engineers, player developers, QA — and anyone
 building a mobile app or a Wi-Fi connected device, or responsible for the QoE
 telemetry that reports on one. For a device the case is stronger: its Wi-Fi
-behaviour ships in firmware and cannot be patched from a server, and it
-usually accepts no proxy, certificate or test harness — which is the
-constraint this appliance is designed around.
+behaviour lives in firmware, whose fix has to travel over the very link that is
+failing — so a rollout is slow, staged, and reaches least of the population
+that needs it most. It also usually accepts no proxy, certificate or test
+harness, which is the constraint this appliance is designed around.
 
 **One engineer, one box.** boa is a bench instrument for a single operator, not
 shared lab infrastructure. No port authenticates, there is no user model and no
