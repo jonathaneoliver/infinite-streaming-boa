@@ -189,6 +189,59 @@ the thing that *caused* the events rather than by the device experiencing them,
 which is the whole point — a client's own account of what happened to it is the
 thing under test.
 
+### Driving it from a script, not from the page
+
+The interface can author quite involved behaviour — lanes, keyframes, loops, a
+pattern that runs for fifteen minutes and repeats — and while you are working
+out what a device *does*, clicking is the fastest way to find out.
+
+For anything you intend to compare, drive it from a script instead. Everything
+the interface does is an HTTP call to the same API you have, with **no
+privileged second interface behind it**: the page is a client like any other.
+In practice this box is driven as often from a shell — increasingly from Claude
+Code on the host, which can read the run back and decide what to do next — as
+it is from the browser.
+
+**A/B is where this stops being a convenience.** A comparison is worth only as
+much as the sameness of everything you did not deliberately change, and hand
+driving introduces variance in precisely the places that matter: when the
+impairment started, how long it ran, whether the device had settled first, how
+long you took to click the second button. A script makes run A and run B
+identical except for the one line that differs.
+
+```sh
+BOX=http://infinite-streaming-boa.local
+MAC=fc:9c:a7:93:7f:ed
+
+run () {                                    # $1 is A or B
+  curl -sX POST "$BOX/api/devices/$MAC/reset"
+  curl -sN "$BOX/api/events/stream" > "run-$1.ndjson" &   # ground truth
+  cap=$!
+  sleep 30                                  # let the device settle
+  if [ "$1" = B ]; then                     # the ONLY difference
+    curl -sX POST "$BOX/api/bridge/radios/wlan-usb/gather"
+  fi
+  sleep 120
+  kill $cap
+}
+
+run A
+run B
+diff <(jq -r 'select(.kind).kind' run-A.ndjson) \
+     <(jq -r 'select(.kind).kind' run-B.ndjson)
+```
+
+Most of the radio controls need no request body at all — `steer` picks the
+other serving radio itself, and `gather`, `deadzone` and the rest take their
+options as query parameters (`?pin=10`, `?dur=30&scope=all`) — so a run is
+readable as a sequence of bare `POST`s rather than as a pile of JSON.
+
+Two things follow from scripting that are hard to get any other way: a run can
+be **repeated exactly**, weeks later, by someone else; and the box's own event
+capture gives you a machine-readable record of what it did, alongside whatever
+the device under test reported. That pairing is what makes the QoE comparison
+above tractable rather than a matter of watching two screens.
+
 ### Other uses this shape supports
 
 - **Roaming behaviour**: does the app survive a mid-stream move between access
