@@ -64,6 +64,26 @@ manipulate what travels over it there.
 ![The boa interface: an iPhone streaming while the valley pattern walks the
 downlink cap down through a measured rendition ladder](docs/images/interface.png)
 
+![The 0.2.0 interface: three adapters with their own timeline, an iPhone being
+walked away from the router by the walkabout pattern, and the activity log
+recording two clients refusing a steer](docs/images/interface-0.2.0.png)
+
+Above: **0.2.0**, and the whole page at once. Three radios in the rack, each with
+its own controls and a shared timeline; an iPhone 676 s into a 900 s `walkabout`,
+being handed steadily worse conditions as it is walked away from the router; and
+the activity log at the top recording what the radios were asked to do and what
+the clients said back — including *"refused, offering its own list of candidates
+instead"*, which is a client declining a steer and is the honest outcome rather
+than a failure.
+
+The two adapters not carrying clients are still fully controllable, which is the
+point of the rack: `disable AP`, `deauth + disable AP`, `deauth`, `disassoc`,
+`evict`, `gather` and `scan` sit on every radio whether or not anything is
+associated to it.
+
+![The boa interface: an iPhone streaming while the valley pattern walks the
+downlink cap down through a measured rendition ladder](docs/images/interface.png)
+
 Above: one client streaming, five minutes of history. The blue trace is real
 downlink throughput; the dashed `cap` line is what boa is enforcing. The
 `valley` pattern is 315s into its 660s run, stepping the cap down rung by rung
@@ -140,6 +160,22 @@ Anyone building **a mobile app, or a Wi-Fi connected device**, who needs to know
 how the client's relationship with the access point affects it — not only how
 much bandwidth it gets. Those are different questions, and until this box could
 drive its own radios only the second one was testable.
+
+**It is a bench tool for one engineer at a time.** That is a design position
+rather than a missing feature, and it decides a lot: there is no login on any
+port, no notion of a user, no tenancy, and no way to give two people different
+views of the same box. Policies, patterns and radio state are all *the box's*
+state, so a second person changing something changes it for the run you are in
+the middle of. `deploy.sh` takes a short-lived claim on the hardware before it
+pushes, which stops two deploys colliding — it is a courtesy between colleagues
+sharing a box, not access control, and nothing stops a browser doing whatever it
+likes meanwhile.
+
+So: one box per engineer, on a network they control. It is not shared lab
+infrastructure, not a CI runner, and not a certified instrument (see
+[Non-Goals](PRD.md#3-non-goals)). If several people need it at once, the answer
+is several Pis — which is most of why it targets a £60 board and a build script
+rather than a rack appliance.
 
 The link is not a dial. A real client is continuously deciding *which* access
 point to be on, whether to roam, and what to do when the one it is using stops
@@ -280,6 +316,151 @@ above tractable rather than a matter of watching two screens.
   pattern deliberately, and confirm whatever is supposed to detect it does.
 - **A weak link without a faraday cage**: the distance model degrades a device's
   link the way distance would, uplink first, without moving anything.
+
+## Saving and restoring a configuration
+
+**Do this before a reflash.** Writing a new card replaces the whole filesystem,
+`/var/lib/infinite-streaming-boa/` included — every device's policy, sub-classes,
+measured ladders and patterns. The interface has **export config** and **import
+config** buttons in the header, and the same document is available over HTTP:
+
+```sh
+curl -s http://infinite-streaming-boa.local/api/config > boa-config.json
+# ... reflash, rejoin the AP ...
+curl -X POST --data-binary @boa-config.json \
+     http://infinite-streaming-boa.local/api/config
+```
+
+`scripts/config.sh` wraps the same two calls. The whole document is validated
+before anything is written, so a partial or malformed import changes nothing.
+
+It is also how a scenario travels: a configuration exported from one box
+reproduces the same policies on another, which is what makes a scripted
+comparison repeatable by somebody else.
+
+## The controls, one by one
+
+The screenshot above has more in it than the walkthrough so far implies. Working
+down:
+
+### Presets, before the sliders
+
+Eight starting points, each a plausible whole link rather than a single number —
+click one, then adjust. Their notes are the summary; the exact figures live in
+`ui/src/types.ts`.
+
+| Preset | Downlink | Shape |
+|---|---|---|
+| Clean | — | no conditioning; the way back from anything |
+| Fibre | 100 Mbps, 8 ms | fast and boring, near-zero loss |
+| Cable | 30 Mbps, 30 ms | a little bursty loss |
+| 4G good | 20 Mbps, 50 ms | 0.1% loss in bursts of 4 |
+| 4G weak | 3 Mbps, 120 ms | 1% loss in bursts of 10 |
+| 3G | 1.5 Mbps, 200 ms | 1.5% loss, the classic bad-network test |
+| Satellite | 25 Mbps, 600 ms | fast but very late — geostationary latency |
+| Lossy | 10 Mbps, 5% | loss in bursts of 20, a radio fade rather than a full queue |
+
+Uplink is set separately by each preset and is always the smaller number, as it
+is on a real access link.
+
+**The loss shapes are chosen, not fitted.** Congestion-like presets keep loss
+near uniform, because a router dropping from a full queue loses single packets;
+the mobile ones use long bursts, because a radio fade loses a run of them. No
+preset has been fitted to a measured link, and none claims to be.
+
+### Distance, and what kind of device is at that distance
+
+The **distance** slider tells a device to behave as though it were further away,
+handing it the rate, delay, jitter and corruption that signal level implies —
+uplink degrading first, as a real client's does.
+
+The **device** selector next to it says what is at the far end, because that
+changes the answer. The model works in dB relative to a laptop:
+
+| | Hears the AP | Is heard by the AP |
+|---|---|---|
+| **laptop** | reference | reference |
+| **phone** | −2 dB | −6 dB |
+| **watch** | −5 dB | −11 dB |
+
+Bigger radios with more antennas are heard better at the same distance, so a
+watch's uplink dies several metres before a laptop's does. The signal readout
+shows both directions and marks them **modelled**, because the radio has not
+moved and the real RSSI beside it has not changed.
+
+### Making the radio itself worse
+
+Under each adapter, separate from per-client conditioning, because these affect
+every client on that radio:
+
+- **Profiles** — `clean` (the way back), `legacy` (drop to 802.11n),
+  `narrow` (drop to 20 MHz), and `dozy` (DTIM 10 at a 300 ms beacon with U-APSD
+  off, so a sleeping client waits up to three seconds for buffered downlink — a
+  power-save effect no netem delay distribution can produce).
+- **RTS/CTS** — request-to-send before every frame. Roughly halves throughput
+  and adds per-frame latency; it is what a radio does when it believes there are
+  hidden nodes.
+- **Fragmentation** — split frames at a threshold (256 bytes, say), so each one
+  needs more airtime and more acknowledgements.
+
+Both thresholds are phy-level settings that apply without restarting the access
+point, so nobody is dropped when you change them.
+
+### Asking the client what it sees
+
+**measure** sends an 802.11k beacon request for each radio the box could steer
+to, so a refusal can be explained by what the client can actually hear rather
+than guessed at from the wrong end of the link. It walks a mode ladder — active,
+then passive, then the client's scan table — because a client need not support
+all three and hostapd refuses to transmit a mode the device has not advertised.
+
+**No client tested here has returned a report.** The path ships and is exercised
+by the button; whether any given device participates is up to its firmware. See
+[#228](https://github.com/jonathaneoliver/infinite-streaming-boa/issues/228).
+
+### Reading the charts
+
+The toolbar above the device list applies to every chart at once:
+
+- **Range** — 1m / 5m / 15m / 1h. Shortening never refetches; the client already
+  holds an hour, so a shorter window is a full-resolution slice of it.
+- **Y-axis** — `auto` scales to the data, `to cap` to the policy being enforced,
+  `to PHY` to what the link could carry, and `fixed` to a number you give. `to
+  PHY` uses the highest ceiling in the visible window rather than the current
+  one, so the axis does not jump every time the MCS changes.
+- **Mean over** — 10s / 30s / 60s, the window behind the smoothed line. Compare
+  an `iperf3` whole-run figure against this, not against the live trace.
+- **Series** — which of live, mean and PHY are drawn.
+
+### walkabout
+
+A built-in pattern that walks a device away from the router and back on a clock
+— 900 seconds, 25 keyframes — stepping the modelled distance out and in again
+while **pinning the device to a band at each step** rather than asking it to
+move. It is the closest thing here to carrying a device around a building, and
+it repeats, so a player can be watched through several laps.
+
+> **Not calibrated. Your mileage will vary.**
+>
+> The distances are indicative, not measured. The path-loss exponents are
+> ITU-R P.1238's tabulated values — N = 28 residential, N = 31 for a 5 GHz
+> office — and that recommendation says plainly that *site-calibrated* values
+> are needed for real link planning. Beyond the rate anchors, the mapping from
+> signal to delay, jitter and corruption is plausible rather than fitted: it has
+> the right shape (uplink degrades before downlink, corruption arrives before
+> loss, both negligible until the headroom is nearly gone) without the right
+> magnitudes for *your* building.
+>
+> This is why every output of the model is labelled **typed** rather than
+> **measured**, and why the real RSSI is shown beside the modelled one and
+> allowed to disagree with it. Use walkabout to compare two runs, or two
+> firmware builds, against the same synthetic journey — not to claim a device
+> works at 25 metres.
+>
+> [#221](https://github.com/jonathaneoliver/infinite-streaming-boa/issues/221)
+> is the open work to replace the assumed curve with a measured one.
+> `docs/DATA-CONTRACT.md` Source S carries the confidence of each number
+> individually.
 
 ## How this compares to what already exists
 
