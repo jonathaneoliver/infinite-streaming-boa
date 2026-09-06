@@ -608,10 +608,12 @@ custom* and select the file) or **[balenaEtcher](https://etcher.balena.io/)**.
 Both verify the write, refuse your system disk, and run on macOS, Linux and
 Windows.
 
-A `./flash.sh` helper is included for macOS, but it is **not the recommended
-path**: it is a raw `dd` write to a block device you name by hand, and one
-mistyped identifier erases that disk in seconds. It has guards, but reach for an
-imager instead unless you know exactly why you are not.
+There is deliberately **no flashing helper in this repository**. One shipped
+briefly — a raw `dd` write to a block device named by hand — and it was removed:
+a mistyped identifier erases that disk in seconds, guards or not, and no
+convenience is worth handing someone a loaded tool aimed at their own SSD. The
+imagers above verify the write and refuse your system disk, which is exactly the
+work a helper here would have to duplicate to be safe.
 
 Cable the Pi's `eth0` to your existing network, optionally plug a USB ethernet
 adapter in for a wired device under test, then:
@@ -958,7 +960,6 @@ on the ports it hands out — the two compose.
 
 ```
 build.sh              orchestrates the build; validates .env
-flash.sh              optional raw dd write to a card (macOS); prefer an imager
 scripts/customize.sh  all image surgery; runs in a privileged arm64 container
 scripts/build-payload.sh  builds the UI and cross-compiles the daemon
 daemon/               Go daemon; embeds the compiled UI, ships as one binary
