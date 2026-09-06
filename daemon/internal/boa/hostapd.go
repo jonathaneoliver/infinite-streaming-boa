@@ -172,6 +172,12 @@ func (e *Engine) fireLink(f LinkFire) {
 	switch f.Kind {
 	case LinkDeadzone:
 		err = e.LinkDeadzone(f.MAC, f.DurSec, f.Scope) // clean deny-ACL block
+	// Must sit ABOVE the default, which deauthenticates: a kind falling through
+	// to it would break the link it was asked to hold.
+	case LinkPin:
+		err = e.pinToBand(f.MAC, f.ToBandMHz, f.DurSec)
+	case LinkEvict:
+		err = e.EvictClient(f.MAC, f.DurSec)
 	case LinkDisassoc:
 		if f.DurSec > 0 {
 			e.LinkFlap(f.MAC, LinkDisassoc, f.DurSec)

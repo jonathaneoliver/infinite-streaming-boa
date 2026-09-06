@@ -378,6 +378,21 @@ func PathAtBand(refDbm float64, m RssiModel, freqMHz int) float64 {
 }
 
 /*
+ * AutoShapesAt is the whole model at one level, with the band chosen for it.
+ *
+ * The walkabout replays this at each step and the slider does it under
+ * AutoBand, so it lives in one place. patternlib.go records what the
+ * alternative costs: its climb steps were lifted from the UI's presets
+ * "so the two agree", after they had not.
+ */
+func AutoShapesAt(refDbm float64, m RssiModel) (down, up Shape, freqMHz, widthMHz int) {
+	freqMHz, widthMHz = BestBandFor(refDbm, m)
+	dn, upl := LevelsFor(PathAtBand(refDbm, m, freqMHz), m)
+	down, up = ShapeForLevels(dn, upl, freqMHz, widthMHz)
+	return down, up, freqMHz, widthMHz
+}
+
+/*
  * DefaultDeltaDb is how much quieter a typical client is than the access point.
  *
  * A phone transmits around 13-15 dBm against an AP's 20, and it has a smaller

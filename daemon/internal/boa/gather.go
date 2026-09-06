@@ -281,6 +281,75 @@ func (e *Engine) liftPins(op *pinOp, why string) {
 // A new command SUPERSEDES the old one rather than combining with it, which is
 // also the only reading an operator would expect: pressing gather again means
 // "now do this instead", never "do both".
+/*
+ * clearPinsFor supersedes only the operations holding THESE clients.
+ *
+ * The narrow half of clearPins, and the one a per-client control must use.
+ *
+ * WHY A RELEASE IS MANDATORY BEFORE A RE-CLAIM, which is easy to read as
+ * tidiness and is not: e.pins holds ONE op per MAC. A second operation claiming
+ * a client that a first one still holds overwrites the entry, and the first op's
+ * deny entries for that client are then unreachable -- liftPins scans e.pins for
+ * its own macs, no longer finds this one, and never issues the DEL. The client
+ * stays banned on those radios until something else happens to clear them.
+ *
+ * WHY THE SCOPE MUST BE NARROW: clearPins lifts every operation in force, which
+ * is right for a box-wide control -- a gather covers every client, so every
+ * older claim is genuinely superseded. It is wrong for a per-client one. Two
+ * devices each running a walkabout would cancel each other at every crossing:
+ * A's pin holds A on 2.4GHz, B's pin calls clear, A's ban lifts, and A wanders
+ * back to 5GHz while its own pattern goes on applying 2.4GHz keyframes to it.
+ * Silent, and the exact shape of failure the per-device independence in PRD 6.2
+ * exists to prevent.
+ *
+ * A pinOp may cover several clients, so a client is taken OUT of its operation
+ * rather than the operation being torn down: the ones still in it keep their
+ * bans, and "the bans lift together" goes on meaning something for them.
+ */
+func (e *Engine) clearPinsFor(macs []string, why string) {
+	type claim struct {
+		mac string
+		op  *pinOp
+	}
+	var released []claim
+	var emptied []*pinOp
+
+	e.mu.Lock()
+	for _, mac := range macs {
+		op := e.pins[mac]
+		if op == nil {
+			continue
+		}
+		delete(e.pins, mac)
+		delete(op.pending, mac)
+		released = append(released, claim{mac, op})
+		if len(op.pending) == 0 {
+			emptied = append(emptied, op)
+		}
+	}
+	e.mu.Unlock()
+
+	// Outside the lock: releaseDeny takes it again, and holds a control-socket
+	// round trip per radio while it does.
+	for _, c := range released {
+		e.releaseDeny(c.mac, c.op.deny)
+	}
+
+	// An operation whose last client was taken out is finished. Consuming its
+	// `once` here stops its own timeout logging a lift for nobody later.
+	for _, op := range emptied {
+		op.once.Do(func() {
+			where := op.to
+			if where == "" {
+				where = joinRadios(op.deny)
+			}
+			e.logEvent(EventAction, where, "",
+				"movement on %s ended early: its last client was taken by another (%s)",
+				where, why)
+		})
+	}
+}
+
 func (e *Engine) clearPins(why string) {
 	e.mu.RLock()
 	seen := map[*pinOp]bool{}
@@ -317,29 +386,9 @@ func (e *Engine) GatherTo(iface string, durSec float64) (int, error) {
 			"%s is not serving an access point, so there is nothing to gather to", iface)
 	}
 
-	// Every OTHER serving radio: the ones the clients must be kept off.
-	//
-	// Strict about a radio that is present but unreachable, for the reason
-	// deadzoneRadios is: a client could still associate there, so the pin would
-	// have a hole in it and the gather would silently not be a gather.
-	var deny []string
-	for _, w := range e.cfg.WlanPorts {
-		if w == iface {
-			continue
-		}
-		switch {
-		case hostapdReachable(w):
-			deny = append(deny, w)
-		case linkPresent(w):
-			return 0, fmt.Errorf(
-				"cannot pin clients to %s: %s is present but hostapd is not serving "+
-					"it, so a client could associate there and the gather would have "+
-					"a hole in it", iface, w)
-		}
-	}
-	if len(deny) == 0 {
-		return 0, fmt.Errorf(
-			"%s is the only radio serving, so there is nothing to gather from", iface)
+	deny, err := e.gatherDeny(iface)
+	if err != nil {
+		return 0, err
 	}
 	if e.cfg.Demo {
 		return 0, nil
@@ -371,6 +420,152 @@ func (e *Engine) GatherTo(iface string, durSec float64) (int, error) {
 			"point left to choose. The bans lift together once they have all "+
 			"arrived, or after %.0fs. Not a request — they cannot refuse what "+
 			"they were not asked")
+}
+
+// gatherDeny is every OTHER serving radio: the ones a client must be kept off
+// for a pin to iface to mean anything.
+//
+// Strict about a radio that is present but unreachable, for the reason
+// deadzoneRadios is: a client could still associate there, so the pin would have
+// a hole in it and the gather would silently not be a gather.
+func (e *Engine) gatherDeny(iface string) ([]string, error) {
+	var deny []string
+	for _, w := range e.cfg.WlanPorts {
+		if w == iface {
+			continue
+		}
+		switch {
+		case hostapdReachable(w):
+			deny = append(deny, w)
+		case linkPresent(w):
+			return nil, fmt.Errorf(
+				"cannot pin clients to %s: %s is present but hostapd is not serving "+
+					"it, so a client could associate there and the gather would have "+
+					"a hole in it", iface, w)
+		}
+	}
+	if len(deny) == 0 {
+		return nil, fmt.Errorf(
+			"%s is the only radio serving, so there is nothing to gather from", iface)
+	}
+	return deny, nil
+}
+
+/*
+ * GatherClientTo pins ONE client to iface. Same mechanism, smaller client set.
+ *
+ * The reason this exists rather than a per-client transition request: MEASURED
+ * 2026-09-06 on this box, an iPhone ignored a same-band request entirely and
+ * then REFUSED a cross-band one, offering its own candidate list instead. It was
+ * behaving correctly -- the distance model does not move real RSSI, so its 5GHz
+ * signal was excellent and it had no reason to go anywhere. A modelled walk
+ * therefore cannot reach 2.4GHz by asking, which is the same conclusion the
+ * radio-lane controls reached: 802.11 has no request that places a station on a
+ * BSS, so a control naming a destination has to remove the alternatives instead.
+ *
+ * Everything that makes a gather trustworthy comes with it unchanged: the ban is
+ * registered before it is applied, lifts on arrival, lifts on a timeout
+ * regardless, and supersedes whatever was in force.
+ */
+func (e *Engine) GatherClientTo(mac, iface string, durSec float64) error {
+	if !e.LinkControlAvailable() {
+		return fmt.Errorf("link control unavailable: hostapd is not serving the AP")
+	}
+	m := normMAC(mac)
+	if !validMAC(m) {
+		return fmt.Errorf("not a MAC address: %s", mac)
+	}
+	if durSec <= 0 {
+		durSec = gatherPinSec
+	}
+	if durSec < 1 || durSec > 300 {
+		return fmt.Errorf("pin duration must be 1-300 seconds")
+	}
+	if !e.cfg.Demo && !hostapdReachable(iface) {
+		return fmt.Errorf(
+			"%s is not serving an access point, so there is nothing to pin to", iface)
+	}
+	deny, err := e.gatherDeny(iface)
+	if err != nil {
+		return err
+	}
+	if e.cfg.Demo {
+		return nil
+	}
+	// Narrow, not box-wide: this holds one client, so it may only supersede the
+	// claims on that client. See clearPinsFor.
+	e.clearPinsFor([]string{m}, "superseded by a pin")
+	_, err = e.runPin(&pinOp{to: iface, deny: deny}, []string{m}, iface, iface, durSec,
+		"pinning %d client(s) onto %s: denied on %s, so a rescan has one access "+
+			"point left to choose. The ban lifts on arrival, or after %.0fs. "+
+			"Not a request — it cannot refuse what it was not asked")
+	return err
+}
+
+/*
+ * EvictClient pushes ONE client off the radio it is on. The mirror of
+ * GatherClientTo, and the same pair the radio lane already has.
+ *
+ * NOT A DUPLICATE OF deadzone WITH ScopeCurrent, though the two look alike and
+ * an earlier draft of this dropped it as one. Both deny the client on the radio
+ * it is sitting on; what happens next differs, and for a pattern the difference
+ * is the whole point:
+ *
+ *   - a DEADZONE holds the ban for its full duration whatever the client does.
+ *     That is what makes it an outage, and why the block on the timeline has a
+ *     width you can read.
+ *   - an EVICT lifts the moment the client lands somewhere else. It is a move,
+ *     not an outage, and its duration is a deadline rather than a dose.
+ *
+ * So a five-second deadzone costs five seconds of service. A five-second evict
+ * usually costs a fraction of one, and only a client that refuses to go
+ * anywhere experiences the five.
+ *
+ * Where it goes is explicitly not this box's decision -- that is what separates
+ * an evict from a pin, at either scope.
+ */
+func (e *Engine) EvictClient(mac string, durSec float64) error {
+	if !e.LinkControlAvailable() {
+		return fmt.Errorf("link control unavailable: hostapd is not serving the AP")
+	}
+	m := normMAC(mac)
+	if !validMAC(m) {
+		return fmt.Errorf("not a MAC address: %s", mac)
+	}
+	if durSec <= 0 {
+		durSec = gatherPinSec
+	}
+	if durSec < 1 || durSec > 300 {
+		return fmt.Errorf("pin duration must be 1-300 seconds")
+	}
+	from := e.radioFor(m)
+	if from == "" {
+		return fmt.Errorf("cannot evict %s: it is not on a radio this box serves", m)
+	}
+
+	// Somewhere to go, or this is an outage wearing an evict's name.
+	var elsewhere []string
+	for _, w := range e.cfg.WlanPorts {
+		if w != from && hostapdReachable(w) {
+			elsewhere = append(elsewhere, w)
+		}
+	}
+	if len(elsewhere) == 0 {
+		return fmt.Errorf(
+			"%s is the only radio serving, so an evict would put %s off the box "+
+				"altogether rather than onto another radio", from, m)
+	}
+	if e.cfg.Demo {
+		return nil
+	}
+	e.clearPinsFor([]string{m}, "superseded by an evict")
+	// to is deliberately empty: this ban says where it may NOT go.
+	_, err := e.runPin(&pinOp{deny: []string{from}}, []string{m}, from, elsewhere[0], durSec,
+		"evicting %d client(s) off %s: denied there so it cannot come back, and "+
+			"free to pick any other radio (%s is only the hint in the request). The "+
+			"ban lifts once it has landed, or after %.0fs. Where it goes is its own "+
+			"choice — that is what an evict is")
+	return err
 }
 
 // EvictFrom empties one radio and makes the departure stick.

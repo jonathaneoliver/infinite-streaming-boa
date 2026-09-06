@@ -74,6 +74,38 @@ const (
 	LinkDeauth   = "deauth"   // 802.11 deauthentication: the harder pulse
 	LinkDisassoc = "disassoc" // 802.11 disassociation: the softer pulse
 	LinkDeadzone = "deadzone" // deauth held for DurSec: the client cannot stay on
+
+	/*
+	 * TWO kinds, and NEITHER ASKS.
+	 *
+	 * The same pair the radio lane has, one scope down: pin names a destination
+	 * and removes every other choice; evict names none and removes only the
+	 * radio being left. Both run gather.go's mechanism over a single client.
+	 *
+	 * EVICT IS NOT deadzone WITH ScopeCurrent, though they look alike and an
+	 * earlier draft dropped it as a duplicate. Both deny the client where it is
+	 * sitting; what follows differs. A deadzone holds its ban for the full
+	 * duration whatever the client does -- that is what makes it an outage, and
+	 * why its block has a width you can read. An evict lifts the moment the
+	 * client lands somewhere else, so its duration is a deadline rather than a
+	 * dose: five seconds of deadzone costs five seconds of service, five seconds
+	 * of evict usually costs a fraction of one.
+	 *
+	 * Neither can be built by asking.
+	 * MEASURED 2026-09-06: an iPhone ignored a same-band transition request and
+	 * then refused a cross-band one, offering its own candidate list. It was
+	 * right to -- the distance model does not move real RSSI, so its 5GHz signal
+	 * was excellent. The radio lane reached this conclusion first and wrote it
+	 * down: 802.11 has no request that places a station on a BSS, so a control
+	 * naming a destination keeps its word by removing the alternatives.
+	 *
+	 * So pin runs the gather mechanism over a single client -- see
+	 * GatherClientTo. Named pin and not gather because gather describes filling
+	 * a RADIO, which one client cannot do; pin is what gather.go already calls
+	 * the mechanism throughout.
+	 */
+	LinkPin   = "pin"   // hold this client on the band named below
+	LinkEvict = "evict" // push this client off the radio it is on
 )
 
 // Deadzone scope: which radios a deadzone holds a client off.
@@ -102,6 +134,27 @@ type LinkEvent struct {
 	AtSec  float64 `json:"at_sec"`
 	Kind   string  `json:"kind"`
 	DurSec float64 `json:"dur_sec,omitempty"` // deadzone only
+
+	/*
+	 * ToBandMHz is where a pin holds the client -- named as a BAND, not as an
+	 * interface.
+	 *
+	 * A pattern is a stored, shareable artifact and interface names are box
+	 * configuration: `wlan-usb` means nothing on a box whose adapter is called
+	 * something else, and a pattern naming it would silently target the wrong
+	 * radio or none. A band is a physical fact both boxes agree on, so the
+	 * pattern says 2462 and the box decides which of its radios that is.
+	 *
+	 * It also matches what the model actually chooses. BestBandFor returns a
+	 * frequency, so a walkabout emitting one is passing on its own decision
+	 * rather than translating it into a name and back.
+	 *
+	 * Resolution can fail -- a box with no radio on that band has nowhere to
+	 * pin the client -- and that is logged rather than swallowed. See
+	 * Engine.fireLink.
+	 */
+	ToBandMHz int `json:"to_band_mhz,omitempty"` // pin only
+
 	// Scope is deadzone only, and empty means ScopeCurrent -- so a pattern
 	// saved before this field existed keeps doing exactly what it did.
 	Scope string `json:"scope,omitempty"`
@@ -225,10 +278,11 @@ type RadioFire struct {
 // handed back to the Engine to execute against hostapd (outside the Player
 // lock, since it does network I/O).
 type LinkFire struct {
-	MAC    string
-	Kind   string
-	DurSec float64 // deadzone only
-	Scope  string  // deadzone only; empty means ScopeCurrent
+	MAC       string
+	Kind      string
+	DurSec    float64 // deadzone only
+	Scope     string  // deadzone only; empty means ScopeCurrent
+	ToBandMHz int     // pin only
 }
 
 // Pattern is an ordered list of keyframes plus how to leave the end of it.
@@ -448,8 +502,30 @@ func validPattern(p Pattern) error {
 				return fmt.Errorf("link event %d: deadzone scope must be %q or %q (got %q)",
 					i, ScopeCurrent, ScopeAll, ev.Scope)
 			}
+		case LinkEvict:
+			// Nowhere to name: an evict says where the client may NOT be, and
+			// where it goes is its own choice. A band here would be a promise
+			// this kind does not make.
+			if ev.ToBandMHz != 0 {
+				return fmt.Errorf("link event %d: evict takes no band -- it means leave, and where to is the client's answer. Use pin to name a destination", i)
+			}
+			if ev.DurSec < 0 || ev.DurSec > 300 {
+				return fmt.Errorf("link event %d: evict duration must be 0 (the default) to 300s", i)
+			}
+		case LinkPin:
+			// A pin with no destination is a no-op that looks like a move, which
+			// is the kind of silence this repo has been bitten by.
+			if !knownBand(ev.ToBandMHz) {
+				return fmt.Errorf("link event %d: pin needs a band to hold the client on -- 2412-2484 or 5150-5895 MHz, not %d", i, ev.ToBandMHz)
+			}
+			// The ban duration. Zero takes gather.go's default rather than
+			// meaning "forever", which is the one reading that could strand a
+			// client off the box.
+			if ev.DurSec < 0 || ev.DurSec > 300 {
+				return fmt.Errorf("link event %d: pin duration must be 0 (the default) to 300s", i)
+			}
 		default:
-			return fmt.Errorf("link event %d: unknown kind %q (want drop, nudge or deadzone)", i, ev.Kind)
+			return fmt.Errorf("link event %d: unknown kind %q (want deauth, disassoc, deadzone, pin or evict)", i, ev.Kind)
 		}
 		if ev.Scope != "" && ev.Kind != LinkDeadzone {
 			return fmt.Errorf("link event %d: scope is deadzone only, not %s", i, ev.Kind)
@@ -857,7 +933,8 @@ func (p Pattern) linkFires(mac string, prev, pos float64, looped bool, dur float
 			// deadzone carries its duration; the Engine holds the client off
 			// with a deny-ACL ban rather than re-firing each tick.
 			out = append(out, LinkFire{
-				MAC: mac, Kind: ev.Kind, DurSec: ev.DurSec, Scope: ev.Scope,
+				MAC: mac, Kind: ev.Kind, DurSec: ev.DurSec,
+				Scope: ev.Scope, ToBandMHz: ev.ToBandMHz,
 			})
 		}
 	}
@@ -920,4 +997,17 @@ func (p *Player) View(mac string) *PatternView {
 		Laps: r.laps, Index: r.idx, Down: r.down, Up: r.up,
 		Reason: r.reason, StartedAt: r.startedAt.UnixMilli(),
 	}
+}
+
+/*
+ * knownBand is a sanity check on a gather's destination, not a channel plan.
+ *
+ * It asks only whether the number is a Wi-Fi frequency at all, because whether
+ * THIS box has a radio there is a question about the box and not about the
+ * pattern -- and the answer can change between saving a pattern and running it,
+ * when a USB adapter is unplugged. So the validator rejects 1234 and accepts
+ * 5745; the fire path decides whether 5745 is reachable today.
+ */
+func knownBand(mhz int) bool {
+	return (mhz >= 2412 && mhz <= 2484) || (mhz >= 5150 && mhz <= 5895)
 }

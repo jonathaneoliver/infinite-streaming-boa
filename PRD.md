@@ -127,6 +127,24 @@ Intended for:
   policy in metres would mean a different impairment in a different building —
   and the unit that label is drawn in follows the reader's own locale, so a US
   reader is shown feet without anything downstream knowing it.
+- **The walk itself is a pattern, not just a position.** `walkabout` sweeps the
+  model on a clock: out from beside the access point to the edge of range and
+  back, with the band change driven at the crossing. It is the walk-away-and-back
+  test that this box could not otherwise perform, and it differs from every other
+  built-in pattern in that its keyframes are **computed rather than chosen** —
+  they are the same arithmetic the distance control does, evaluated at a series
+  of levels instead of one.
+- **The walk ends where the model says the link ends**, not at a distance
+  someone picked. It steps outward until one more step would take both
+  directions past the point of holding, and stops there — so the far end is the
+  worst the link can be while still alive. A hand-picked endpoint goes stale
+  silently every time a constant behind the model moves, and each such move
+  slides the cliff along while the endpoint stays put.
+- **The way back is slower than the way out**, because recovery is not
+  degradation reversed. Rate control drops on a few failed frames and climbs
+  back only after sustained success, and a player has a drained buffer to refill
+  before it risks a higher rendition. A symmetric walk reports a recovery that
+  never happened.
 
 ## 4) Users & Use Cases
 
@@ -369,6 +387,33 @@ damages packets, never link state.
   a **pattern lane** beside rate and loss — a deauth at t=120s is exactly
   reproducible, which no packet impairment is, and is the specific event this
   exists for.
+- **Two of them move a client rather than breaking its link, and neither asks.**
+  `pin` holds a device on a named band by denying it on every radio serving
+  another; `evict` denies only the radio it is leaving, so where it goes next is
+  its own choice. They are the pair the radio lane already has, one scope down,
+  and they run the same mechanism over a single client.
+- **An evict is not a deadzone, though both deny the radio a client is on.** A
+  deadzone holds its ban for the full duration whatever the client does — that
+  is what makes it an outage, and why its block has a width worth reading. An
+  evict lifts the moment the client lands somewhere else, so its duration is a
+  deadline rather than a dose: five seconds of deadzone costs five seconds of
+  service, five seconds of evict usually costs a fraction of one.
+- **Asking was tried and measured failing.** A transition request is a
+  suggestion, and on this box an iPhone ignored a same-band one outright and
+  then refused a cross-band one, offering its own candidate list. It was right
+  to: the distance model does not move real signal strength, so its 5 GHz link
+  was excellent and it had no reason to go anywhere. A modelled walk therefore
+  cannot reach 2.4 GHz by asking, which is the same conclusion the radio
+  controls reached — 802.11 has no request that places a station on a BSS.
+- **A pin names a band, not a radio, and that makes it idempotent.** Already on
+  that band means nothing happens. The distinction is not academic on a box
+  serving two radios in one band: resolving "5 GHz" to a radio picks one of
+  them, and comparing that to where the client is would move it sideways
+  between two equally good radios on every lap of a looping walk.
+- A **pin** is **generated rather than drawn** — it needs a destination band and
+  the timeline has no way to ask for one — but it is shown wherever a pattern
+  uses it, and can be deleted there. An **evict** names nothing, so it is drawn
+  by hand like the other lanes.
 - They require the **AP running through hostapd**, which is how both radios are
   now driven — the onboard one as well as a USB adapter — so the controls work
   whichever radio is serving. (They were USB-only while the onboard radio ran
@@ -616,8 +661,16 @@ damages packets, never link state.
   **Together**, not per client: an operation is not finished until every client
   it covers has moved, and releasing the first arrival early would free it to
   wander back into radios the others are still being held out of.
-- **A new movement command supersedes the last one.** Any gather or evict clears
-  every ban in force before placing its own. Two overlapping operations would
+- **A new movement command supersedes the last one, over the clients it
+  covers.** A box-wide gather or evict clears every ban in force before placing
+  its own; a per-client one clears only the claims on that client. The release
+  itself is not optional either way — a client is held by one operation at a
+  time, so re-claiming it without releasing first would strand the old
+  operation's bans with nothing left to lift them. But widening that release to
+  the whole box at per-client scope would let two devices running walkabouts
+  cancel each other at every band change, leaving the first free to roam off the
+  band its own pattern is still conditioning for — which is the per-device
+  independence of §6.2 broken silently. Two overlapping operations would
   otherwise deny a client *everywhere* — the first holding it at A by denying B
   and C, the second holding it at B by denying A and C — leaving it unable to
   associate at all, with each deny list looking individually reasonable. Pressing
