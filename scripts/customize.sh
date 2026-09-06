@@ -779,9 +779,54 @@ onboard_rfkill() {
   done
 }
 
+# Radios that are off ON PURPOSE, as rfkill node names, one per line.
+#
+# The daemon owns the decision -- it is the thing that switched them off -- and
+# writes one marker per interface under its RuntimeDirectory. EXISTENCE is the
+# whole contract: nothing here parses a file, so nothing here can misparse one,
+# and a marker being written while this runs is either there or not.
+#
+# Through the interface's OWN phy80211 link rather than by walking
+# /sys/class/rfkill and matching on the device path, which is what the loop
+# below has to do. This is exact: the node under
+# /sys/class/net/<iface>/phy80211/rfkill* belongs to that interface's phy and no
+# other, so a two-radio box cannot read the wrong switch.
+OFF_DIR=/run/infinite-streaming-boa/radio-off
+held_off() {
+  [ -d "$OFF_DIR" ] || return 0
+  for f in "$OFF_DIR"/*; do
+    [ -f "$f" ] || continue
+    for r in "/sys/class/net/$(basename "$f")/phy80211"/rfkill*; do
+      [ -d "$r" ] && basename "$r"
+    done
+  done
+}
+
 # The onboard radio must be UNBLOCKED for hostapd to bring it up, in every
 # case now: it either serves alongside the adapter or serves alone.
-for r in $(onboard_rfkill); do echo 0 > "$r/soft" 2>/dev/null; done
+#
+# EXCEPT where the box recorded that the radio is off on purpose. This loop
+# exists to clear a STALE block -- the onboard radio used to be rfkilled
+# whenever an adapter was present -- and a stale block is indistinguishable from
+# a decision taken thirty seconds ago, because both are soft = 1. It ran
+# unconditionally at boot and on every radio hotplug, so on a box whose USB
+# adapter re-enumerates it silently ended real outages, and the operator's own
+# switch was the thing it overrode (#186). Look the decision up rather than
+# guess from the bit.
+HELD=$(held_off)
+for r in $(onboard_rfkill); do
+  n=$(basename "$r")
+  case " $HELD " in
+    *" $n "*)
+      log "leaving $n blocked: that radio is switched off on purpose"
+      continue
+      ;;
+  esac
+  # Loudly, not best-effort. A radio that stays blocked because this write
+  # failed comes up as an access point serving nobody, which is the shape of
+  # silent failure this box keeps being bitten by.
+  echo 0 > "$r/soft" 2>/dev/null || log "could not unblock $n"
+done
 
 HAVE_USB=0; [ -d /sys/class/net/wlan-usb ] && HAVE_USB=1
 HAVE_ONBOARD=0; [ -d /sys/class/net/wlan0 ] && HAVE_ONBOARD=1

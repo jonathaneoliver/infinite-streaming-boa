@@ -65,7 +65,48 @@ func radioPowered(iface string) (on bool, known bool) {
 	return strings.TrimSpace(string(b)) == "0", true
 }
 
-// SetRadioPower cuts or restores a radio's power, saying nothing to its clients.
+// SetRadioPower cuts or restores a radio's power AT THE OPERATOR'S REQUEST,
+// saying nothing to its clients.
+//
+// The only entry point that records a DECISION, and the whole of the
+// difference: an off here means "off until I say otherwise", which is what
+// stops select-radio's unblock loop and the startup restore undoing it (#186).
+// setRadioPower is the same switch without the promise, and is what a timed
+// outage uses -- an outage that ends itself is not a decision to leave a radio
+// off, and one caught by a daemon that died must not outlive it.
+func (e *Engine) SetRadioPower(iface string, on bool) error {
+	if err := e.radioExists(iface); err != nil {
+		return err
+	}
+	// RECORDED BEFORE THE SWITCH, so there is no window in which the radio is
+	// off and nothing on the box says the operator meant it. A hotplug landing
+	// in that window is exactly #186.
+	if !e.cfg.Demo {
+		why := offByOperator
+		if on {
+			why = "" // switching it back on retracts the decision
+		}
+		if err := setRadioOffMarker(iface, why); err != nil {
+			// The switch still happens -- it is what was asked for -- but the
+			// loss is never silent: without the marker a hotplug or a deploy
+			// can put this radio back on and say nothing, which is the bug
+			// this exists to close.
+			state := "off"
+			if on {
+				state = "on"
+			}
+			e.logEvent(EventWarning, iface, "",
+				"%s was switched %s but the decision could not be recorded, so a "+
+					"radio hotplug may undo it: %v", iface, state, err)
+		}
+	}
+	return e.setRadioPower(iface, on)
+}
+
+// setRadioPower is the mechanism: the rfkill write, the log line, and the
+// background watch that confirms the access point came back. It holds no
+// opinion about WHY the radio is being switched, which is what lets a timed
+// outage and the startup restore share it with the operator's own switch.
 //
 // rfkill rather than stopping hostapd, and the difference is the whole feature:
 // `systemctl stop` and hostapd's own DISABLE both tear the BSS down cleanly,
@@ -73,7 +114,7 @@ func radioPowered(iface string) (on bool, known bool) {
 // announcement this is meant to withhold. Blocking at the rfkill level switches
 // the transmitter off, so even if hostapd tries to say goodbye the frame cannot
 // leave. Silence is guaranteed by the hardware rather than by hoping.
-func (e *Engine) SetRadioPower(iface string, on bool) error {
+func (e *Engine) setRadioPower(iface string, on bool) error {
 	if err := e.radioExists(iface); err != nil {
 		return err
 	}
@@ -250,36 +291,113 @@ func (e *Engine) RadioOutage(iface string, durSec float64) error {
 	if durSec < 1 || durSec > 300 {
 		return fmt.Errorf("outage must be 1-300 seconds (got %.0f)", durSec)
 	}
-	if err := e.SetRadioPower(iface, false); err != nil {
+	// setRadioPower, not SetRadioPower: the marker written here is offByOutage,
+	// which the startup restore clears. Recording an outage as the operator's
+	// standing decision would leave a radio off forever if the daemon died
+	// during the sleep below, which is the failure restoreRadioPower exists to
+	// prevent.
+	if err := e.setRadioPower(iface, false); err != nil {
 		return err
+	}
+	// Marked all the same, so a radio hotplug does not end the outage early.
+	// The measurement IS the outage; one that stops halfway through is not a
+	// shorter measurement, it is a wrong one (#186).
+	if !e.cfg.Demo {
+		if err := setRadioOffMarker(iface, offByOutage); err != nil {
+			e.logEvent(EventWarning, iface, "",
+				"the outage on %s could not be recorded, so a radio hotplug may "+
+					"end it early: %v", iface, err)
+		}
 	}
 	e.logEvent(EventAction, iface, "", "timed outage on %s: %.0fs", iface, durSec)
 	go func() {
 		time.Sleep(time.Duration(durSec * float64(time.Second)))
-		if err := e.SetRadioPower(iface, true); err != nil {
+		if !e.cfg.Demo {
+			// Cleared BEFORE the radio comes back rather than after, so a
+			// marker cannot outlive the cut it describes even if the unblock
+			// fails.
+			if err := setRadioOffMarker(iface, ""); err != nil {
+				e.logEvent(EventWarning, iface, "",
+					"could not clear the outage marker for %s: %v", iface, err)
+			}
+		}
+		if err := e.setRadioPower(iface, true); err != nil {
 			fmt.Printf("infinite-streaming-boa: restoring %s after outage: %v\n", iface, err)
 		}
 	}()
 	return nil
 }
 
-// restoreRadioPower turns every watched radio back on at startup.
+// restoreRadioPower settles every watched radio at startup, against what the
+// box recorded about why it is in the state it is in.
 //
-// Same reasoning as clearDenyACL: an outage in force when the daemon died would
-// otherwise leave the access point off the air permanently, with nothing on
-// screen to say why and no obvious way back short of a reboot. A cut that
-// outlives the process that made it is not an impairment, it is a broken box.
+// The restore itself has the same reasoning as clearDenyACL: an outage in force
+// when the daemon died would otherwise leave the access point off the air
+// permanently, with nothing on screen to say why and no obvious way back short
+// of a reboot. A cut that outlives the process that made it is not an
+// impairment, it is a broken box.
+//
+// What it must NOT restore is a radio the operator switched off. The daemon
+// restarts on every deploy and whenever select-radio sees BOA_WLAN_PORT change
+// -- neither is a reason to overrule a decision, and doing it silently was half
+// of #186. The markers are what separate the two cases; before they existed
+// both looked identical from here.
 func (e *Engine) restoreRadioPower() {
 	if e.cfg.Demo {
 		return
 	}
 	for _, w := range e.cfg.WlanPorts {
-		if on, known := radioPowered(w); known && !on {
+		on, known := radioPowered(w)
+		if !known {
+			continue
+		}
+		why := radioOffMarker(w)
+		switch {
+		case on && why == offByOperator:
+			// The box HAS overridden the operator, and says so rather than
+			// letting the run be quietly wrong. The usual cause is a radio
+			// that re-enumerated: a USB adapter comes back unblocked whatever
+			// it was doing when it left, and no marker can stop the kernel
+			// handing back a fresh device.
+			e.logEvent(EventWarning, w, "",
+				"%s was switched off, but it is powered on again — the radio most "+
+					"likely re-enumerated, and anything measured across that point "+
+					"was not measured through an outage", w)
+			e.clearRadioOffMarker(w)
+		case on:
+			// Powered, and any marker describes a state that has passed.
+			// Dropping it keeps the record from disagreeing with the hardware.
+			if why != "" {
+				e.clearRadioOffMarker(w)
+			}
+		case why == offByOperator:
+			// Left off, deliberately. Logged because a radio that is off and
+			// stays off across a restart is otherwise indistinguishable from
+			// one that failed to come back.
+			e.logEvent(EventRadio, w, "",
+				"%s is still switched off — the operator's decision survives a restart", w)
+		default:
+			// Off with no standing decision behind it: a timed outage this
+			// process is no longer around to finish, or a block from before
+			// the box was watching. Restore, exactly as before.
 			fmt.Printf("infinite-streaming-boa: %s was powered off at startup; restoring\n", w)
-			if err := e.SetRadioPower(w, true); err != nil {
+			if why != "" {
+				e.clearRadioOffMarker(w)
+			}
+			if err := e.setRadioPower(w, true); err != nil {
 				fmt.Printf("infinite-streaming-boa: restore %s: %v\n", w, err)
 			}
 		}
+	}
+}
+
+// clearRadioOffMarker drops a radio's off marker and reports a failure to drop
+// it. Never silent: a marker left behind is a radio the box will decline to
+// bring back at the next restart, for a reason that has stopped being true.
+func (e *Engine) clearRadioOffMarker(iface string) {
+	if err := setRadioOffMarker(iface, ""); err != nil {
+		e.logEvent(EventWarning, iface, "",
+			"could not clear the off marker for %s: %v", iface, err)
 	}
 }
 
