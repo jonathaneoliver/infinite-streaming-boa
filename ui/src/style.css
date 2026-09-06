@@ -106,8 +106,14 @@ header.top .sub { color: var(--ink-faint); font-size: 13px; }
 
 /* --- notices ------------------------------------------------------------ */
 .notice {
-  display: flex;
-  gap: 10px;
+  /* BLOCK, not flex. A notice is a paragraph, and one of them (the iperf note
+     in App.vue) carries inline <code> and <strong>. Under `display: flex` each
+     of those became its own flex item and each surrounding text run became an
+     anonymous one, so the sentence rendered as a row of columns in reading
+     order. Every other notice holds a single text node, which is why this went
+     unnoticed until a notice needed markup -- and why the `gap` that came with
+     the flex never applied to anything. */
+  display: block;
   padding: 10px 12px;
   border: 1px solid var(--line);
   border-left: 3px solid var(--warn);
