@@ -462,6 +462,79 @@ it repeats, so a player can be watched through several laps.
 > `docs/DATA-CONTRACT.md` Source S carries the confidence of each number
 > individually.
 
+### What this replaces, and what it does not
+
+There are three ways to test a device on a weak link. This box is the cheapest
+of them, and the least faithful.
+
+**1. A programmable step attenuator, in an RF-shielded enclosure.** What a device
+lab uses, and better than the other two in every way that matters to a
+measurement: the level is calibrated in dB, it repeats exactly, and the enclosure
+removes the neighbours — which, per the warning under [Hardware](#hardware), is
+most of what makes testing over the air hard. It also costs thousands, needs coax
+to antenna ports many consumer devices do not have, and puts the device in a
+metal box where nobody can see the screen or touch it.
+
+**2. A radio whose driver actually implements transmit power control.** Then the
+access point can genuinely turn itself down, the client really does receive less
+signal, and everything the client decides from that signal responds. Cheap, and
+it would be a real improvement on what is here.
+
+It is not available on this hardware. The `mt7921u` reports `3.00 dBm` whatever
+it is set to — a known driver bug — and the *control* is inert as well: a 30 dB
+request across the adapter's whole legal range moved received signal by nothing
+at all ([measured](#access-point-performance)).
+[#202](https://github.com/jonathaneoliver/infinite-streaming-boa/issues/202)
+carries the one-line check to re-run after any kernel change, and what to do if
+the upstream patch ever lands.
+
+Worth knowing even then: lowering the **AP's** power weakens the downlink only.
+The client still transmits at full power, so the uplink stays strong — which is
+the opposite asymmetry to real distance, where the smaller radio's uplink fails
+*first*. A working txpower control would be a better instrument than the model,
+not an equivalent one.
+
+**3. The distance model — what this box does.** It does not weaken the radio; it
+applies the *consequences* of a weaker signal to the traffic: lower rate, more
+delay and jitter, corruption before loss, uplink degrading first.
+
+| | Attenuator + enclosure | Real txpower control | boa's distance model |
+|---|---|---|---|
+| Cost | thousands | cheap | already in the box |
+| Setup | coax, sealed chamber | a driver that works | a slider |
+| Calibrated | yes, in dB | roughly | **no** — see above |
+| Isolated from other networks | yes | no | no |
+| Device usable while testing | not really | yes | yes |
+| Degrades both directions | yes | **downlink only** | yes (modelled) |
+| **Changes what the radio experiences** | **yes** | **yes** | **no** |
+| Available here today | — | no ([#202](https://github.com/jonathaneoliver/infinite-streaming-boa/issues/202)) | yes |
+
+**That last-but-one row is a hard limit, not a rough edge.** You can see it in
+the screenshot at the top of this page: the iPhone is being walked to a modelled
+**55 ft / −64 dBm**, while its actual signal reads **−27 dBm** and its PHY rate
+is still **1201 Mbit/s**. Both numbers are shown side by side and allowed to
+disagree; the modelled one is labelled as such.
+
+So anything the device decides **from its own measurement of the signal** is
+untouched:
+
+- roaming and band-steering triggers, which fire on RSSI thresholds
+- rate adaptation and MCS selection
+- antenna diversity, beamforming, transmit power control
+- power-save behaviour that depends on link margin
+
+If you are testing **how an application behaves on a poor link**, the model is
+the right tool and an enclosure is overkill. If you are testing **the device's
+own radio decisions** — when it roams, how it picks a band, what its firmware
+does as margin disappears — you need real attenuation, and this will quietly
+tell you nothing.
+
+**The one thing boa has that an attenuator does not:** it can *force* the roam
+instead of waiting for the device to choose one. `steer`, `gather`, `evict` and
+`deadzone` change which access point a client is on directly — so the roam
+**outcome** can be exercised even though the roam **trigger** cannot.
+
+
 ## How this compares to what already exists
 
 Deliberately degrading a link is a well-worn idea, and most of the tools below
