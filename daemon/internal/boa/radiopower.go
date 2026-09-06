@@ -327,7 +327,23 @@ func (e *Engine) endRecovery(iface string) {
 
 // SetAPEnabled brings this radio's access point up or down, leaving the radio
 // itself powered.
-func (e *Engine) SetAPEnabled(iface string, on bool) error {
+//
+// notify is "nudge", "drop" or empty, and applies only on the way DOWN. It says
+// goodbye to every client on the radio before the BSS closes, which is a
+// different experiment from letting hostapd tear down however it chooses:
+//
+//	""       whatever hostapd does on DISABLE, which is not something this box
+//	         can currently observe -- proving what leaves the antenna needs a
+//	         receiver, and both radios here are access points (#136)
+//	nudge    disassociate first: the client is told to go, keeps its
+//	         authentication, and usually comes back fastest
+//	drop     deauthenticate first: the harder goodbye, authentication and all
+//
+// Per request rather than a mode, because it is a property of THIS teardown.
+// An operator comparing how a device reacts to being told against how it reacts
+// to working it out wants to vary this between one press and the next, not
+// configure it once.
+func (e *Engine) SetAPEnabled(iface string, on bool, notify string) error {
 	if err := e.radioExists(iface); err != nil {
 		return err
 	}
@@ -342,6 +358,25 @@ func (e *Engine) SetAPEnabled(iface string, on bool) error {
 	cmd := "DISABLE"
 	if on {
 		cmd = "ENABLE"
+	}
+
+	// BEFORE the teardown, and only on the way down. Reported with a count
+	// because "told 2 clients" and "told nobody" are different events and the
+	// second is worth noticing -- a goodbye nobody heard is not a goodbye.
+	if !on && notify != "" {
+		n, err := e.LinkAll(iface, notify)
+		if err != nil {
+			// Not fatal: the access point is still going down, and refusing to
+			// take it down because the announcement failed would leave the
+			// operator with neither half of what they asked for.
+			e.logEvent(EventWarning, iface, "",
+				"could not announce the shutdown on %s: %v — taking it down anyway",
+				iface, err)
+		} else {
+			e.logEvent(EventAction, iface, "",
+				"%s told %d client(s) to leave (%s) before its access point goes down",
+				iface, n, notify)
+		}
 	}
 
 	// LOGGED AT THE PRESS, before anything is waited for.

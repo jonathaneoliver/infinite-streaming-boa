@@ -45,7 +45,7 @@
  */
 import { computed, onMounted, ref, watch } from 'vue';
 import type { Pattern, PatternView, RadioEvent } from '@/types';
-import { MIN_AP_DOWN_SEC, MIN_RADIO_OFF_SEC } from '@/types';
+import { DEVELOPER, MIN_AP_DOWN_SEC, MIN_RADIO_OFF_SEC } from '@/types';
 
 const props = defineProps<{
   /** The radios this box watches, in preference order. */
@@ -62,6 +62,11 @@ type Kind = RadioEvent['kind'];
  * does -- and its hint says so, since the word alone did not.
  */
 const KINDS: { kind: Kind; hint: string }[] = [
+  // The power-cut lane is behind developer=1, with the switch it mirrors on
+  // the adapter row. An `apdown` lane authors the same shape of outage without
+  // the two-minute recovery a wedged USB radio costs, so it is the one that
+  // should be reached for by default. Filtered below rather than removed:
+  // a silent outage is a real experiment, just not the default tool.
   { kind: 'off', hint: 'switch off: power cut, silent, client must notice' },
   { kind: 'apdown', hint: 'disable AP: BSS closed, radio up, client is told' },
   { kind: 'gather', hint: 'everyone comes here' },
@@ -130,16 +135,20 @@ const kindShown = (kind: Kind) =>
 
 const lanes = computed(() =>
   groupBy.value === 'effect'
-    ? KINDS.flatMap((k) =>
+    ? kindsAllowed.value.flatMap((k) =>
         props.radios
           .filter((iface) => laneShown(iface, k.kind))
           .map((iface) => ({ iface, ...k })),
       )
     : props.radios.flatMap((iface) =>
-        KINDS.filter((k) => laneShown(iface, k.kind)).map((k) => ({ iface, ...k })),
+        kindsAllowed.value
+          .filter((k) => laneShown(iface, k.kind))
+          .map((k) => ({ iface, ...k })),
       ),
 );
-const addChips = computed(() => KINDS.filter((k) => !kindShown(k.kind)));
+/** The kinds this operator may author. See the note on KINDS. */
+const kindsAllowed = computed(() => KINDS.filter((k) => k.kind !== 'off' || DEVELOPER));
+const addChips = computed(() => kindsAllowed.value.filter((k) => !kindShown(k.kind)));
 const dropChips = computed(() => KINDS.filter((k) => kindShown(k.kind) && !kindUses(k.kind)));
 
 const laneEvents = (iface: string, kind: Kind) =>
@@ -587,7 +596,21 @@ const PRESETS = computed(() => {
         props.radios.map((iface) => ({ iface, kind: 'deauth' as const, at_sec })),
       ),
   });
-  return out;
+
+  // GATED ON WHAT A PRESET BUILDS, not on where it sits in this list.
+  //
+  // A power cut can wedge the USB radio for two minutes (#182), so those
+  // presets go behind developer=1 with the chip and the switch they are built
+  // from -- "musical chairs" produces the same shape of disturbance without
+  // that cost.
+  //
+  // Asking each preset what it authors rather than gating by position, because
+  // position was wrong in both directions when tried: "rolling blackout" and
+  // "graceful shutdown" cut power and sat above the line, while "deauth storm"
+  // does not and sat below it. This way a preset added later is gated by what
+  // it does, and nobody has to remember.
+  if (DEVELOPER) return out;
+  return out.filter((p) => !p.build().some((e) => e.kind === 'off'));
 });
 
 /** Applying a preset REPLACES the timeline. Merging would produce something

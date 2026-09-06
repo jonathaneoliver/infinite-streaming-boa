@@ -566,14 +566,14 @@ func (e *Engine) fireRadio(f RadioFire) {
 		// rather than by the player, so a pattern that is stopped mid-block
 		// cannot leave a BSS down -- the same reason RadioOutage owns its own
 		// restore.
-		if err := e.SetAPEnabled(f.Iface, false); err != nil {
+		if err := e.SetAPEnabled(f.Iface, false, ""); err != nil {
 			e.logEvent(EventRadio, f.Iface, "",
 				"pattern could not take the access point down on %s: %v", f.Iface, err)
 			return
 		}
 		go func(iface string, d float64) {
 			time.Sleep(time.Duration(d * float64(time.Second)))
-			if err := e.SetAPEnabled(iface, true); err != nil {
+			if err := e.SetAPEnabled(iface, true, ""); err != nil {
 				e.logEvent(EventWarning, iface, "",
 					"pattern could not bring the access point back on %s: %v", iface, err)
 			}

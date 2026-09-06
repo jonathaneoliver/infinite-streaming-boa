@@ -129,12 +129,20 @@ export function useBridge(active: Ref<boolean>) {
    * departure is announced and the client acts on being told rather than on
    * working it out. That difference is the whole reason both controls exist.
    */
-  const setAPEnabled = (iface: string, on: boolean) =>
-    act(`/api/bridge/radios/${encodeURIComponent(iface)}/ap?on=${on ? 1 : 0}`, (b) =>
-      b.enabled
-        ? `${b.iface}: access point back up. Clients can associate again.`
-        : `${b.iface}: access point DOWN — the radio is still transmitting, so ` +
-          `unlike a power cut the clients were told it went away.`,
+  const setAPEnabled = (iface: string, on: boolean, notify = '') =>
+    act(
+      `/api/bridge/radios/${encodeURIComponent(iface)}/ap?on=${on ? 1 : 0}` +
+        (notify ? `&notify=${notify}` : ''),
+      (b) =>
+        b.enabled
+          ? `${b.iface}: access point back up. Clients can associate again.`
+          : b.notify
+            ? `${b.iface}: clients were told to leave (${b.notify}), then the ` +
+              `access point went down. The goodbye is explicit here, rather ` +
+              `than whatever hostapd does on its own.`
+            : `${b.iface}: access point DOWN — the radio is still ` +
+              `transmitting, so unlike a power cut the clients were told it ` +
+              `went away.`,
     );
 
   /**

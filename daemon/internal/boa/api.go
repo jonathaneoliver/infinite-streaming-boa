@@ -512,12 +512,21 @@ func (a *API) postAPEnabled(w http.ResponseWriter, r *http.Request) {
 	iface := r.PathValue("iface")
 	q := r.URL.Query()
 	on := q.Get("on") != "0" && !strings.EqualFold(q.Get("on"), "false")
-	if err := a.e.SetAPEnabled(iface, on); err != nil {
+	// Optional, and only meaningful on the way down: say goodbye to the clients
+	// before the BSS closes. Validated rather than passed through, so a typo
+	// becomes a message instead of a silent no-op.
+	notify := strings.TrimSpace(q.Get("notify"))
+	if notify != "" && notify != LinkNudge && notify != LinkDrop {
+		writeErr(w, http.StatusBadRequest,
+			fmt.Sprintf("notify must be %q or %q", LinkNudge, LinkDrop))
+		return
+	}
+	if err := a.e.SetAPEnabled(iface, on, notify); err != nil {
 		writeErr(w, http.StatusBadGateway, err.Error())
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"iface": iface, "action": "ap", "enabled": on,
+		"iface": iface, "action": "ap", "enabled": on, "notify": notify,
 	})
 }
 

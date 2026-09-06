@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue';
 import type { IfaceInfo, Series } from '@/types';
+import { DEVELOPER } from '@/types';
 import { rackAdapters, isOpen, toggleAdapter } from '@/composables/useAdapters';
 import AdapterStack from '@/components/AdapterStack.vue';
 import type { useBridge } from '@/composables/useBridge';
@@ -244,7 +245,18 @@ function degraded(i: IfaceInfo): boolean {
              A disabled button says "not now"; an absent one says "this box
              cannot do that", and only one of those is true here. -->
         <template v-if="r.wireless">
+          <!-- CUTTING POWER IS BEHIND developer=1.
+               It is the most destructive control here and the least
+               recoverable: rfkill wedges the USB adapter often enough that
+               #182 exists about it, and the recovery takes about two minutes
+               during which the radio serves nobody. `disable AP` produces the
+               same visible outcome -- the network goes away -- for a client
+               that is told, comes back in a second, and has never wedged
+               anything. That is the one to reach for by default.
+               Not removed, because a silent outage is a real experiment and
+               the only way to make one; just not the button nearest to hand. -->
           <button
+            v-if="DEVELOPER"
             class="ghost" :class="{ accent: r.power_known && !r.powered }"
             :disabled="busy || !r.power_known"
             :title="r.powered
@@ -276,6 +288,22 @@ Clients ARE told it has gone, unlike a power cut.`
               : `Bring ${r.name}'s access point back up.`"
             @click="bridge.setAPEnabled(r.name, !r.ap?.enabled)"
           >{{ r.ap?.enabled === false ? 'enable AP' : 'disable AP' }}</button>
+          <!-- The same teardown with an EXPLICIT goodbye first.
+               Its own button rather than a mode, because it is a property of
+               one press: an operator comparing how a device reacts to being
+               told against how it reacts to working it out varies this between
+               one press and the next. Shown only while there is an access
+               point up and somebody on it to tell -- with nobody there, the
+               announcement is the only thing that would differ from the plain
+               disable, and there is nobody to announce it to. -->
+          <button
+            v-if="apLive(r)"
+            class="ghost" :disabled="busy || !r.ap?.stations"
+            :title="`Disassociate all ${r.ap?.stations ?? 0} client(s), then take `
+              + `${r.name}'s access point down. An explicit goodbye, rather than `
+              + `whatever hostapd does on its own.`"
+            @click="bridge.setAPEnabled(r.name, false, 'nudge')"
+          >tell &amp; disable</button>
           <button
             class="ghost" :disabled="busy || !apLive(r) || !r.ap?.stations"
             :title="apLive(r)
@@ -406,6 +434,10 @@ Clients ARE told it has gone, unlike a power cut.`
             >scan and move to the quietest</button>
           </div>
 
+          <!-- The timed outage goes behind developer=1 with the power switch
+               it belongs to: same mechanism, same cost, same tendency to wedge
+               the USB adapter. -->
+          <template v-if="DEVELOPER">
           <h4>Take it away</h4>
           <p class="warn-line">
             <strong>Silent.</strong> Clients are told nothing and must time out —
@@ -432,6 +464,7 @@ Clients ARE told it has gone, unlike a power cut.`
             A client with a randomised MAC may return as a <strong>new device</strong>,
             leaving its policy behind on the old address (#45).
           </p>
+          </template>
 
           <h4>Make the link worse</h4>
           <p class="meta group-note">
