@@ -386,6 +386,10 @@ func (e *Engine) Start() {
 	// -- which is every box already in the field. See hushTeardown and #224.
 	e.hushRadios()
 	e.restoreRadioPower()
+	// And check the opposite fault: a radio that is ON but serving nobody,
+	// which restoreRadioPower cannot see and which a restart mid-recovery
+	// leaves behind. See checkRadiosAtStart.
+	e.checkRadiosAtStart()
 	// A monitor connection per radio, for the messages hostapd sends unasked.
 	// Everything else here talks to hostapd in request/reply, which cannot see
 	// a client's answer to a steer -- see hostapdmonitor.go.

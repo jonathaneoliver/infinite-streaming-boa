@@ -759,6 +759,54 @@ func (e *Engine) restoreRadioPower() {
 	}
 }
 
+// checkRadiosAtStart looks for a radio that is powered but has no access point,
+// and rebuilds it.
+//
+// The gap this closes was found the hard way: a radio wedged, the recovery
+// started, and the daemon was restarted by a deploy 47 seconds later -- which
+// killed the goroutine doing the recovering. Nothing looked again. The radio
+// stayed powered, bridged, forwarding, reporting state=ENABLED, and joinable by
+// nobody, until an operator noticed it was broken and said so.
+//
+// restoreRadioPower already runs here and does not cover this: it turns ON a
+// radio that is OFF, which is the opposite fault. A radio in this state looks
+// fine to every check the box had.
+//
+// A restart is exactly when this needs asking. The recovery lives in a
+// goroutine with no persistence, so ANY restart during one -- a deploy, a
+// crash, a reboot -- abandons it silently, and a deploy is the single most
+// likely thing to be happening while somebody is provoking radios on purpose.
+//
+// Runs in the background: hostapd's control socket can be unresponsive for
+// minutes after a driver reset, and start() must not wait on it.
+func (e *Engine) checkRadiosAtStart() {
+	if e.cfg.Demo {
+		return
+	}
+	for _, w := range e.cfg.WlanPorts {
+		go func(iface string) {
+			// Settle first. hostapd may still be coming up alongside the
+			// daemon, and a BSS that is merely not ready yet must not be
+			// mistaken for one that is never coming.
+			time.Sleep(20 * time.Second)
+
+			if on, known := radioPowered(iface); known && !on {
+				return // deliberately off; restoreRadioPower owns that case
+			}
+			if !hostapdReachable(iface) {
+				return // no control socket: nothing to ask and nothing to fix
+			}
+			if waitAPEnabled(iface, 30*time.Second) {
+				return // serving, which is the overwhelmingly common case
+			}
+			e.logEvent(EventWarning, iface, "",
+				"%s is powered but has no access point on it after a restart — "+
+					"rebuilding it", iface)
+			e.rebuildBSS(iface)
+		}(w)
+	}
+}
+
 // radioExists is the lighter gate for actions that do NOT need hostapd -- power
 // is cut at the rfkill level, which works whether or not anything is serving.
 func (e *Engine) radioExists(iface string) error {
