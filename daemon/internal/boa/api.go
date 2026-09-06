@@ -512,13 +512,26 @@ func (a *API) postAPEnabled(w http.ResponseWriter, r *http.Request) {
 	iface := r.PathValue("iface")
 	q := r.URL.Query()
 	on := q.Get("on") != "0" && !strings.EqualFold(q.Get("on"), "false")
-	// Optional, and only meaningful on the way down: say goodbye to the clients
-	// before the BSS closes. Validated rather than passed through, so a typo
-	// becomes a message instead of a silent no-op.
+	// Optional, and it means something different in each direction: going down
+	// it says goodbye to the stations currently associated, coming up it
+	// announces the start to clients still holding a stale association. See
+	// SetAPEnabled. Validated rather than passed through, so a typo becomes a
+	// message instead of a silent no-op.
 	notify := strings.TrimSpace(q.Get("notify"))
-	if notify != "" && notify != LinkNudge && notify != LinkDrop {
+	switch {
+	case notify == "":
+	case on && notify == "announce":
+	case !on && (notify == LinkNudge || notify == LinkDrop):
+	default:
+		if on {
+			writeErr(w, http.StatusBadRequest,
+				`coming up, notify must be "announce": there are no associated `+
+					`stations to address individually, only a broadcast to clients `+
+					`still holding a stale association`)
+			return
+		}
 		writeErr(w, http.StatusBadRequest,
-			fmt.Sprintf("notify must be %q or %q", LinkNudge, LinkDrop))
+			fmt.Sprintf("going down, notify must be %q or %q", LinkNudge, LinkDrop))
 		return
 	}
 	if err := a.e.SetAPEnabled(iface, on, notify); err != nil {

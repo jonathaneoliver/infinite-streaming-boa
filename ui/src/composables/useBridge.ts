@@ -135,11 +135,16 @@ export function useBridge(active: Ref<boolean>) {
         (notify ? `&notify=${notify}` : ''),
       (b) =>
         b.enabled
-          ? `${b.iface}: access point back up. Clients can associate again.`
+          ? b.notify
+            ? `${b.iface}: access point back up, and its return was ANNOUNCED — ` +
+              `any client still holding a stale association was told to start ` +
+              `again rather than left to notice.`
+            : `${b.iface}: access point back up. Clients can associate again.`
           : b.notify
             ? `${b.iface}: clients were told to leave (${b.notify}), then the ` +
               `access point went down. The goodbye is explicit here, rather ` +
-              `than whatever hostapd does on its own.`
+              `than whatever hostapd does on its own — and it is the same ` +
+              `frame type the AP broadcasts on its way back up.`
             : `${b.iface}: access point DOWN — the radio is still ` +
               `transmitting, so unlike a power cut the clients were told it ` +
               `went away.`,

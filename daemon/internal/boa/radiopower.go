@@ -328,9 +328,11 @@ func (e *Engine) endRecovery(iface string) {
 // SetAPEnabled brings this radio's access point up or down, leaving the radio
 // itself powered.
 //
-// notify is "nudge", "drop" or empty, and applies only on the way DOWN. It says
-// goodbye to every client on the radio before the BSS closes, which is a
-// different experiment from letting hostapd tear down however it chooses:
+// notify announces the change, and means something different in each direction
+// because the audience is different.
+//
+// GOING DOWN, the audience is the stations currently associated, and they are
+// told individually before the BSS closes:
 //
 //	""       whatever hostapd does on DISABLE, which is not something this box
 //	         can currently observe -- proving what leaves the antenna needs a
@@ -339,10 +341,21 @@ func (e *Engine) endRecovery(iface string) {
 //	         authentication, and usually comes back fastest
 //	drop     deauthenticate first: the harder goodbye, authentication and all
 //
-// Per request rather than a mode, because it is a property of THIS teardown.
-// An operator comparing how a device reacts to being told against how it reacts
-// to working it out wants to vary this between one press and the next, not
-// configure it once.
+// COMING UP, the audience is clients that still BELIEVE they are associated and
+// are not -- which is exactly the population a silent outage creates, since
+// cutting power tells nobody. hostapd's own start-time broadcast deauthentication
+// is aimed at them, telling them to start again rather than sit on a stale
+// association. This box switches that off globally (#224) because it lands on
+// the clients a measurement is watching; any non-empty notify turns it back on
+// for THIS start only.
+//
+// So it is not symmetric, and cannot be: on the way down the AP can address
+// stations it knows about, and on the way up all it can do is broadcast.
+//
+// Per request rather than a mode, in both directions, because it is a property
+// of THIS transition. An operator comparing how a device reacts to being told
+// against how it reacts to working it out wants to vary it between one press
+// and the next, not configure it once.
 func (e *Engine) SetAPEnabled(iface string, on bool, notify string) error {
 	if err := e.radioExists(iface); err != nil {
 		return err
@@ -392,6 +405,22 @@ func (e *Engine) SetAPEnabled(iface string, on bool, notify string) error {
 	}
 	e.logEvent(EventAction, iface, "", "%s access point %s", iface, asked)
 
+	// BEFORE the ENABLE, because hostapd reads this when it starts the BSS and
+	// not when the command arrives. Restored once the access point is up, in
+	// confirmAPState, so the suppression from #224 is the standing state and
+	// this is an exception for one start.
+	announced := on && notify != ""
+	if announced {
+		if _, err := hostapdSend(iface, "SET broadcast_deauth 1"); err != nil {
+			fmt.Printf("infinite-streaming-boa: %s announce-on-start: %v\n", iface, err)
+			announced = false
+		} else {
+			e.logEvent(EventAction, iface, "",
+				"%s will announce its access point coming back, so clients still "+
+					"holding a stale association are told to start again", iface)
+		}
+	}
+
 	// The reply is NOT the answer, for the reason reenableAP documents at
 	// length: hostapd acknowledges ENABLE only once the BSS is up, and on
 	// mt7921u at 80MHz that outlasts the socket's 2s deadline, so a healthy
@@ -407,13 +436,26 @@ func (e *Engine) SetAPEnabled(iface string, on bool, notify string) error {
 	// switch. Waiting here also blocked the interface's own reload, so the row
 	// they were looking at could not update until the thing it was waiting for
 	// had finished.
-	go e.confirmAPState(iface, on)
+	go e.confirmAPState(iface, on, announced)
 	return nil
 }
 
 // confirmAPState watches an access point actually change, and says so.
 // Background; the control has already returned.
-func (e *Engine) confirmAPState(iface string, on bool) {
+func (e *Engine) confirmAPState(iface string, on bool, announced bool) {
+	// Put the suppression back however this turns out. Leaving it on would make
+	// every LATER start announce itself too, which is the standing behaviour
+	// #224 exists to prevent -- and it would do so invisibly, because nothing
+	// after this press asked for it.
+	if announced {
+		defer func() {
+			if _, err := hostapdSend(iface, "SET broadcast_deauth 0"); err != nil {
+				e.logEvent(EventWarning, iface, "",
+					"could not restore the start-up silence on %s: %v — later "+
+						"restarts of this access point may announce themselves", iface, err)
+			}
+		}()
+	}
 	if !waitAPState(iface, 30*time.Second, on) {
 		e.forgetRadioOn()
 		e.freshenBridge()

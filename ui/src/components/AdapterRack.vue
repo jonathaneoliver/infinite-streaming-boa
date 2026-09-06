@@ -302,32 +302,43 @@ Clients ARE told it has gone, unlike a power cut.`
                come and go with the state of the radio it belongs to. Nothing
                on this row is conditionally rendered any more; state changes
                what a button DOES, never whether it is there. -->
-          <!-- With the access point already down this becomes the way BACK,
-               rather than sitting dead beside a button that offers it.
+          <!-- TELL, in whichever direction the radio is going.
 
-               There is deliberately no "tell & enable". Telling means
-               disassociating the clients on this radio, and there are none
-               while it is down -- nor any at the moment it comes up. The only
-               thing an access point can say on its way up is hostapd's
-               broadcast deauthentication, aimed at clients that still believe
-               they are associated, and that is switched OFF here on purpose
-               (#224): it lands on exactly the clients a measurement is
+               The audience differs, which is why this is not one action with a
+               sign flipped. Going down it is the stations currently
+               associated, addressed individually before the BSS closes. Coming
+               up it is clients that still BELIEVE they are associated and are
+               not -- exactly the population a silent outage creates, since
+               cutting power tells nobody -- and all the access point can do
+               for them is broadcast, which this box otherwise suppresses
+               (#224) because it lands on the clients a measurement is
                watching.
 
-               So the pair is asymmetric because the underlying actions are.
-               Going down can be announced; coming up cannot. -->
+               DEAUTHENTICATION in both directions, deliberately. The frames
+               differ from disassociation -- deauth withdraws authentication as
+               well as association, so a client must redo the whole handshake --
+               and an earlier version sent a disassociation on the way down
+               while the way up re-enabled a broadcast DEAUTH. That made the two
+               halves of one control disagree about what "tell" means, which is
+               no use to somebody comparing how a device reacts to being told.
+               Under WPA2 both force a full reconnect anyway, so the choice
+               costs nothing and buys one answer instead of two.
+
+               So: individually on the way down, by broadcast on the way up,
+               the same frame type in both, and never a no-op in either. -->
           <button
             class="ghost" :class="{ accent: r.powered && r.ap && !r.ap.enabled }"
             :disabled="busy || !r.powered || !r.ap
               || (apLive(r) && !r.ap?.stations)"
             :title="!apLive(r)
-              ? `Bring ${r.name}'s access point back up. There is no \'tell\' on the `
-                + `way up: nothing is associated yet, so there is nobody to tell.`
-              : `Disassociate all ${r.ap?.stations ?? 0} client(s), then take `
+              ? `Bring ${r.name}'s access point back up AND announce it, so a client `
+                + `still holding a stale association is told to start again rather `
+                + `than left to notice.`
+              : `Deauthenticate all ${r.ap?.stations ?? 0} client(s), then take `
                 + `${r.name}'s access point down. An explicit goodbye, rather than `
                 + `whatever hostapd does on its own.`"
-            @click="bridge.setAPEnabled(r.name, !apLive(r), apLive(r) ? 'nudge' : '')"
-          >{{ apLive(r) ? 'tell &amp; disable' : 'enable AP' }}</button>
+            @click="bridge.setAPEnabled(r.name, !apLive(r), apLive(r) ? 'drop' : 'announce')"
+          >{{ apLive(r) ? 'tell &amp; disable' : 'tell &amp; enable' }}</button>
           <button
             class="ghost" :disabled="busy || !apLive(r) || !r.ap?.stations"
             :title="apLive(r)
