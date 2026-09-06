@@ -292,13 +292,18 @@ Clients ARE told it has gone, unlike a power cut.`
                Its own button rather than a mode, because it is a property of
                one press: an operator comparing how a device reacts to being
                told against how it reacts to working it out varies this between
-               one press and the next. Shown only while there is an access
-               point up and somebody on it to tell -- with nobody there, the
-               announcement is the only thing that would differ from the plain
-               disable, and there is nobody to announce it to. -->
+               one press and the next.
+
+               NOT v-if. It was, on the reasoning that with nobody to tell the
+               announcement is the only thing that would differ -- which is an
+               argument for disabling it and never for removing it. The button
+               then vanished exactly when a radio's access point went down,
+               which is the third time a control on this row has been made to
+               come and go with the state of the radio it belongs to. Nothing
+               on this row is conditionally rendered any more; state changes
+               what a button DOES, never whether it is there. -->
           <button
-            v-if="apLive(r)"
-            class="ghost" :disabled="busy || !r.ap?.stations"
+            class="ghost" :disabled="busy || !apLive(r) || !r.ap?.stations"
             :title="`Disassociate all ${r.ap?.stations ?? 0} client(s), then take `
               + `${r.name}'s access point down. An explicit goodbye, rather than `
               + `whatever hostapd does on its own.`"
@@ -706,6 +711,14 @@ Clients ARE told it has gone, unlike a power cut.`
    browser parsing `.badge .badge.blank` as a descendant selector that matches
    nothing, so every quiet radio drew an empty outlined box. */
 .badge.blank { visibility: hidden; }
+/* And a CONSTANT width, or the reservation is worthless: hiding a badge that
+   held one space still gave back the difference between that and "AP
+   DISABLED", so the row slid anyway -- which is the whole fault this was
+   supposed to prevent. Wide enough for the longest thing it says. */
+.warn-badge {
+  min-width: 6.5rem;
+  text-align: center;
+}
 .badge.warn-badge {
   color: var(--warn);
   border-color: color-mix(in srgb, var(--warn) 45%, var(--line));
