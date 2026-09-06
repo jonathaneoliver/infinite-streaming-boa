@@ -84,7 +84,26 @@ export function useEvents(pollMs = 3000) {
       // wlan0" -- and reversed, every story on this box was told backwards.
       // Oldest at the top, scrolling up and off, is how every log an operator
       // has ever read behaves.
-      events.value = events.value.concat(body.events).slice(-KEEP);
+      // SORTED BY THE TIME SHOWN, not by the order they were recorded.
+      //
+      // Some events are deliberately backdated. An association is stamped from
+      // hostapd's own report of when the station went, not from when the daemon
+      // got round to logging it (#215), so "left wlan0" can carry a timestamp a
+      // second earlier than a line recorded before it. In insertion order that
+      // reads as a log that has lost the plot: an access point going down at
+      // .201 above a client leaving it at .250.
+      //
+      // Ties break on seq, which keeps the causal order within a millisecond --
+      // three events sharing 04:25:57.250 still read "told them", "asked it to
+      // go down", "it went down" rather than in whatever order a sort felt like.
+      //
+      // A backdated event can therefore appear ABOVE the newest line rather
+      // than at the bottom. That is correct: it happened earlier, and the log
+      // claims to be chronological.
+      events.value = events.value
+        .concat(body.events)
+        .sort((x, y) => x.at - y.at || x.seq - y.seq)
+        .slice(-KEEP);
       unseen.value += body.events.length;
     }
     err.value = '';
