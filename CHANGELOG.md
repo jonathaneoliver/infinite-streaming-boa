@@ -40,12 +40,16 @@ does while the link holds still.
 | Cope with an access point that says goodbye first | `deauth + disable AP` | No |
 | Behave as though it were N metres further away — lower rate, more delay, jitter and corruption, uplink degrading first | distance model | n/a — this is shaping, not a request |
 | Walk away from the router and back, on a clock, changing band as it goes | `walkabout` pattern | n/a |
-| Report what it can actually see on other channels | 802.11k beacon request | **Yes** — and every Apple client tested does |
 
-Two of those are honest "yes" answers, and they matter: a steer is a *request*,
-and a device that declines it is behaving correctly. The deny lists exist
-precisely because a request alone cannot choose the destination — see the
-limitations below for where even those do not reach.
+The first row is an honest "yes", and it matters: a steer is a *request*, and a
+device that declines it is behaving correctly. The deny lists exist precisely
+because a request alone cannot choose the destination — see the limitations
+below for where even those do not reach.
+
+**Asking a client what it can see is NOT on this list.** The 802.11k beacon
+request shipped (see below) and no client tested here has returned a report, so
+it is not something you can currently make a device do. #228 stays open for
+that reason.
 
 110 commits. The interface was rebuilt around the change: one scrolling view of
 fabric, adapters and devices, streaming rather than polling.
@@ -218,10 +222,13 @@ Carried forward from 0.1.0, plus what this release measured:
   adapters, with the capability advertised and hostapd accepting the request
   without complaint. `steer`, and the polite half of `gather` and `evict`, are
   silent no-ops from that radio.
-- **Apple clients answer no beacon-report request** — neither active nor
-  passive. The 802.11k implementation works, but the clients most likely to be
-  under test do not participate, so "why was this steer refused" is still
-  unanswered for them.
+- **No client tested here has returned a beacon report.** The 802.11k request
+  path ships and walks a mode ladder (active → passive → table), because a
+  client need not support all three and hostapd refuses to transmit a mode the
+  device has not advertised — measured 2026-09-06 on a MacBook:
+  `does not support active beacon report`. The feature is therefore built but
+  unproven against real clients, and the question it exists to answer — *why*
+  a steer was refused — is still unanswered. **#228 is deliberately left open.**
 - **A hotplug restarts the daemon**, which kills a running pattern without
   saying so.
 - **Wi-Fi airtime is shared**, so conditioning is additive on top of a variable
