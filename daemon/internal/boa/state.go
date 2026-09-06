@@ -976,6 +976,7 @@ func (e *Engine) tick() {
 			// port on every address, so a listener in the table is the whole
 			// answer and costs no connection.
 			Glances: PortListening(glancesPort), GlancesPort: glancesPort,
+			Services: serviceStates(),
 			LinkControl: e.anyLinkControl(),
 			LossBurst:   burstOK, LossBurstNote: burstNote,
 			NamesLearned: len(names), NamesByMAC: len(macNames),

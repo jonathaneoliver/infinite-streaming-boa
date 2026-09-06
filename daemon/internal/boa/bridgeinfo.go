@@ -121,11 +121,6 @@ type BridgeInfo struct {
 	// per-channel summary travels here, never the access point list -- that is
 	// hundreds of entries on a busy band, and this payload is polled.
 	Scans map[string]ScanSummary `json:"scans,omitempty"`
-	// Services are the box's own observability processes, and whether each is
-	// running. Carried on the bridge payload rather than the 1Hz snapshot
-	// because reading them costs a subprocess apiece: this view is built on a
-	// timer, the snapshot is built every second.
-	Services []ServiceInfo `json:"services,omitempty"`
 	// ReadAgeMs is how long ago this view was actually built, in milliseconds.
 	//
 	// It is built on a timer rather than per request, so it can be a couple of
@@ -344,7 +339,6 @@ func (e *Engine) buildBridgeState() BridgeInfo {
 	sort.SliceStable(bi.Ifaces, func(i, j int) bool {
 		return roleOrder(bi.Ifaces[i].Role) < roleOrder(bi.Ifaces[j].Role)
 	})
-	bi.Services = serviceStates()
 	bi.Notes = bridgeNotes(bi, e.cfg)
 	bi.Scans = e.lastScans()
 	bi.Airtime = e.AirtimePct()

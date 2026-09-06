@@ -572,6 +572,10 @@ export interface Capabilities {
   /** True only when the glances web UI is LISTENING, not merely installed. */
   glances: boolean;
   glances_port: number;
+  /** The box's own services and whether each is running, so the header can
+   *  offer a switch beside each link. Every controllable service appears,
+   *  running or not -- a stopped one still needs its start button. */
+  services?: ServiceInfo[];
   /** True when per-client link events (deauth/disassoc) can be driven -- i.e.
    *  hostapd is serving the AP and exposing its control socket. False on the
    *  onboard/NetworkManager radio, so the link actions are hidden rather than

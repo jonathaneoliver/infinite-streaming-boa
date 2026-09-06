@@ -142,34 +142,6 @@ const pending = ref('');
       <div v-else class="notice placeholder" aria-hidden="true">&nbsp;</div>
     </div>
 
-    <!-- THE BOX'S OWN PROCESSES, not the network's.
-         Here rather than beside the header links that open them, because a
-         link and a switch are different promises: one navigates, the other
-         changes the box, and mixing them in a row of pills invites the second
-         when the first was meant. They belong on this screen for the same
-         reason the radios do -- everything here is a thing the appliance IS,
-         rather than a device it is watching.
-         The reason they are switchable at all is CPU contention with a
-         measurement: ntopng inspects every packet on the bridge and works
-         hardest while a run is happening. Stopping it is how you take that
-         doubt out of a result. -->
-    <div v-if="(bridge.info.value?.services ?? []).length" class="services">
-      <span class="k">box services</span>
-      <template v-for="s in bridge.info.value?.services ?? []" :key="s.name">
-        <span class="svc">
-          <span class="dot" :class="{ on: s.running }" aria-hidden="true"></span>
-          {{ s.name }}
-          <button
-            class="ghost" :disabled="bridge.busy.value"
-            :title="s.running
-              ? `Stop ${s.name}. It competes for CPU with whatever you are measuring.`
-              : `Start ${s.name}.`"
-            @click="bridge.setService(s.name, !s.running)"
-          >{{ s.running ? 'stop' : 'start' }}</button>
-        </span>
-      </template>
-    </div>
-
     <!-- Standing facts about what is and is not being conditioned. An
          unwatched radio is an error-level notice: its clients pass traffic
          while appearing nowhere, which is the worst kind of quiet. -->
@@ -272,31 +244,6 @@ const pending = ref('');
 </template>
 
 <style scoped>
-.services {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 6px 14px;
-  margin: 0 0 10px;
-  font-size: 12px;
-  color: var(--ink-dim);
-}
-.services .k {
-  font-size: 10px;
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-  color: var(--ink-faint);
-  font-weight: 600;
-}
-.svc { display: inline-flex; align-items: center; gap: 6px; }
-/* Running state is shown as well as implied by the button, because a button
-   that says "stop" tells you what it will DO and leaves you to infer the state
-   -- which is the same misreading that made "AP up" mean the AP was down. */
-.svc .dot {
-  width: 7px; height: 7px; border-radius: 50%;
-  background: var(--ink-faint);
-}
-.svc .dot.on { background: var(--ok, #4ade80); }
 .radio-card { margin-bottom: 16px; }
 .card { padding-bottom: 14px; margin-bottom: 16px; }
 

@@ -459,6 +459,18 @@ type Capabilities struct {
 	// refused connection, so an image built without it degrades to silence.
 	Glances     bool `json:"glances"`
 	GlancesPort int  `json:"glances_port"`
+	// Services are the box's own observability processes and whether each is
+	// running, so the header can offer a switch beside each link.
+	//
+	// Distinct from the two booleans above, which report whether a PORT is
+	// listening and decide whether a link is worth showing at all. This lists
+	// every service the box will start or stop, running or not -- because a
+	// stopped service still needs its own start button, and gating that on the
+	// service being up would remove the only control that could bring it back.
+	//
+	// Cheap enough for the 1Hz snapshot because the reading is cached and
+	// invalidated on a press; see serviceStates.
+	Services []ServiceInfo `json:"services,omitempty"`
 	// LinkControl reports whether per-client link events (deauth/disassoc) can
 	// be driven -- i.e. hostapd is serving the AP and exposing its control
 	// socket. False on the onboard/NetworkManager radio, which offers no such

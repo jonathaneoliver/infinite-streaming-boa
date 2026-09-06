@@ -9,6 +9,30 @@ import BridgeView from '@/components/BridgeView.vue';
 import EventLog from '@/components/EventLog.vue';
 
 const { snap, connected, transport, series, bucketMs, setRange } = useSnapshot();
+
+/**
+ * Start or stop one of the box's own services.
+ *
+ * Straight to the endpoint rather than through useBridge: this lives in the
+ * header, which has no bridge view to borrow one from, and the running state
+ * comes back on the snapshot that is already arriving every second. The
+ * daemon invalidates its own cached reading on a press, so the next snapshot
+ * carries the new state rather than one up to ten seconds old.
+ */
+const svcBusy = ref('');
+async function toggleService(name: string, on: boolean) {
+  svcBusy.value = name;
+  try {
+    await fetch(`/api/services/${encodeURIComponent(name)}?on=${on ? 1 : 0}`, {
+      method: 'POST',
+    });
+  } finally {
+    // Cleared regardless: leaving the lamp disabled after a failure would take
+    // away the control that could retry it, and the error surfaces in the
+    // activity log either way.
+    svcBusy.value = '';
+  }
+}
 const dev = useDevice();
 
 /*
@@ -209,22 +233,44 @@ the file are replaced, devices not mentioned are left alone.">
           class="hidden-file" @change="onLoadConfig"
         />
       </label>
-      <a
-        v-if="caps?.ntopng"
-        class="pill link"
-        :href="ntopngUrl(caps.ntopng_port, '/lua/if_stats.lua')"
-        target="_blank" rel="noopener"
-        title="Traffic analysis for the whole bridge, in ntopng"
-      >ntopng ↗</a>
-      <a
-        v-if="caps?.glances"
-        class="pill link"
-        :href="glancesUrl(caps.glances_port)"
-        target="_blank" rel="noopener"
-        title="The box's own health -- CPU, memory, temperature, disk and
-per-process load -- in glances. Says nothing about the clients; this is the
-appliance watching itself."
-      >glances ↗</a>
+      <!-- THE LINK AND ITS SWITCH, together, because they are about the same
+           thing and were previously in two places -- a row on the bridge
+           screen for the switches and these pills for the links.
+
+           The lamp is the control. Off, the pill stays put and stops being a
+           link: a stopped service still needs its own start button, and
+           hiding the pill when the service goes down would take away the only
+           thing that could bring it back -- the same fault as controls that
+           vanished from an adapter row when its radio went quiet.
+
+           These are switchable at all because of what they cost a
+           MEASUREMENT, not what they cost the box: ntopng inspects every
+           packet crossing the bridge, so it works hardest exactly while a run
+           is happening -- 7% of a core idle, 71% under load. -->
+      <span
+        v-for="svc in caps?.services ?? []" :key="svc.name"
+        class="pill link svc" :class="{ dead: !svc.running }"
+      >
+        <button
+          class="led" :class="{ on: svc.running }"
+          :disabled="svcBusy === svc.name"
+          :title="svc.running
+            ? `Stop ${svc.name}. It competes for CPU with whatever you are measuring.`
+            : `Start ${svc.name}.`"
+          @click="toggleService(svc.name, !svc.running)"
+        />
+        <a
+          v-if="svc.running"
+          :href="svc.name === 'ntopng'
+            ? ntopngUrl(caps!.ntopng_port, '/lua/if_stats.lua')
+            : glancesUrl(caps!.glances_port)"
+          target="_blank" rel="noopener"
+          :title="svc.name === 'ntopng'
+            ? 'Traffic analysis for the whole bridge, in ntopng'
+            : `The box's own health -- CPU, memory, temperature, disk and per-process load -- in glances. Says nothing about the clients; this is the appliance watching itself.`"
+        >{{ svc.name }} ↗</a>
+        <span v-else :title="`${svc.name} is stopped`">{{ svc.name }}</span>
+      </span>
     </header>
 
     <!-- Above everything, because it belongs to the box rather than to any one
