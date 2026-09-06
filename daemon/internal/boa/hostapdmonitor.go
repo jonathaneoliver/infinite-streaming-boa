@@ -387,6 +387,20 @@ func (e *Engine) noteAssoc(iface, mac string, connected bool) {
 		e.assocSeen = map[string]assocObs{}
 	}
 	e.assocSeen[mac] = assocObs{iface: iface, at: time.Now(), connected: connected}
+
+	// A DURABLE record of the departure, which assocSeen cannot be: assocTime
+	// consumes that one so a single transition stamps a single event, and the
+	// tick needs to keep asking "has this client left?" for as long as it is
+	// deciding whether to list it. Cleared on the way back in, so a client that
+	// returns is not held out by a departure it has already reversed.
+	if e.assocGone == nil {
+		e.assocGone = map[string]time.Time{}
+	}
+	if connected {
+		delete(e.assocGone, mac)
+	} else {
+		e.assocGone[mac] = time.Now()
+	}
 }
 
 // assocTime is when hostapd saw this client's most recent transition of the

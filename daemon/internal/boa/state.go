@@ -160,6 +160,19 @@ type Engine struct {
 	// radio; guaranteed with two.
 	radioOnAt map[string]time.Time
 
+	// assocGone is when hostapd last said a client had LEFT a radio.
+	//
+	// Kept because absence and departure are different facts. A station missing
+	// from the driver's table might be gone, or might be mid-roam or in a
+	// power-save transition -- which is why presence has a minute of grace. An
+	// AP-STA-DISCONNECTED is not ambiguous: the box was TOLD, by the same event
+	// that writes "X left wlan-usb" in the activity log, and there is nothing
+	// to be cautious about.
+	//
+	// Separate from assocSeen, which assocTime CONSUMES so that one transition
+	// stamps one event. This has to outlive being read.
+	assocGone map[string]time.Time
+
 	// deadzones are the bans currently held in hostapd's deny lists.
 	//
 	// Tracked because those lists are RUNTIME state: they are set over the
@@ -713,6 +726,19 @@ func (e *Engine) tick() {
 		// would be worse than a stale entry. The device stays LISTED either
 		// way; only "present" changes.
 		if e.cfg.IsWlan(sn.Port) {
+			// TOLD beats inferred. The grace below exists because absence from
+			// the station table is ambiguous; an explicit disconnect is not, so
+			// a client hostapd has reported leaving is dropped at once rather
+			// than lingering for the grace period.
+			//
+			// This is the difference an operator noticed: the activity log said
+			// "X left wlan-usb" the moment it happened, and the adapter's
+			// client list went on showing X for another minute. Both were
+			// reading the same radio; only one of them was listening.
+			if gone, ok := e.assocGone[mac]; ok &&
+				gone.After(time.UnixMilli(e.lastAssoc[mac])) {
+				continue
+			}
 			if last, seen := e.lastAssoc[mac]; !seen ||
 				now.Sub(time.UnixMilli(last)) > wlanPresenceGrace {
 				continue
