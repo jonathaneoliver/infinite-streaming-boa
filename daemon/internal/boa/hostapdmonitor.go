@@ -43,6 +43,11 @@ type pendingSteer struct {
 	iface string
 	to    string
 	at    time.Time
+	// insist records that this steer carried disassoc_imminent, so silence can
+	// be reported with what happens next rather than as a dead end. Without it
+	// the log said "did not answer, and has not moved" and then the device
+	// moved anyway seconds later, with nothing in between explaining why.
+	insist bool
 }
 
 // btmStatus renders an 802.11 BSS Transition Management status code.
@@ -78,13 +83,15 @@ func btmStatus(code int) string {
 
 // notePendingSteer records a request so that an answer -- or the absence of one
 // -- can be attributed to it.
-func (e *Engine) notePendingSteer(mac, fromIface, toIface string) {
+func (e *Engine) notePendingSteer(mac, fromIface, toIface string, insist bool) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	if e.pendingSteers == nil {
 		e.pendingSteers = map[string]pendingSteer{}
 	}
-	e.pendingSteers[mac] = pendingSteer{iface: fromIface, to: toIface, at: time.Now()}
+	e.pendingSteers[mac] = pendingSteer{
+		iface: fromIface, to: toIface, at: time.Now(), insist: insist,
+	}
 }
 
 // takePendingSteer removes and returns a pending request, if there is one.
@@ -138,6 +145,27 @@ func (e *Engine) reportMuteSteers() {
 				"%s moved to %s without answering — it acted on the request "+
 					"but sent no 802.11v response",
 				label, e.describeRadio(to))
+			continue
+		}
+		if m.p.insist {
+			// Says what happens NEXT, because something does. The deadline is
+			// measured from the request, so by the time silence is reported
+			// most of it has already elapsed -- and an operator told only
+			// "has not moved" has no reason to keep watching the very window
+			// in which the interesting thing happens.
+			//
+			// "now" rather than a countdown to zero: with evictDisassocSec at
+			// or below btmWait the deadline has already arrived by the time
+			// this runs, and "in about 0s" reads as a bug.
+			when := "now"
+			if left := evictDisassocSec - int(btmWait/time.Second); left > 1 {
+				when = fmt.Sprintf("in about %ds", left)
+			}
+			e.logEvent(EventAction, m.p.iface, m.mac,
+				"%s did not answer the request to leave for %s. It is being "+
+					"disassociated %s and will then pick a radio for itself — "+
+					"which need not be that one",
+				label, m.p.to, when)
 			continue
 		}
 		e.logEvent(EventAction, m.p.iface, m.mac,
@@ -275,6 +303,35 @@ func (e *Engine) handleHostapdEvent(iface, msg string) {
 		msg = msg[i+1:]
 	}
 	msg = strings.TrimSpace(msg)
+
+	// Associations, timestamped by hostapd rather than by the tick that would
+	// otherwise notice them up to a second later. These raise no event of their
+	// own -- the tick still decides WHAT happened, so a radio without a control
+	// socket is not silently dropped from the log -- they only record WHEN, for
+	// the tick to stamp its own event with. See noteAssoc and addAt.
+	if rest, ok := strings.CutPrefix(msg, "AP-STA-CONNECTED "); ok {
+		e.noteAssoc(iface, firstField(rest), true)
+		return
+	}
+	if rest, ok := strings.CutPrefix(msg, "AP-STA-DISCONNECTED "); ok {
+		e.noteAssoc(iface, firstField(rest), false)
+		return
+	}
+
+	// A client's answer to a beacon request: what IT heard, for a BSS it is not
+	// associated to. See beaconreport.go and #228.
+	//
+	//	BEACON-RESP-RX <mac> <token> <rep_mode> <measurement report hexdump>
+	//
+	// rep_mode is non-zero when the client REFUSED or could not run the
+	// measurement, and carries no report body with it -- a refusal logged as a
+	// missing report would read as a parse failure, so the two are separated
+	// here rather than at the point they are printed.
+	if rest, ok := strings.CutPrefix(msg, "BEACON-RESP-RX "); ok {
+		e.handleBeaconResp(rest)
+		return
+	}
+
 	rest, ok := strings.CutPrefix(msg, "BSS-TM-RESP ")
 	if !ok {
 		return
@@ -325,4 +382,171 @@ func targetNote(bssid string) string {
 		return ""
 	}
 	return " (" + bssid + ")"
+}
+
+// firstField is the MAC out of the remainder of an AP-STA-* line, which may
+// carry more words after it depending on hostapd's build.
+func firstField(rest string) string {
+	if f := strings.Fields(rest); len(f) > 0 {
+		return f[0]
+	}
+	return ""
+}
+
+// assocFresh is how long an observation may be used to stamp an event.
+//
+// Comfortably more than a tick, so a transition seen just after one poll is
+// still available to the next, and short enough that a stale record cannot
+// backdate an unrelated event later on. A client that joins, leaves and rejoins
+// inside this window has its most recent transition used, which is the one the
+// tick is about to raise.
+const assocFresh = 5 * time.Second
+
+// assocObs is one association transition as hostapd reported it, in real time.
+type assocObs struct {
+	iface     string
+	at        time.Time
+	connected bool
+}
+
+// noteAssoc records that hostapd saw a client associate or disassociate, with
+// the time it said so.
+//
+// Deliberately NOT an event. hostapd only speaks for radios it is serving, and
+// this box can run one radio under hostapd and another under NetworkManager --
+// see anyLinkControl. Raising the log line from here would make a client on the
+// second radio invisible, which is a worse failure than a coarse timestamp. So
+// the tick remains the single thing that decides an event happened, and this
+// only sharpens when it says it did.
+func (e *Engine) noteAssoc(iface, mac string, connected bool) {
+	mac = normMAC(mac)
+	if !validMAC(mac) {
+		return
+	}
+	// A gather's deny list exists to constrain one re-association. This is that
+	// re-association, so the ban has done its job and can go now rather than
+	// sitting out a timeout.
+	//
+	// Registered BEFORE the unlock below, which means it runs AFTER it: deferred
+	// calls run last-in-first-out, so a defer placed after `defer e.mu.Unlock()`
+	// would run while the lock is still held -- and liftPinOnArrival takes the
+	// same non-reentrant mutex. That was a deadlock, and it presented as the
+	// whole test binary hanging until Go's ten-minute timeout killed it rather
+	// than as anything pointing at this line.
+	if connected {
+		defer e.liftPinOnArrival(iface, mac)
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.assocSeen == nil {
+		e.assocSeen = map[string]assocObs{}
+	}
+	e.assocSeen[mac] = assocObs{iface: iface, at: time.Now(), connected: connected}
+
+	// A DURABLE record of the departure, which assocSeen cannot be: assocTime
+	// consumes that one so a single transition stamps a single event, and the
+	// tick needs to keep asking "has this client left?" for as long as it is
+	// deciding whether to list it. Cleared on the way back in, so a client that
+	// returns is not held out by a departure it has already reversed.
+	if e.assocGone == nil {
+		e.assocGone = map[string]time.Time{}
+	}
+	if connected {
+		delete(e.assocGone, mac)
+	} else {
+		e.assocGone[mac] = time.Now()
+	}
+}
+
+// assocTime is when hostapd saw this client's most recent transition of the
+// kind being reported, or now if it did not see one.
+//
+// The record is consumed, so a single transition stamps a single event: if the
+// same observation stamped a join and then a later leave, the second would
+// carry a time it has no claim to.
+func (e *Engine) assocTime(mac string, connected bool) time.Time {
+	now := time.Now()
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	obs, ok := e.assocSeen[mac]
+	if !ok || obs.connected != connected || now.Sub(obs.at) > assocFresh {
+		return now
+	}
+	delete(e.assocSeen, mac)
+	return obs.at
+}
+
+// handleBeaconResp decodes one BEACON-RESP-RX payload: everything after the
+// event name.
+func (e *Engine) handleBeaconResp(rest string) {
+	fields := strings.Fields(rest)
+	// mac, token, rep_mode, report -- the report is absent on a refusal.
+	if len(fields) < 3 {
+		return
+	}
+	mac := normMAC(fields[0])
+	if !validMAC(mac) {
+		return
+	}
+	// rep_mode is a bitmask: late, incapable, refused. Any bit set means there
+	// is no measurement to read, and saying WHICH is the difference between "it
+	// cannot do this" and "it would not do this now".
+	repMode, err := strconv.ParseUint(fields[2], 16, 8)
+	if err != nil {
+		return
+	}
+	if repMode != 0 {
+		e.logEvent(EventWarning, e.radioFor(mac), mac,
+			"%s declined to measure the other radios: %s",
+			e.labelFor(mac), beaconRefusal(uint8(repMode)))
+		return
+	}
+	// Accepted, and answered with NOTHING.
+	//
+	// Not a malformed response and not a refusal: the client ran the
+	// measurement and found no BSS to report. In beacon-table mode -- the only
+	// mode Apple devices here accept -- that means the BSSID was not in its
+	// scan cache, so it never looked rather than looked and heard nothing.
+	//
+	// MEASURED 2026-09-06: an iPhone answered exactly this for both other
+	// radios on the box. Logged rather than dropped, because an empty answer is
+	// the outcome and a silent return leaves the operator watching a button
+	// that appears to do nothing at all.
+	if len(fields) < 4 || strings.TrimSpace(fields[3]) == "" {
+		e.logEvent(EventWarning, e.radioFor(mac), mac,
+			"%s accepted the measurement but reported no BSS — in scan-cache "+
+				"mode that means the radio was not in its cache, so it never "+
+				"went and listened", e.labelFor(mac))
+		return
+	}
+	br, err := parseBeaconReport(fields[3])
+	if err != nil {
+		e.logEvent(EventWarning, e.radioFor(mac), mac,
+			"%s answered a beacon request but the report could not be read: %v",
+			e.labelFor(mac), err)
+		return
+	}
+	e.noteBeaconReport(mac, br)
+}
+
+// beaconRefusal renders the Measurement Report Mode bits in words.
+//
+// In words for the same reason btmStatus is: a bare "rep_mode=2" in an activity
+// log is a value the reader has to go and look up, which in practice means it
+// does not get read. The bits are from IEEE 802.11 Figure 9-198.
+func beaconRefusal(mode uint8) string {
+	var why []string
+	if mode&0x01 != 0 {
+		why = append(why, "it was too late to start the measurement")
+	}
+	if mode&0x02 != 0 {
+		why = append(why, "it is not capable of this measurement")
+	}
+	if mode&0x04 != 0 {
+		why = append(why, "it refused")
+	}
+	if len(why) == 0 {
+		return fmt.Sprintf("report mode 0x%02x", mode)
+	}
+	return strings.Join(why, "; ")
 }

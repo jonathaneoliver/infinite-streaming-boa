@@ -374,6 +374,29 @@ select, input[type='text'], input[type='number'] {
 .pill.link { text-decoration: none; }
 .pill.link:hover { color: var(--ink); border-color: var(--ink-faint); }
 
+/* A service pill: a lamp that is also the switch, beside the link it opens.
+   Stopped, the pill keeps its place and dims -- it must not disappear, because
+   its own lamp is the only way to start the service again. */
+.pill.svc { display: inline-flex; align-items: center; gap: 7px; }
+.pill.svc a,
+.pill.svc > span { text-decoration: none; color: inherit; }
+.pill.svc.dead { color: var(--ink-faint); }
+.led {
+  width: 8px;
+  height: 8px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: var(--ink-faint);
+  cursor: pointer;
+  /* Bigger than it looks: 8px is a fair lamp and a poor target, so the hit
+     area is padded out without moving anything around it. */
+  box-shadow: 0 0 0 4px transparent;
+}
+.led:hover { box-shadow: 0 0 0 4px rgb(255 255 255 / 8%); }
+.led.on { background: var(--ok); }
+.led:disabled { cursor: default; opacity: 0.5; }
+
 .empty { text-align: center; padding: 56px 20px; color: var(--ink-faint); }
 
 /* The file input is driven by a button, so it never shows itself.

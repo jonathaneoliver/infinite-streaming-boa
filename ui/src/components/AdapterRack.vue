@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue';
 import type { IfaceInfo, Series } from '@/types';
+import { DEVELOPER } from '@/types';
 import { rackAdapters, isOpen, toggleAdapter } from '@/composables/useAdapters';
 import AdapterStack from '@/components/AdapterStack.vue';
 import type { useBridge } from '@/composables/useBridge';
@@ -61,16 +62,123 @@ function showClient(mac: string) {
 }
 
 /**
+ * Whether this radio can act on its clients at all.
+ *
+ * Everything on the row except the two switches goes through hostapd on THIS
+ * radio: a deauth, a disassociation, a steer in either direction and a band
+ * scan all need a BSS to issue them from. With the radio powered off, or its
+ * access point down, none of them can do anything -- so they say so by being
+ * dead rather than by failing when pressed.
+ *
+ * The two switches are deliberately exempt. `switch on` and `enable AP` are the
+ * way BACK, and a row that greys out its own recovery controls when a radio is
+ * down has locked the operator out of the one state they need to leave.
+ *
+ * The distinction that matters, and the one an earlier version got wrong: this
+ * is THIS radio's own state. Disabling a control because of the OTHER radio is
+ * what made buttons vanish and then flicker while an operator worked, and it is
+ * not something a button on this row should ever be saying.
+ */
+/**
+ * What is wrong with this radio, in two words, or nothing.
+ *
+ * Four states rather than the two it began with, because the row grew controls
+ * that create states the badge could not describe: a radio can now have its
+ * access point taken down while staying powered, and that is invisible in a row
+ * whose other indicators all still read normally.
+ *
+ * Ordered by which fact makes the others moot. A radio with its transmitter off
+ * has no access point either, and saying so twice would be noise; a radio the
+ * daemon does not watch is not being conditioned at all, which outranks
+ * anything about its access point.
+ *
+ * "no AP" is the one that is not an operator's doing: powered, watched, and
+ * hostapd is not answering for it. That is the shape of the wedge in #182, and
+ * it is worth a badge precisely because every other indicator on the row looks
+ * healthy while it is true.
+ */
+function warnText(r: IfaceInfo): string {
+  if (!r.serving) return 'not serving';
+  // The STATE, in the same words the pattern lane uses for it: a lane authoring
+  // `radio-off` and a badge reading `off` are the same condition, and a reader
+  // should not have to work that out. The BUTTONS keep their verbs -- a control
+  // does something, a badge and a lane name a condition, and "switch off" is
+  // the action that produces "radio off". See #229.
+  if (r.power_known && !r.powered) return 'radio off';
+  if (!r.ap) return 'no AP';
+  // Before "AP disabled", because it IS one as far as `enabled` goes and the
+  // two need opposite actions: a disabled AP is switched back on, whereas this
+  // one has an interface that went away under hostapd and needs hostapd
+  // restarted. Reported as the same thing, an operator presses enable, watches
+  // it claim success, and still cannot join -- which is how twenty minutes went
+  // missing on 2026-09-06.
+  if (r.ap.link_down) return 'link down';
+  // "AP disabled", matching the control that produces it and the pattern lane
+  // that schedules it -- one word family for one thing, which is the whole
+  // point of #229. It read "AP down" briefly, which was a second name for the
+  // same state and sat confusingly next to "link down" above, a genuinely
+  // different fault needing a different fix.
+  if (!r.ap.enabled) return 'AP disabled';
+  return '';
+}
+
+function apLive(r: IfaceInfo): boolean {
+  return r.powered !== false && r.ap?.enabled === true;
+}
+
+/**
  * The other radio clients can be moved between, as the whole interface rather
  * than just its name -- gathering needs to know how many stations are on it,
  * not only that it exists.
  *
- * Undefined on a one-radio box, where BOTH controls are absent rather than
- * present and dead: a transition request has to name another access point, so
- * with nowhere to send anyone there is nothing to offer.
+ * EXISTENCE, not health.
+ *
+ *
+ * This decides only whether a peer EXISTS, which depends on how many radios the
+ * box has and so never changes while anyone is looking. It previously required
+ * `o.ap?.enabled`, so the moment the other radio's access point went down these
+ * two buttons vanished from THIS radio's row and every control after them slid
+ * left under the pointer. On a one-radio box they are present and dead rather
+ * than absent, for the same reason.
  */
-function otherRadio(r: IfaceInfo): IfaceInfo | undefined {
-  return rackAdapters.value.find((o) => o.name !== r.name && o.ap?.enabled);
+/**
+ * EVERY other radio, which is what gather actually acts on.
+ *
+ * There was a singular otherRadio() returning the FIRST other wireless
+ * interface. That was the whole answer on a two-radio box and became wrong the
+ * moment a third appeared: a client sitting on the radio that happened to sort
+ * third was invisible to every row, so gather was greyed out everywhere with
+ * nothing saying why. It is gone rather than left beside this one, because a
+ * helper that quietly picks one of three is a trap to reach for.
+ */
+function otherRadios(r: IfaceInfo): IfaceInfo[] {
+  return rackAdapters.value.filter((o) => o.name !== r.name && o.wireless);
+}
+
+/** How many clients gather would be asking to move, across all other radios. */
+function gatherable(r: IfaceInfo): number {
+  return otherRadios(r).reduce((n, o) => n + (o.ap?.stations ?? 0), 0);
+}
+
+/**
+ * Where an eviction sends them: the FIRST access point that is actually up, in
+ * rack order.
+ *
+ * Named in the tooltip rather than left implicit, so the choice is visible
+ * before it is made rather than inferred from the log afterwards -- but the
+ * rule itself is the daemon's, not a second opinion. OtherRadio in
+ * radioprofile.go takes the first serving radio in WlanPorts order, and this
+ * takes the first in rack order, which lists the same radios the same way.
+ *
+ * Emptiest-first was tried here and reverted. It spreads clients, which reads
+ * as the better behaviour until you notice it makes the destination depend on
+ * transient state: the same button resolves differently on two runs of one
+ * test, and the client card -- which asks the daemon -- named a different
+ * radio than this did for the same move. One box has to give one answer, and
+ * on a measurement box that answer has to be the predictable one.
+ */
+function evictTo(r: IfaceInfo): IfaceInfo | undefined {
+  return otherRadios(r).find((o) => o.ap?.enabled);
 }
 
 /**
@@ -162,15 +270,46 @@ function degraded(i: IfaceInfo): boolean {
         <span v-else class="who-none">no clients</span>
 
         <div class="tail">
-          <span v-if="!r.serving && r.wireless" class="badge warn-badge">not serving</span>
-          <span v-else-if="r.power_known && !r.powered" class="badge warn-badge">off</span>
+          <!-- The badge holds its place whether or not it has anything to say.
+               It sits before the buttons in a flex row, so appearing pushed
+               every control along by its own width -- mid-press, on the one
+               radio whose state was changing. -->
+          <span
+            v-if="r.wireless" class="badge warn-badge"
+            :class="{ blank: !warnText(r) }"
+            :title="warnText(r) === 'AP disabled'
+              ? `${r.name} is powered, but its access point is down — clients cannot join it.`
+              : warnText(r) === 'no AP'
+                ? `${r.name} is powered and watched, but hostapd is not answering for it.`
+                : undefined"
+          >{{ warnText(r) || '\u00a0' }}</span>
 
         <!-- The actions reached for constantly. Every one of these acts on
              EVERY client on this adapter -- which is why the devices are named
              at the left of the row rather than counted on a button. "drop 2"
              read as part of the label, as though there were some other drop. -->
-        <template v-if="r.ap">
+        <!-- DRAWN WHENEVER THIS IS A RADIO, never gated on hostapd being
+             readable. `r.ap` is absent whenever the control socket cannot be
+             read -- a wedged adapter, a rebuild, a band scan -- which is
+             precisely when an operator is watching this row and reaching for
+             these controls. Removing them then took the whole set off the page
+             and slid everything below it upwards, so a click already committed
+             to landed somewhere else.
+             A disabled button says "not now"; an absent one says "this box
+             cannot do that", and only one of those is true here. -->
+        <template v-if="r.wireless">
+          <!-- CUTTING POWER IS BEHIND developer=1.
+               It is the most destructive control here and the least
+               recoverable: rfkill wedges the USB adapter often enough that
+               #182 exists about it, and the recovery takes about two minutes
+               during which the radio serves nobody. `disable AP` produces the
+               same visible outcome -- the network goes away -- for a client
+               that is told, comes back in a second, and has never wedged
+               anything. That is the one to reach for by default.
+               Not removed, because a silent outage is a real experiment and
+               the only way to make one; just not the button nearest to hand. -->
           <button
+            v-if="DEVELOPER"
             class="ghost" :class="{ accent: r.power_known && !r.powered }"
             :disabled="busy || !r.power_known"
             :title="r.powered
@@ -178,16 +317,101 @@ function degraded(i: IfaceInfo): boolean {
               : `Switch ${r.name} back on.`"
             @click="bridge.setPower(r.name, !r.powered)"
           >{{ r.powered ? 'switch off' : 'switch on' }}</button>
+          <!-- THE OTHER HALF OF THE PAIR, and it sits next to the power switch
+               on purpose: the two look identical to a client -- the network
+               goes away -- and differ in the one respect being tested, whether
+               it was TOLD. Power is rfkill and says nothing; this closes the
+               BSS with the transmitter still on, so the departure is announced.
+               Side by side is what makes them read as a choice of mechanism
+               rather than two unrelated ways to break the same thing.
+
+               VERBS, not states. These first read "AP up" / "AP down", which
+               name the action the same way "switch on" / "switch off" do -- but
+               those two are unmistakably imperative and these two are not. "AP
+               up" on a radio whose access point is DOWN parses as a status
+               label announcing the opposite of the truth, which is worse than
+               ambiguous on a control an operator reaches for precisely when
+               they are unsure what state a radio is in. -->
           <button
-            class="ghost" :disabled="busy || !r.ap.stations"
-            :title="`Deauthenticate all ${r.ap.stations} client(s). They are told, so they reconnect quickly.`"
-            @click="bridge.linkAll(r.name, 'drop')"
-          >drop</button>
+            class="ghost" :class="{ accent: r.powered && r.ap && !r.ap.enabled }"
+            :disabled="busy || !r.powered || !r.ap"
+            :title="r.ap?.enabled
+              ? `Take ${r.name}'s access point down, leaving the radio powered. \
+Clients ARE told it has gone, unlike a power cut.`
+              : `Bring ${r.name}'s access point back up.`"
+            @click="bridge.setAPEnabled(r.name, !r.ap?.enabled)"
+          >{{ r.ap?.enabled === false ? 'enable AP' : 'disable AP' }}</button>
+          <!-- The same teardown with an EXPLICIT goodbye first.
+               Its own button rather than a mode, because it is a property of
+               one press: an operator comparing how a device reacts to being
+               told against how it reacts to working it out varies this between
+               one press and the next.
+
+               NOT v-if. It was, on the reasoning that with nobody to tell the
+               announcement is the only thing that would differ -- which is an
+               argument for disabling it and never for removing it. The button
+               then vanished exactly when a radio's access point went down,
+               which is the third time a control on this row has been made to
+               come and go with the state of the radio it belongs to. Nothing
+               on this row is conditionally rendered any more; state changes
+               what a button DOES, never whether it is there. -->
+          <!-- DEAUTH +, in whichever direction the radio is going.
+
+               Named for the frame it sends rather than for the intention
+               behind it. It was "tell", which was friendly and hid which frame
+               went out -- the same fault "drop" had for a deauthentication and
+               "nudge" for a disassociation, in an interface whose whole job is
+               to be precise about exactly that. See #229.
+
+               The audience differs, which is why this is not one action with a
+               sign flipped. Going down it is the stations currently
+               associated, addressed individually before the BSS closes. Coming
+               up it is clients that still BELIEVE they are associated and are
+               not -- exactly the population a silent outage creates, since
+               cutting power tells nobody -- and all the access point can do
+               for them is broadcast, which this box otherwise suppresses
+               (#224) because it lands on the clients a measurement is
+               watching.
+
+               DEAUTHENTICATION in both directions, deliberately. The frames
+               differ from disassociation -- deauth withdraws authentication as
+               well as association, so a client must redo the whole handshake --
+               and an earlier version sent a disassociation on the way down
+               while the way up re-enabled a broadcast DEAUTH. That made the two
+               halves of one control disagree about which frame goes out, which is
+               no use to somebody comparing how a device reacts to being told.
+               Under WPA2 both force a full reconnect anyway, so the choice
+               costs nothing and buys one answer instead of two.
+
+               So: individually on the way down, by broadcast on the way up,
+               the same frame type in both, and never a no-op in either. -->
           <button
-            class="ghost" :disabled="busy || !r.ap.stations"
-            title="Disassociate every client — the softer transition."
-            @click="bridge.linkAll(r.name, 'nudge')"
-          >nudge</button>
+            class="ghost" :class="{ accent: r.powered && r.ap && !r.ap.enabled }"
+            :disabled="busy || !r.powered || !r.ap
+              || (apLive(r) && !r.ap?.stations)"
+            :title="!apLive(r)
+              ? `Bring ${r.name}'s access point back up AND announce it, so a client `
+                + `still holding a stale association is told to start again rather `
+                + `than left to notice.`
+              : `Deauthenticate all ${r.ap?.stations ?? 0} client(s), then take `
+                + `${r.name}'s access point down. An explicit goodbye, rather than `
+                + `whatever hostapd does on its own.`"
+            @click="bridge.setAPEnabled(r.name, !apLive(r), true)"
+          >{{ apLive(r) ? 'deauth + disable AP' : 'deauth + enable AP' }}</button>
+          <button
+            class="ghost" :disabled="busy || !apLive(r) || !r.ap?.stations"
+            :title="apLive(r)
+              ? `Deauthenticate all ${r.ap?.stations ?? 0} client(s). They are told, so they reconnect quickly.`
+              : `${r.name} has no access point up, so there is nothing to deauthenticate from.`"
+            @click="bridge.linkAll(r.name, 'deauth')"
+          >deauth</button>
+          <button
+            class="ghost" :disabled="busy || !apLive(r) || !r.ap?.stations"
+            :title="apLive(r)
+              ? 'Disassociate every client — the softer transition.'
+              : `${r.name} has no access point up, so there is nobody to disassociate.`"
+            @click="bridge.linkAll(r.name, 'disassoc')"
+          >disassoc</button>
           <!-- EVICT and GATHER: the same 802.11v request in both directions.
                One button called "steer" only ever emptied a radio, which is
                half the question. "Move everyone to the other band" and "bring
@@ -197,24 +421,48 @@ function degraded(i: IfaceInfo): boolean {
                named after the wrong radio.
                Each is disabled when its source radio has nobody on it, so a
                dead button always means "there is no one to move", never "this
-               is not supported". -->
+               is not supported".
+
+               Gated on THIS radio's access point, and never on the other
+               one's. The difference is the whole lesson from getting it wrong
+               twice: keyed to the PEER's state these vanished, and then
+               flickered, while an operator was working -- and a greyed button
+               then meant "some other radio is down", which is not something a
+               button on this row should ever say.
+               Its own AP is different. With no BSS here there is genuinely
+               nothing to steer, and dead is the honest state. -->
           <button
-            v-if="otherRadio(r)" class="ghost" :disabled="busy || !r.ap.stations"
-            :title="`Ask all ${r.ap.stations} client(s) on ${r.name} to move to `
-              + `${otherRadio(r)!.name} (802.11v). They may refuse.`"
+            class="ghost"
+            :disabled="busy || !apLive(r) || !r.ap?.stations || !evictTo(r)"
+            :title="!apLive(r)
+              ? `${r.name} has no access point up, so it has nobody to move.`
+              : !evictTo(r)
+                ? 'No other access point is up for them to go to.'
+                : `Push all ${r.ap?.stations ?? 0} client(s) off ${r.name} and deny `
+                  + `them here, so they cannot come straight back. Each ban lifts as `
+                  + `soon as that client lands somewhere. Where each one goes is its `
+                  + `own choice — this empties a radio, it does not place anyone.`"
             @click="bridge.evict(r.name)"
           >evict</button>
           <button
-            v-if="otherRadio(r)" class="ghost"
-            :disabled="busy || !otherRadio(r)!.ap?.stations"
-            :title="`Ask all ${otherRadio(r)!.ap?.stations ?? 0} client(s) on `
-              + `${otherRadio(r)!.name} to move here to ${r.name} (802.11v). `
-              + `They may refuse.`"
-            @click="bridge.gather(r.name, otherRadio(r)!.name)"
+            class="ghost"
+            :disabled="busy || !apLive(r) || !gatherable(r)"
+            :title="!apLive(r)
+              ? `${r.name} has no access point up, so there is nowhere here to gather them to.`
+              : !otherRadios(r).length
+                ? 'No other radio on this box to gather from.'
+                : `Move all ${gatherable(r)} client(s) on `
+                  + `${otherRadios(r).map((o) => o.name).join(' and ')} here by denying `
+                  + `them on the others. Each ban lifts as soon as that client arrives. `
+                  + `They cannot refuse — this removes the alternatives rather than `
+                  + `asking. Use steer on a client to test whether it honours a request.`"
+            @click="bridge.gather(r.name)"
           >gather</button>
           <button
-            class="ghost" :disabled="busy"
-            title="Survey the band. Costs a few beacon gaps, or an outage on a radio that will not scan while serving."
+            class="ghost" :disabled="busy || !apLive(r)"
+            :title="apLive(r)
+              ? 'Survey the band. Costs a few beacon gaps, or an outage on a radio that will not scan while serving.'
+              : `${r.name} has no access point up; a scan takes the BSS down and puts it back, so there is nothing to take down.`"
             @click="bridge.scanBand(r.name, false)"
           >scan</button>
           <!-- The profiles are NOT here. They restart the access point and drop
@@ -284,6 +532,10 @@ function degraded(i: IfaceInfo): boolean {
             >scan and move to the quietest</button>
           </div>
 
+          <!-- The timed outage goes behind developer=1 with the power switch
+               it belongs to: same mechanism, same cost, same tendency to wedge
+               the USB adapter. -->
+          <template v-if="DEVELOPER">
           <h4>Take it away</h4>
           <p class="warn-line">
             <strong>Silent.</strong> Clients are told nothing and must time out —
@@ -310,6 +562,7 @@ function degraded(i: IfaceInfo): boolean {
             A client with a randomised MAC may return as a <strong>new device</strong>,
             leaving its policy behind on the old address (#45).
           </p>
+          </template>
 
           <h4>Make the link worse</h4>
           <p class="meta group-note">
@@ -343,11 +596,35 @@ function degraded(i: IfaceInfo): boolean {
         </template>
       </div>
     </article>
+
+    <!-- Rack-level, and deliberately NOT another fold.
+         A timeline that spans the radios has the SET as its subject, so it
+         belongs in the section that names the set rather than beside it -- the
+         rule this rack already states, that a control lives where its subject
+         is named, exactly once.
+         Not an <article class="fold"> though: the heading counts adapters, and
+         a fourth fold under "adapters 3" would contradict it; and the fold row
+         is a positional grid of six fixed tracks that a pattern header has no
+         cells for. So it is its own element, at the folds' indent, separated by
+         a rule. -->
+    <div v-if="$slots.pattern" class="fold rack-wide">
+      <slot name="pattern"></slot>
+    </div>
   </section>
 </template>
 
 <style scoped>
 .rack { margin-bottom: 12px; }
+/* Wears the fold's clothes, because it IS one to the eye: same box, same
+   indent, same caret. What it is not is an <article> in the v-for -- the
+   heading counts adapters, and the fold's six-track grid has no cells for a
+   pattern header. Only the marker sets it apart. */
+.rack-wide { position: relative; }
+.rack-wide::before {
+  content: '';
+  position: absolute; left: 14px; right: 14px; top: -6px;
+  border-top: 1px dashed var(--line-soft);
+}
 /* Matches the client list's heading exactly: these two are the page's only
    sections now that the tabs are gone, and they have to look like a pair. At
    the old 10px faint weight this read as a caption on the first fold rather
@@ -519,6 +796,22 @@ function degraded(i: IfaceInfo): boolean {
 .warn-line { color: var(--warn); font-size: 11px; margin: 2px 0; }
 .group-note { margin: 0 0 4px; }
 .notice.inline { margin: 8px 0 0; }
+/* An empty badge keeps its box so the controls after it never move. Invisible
+   rather than absent: `visibility` reserves the space that `display:none` would
+   give back, which is the whole point.
+   Kept as its own rule and NOT folded into the selector below -- an earlier
+   edit inserted it into the middle of `.badge.warn-badge`, which left the
+   browser parsing `.badge .badge.blank` as a descendant selector that matches
+   nothing, so every quiet radio drew an empty outlined box. */
+.badge.blank { visibility: hidden; }
+/* And a CONSTANT width, or the reservation is worthless: hiding a badge that
+   held one space still gave back the difference between that and "AP
+   DISABLED", so the row slid anyway -- which is the whole fault this was
+   supposed to prevent. Wide enough for the longest thing it says. */
+.warn-badge {
+  min-width: 6.5rem;
+  text-align: center;
+}
 .badge.warn-badge {
   color: var(--warn);
   border-color: color-mix(in srgb, var(--warn) 45%, var(--line));

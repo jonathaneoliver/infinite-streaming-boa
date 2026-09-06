@@ -444,9 +444,45 @@ log "Bridge br-lan: ${BOA_WAN_PORT} (wan) + wlan0/wlan-usb (ap '${AP_SSID}', hos
 cat > "$ROOT/etc/udev/rules.d/76-infinite-streaming-boa-usb-lan.rules" <<'UDEV'
 # USB ethernet becomes lan0, the downstream wired port.
 SUBSYSTEM=="net", ACTION=="add", ENV{ID_BUS}=="usb", ENV{DEVTYPE}!="wlan", ATTR{address}!="", NAME="lan0"
-# A USB Wi-Fi adapter gets its own stable name, so it can never take lan0 and
-# so the access point can be pointed at it by name.
-SUBSYSTEM=="net", ACTION=="add", ENV{ID_BUS}=="usb", ENV{DEVTYPE}=="wlan", ATTR{address}!="", NAME="wlan-usb"
+
+# USB Wi-Fi adapters are named BY SOCKET: whatever is plugged into a given
+# physical port gets that port's name, every boot and every hotplug.
+#
+# This rule used to match any USB wlan device and call it wlan-usb. That works
+# with one adapter and breaks silently with two: the name went to whichever
+# enumerated first, so it changed hands between replugs with nothing saying so.
+# Everything downstream keys off the name -- the hostapd config that says
+# interface=wlan-usb, the daemon's watched ports, the tc filters, the channel a
+# radio is put back on -- so a measurement could be attributed to the wrong
+# adapter and nothing would look wrong. Observed 2026-09-06: wlan-usb was one
+# dongle all evening and the other by morning.
+#
+# BY SOCKET RATHER THAN BY MAC, deliberately, and the reasons are what make this
+# fit in an image at all:
+#
+#   - No MAC in the build. The same image works on every box; a MAC rule would
+#     have to be written per box, after the fact, by hand.
+#   - A REPLACEMENT dongle in the same port keeps the name, so hostapd's config
+#     still finds its interface. Under MAC naming a replacement is a new name
+#     and the radio silently fails to come up -- which is exactly why Linux
+#     abandoned 75-persistent-net-generator.rules years ago.
+#   - The physical port is what an operator reasons about here. Two of the four
+#     sockets are SuperSpeed and two are not, and a radio in the wrong one runs
+#     at 480Mb/s while reporting its full channel width -- so which hole a
+#     dongle is in already matters more than which dongle it is.
+#
+# The trade, stated plainly: move a dongle to another socket and its name
+# follows the socket, not the dongle. And behind an external hub the kernel path
+# gains a level -- 2-1 becomes 2-1.1 -- so a hubbed adapter matches none of
+# these and keeps the kernel's wlanN, visible as unconfigured rather than
+# quietly taking a name something else expects to own.
+#
+# Pi 5 paths: usb2 and usb4 are the SuperSpeed sockets, usb1 and usb3 the
+# 480Mb/s ones. Measured by moving one adapter through all four, 2026-09-06.
+SUBSYSTEM=="net", ACTION=="add", ENV{ID_BUS}=="usb", ENV{DEVTYPE}=="wlan", KERNELS=="2-1", NAME="wlan-usb"
+SUBSYSTEM=="net", ACTION=="add", ENV{ID_BUS}=="usb", ENV{DEVTYPE}=="wlan", KERNELS=="4-1", NAME="wlan-usb2"
+SUBSYSTEM=="net", ACTION=="add", ENV{ID_BUS}=="usb", ENV{DEVTYPE}=="wlan", KERNELS=="1-1", NAME="wlan-usb3"
+SUBSYSTEM=="net", ACTION=="add", ENV{ID_BUS}=="usb", ENV{DEVTYPE}=="wlan", KERNELS=="3-1", NAME="wlan-usb4"
 UDEV
 
 # Rescue address. A transparent bridge has no address of its own by design, so
@@ -568,14 +604,30 @@ log "Console will show live addresses and keep boot messages"
 # so a client on a second AP would be invisible to conditioning.
 NL_UNMANAGED="$ROOT/etc/NetworkManager/conf.d/10-boa-unmanaged-usb-wifi.conf"
 install -D -m 0644 /dev/stdin "$NL_UNMANAGED" <<'NMCONF'
-# hostapd owns whichever radio serves the AP -- the USB adapter and the onboard
+# hostapd owns whichever radio serves the AP -- the USB adapters and the onboard
 # wlan0 alike. Without this NetworkManager also claims them and the two fight
 # over the interface; NM wins the race often enough to look random.
+#
+# A GLOB, not a list of names. The list said "wlan-usb,wlan0" and a second
+# dongle arrived as wlan-usb2, which matched neither -- so NM managed it while
+# hostapd served it. Confirmed on the box 2026-09-06: nmcli reported wlan-usb
+# and wlan0 as "unmanaged" and wlan-usb2 as "disconnected", i.e. NM's to claim.
+# A name list has to be edited for every radio ever plugged in, and nothing
+# fails loudly when it is not; udev names every radio here wlan*, and hostapd
+# owns all of them, so the glob is the rule rather than an enumeration of it.
 [keyfile]
-unmanaged-devices=interface-name:wlan-usb,wlan0
+unmanaged-devices=interface-name:wlan*
 NMCONF
 
-# hostapd's own config, generated once per radio role. The AP settings come from
+# hostapd's own SEED configs, generated once per radio role.
+#
+# SEEDS ONLY, since #227. radioplan runs at every boot and every radio hotplug
+# and writes one config per interface it actually finds -- boa-wlan-usb.conf,
+# boa-wlan0.conf -- so these role-named files are what exists before a radio has
+# ever been seen, and what the planner falls back to scavenging an SSID from.
+# They are NOT the enumeration of what this box can serve: that question is now
+# answered by walking /sys/class/net/*/phy80211, which is why a third or fourth
+# adapter needs no edit here. The AP settings come from
 # .env, so both radios publish the same SSID and passphrase and a client sees
 # ONE network across the two -- and, because both are bridged onto the same
 # segment, keeps its address when it moves between them. select-radio (5b)
@@ -665,6 +717,26 @@ channel=${_chan}
 ssid=${_ssid}
 ignore_broadcast_ssid=$([ "$AP_HIDDEN" = "true" ] && echo 1 || echo 0)
 wmm_enabled=1
+# Do NOT announce the access point starting or stopping.
+#
+# hostapd defaults this to 1 and broadcasts a deauthentication frame at both
+# ends of every AP start and stop. On this box that undoes the thing the
+# product exists to do: an outage is cut at the rfkill level SPECIFICALLY so
+# that nothing can be said to the client and it has to notice for itself -- and
+# then the access point came back and told everyone anyway. The announcement
+# lands on exactly the clients being measured, because a station that has not
+# yet noticed the outage still believes it is associated, and this frame is
+# what informs it. Issue #224.
+#
+# It also fires on a band scan, a channel move and a profile change, each of
+# which drops the BSS and puts it back, so any of those run mid-measurement
+# told every client on the radio something.
+#
+# This governs the BROADCAST frame. Whether hostapd still deauthenticates
+# stations individually while flushing them is unverified -- proving what
+# leaves the antenna needs a receiver, and both radios here are access points
+# (#136). So this reduces the announcement; it is not yet known to remove it.
+broadcast_deauth=0
 # Advertise 802.11v BSS Transition Management, which the steer control needs.
 #
 # The control already sends the request and hostapd already accepts it -- but
@@ -679,6 +751,19 @@ wmm_enabled=1
 # On every role, because it is a property of the access point rather than of a
 # band: the frame goes out through nl80211 and both radios run this same build.
 bss_transition=1
+# 802.11k radio measurement, so the box can ask a client what IT can see (#228).
+#
+# rrm_beacon_report is the one that matters here: it lets the AP send a beacon
+# request and receive the client's own RCPI for a BSS it is not associated to,
+# which is the only way to learn the signal of a radio a client is NOT using.
+# Without it a steer can be refused and never explained.
+#
+# rrm_neighbor_report advertises the capability alongside it. Both are
+# advertised in the beacon, so a client decides whether to honour a request on
+# what it saw when it associated -- turning these on does not reach a client
+# that is already connected until it re-associates.
+rrm_neighbor_report=1
+rrm_beacon_report=1
 ieee80211n=1
 ieee80211ac=${_ac}
 ieee80211ax=${_ax}
@@ -704,8 +789,46 @@ EOF
 # delivered anyway. Same SSID and passphrase on both, bridged onto the same
 # segment, so a client sees one network and keeps its address across a roam.
 emit_hostapd_conf usb       usb     wlan-usb "$USB_SSID" "$AP_BAND" "$AP_CHANNEL"
+# The second USB socket, on the far end of the 5GHz band from the first.
+#
+# Same SSID, so it is a third roaming target rather than a separate network --
+# which is what makes steer, gather and evict mean anything across it. Written
+# whether or not a second adapter is present: a config costs nothing and the
+# instance only starts when select-radio sees the interface.
+#
+# Channel 36 against the first radio's 149. With 80MHz each they occupy 36-48
+# and 149-161, so they do not overlap -- two 80MHz radios on one box would
+# otherwise read each other as interference, and a roam between them could not
+# be told apart from the contention. Both are non-DFS in the US domain, so
+# neither sits out a radar check before it can beacon.
+emit_hostapd_conf usb2      usb     wlan-usb2 "$USB_SSID" a 36
 emit_hostapd_conf onboard   onboard wlan0    "$AP_SSID"  "$AP_BAND" "$AP_CHANNEL"
 emit_hostapd_conf onboard24 onboard wlan0    "$AP_SSID"  bg         "$AP_CHANNEL_24"
+
+# What the access points are called, for the boot-time planner.
+#
+# radioplan writes one hostapd config per radio it discovers, and needs the SSID
+# and passphrase to put in them. It can scavenge those from an existing
+# boa-*.conf -- which is how it worked on a box built before this file was
+# written -- but scavenging is a fallback, not a source: it depends on a config
+# the planner is about to overwrite still being there, and it picks whichever
+# file sorts first rather than a value anybody chose.
+#
+# ONE SSID across every radio, deliberately. A steer, a gather and an evict all
+# mean "move between access points on this box", and two access points with
+# different SSIDs are two networks -- a client leaving one for the other is not
+# roaming, it is joining something else, and every roam measurement taken across
+# them would be measuring the wrong thing.
+#
+# Known limitation: AP_SSID_USB is therefore NOT honoured once the planner owns
+# the configs. It survives in the seed configs below, which the planner replaces
+# on the first boot with a radio attached.
+install -d -m 0755 "$ROOT/etc/infinite-streaming-boa"
+install -D -m 0600 /dev/stdin "$ROOT/etc/infinite-streaming-boa/ap.env" <<APENV
+AP_SSID=${AP_SSID}
+AP_PASSPHRASE=${AP_PASSWORD}
+AP_COUNTRY=${AP_COUNTRY}
+APENV
 
 # Our own unit rather than the packaged hostapd.service, which Debian ships
 # masked and pointed at /etc/default/hostapd. Ours is started and stopped by the
@@ -779,52 +902,115 @@ onboard_rfkill() {
   done
 }
 
+# Radios that are off ON PURPOSE, as rfkill node names, one per line.
+#
+# The daemon owns the decision -- it is the thing that switched them off -- and
+# writes one marker per interface under its RuntimeDirectory. EXISTENCE is the
+# whole contract: nothing here parses a file, so nothing here can misparse one,
+# and a marker being written while this runs is either there or not.
+#
+# Through the interface's OWN phy80211 link rather than by walking
+# /sys/class/rfkill and matching on the device path, which is what the loop
+# below has to do. This is exact: the node under
+# /sys/class/net/<iface>/phy80211/rfkill* belongs to that interface's phy and no
+# other, so a two-radio box cannot read the wrong switch.
+OFF_DIR=/run/infinite-streaming-boa/radio-off
+held_off() {
+  [ -d "$OFF_DIR" ] || return 0
+  for f in "$OFF_DIR"/*; do
+    [ -f "$f" ] || continue
+    for r in "/sys/class/net/$(basename "$f")/phy80211"/rfkill*; do
+      [ -d "$r" ] && basename "$r"
+    done
+  done
+}
+
 # The onboard radio must be UNBLOCKED for hostapd to bring it up, in every
 # case now: it either serves alongside the adapter or serves alone.
-for r in $(onboard_rfkill); do echo 0 > "$r/soft" 2>/dev/null; done
-
-HAVE_USB=0; [ -d /sys/class/net/wlan-usb ] && HAVE_USB=1
-HAVE_ONBOARD=0; [ -d /sys/class/net/wlan0 ] && HAVE_ONBOARD=1
-
-if [ "$HAVE_USB" = 1 ]; then
-  # Pin the bridge MAC before hostapd adds a radio to br-lan. A bridge takes
-  # the LOWEST MAC among its members and recalculates as members come and go,
-  # so an adapter sorting below the onboard NIC changes the box's identity --
-  # and with it the IPv6 link-local address that is the no-configuration way
-  # back in when DHCP has failed. Two radios joining makes this more likely,
-  # not less.
-  #
-  # Guarded on a DIFFERENCE: re-setting a MAC to the value it already holds
-  # still raises a netlink change event, and doing that while NetworkManager is
-  # mid-DHCP is the kind of thing that costs an evening.
-  WANMAC=$(cat "/sys/class/net/$WAN_PORT/address" 2>/dev/null)
-  HAVEMAC=$(cat /sys/class/net/br-lan/address 2>/dev/null)
-  [ -n "$WANMAC" ] && [ "$WANMAC" != "$HAVEMAC" ] \
-    && ip link set dev br-lan address "$WANMAC" 2>/dev/null
-fi
-
-# Decide which hostapd instances should be running, and which must not be.
-# Naming the losers explicitly matters: unplugging the adapter has to STOP the
-# instance that was serving it, or hostapd sits restarting forever against an
-# interface that is gone.
-if [ "$HAVE_USB" = 1 ] && [ "$HAVE_ONBOARD" = 1 ]; then
-  RUN="usb onboard24"; STOP="onboard"
-  WANT="wlan-usb wlan0"
-  log "Both radios: hostapd on wlan-usb (5GHz) and wlan0 (2.4GHz)"
-elif [ "$HAVE_USB" = 1 ]; then
-  RUN="usb"; STOP="onboard onboard24"
-  WANT="wlan-usb"
-  log "USB radio only: hostapd on wlan-usb"
-else
-  RUN="onboard"; STOP="usb onboard24"
-  WANT="wlan0"
-  log "No USB radio: hostapd on the onboard wlan0"
-fi
-
-for i in $STOP; do
-  systemctl stop "infinite-streaming-boa-hostapd@$i.service" 2>/dev/null
+#
+# EXCEPT where the box recorded that the radio is off on purpose. This loop
+# exists to clear a STALE block -- the onboard radio used to be rfkilled
+# whenever an adapter was present -- and a stale block is indistinguishable from
+# a decision taken thirty seconds ago, because both are soft = 1. It ran
+# unconditionally at boot and on every radio hotplug, so on a box whose USB
+# adapter re-enumerates it silently ended real outages, and the operator's own
+# switch was the thing it overrode (#186). Look the decision up rather than
+# guess from the bit.
+HELD=$(held_off)
+for r in $(onboard_rfkill); do
+  n=$(basename "$r")
+  case " $HELD " in
+    *" $n "*)
+      log "leaving $n blocked: that radio is switched off on purpose"
+      continue
+      ;;
+  esac
+  # Loudly, not best-effort. A radio that stays blocked because this write
+  # failed comes up as an access point serving nobody, which is the shape of
+  # silent failure this box keeps being bitten by.
+  echo 0 > "$r/soft" 2>/dev/null || log "could not unblock $n"
 done
-for i in $RUN; do
+
+# Pin the bridge MAC before hostapd adds a radio to br-lan. A bridge takes the
+# LOWEST MAC among its members and recalculates as members come and go, so an
+# adapter sorting below the onboard NIC changes the box's identity -- and with
+# it the IPv6 link-local address that is the no-configuration way back in when
+# DHCP has failed. Several radios joining makes this more likely, not less.
+#
+# Guarded on a DIFFERENCE: re-setting a MAC to the value it already holds still
+# raises a netlink change event, and doing that while NetworkManager is mid-DHCP
+# is the kind of thing that costs an evening.
+WANMAC=$(cat "/sys/class/net/$WAN_PORT/address" 2>/dev/null)
+HAVEMAC=$(cat /sys/class/net/br-lan/address 2>/dev/null)
+[ -n "$WANMAC" ] && [ "$WANMAC" != "$HAVEMAC" ] \
+  && ip link set dev br-lan address "$WANMAC" 2>/dev/null
+
+# ---------------------------------------------------------------------------
+# WHICH RADIOS TO SERVE, discovered rather than matched by name.
+#
+# This replaced a decision tree over HAVE_USB / HAVE_USB2 / HAVE_ONBOARD that
+# hardcoded wlan-usb, wlan-usb2 and wlan0, and needed a branch, a config and a
+# hand-chosen channel added for every adapter. Three things that had to agree,
+# and on 2026-09-06 they did not: a second dongle served nothing until all three
+# were edited, and an intermediate hand-fix to BOA_WLAN_PORT was silently
+# reverted at the next daemon restart because this script owns that variable.
+#
+# radioplan asks each phy what it can do and hands back the interfaces it has
+# written configs for. Adding a radio is now plugging one in. See #227.
+# stdout carries the answer, stderr carries the commentary -- so the commentary
+# goes to the journal and cannot end up inside the answer. An earlier version
+# merged them with 2>&1 and captured its own log lines as interface names.
+PLANNED=$(/usr/local/sbin/infinite-streaming-boa-radioplan | sed -n 's/^PLANNED=//p')
+
+if [ -z "$PLANNED" ]; then
+  # Deliberately leave whatever is running alone. A planner that produced
+  # nothing has told us it could not work out what to do -- tearing down the
+  # access points on the strength of that would turn a puzzling boot into a box
+  # with no network at all.
+  log "radioplan produced no radios; leaving the access points as they are"
+  exit 0
+fi
+
+# Every instance that should NOT be running, named explicitly.
+#
+# The instance name is now the interface name, so a box upgraded from the old
+# scheme still has usb / usb2 / onboard / onboard24 instances running against
+# the same interfaces. Two hostapds on one interface is not a degraded state, it
+# is a broken one, so the old names are stopped by enumerating what is actually
+# active rather than by listing names this script would have to keep in step.
+for unit in $(systemctl list-units --type=service --state=active --no-legend --plain \
+                'infinite-streaming-boa-hostapd@*.service' 2>/dev/null | awk '{print $1}'); do
+  inst=${unit#infinite-streaming-boa-hostapd@}
+  inst=${inst%.service}
+  keep=0
+  for want in $PLANNED; do [ "$inst" = "$want" ] && keep=1; done
+  if [ "$keep" = 0 ]; then
+    log "stopping hostapd@$inst (not in the plan)"
+    systemctl stop "$unit" 2>/dev/null
+  fi
+done
+
+for i in $PLANNED; do
   # restart, not start, so a radio swap re-reads a config that may have changed
   systemctl restart "infinite-streaming-boa-hostapd@$i.service"
 done
@@ -834,9 +1020,9 @@ done
 # argument, and -wlan splits it. Restart only when it actually changed -- a
 # restart drops a running sweep.
 CUR=$(sed -n 's/^BOA_WLAN_PORT=//p' "$DEFAULTS" 2>/dev/null)
-if [ "$CUR" != "$WANT" ]; then
-  sed -i "s/^BOA_WLAN_PORT=.*/BOA_WLAN_PORT=$WANT/" "$DEFAULTS"
-  log "BOA_WLAN_PORT '$CUR' -> '$WANT'; restarting daemon"
+if [ "$CUR" != "$PLANNED" ]; then
+  sed -i "s/^BOA_WLAN_PORT=.*/BOA_WLAN_PORT=$PLANNED/" "$DEFAULTS"
+  log "BOA_WLAN_PORT '$CUR' -> '$PLANNED'; restarting daemon"
   systemctl restart infinite-streaming-boa.service
 fi
 SEL

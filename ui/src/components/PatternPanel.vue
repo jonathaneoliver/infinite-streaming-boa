@@ -646,8 +646,8 @@ function setLaneValue(lane: LaneKey, at: number, n: number, ceil: number) {
  * way: click to add, drag to move, drag the right edge to lengthen. See #135.
  */
 const LINK_LANES: { kind: LinkEvent['kind']; label: string }[] = [
-  { kind: 'drop', label: 'drop' },
-  { kind: 'nudge', label: 'nudge' },
+  { kind: 'deauth', label: 'deauth' },
+  { kind: 'disassoc', label: 'disassoc' },
   { kind: 'deadzone', label: 'deadzone' },
 ];
 const PULSE_VIS_SEC = 0.5; // a zero-duration pulse still needs a grabbable width

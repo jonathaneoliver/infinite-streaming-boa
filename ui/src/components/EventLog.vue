@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue';
+import { computed, nextTick, onMounted, ref, watch } from 'vue';
 import { useEvents } from '@/composables/useEvents';
 
 /**
@@ -34,11 +34,78 @@ onMounted(log.start);
 // they are, by definition, seen.
 watch(log.events, () => {
   if (open.value) log.markSeen();
+  stickToBottom();
 });
 
+// Opening the panel should show the live end, not the top of the history.
+watch(open, (v) => {
+  if (v) {
+    following.value = true;
+    stickToBottom();
+  }
+});
+
+onMounted(stickToBottom);
+
+/**
+ * The scrolling area, so the newest line can be kept in view.
+ */
+const rows = ref<HTMLElement | null>(null);
+
+/**
+ * Whether to follow the bottom.
+ *
+ * TRUE until the operator scrolls away, and true again the moment they come
+ * back. A log that always jumps to the end fights anyone reading back through
+ * it -- which on this box is exactly when it matters, because reading back is
+ * how a run is reconstructed afterwards. A log that never follows makes them
+ * scroll for every new line.
+ *
+ * "Near enough" rather than exactly at the end: a couple of pixels of rounding,
+ * a partially visible row, or a scroll that lands one pixel short would
+ * otherwise turn following off silently and for good.
+ */
+const NEAR = 24;
+const following = ref(true);
+
+function onScroll() {
+  const el = rows.value;
+  if (!el) return;
+  following.value = el.scrollHeight - el.scrollTop - el.clientHeight <= NEAR;
+}
+
+function stickToBottom() {
+  if (!following.value) return;
+  const el = rows.value;
+  if (!el) return;
+  // After the DOM has the new row, or this scrolls to where the list used to
+  // end and stops one line short every time.
+  nextTick(() => {
+    el.scrollTop = el.scrollHeight;
+  });
+}
+
 const shown = computed(() =>
-  open.value ? log.events.value : log.events.value.slice(0, PREVIEW),
+  // The LAST few when closed, not the first: the list is chronological now, so
+  // the newest lines are at the end and those are the ones a collapsed panel
+  // exists to show.
+  open.value ? log.events.value : log.events.value.slice(-PREVIEW),
 );
+
+/**
+ * How many blank rows to hold the closed log open with.
+ *
+ * The comment below promised "a fixed handful of rows, so the page below it
+ * sits at the same height whatever has just happened", and slice() only ever
+ * delivered a CAP: with fewer than PREVIEW events the panel was shorter and
+ * grew as they arrived, shifting everything under it -- most visibly after a
+ * restart clears the ring and it grows from nothing four times over.
+ *
+ * Padding to PREVIEW makes the promise true. Blank rows rather than a
+ * min-height, so the reserved space is exactly a row tall however the type
+ * metrics land.
+ */
+const padRows = computed(() => (open.value ? 0 : Math.max(0, PREVIEW - shown.value.length)));
 const hidden = computed(() => log.events.value.length - shown.value.length);
 
 /**
@@ -52,11 +119,26 @@ const unseenHidden = computed(() => Math.max(0, log.unseen.value - PREVIEW));
  * Clock time, not "3m ago". These events are read against a bench test that is
  * being watched live, so what matters is lining an event up with something on a
  * chart, and a chart is labelled in clock time.
+ *
+ * TO THE MILLISECOND, because seconds are too coarse for what this log is used
+ * to measure. A client leaving one radio and joining another is routinely a few
+ * hundred milliseconds apart -- roam latencies measured on this box run from
+ * about 500ms upwards -- and at second resolution those either collapse onto
+ * one timestamp or appear a whole second apart, depending only on where the
+ * boundary happened to fall.
+ *
+ * Be clear about what the extra digits do and do not mean. An event timestamped
+ * by hostapd's control socket, an association among them, is accurate to the
+ * millisecond. One noticed by the 1Hz tick instead is accurate only to that
+ * tick, and will cluster near second boundaries however many digits are
+ * printed. That is the distinction #215 was about; the milliseconds make it
+ * visible rather than introduce it.
  */
 function clock(ms: number): string {
   const d = new Date(ms);
   const p = (n: number) => String(n).padStart(2, '0');
-  return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+  const t = `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+  return `${t}.${String(d.getMilliseconds()).padStart(3, '0')}`;
 }
 </script>
 
@@ -81,7 +163,7 @@ function clock(ms: number): string {
       <span v-if="!open && unseenHidden" class="badge">{{ unseenHidden }}</span>
     </button>
 
-    <div class="rows" :class="{ scroll: open }">
+    <div ref="rows" class="rows" :class="{ scroll: open }" @scroll="onScroll">
       <!-- The failure is shown IN the log rather than beside it: an activity
            panel that has silently stopped polling looks exactly like a quiet
            box, and that is the one lie it must not tell. -->
@@ -89,6 +171,14 @@ function clock(ms: number): string {
       <p v-else-if="!log.events.value.length" class="row quiet">
         Nothing has happened since the daemon started. Joins, roams between
         radios, channel changes and anything pressed here land in this list.
+      </p>
+      <!-- ABOVE the rows, not below. The newest line sits at the bottom edge,
+           so a short log has to grow downwards from the top like a terminal
+           does -- pads underneath would leave the live end floating in the
+           middle of the panel. Holds the closed log at its full height either
+           way, so nothing below it moves as events arrive. See padRows. -->
+      <p v-for="i in padRows" :key="`pad${i}`" class="row pad" aria-hidden="true">
+        <span class="t">&nbsp;</span>
       </p>
       <p v-for="e in shown" :key="e.seq" class="row">
         <span class="t">{{ clock(e.at) }}</span>
@@ -148,12 +238,26 @@ function clock(ms: number): string {
   border-top: 1px solid var(--line-soft);
   padding: 4px 10px 6px;
 }
-/* Only the open log scrolls. Collapsed it is a fixed handful of rows, so the
-   page below it sits at the same height whatever has just happened. */
+/* Only the open log scrolls, and it does so at a FIXED height.
+ *
+ * max-height was the same half-measure padRows was written to fix at the other
+ * end: it caps the panel but does not reserve it, so an open log grew from one
+ * row up to the cap as events arrived and pushed the whole page down on every
+ * line. On a box where watching the log IS the task -- events arrive exactly
+ * when an operator is reaching for the controls under it -- that is the worst
+ * possible moment to move them.
+ *
+ * A fixed height means empty space under a quiet log, which is the right trade:
+ * the space belongs to the log either way, and reserving it is the point.
+ *
+ * scrollbar-gutter keeps the width steady too, so the rows do not reflow the
+ * first time the content passes the fold. */
 .rows.scroll {
-  max-height: 220px;
+  height: 220px;
   overflow-y: auto;
+  scrollbar-gutter: stable;
 }
+.row.pad { visibility: hidden; }
 .row {
   display: flex;
   align-items: baseline;
