@@ -1559,7 +1559,6 @@ idea is the same; the implementation is not. This version was written end to end
 with [Claude Code](https://claude.com/claude-code) — the Go daemon, the Vue
 interface, the image build, the systemd and network plumbing, the docs and the
 tests — over about four days. The hand-built original took roughly four weeks.
-The commit history is the record of it.
 
 ## Licence
 
