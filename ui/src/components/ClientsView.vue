@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, inject, ref, watch } from 'vue';
 import type {
-  Capabilities, ChartPrefs, Client, Pattern, Series, Shape, Snapshot, SortMode, YMode,
+  Capabilities, ChartPrefs, Client, Pattern, RssiModel, Series, Shape, Snapshot, SortMode, YMode,
 } from '@/types';
 import { SUSTAINED_SEC, sortClients } from '@/types';
 import { chartPrefs } from '@/composables/useChartPrefs';
@@ -241,6 +241,7 @@ const now = chartNow;
       @toggle="toggleFold(c.mac)"
       @shape="(dir, s) => dev.patchShape(c.mac, rev(c), dir, s)"
       @preset="(down: Shape, up: Shape) => dev.patchPolicy(c.mac, rev(c), { down, up })"
+      @distance="(rssi: RssiModel | null) => dev.patchPolicySoon(c.mac, rev(c), { rssi })"
       @label="(l: string) => dev.patchPolicy(c.mac, rev(c), { label: l })"
       @reset="dev.reset(c.mac)"
       @forget="dev.forget(c.mac)"

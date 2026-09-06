@@ -253,8 +253,81 @@ type Policy struct {
 	// any. Stored with the policy because it is intent, not telemetry: it is
 	// written when someone edits a keyframe, never once per tick. Storing it
 	// does not run it -- see Player.
-	Pattern  *Pattern `json:"pattern,omitempty"`
-	classMin int      // kernel class minor for the device default class
+	Pattern *Pattern `json:"pattern,omitempty"`
+	// Rssi is the distance model driving this device, if one is. Nil means the
+	// operator is setting Down/Up by hand.
+	//
+	// The INPUT is stored and the derived shapes never are. Storing a model's
+	// output beside its input is how the two come to disagree -- the failure
+	// putLadder's provenance reset exists to prevent -- so the shapes are
+	// computed in desired() each tick and vanish the moment this is cleared.
+	Rssi     *RssiModel `json:"rssi,omitempty"`
+	classMin int        // kernel class minor for the device default class
+}
+
+// RssiView is what a distance model is imposing right now: the level asked for,
+// the distance that implies on the band this client is actually on, and the
+// shapes derived from it.
+//
+// The same relationship to RssiModel that PatternView has to Pattern -- one is
+// the intent, stored; the other is what is happening, computed each tick.
+type RssiView struct {
+	Dbm       float64 `json:"dbm"`
+	DistanceM float64 `json:"distance_m"`
+	// DownDbm and UpDbm are the levels each direction actually arrives at,
+	// after the device's antenna and transmit power are taken off the path.
+	// Both are shown, because both move when either control moves and the pair
+	// is the whole explanation of why the directions differ.
+	DownDbm float64 `json:"down_dbm"`
+	UpDbm   float64 `json:"up_dbm"`
+	// The radio actually used, which under AutoBand is the model's own choice
+	// and has to be shown -- a control set to "auto" that does not say what it
+	// picked is not reporting, it is hiding.
+	FreqMHz  int   `json:"freq_mhz,omitempty"`
+	WidthMHz int   `json:"width_mhz,omitempty"`
+	Down     Shape `json:"down"`
+	Up       Shape `json:"up"`
+}
+
+// RssiModel is a modelled signal level, and the exponent used to render it as a
+// distance.
+//
+// dBm rather than metres is what is stored, deliberately. Metres depend on the
+// path-loss exponent, which is a per-building guess: a policy stored in metres
+// would mean a different impairment in a different building, or after someone
+// changed the exponent. dBm replays identically anywhere, and N is carried only
+// so the interface can show the metres the operator was looking at.
+type RssiModel struct {
+	Dbm float64 `json:"dbm"`
+	N   float64 `json:"n,omitempty"`
+	// RxDb is what this device's ANTENNA costs it, in both directions.
+	//
+	// Antenna gain is reciprocal: the same small antenna that transmits poorly
+	// also receives poorly, so this moves downlink and uplink together. It is
+	// why changing the device kind changes what the device hears as well as how
+	// well it is heard -- an earlier version had only the transmit half and so
+	// left downlink untouched, which is wrong.
+	RxDb float64 `json:"rx_db"`
+	// TxDb is the ADDITIONAL loss on uplink only, from transmitting at lower
+	// power than the access point.
+	//
+	// Neither is omitempty: 0 is meaningful for both -- it describes a device
+	// as capable as the access point -- and an omitted field would be
+	// indistinguishable from someone asking for that.
+	TxDb float64 `json:"tx_db"`
+
+	// FreqMHz and WidthMHz are the radio to model, for a client that is not on
+	// one -- a device on the wired port.
+	//
+	// Ignored when the client IS on a radio: there the band is a fact to be
+	// read, not a choice to be made, and letting it be overridden would let the
+	// interface disagree with the hardware. Only ever consulted as the answer
+	// to "there is no radio here, so which one should this behave like".
+	FreqMHz  int `json:"freq_mhz,omitempty"`
+	WidthMHz int `json:"width_mhz,omitempty"`
+	// AutoBand lets the model choose the radio at each distance, rather than
+	// holding the one it was given. Only meaningful without a real radio.
+	AutoBand bool `json:"auto_band,omitempty"`
 }
 
 // LadderFor returns this device's ladder for one service.
@@ -385,6 +458,16 @@ type Client struct {
 	// Sweep is the ladder sweep running on this device, or the outcome of the
 	// last one. Absent when the device has never been swept this daemon run.
 	Sweep *SweepView `json:"sweep,omitempty"`
+
+	// RssiRun is what the distance model is imposing on this device, if one is
+	// set. Filled per tick and never persisted -- the stored side is
+	// Policy.Rssi, which holds only the operator's dBm.
+	//
+	// It exists so the controls can show what is ACTUALLY in force. Without it
+	// the sliders would read the stored policy, which under a model is
+	// untouched, and a device being handed 12 Mbit/s with corruption would show
+	// four sliders at zero.
+	RssiRun *RssiView `json:"rssi_run,omitempty"`
 
 	// PatternRun is the pattern playing on this device, if one is. Named apart
 	// from Policy.Pattern deliberately: that is the timeline as authored, this
