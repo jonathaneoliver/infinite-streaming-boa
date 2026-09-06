@@ -160,6 +160,100 @@ type Engine struct {
 	// radio; guaranteed with two.
 	radioOnAt map[string]time.Time
 
+	// assocGone is when hostapd last said a client had LEFT a radio.
+	//
+	// Kept because absence and departure are different facts. A station missing
+	// from the driver's table might be gone, or might be mid-roam or in a
+	// power-save transition -- which is why presence has a minute of grace. An
+	// AP-STA-DISCONNECTED is not ambiguous: the box was TOLD, by the same event
+	// that writes "X left wlan-usb" in the activity log, and there is nothing
+	// to be cautious about.
+	//
+	// Separate from assocSeen, which assocTime CONSUMES so that one transition
+	// stamps one event. This has to outlive being read.
+	assocGone map[string]time.Time
+
+	// deadzones are the bans currently held in hostapd's deny lists.
+	//
+	// Tracked because those lists are RUNTIME state: they are set over the
+	// control socket, no deny_mac_file backs them, and restarting hostapd
+	// therefore erases every one of them. The wedge recovery restarts hostapd,
+	// so without this a deadzone set for sixty seconds would simply end early
+	// and nothing would say it had -- the exact silent failure this codebase
+	// keeps being bitten by, introduced by the fix for a different one.
+	deadzones map[string]*deadzoneBan
+
+	// pins maps a client to the movement operation currently holding it, so an
+	// association event can find the ban that was waiting for it. Several MACs
+	// point at the SAME pinOp: a gather is not finished until every client it
+	// covers has landed, and the bans come off together. Held separately from
+	// deadzones because they end on an EVENT rather than purely on a clock.
+	pins map[string]*pinOp
+
+	// beacons holds what each client last reported hearing, from 802.11k
+	// beacon requests. Its own store rather than a field on Client because the
+	// answers arrive asynchronously through the monitor connection, between
+	// ticks, and a tick that rebuilt Client would otherwise drop them.
+	beacons beaconStore
+
+	// apLinkDown remembers, per radio, whether hostapd's state and the kernel's
+	// last disagreed, so the warning is raised on the transition rather than on
+	// every rebuild of the bridge view. See noteAPLinkDown.
+	apLinkDown map[string]bool
+
+	// recovering guards ONE access-point recovery per radio at a time.
+	//
+	// Every power-on starts a background watch, and that watch can run for
+	// minutes while a wedged mt7921u re-initialises. An operator cycling a
+	// radio off and on a few times therefore had several watches alive at once,
+	// each independently concluding the access point was wedged and each firing
+	// its own DISABLE/ENABLE -- tearing down what the previous one had just
+	// built. Observed 2026-09-05 as seventeen "rebuilt and serving again" lines
+	// at the same second, and a recovery that took 97 seconds because the
+	// rebuilds were undoing each other.
+	//
+	// The newest attempt is the one dropped, not the running one: the watch
+	// already in flight has done the waiting, and restarting it would throw
+	// that away to begin the same work again.
+	recovering map[string]bool
+
+	// bridgeVer counts CHANGES to the bridge view, not rebuilds of it.
+	//
+	// The view is rebuilt every couple of seconds whether or not anything
+	// happened, so a rebuild is not news. A version that only moves when the
+	// content actually differs is what lets the stream stay quiet on an idle
+	// box and fire immediately when a radio changes -- less traffic than the
+	// five-second poll it replaces, not more. See storeBridge.
+	bridgeVer  uint64
+	bridgeHash [32]byte
+
+	// bridgeSnap is the WHOLE bridge view, built on a timer and served from
+	// memory, because nothing in that view may be computed on a request.
+	//
+	// Caching the two obvious offenders was not enough, and the reason is the
+	// kernel rather than this code: while a USB radio reloads its firmware the
+	// driver holds rtnl_lock, so EVERY netlink call blocks behind it -- `ip
+	// addr show` and `iw` alike. There is no subset of this view that can be
+	// made safe by fixing one call site; the request path simply must not touch
+	// the kernel. Measured 2026-09-05: five consecutive polls stalled for the
+	// full 15s test timeout with the per-call caches already in place, while
+	// /api/state, which touches no netlink, answered in 10ms throughout.
+	bridgeSnap   *BridgeInfo
+	bridgeSnapAt time.Time
+	bridgeSnapGo bool
+
+	// regDom caches the regulatory domain, which is read by every bridge
+	// request and changes essentially never.
+	//
+	// `iw reg get` is an nl80211 round trip, and one that BLOCKS while a device
+	// re-initialises: with it on the request path, a single bridge poll during
+	// a radio's recovery hung for over fifteen seconds. Caching the AP status
+	// alone did not fix the freeze, because this was the other subprocess in
+	// the same handler. Issue #223.
+	regDom   string
+	regDomAt time.Time
+	regDomGo bool
+
 	// scanSeen is the last band scan per radio, kept so the interface can
 	// colour its channel controls from a measurement rather than a guess. In
 	// memory like the event log, and for the same reason: it describes a
@@ -267,6 +361,15 @@ func (e *Engine) Shaper() *Shaper           { return e.sh }
 func (e *Engine) Sweeper() *Sweeper         { return e.sweep }
 func (e *Engine) Player() *Player           { return e.player }
 
+// Config exposes the running configuration for handlers that must name a
+// radio -- an adapter pattern's lanes are interfaces, and one this box does not
+// have would fire against nothing.
+func (e *Engine) Config() Config { return e.cfg }
+
+// RadioServing reports whether a radio can currently carry clients, which is
+// the question an adapter pattern's precondition asks: a bounce needs two.
+func (e *Engine) RadioServing(iface string) bool { return e.radioReady(iface) == nil }
+
 // Start brings up the kernel scaffolding and the passive listeners, then ticks
 // forever. Shaping failure is reported through capabilities rather than being
 // fatal: a box that serves a UI explaining why conditioning is unavailable is
@@ -295,7 +398,19 @@ func (e *Engine) Start() {
 	// Clear any deadzone ban left in hostapd's deny list by a daemon that died
 	// mid-outage, so a client is never stranded off the AP across a restart.
 	e.clearDenyACL()
+	// Stop the radios announcing themselves when an access point starts or
+	// stops. Set here as well as in the shipped config, because the config only
+	// reaches a box that is reflashed and this reaches one that is deployed to
+	// -- which is every box already in the field. See hushTeardown and #224.
+	e.hushRadios()
+	// WHICH ADAPTER each name refers to, before anything else is said about
+	// them, so every later line in this run can be attributed to hardware.
+	e.logRadioIdentity()
 	e.restoreRadioPower()
+	// And check the opposite fault: a radio that is ON but serving nobody,
+	// which restoreRadioPower cannot see and which a restart mid-recovery
+	// leaves behind. See checkRadiosAtStart.
+	e.checkRadiosAtStart()
 	// A monitor connection per radio, for the messages hostapd sends unasked.
 	// Everything else here talks to hostapd in request/reply, which cannot see
 	// a client's answer to a steer -- see hostapdmonitor.go.
@@ -571,6 +686,33 @@ func (e *Engine) tick() {
 			}
 			continue
 		}
+		// THE FORWARDING TABLE MUST NOT RESURRECT A DEPARTED WIRELESS CLIENT.
+		//
+		// The bridge's table is LEARNED, and an entry outlives the association
+		// that created it: the ageing time on this box is 300 seconds, and
+		// nothing removes an entry when a station disassociates while its radio
+		// stays up. So a client that left an access point stayed listed on the
+		// radio it had left, for up to five minutes, until it happened to
+		// appear somewhere else and rewrite the entry.
+		//
+		// That produced exactly the asymmetry an operator noticed: the activity
+		// log says "X left wlan-usb" the instant hostapd reports it, and the
+		// adapter's client list went on showing X on wlan-usb regardless. A
+		// join updated the picture; a leave did not.
+		//
+		// The station table above is authoritative for wireless and was already
+		// consulted first, so reaching here with a wireless port means the MAC
+		// is NOT associated to that radio. Only wired ports are believed on the
+		// strength of the forwarding table alone -- there is no better source
+		// for those, and no equivalent of "associated" to contradict it.
+		//
+		// A device that has left but is still ARPing is picked up below and
+		// listed with no port, which is the honest answer: present on the
+		// network, not on a radio, and not shapeable until something says where
+		// it is.
+		if e.cfg.IsWlan(bp.Port) {
+			continue
+		}
 		merged[mac] = &acc{medium: bp.Medium, port: bp.Port, present: true}
 	}
 	// A device that is ARPing is present. ARP does not reveal the port (see
@@ -623,6 +765,19 @@ func (e *Engine) tick() {
 		// would be worse than a stale entry. The device stays LISTED either
 		// way; only "present" changes.
 		if e.cfg.IsWlan(sn.Port) {
+			// TOLD beats inferred. The grace below exists because absence from
+			// the station table is ambiguous; an explicit disconnect is not, so
+			// a client hostapd has reported leaving is dropped at once rather
+			// than lingering for the grace period.
+			//
+			// This is the difference an operator noticed: the activity log said
+			// "X left wlan-usb" the moment it happened, and the adapter's
+			// client list went on showing X for another minute. Both were
+			// reading the same radio; only one of them was listening.
+			if gone, ok := e.assocGone[mac]; ok &&
+				gone.After(time.UnixMilli(e.lastAssoc[mac])) {
+				continue
+			}
 			if last, seen := e.lastAssoc[mac]; !seen ||
 				now.Sub(time.UnixMilli(last)) > wlanPresenceGrace {
 				continue
@@ -711,6 +866,7 @@ func (e *Engine) tick() {
 			// client is already sitting on.
 			c.SteerTo = e.OtherRadio(w)
 		}
+		c.BeaconReports = e.beacons.get(mac)
 		clients = append(clients, c)
 	}
 	// What CHANGED since the last tick, raised now that both the associations
@@ -749,8 +905,12 @@ func (e *Engine) tick() {
 	}
 	e.sweep.Advance(now, sweepObserver{hist: e.hist, live: live})
 	e.storeSweepResult()
-	for _, f := range e.player.Advance(now) {
+	links, radios := e.player.Advance(now)
+	for _, f := range links {
 		go e.fireLink(f) // network I/O to hostapd; keep it off the tick
+	}
+	for _, f := range radios {
+		go e.fireRadio(f) // rfkill and hostapd; likewise off the tick
 	}
 
 	if ready, _ := e.sh.Ready(); ready {
@@ -887,11 +1047,13 @@ func (e *Engine) tick() {
 			// port on every address, so a listener in the table is the whole
 			// answer and costs no connection.
 			Glances: PortListening(glancesPort), GlancesPort: glancesPort,
+			Services:    serviceStates(),
 			LinkControl: e.anyLinkControl(),
 			LossBurst:   burstOK, LossBurstNote: burstNote,
 			NamesLearned: len(names), NamesByMAC: len(macNames),
 		},
-		Notices: e.notices(ready, reason),
+		Notices:    e.notices(ready, reason),
+		AdapterRun: e.player.View(BoxBinding),
 	}
 	e.snap = snap
 	subs := make([]chan Snapshot, 0, len(e.subs))

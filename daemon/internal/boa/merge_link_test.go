@@ -79,8 +79,8 @@ func TestMergeRepeatsAndStretchesLinkEvents(t *testing.T) {
 			t.Errorf("link events are not sorted: %.2fs after %.2fs", ev.AtSec, last)
 		}
 		last = ev.AtSec
-		if ev.Kind != LinkDrop {
-			t.Errorf("link event %d kind = %q, want %q", i, ev.Kind, LinkDrop)
+		if ev.Kind != LinkDeauth {
+			t.Errorf("link event %d kind = %q, want %q", i, ev.Kind, LinkDeauth)
 		}
 	}
 

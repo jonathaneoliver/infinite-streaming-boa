@@ -10,17 +10,80 @@ func TestBTMRequestNamesTheTargetCorrectly(t *testing.T) {
 	// hostapd rejects the whole command on any one being wrong -- but a client
 	// given a WRONG operating class simply ignores the request, which looks
 	// exactly like a client that refused it. That is the failure this pins.
-	got := btmCommand("aa:bb:cc:dd:ee:ff", "9c:ef:d5:aa:11:07", 6, 20, 30)
+	got := btmCommand("aa:bb:cc:dd:ee:ff", "9c:ef:d5:aa:11:07", 6, 20, steerSuggest)
 	for _, want := range []string{
 		"BSS_TM_REQ aa:bb:cc:dd:ee:ff",
 		"pref=1",
-		"abridged=1",          // everything unlisted is less preferred
-		"disassoc_imminent=1", // a client that ignores it still has to move
-		"disassoc_timer=30",
+		"abridged=1", // everything unlisted is less preferred
+
 		"neighbor=9c:ef:d5:aa:11:07,0x0000040f,81,6,7", // 2.4GHz: class 81, HT
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("missing %q in:\n  %s", want, got)
+		}
+	}
+	// A GATHER names one destination, so the client either goes there or stays.
+	// These two fields gave it a third option: refuse, get disassociated
+	// anyway, rescan, and land on whichever access point is loudest -- observed
+	// on 2026-09-06 as "gather to wlan-usb" putting the phone on wlan0, three
+	// times running. Asserted as ABSENT because their return would be silent:
+	// the request still sends, the client still answers, and only the radio the
+	// device ends up on would change.
+	for _, unwanted := range []string{"disassoc_imminent", "disassoc_timer"} {
+		if strings.Contains(got, unwanted) {
+			t.Errorf("a suggested steer must not force the move, but found %q in:\n  %s",
+				unwanted, got)
+		}
+	}
+}
+
+// The other half of the same rule: an EVICT names no destination, so forcing a
+// client that will not leave is exactly what it claims to do. Pinned because
+// the two modes are one function apart, and a mode wired to the wrong control
+// fails silently -- the request sends, the client answers, and only where the
+// device ends up changes.
+func TestEvictInsistsAndGatherDoesNot(t *testing.T) {
+	insist := btmCommand("aa:bb:cc:dd:ee:ff", "9c:ef:d5:aa:11:07", 6, 20, steerInsist)
+	for _, want := range []string{
+		"disassoc_imminent=1",
+		// evictDisassocSec (5s) in the beacon intervals hostapd counts:
+		// 5s / 102.4ms = 48. Asserted as the CONVERTED number on purpose --
+		// asserting the seconds is what let the units bug live for as long as
+		// it did, because the value passed in and the value on the wire looked
+		// identical.
+		"disassoc_timer=48",
+	} {
+		if !strings.Contains(insist, want) {
+			t.Errorf("an evict must force the move, but %q is missing from:\n  %s",
+				want, insist)
+		}
+	}
+	// Both modes must still describe the same destination, or the difference
+	// between them would be more than the promise they make about refusal.
+	suggest := btmCommand("aa:bb:cc:dd:ee:ff", "9c:ef:d5:aa:11:07", 6, 20, steerSuggest)
+	const neighbour = "neighbor=9c:ef:d5:aa:11:07,0x0000040f,81,6,7"
+	for _, got := range []string{insist, suggest} {
+		if !strings.Contains(got, neighbour) {
+			t.Errorf("missing %q in:\n  %s", neighbour, got)
+		}
+	}
+}
+
+// tbttPerSec is the conversion that was wrong for as long as it was named for
+// the wrong unit. Pinned at the boundary rather than the value in use, so a
+// change to evictDisassocSec does not quietly rewrite the arithmetic too.
+func TestTBTTPerSecondCountsBeaconIntervals(t *testing.T) {
+	for _, c := range []struct {
+		sec  int
+		want int
+	}{
+		{1, 9},    // 1s / 102.4ms = 9.76, truncated
+		{5, 48},   // the evict deadline
+		{30, 292}, // kept as a second point, so the arithmetic is pinned by
+		{0, 0},    // more than the one value in use
+	} {
+		if got := tbttPerSec(c.sec); got != c.want {
+			t.Errorf("tbttPerSec(%d) = %d, want %d", c.sec, got, c.want)
 		}
 	}
 }

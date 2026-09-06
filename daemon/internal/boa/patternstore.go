@@ -3,6 +3,7 @@ package boa
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"sort"
@@ -41,8 +42,26 @@ func (s *PatternStore) load() {
 		return // first run: an absent file is normal, not an error
 	}
 	var pat map[string]Pattern
-	if json.Unmarshal(raw, &pat) == nil {
-		s.pat = pat
+	if json.Unmarshal(raw, &pat) != nil {
+		return
+	}
+	// Upgrade the names this box used to write, ONCE, here at the single point
+	// everything saved passes through. A link lane saved as "drop" would
+	// otherwise match no reader and be skipped in silence -- see #229 and
+	// NormalisePattern. Saved back so the upgrade is not redone on every boot,
+	// and so an exported file carries current names.
+	upgraded := false
+	for name, p := range pat {
+		if next, changed := NormalisePattern(p); changed {
+			pat[name] = next
+			upgraded = true
+		}
+	}
+	s.pat = pat
+	if upgraded {
+		if err := s.save(); err != nil {
+			log.Printf("pattern store: could not save renamed kinds: %v", err)
+		}
 	}
 }
 

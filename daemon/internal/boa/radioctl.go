@@ -228,10 +228,10 @@ func (e *Engine) ChanSwitch(iface string, channel, widthMHz int) error {
 // station to build up and unwind.
 func (e *Engine) LinkAll(iface, kind string) (int, error) {
 	verb := "DEAUTHENTICATE"
-	if kind == LinkNudge {
+	if kind == LinkDisassoc {
 		verb = "DISASSOCIATE"
-	} else if kind != LinkDrop {
-		return 0, fmt.Errorf("link event must be %q or %q (got %q)", LinkDrop, LinkNudge, kind)
+	} else if kind != LinkDeauth {
+		return 0, fmt.Errorf("link event must be %q or %q (got %q)", LinkDeauth, LinkDisassoc, kind)
 	}
 	if err := e.radioReady(iface); err != nil {
 		return 0, err
@@ -257,7 +257,7 @@ func (e *Engine) LinkAll(iface, kind string) (int, error) {
 }
 
 // DeauthAll is LinkAll's drop case, kept for the older endpoint.
-func (e *Engine) DeauthAll(iface string) (int, error) { return e.LinkAll(iface, LinkDrop) }
+func (e *Engine) DeauthAll(iface string) (int, error) { return e.LinkAll(iface, LinkDeauth) }
 
 // radioReady is the capability gate every action shares. It names the specific
 // reason rather than returning a bare false: "unavailable" with no cause is the
@@ -534,4 +534,139 @@ func surveyValue(line string) string {
 		return ""
 	}
 	return f[0]
+}
+
+// fireRadio executes one adapter-pattern event.
+//
+// Off the tick, like fireLink: this is rfkill and hostapd control traffic, and
+// a radio that takes a second to come back must not hold the reconciler.
+//
+// Everything here is best effort and everything here REPORTS. A pattern whose
+// radio events silently did nothing is the exact failure this codebase keeps
+// being bitten by -- it would look like a client that did not react.
+func (e *Engine) fireRadio(f RadioFire) {
+	if err := e.radioExists(f.Iface); err != nil {
+		e.logEvent(EventRadio, f.Iface, "",
+			"pattern wanted %s on %s, but %v", f.Kind, f.Iface, err)
+		return
+	}
+
+	switch f.Kind {
+	case RadioOff:
+		// RadioOutage owns the restore, including the #203 marker that stops a
+		// hotplug ending it early and the startup clear that stops a dead
+		// daemon leaving the box dark.
+		if err := e.RadioOutage(f.Iface, f.DurSec); err != nil {
+			e.logEvent(EventRadio, f.Iface, "",
+				"pattern could not take %s down: %v", f.Iface, err)
+		}
+
+	case RadioAPDown, RadioAPDownTell:
+		// The access point goes, the radio stays. Restored by a timer here
+		// rather than by the player, so a pattern that is stopped mid-block
+		// cannot leave a BSS down -- the same reason RadioOutage owns its own
+		// restore.
+		// The LANE decides whether anything is announced, because the two lanes
+		// are the two forms of the button and differ in nothing else.
+		//
+		// This was one lane passing deauth=false while its hint said "client is
+		// told" and the "musical chairs" preset called itself the announced half
+		// of a matched pair. Both halves were silent, so the pair measured the
+		// difference between 15 and 30 seconds rather than the difference
+		// between being told and having to notice.
+		if err := e.SetAPEnabled(f.Iface, false, f.Kind == RadioAPDownTell); err != nil {
+			e.logEvent(EventRadio, f.Iface, "",
+				"pattern could not take the access point down on %s: %v", f.Iface, err)
+			return
+		}
+		go func(iface string, d float64) {
+			time.Sleep(time.Duration(d * float64(time.Second)))
+			// Silent on the way back: the clients were told at the start and
+			// have already gone elsewhere, so a broadcast here would land on
+			// devices that are not on this radio and are not waiting for it.
+			if err := e.SetAPEnabled(iface, true, false); err != nil {
+				e.logEvent(EventWarning, iface, "",
+					"pattern could not bring the access point back on %s: %v", iface, err)
+			}
+		}(f.Iface, f.DurSec)
+
+	case RadioScan:
+		// apply=false: survey only. A pattern that MOVED the radio to the
+		// quietest channel it found would be changing the thing under test
+		// while testing it, and the operator would have no way to tell a
+		// client's reaction to the scan from its reaction to the move.
+		//
+		// In the background because a scan takes the BSS down for a few
+		// seconds, and the player's tick must not be held while it does.
+		go func(iface string) {
+			r, err := e.ScanBand(iface, false)
+			if err != nil {
+				e.logEvent(EventWarning, iface, "",
+					"pattern could not scan from %s: %v", iface, err)
+				return
+			}
+			e.logEvent(EventAction, iface, "",
+				"pattern scanned the band from %s: %d channel(s) heard", iface, len(r.Channels))
+		}(f.Iface)
+
+	case RadioDeauth:
+		n, err := e.LinkAll(f.Iface, LinkDeauth)
+		if err != nil {
+			e.logEvent(EventRadio, f.Iface, "",
+				"pattern could not deauth on %s: %v", f.Iface, err)
+			return
+		}
+		e.logEvent(EventAction, f.Iface, "",
+			"pattern deauthenticated %d client(s) on %s", n, f.Iface)
+
+	case RadioEvict:
+		// Source-named: this radio's clients go elsewhere, and the pattern does
+		// not have to say where.
+		//
+		// It used to be REFUSED on a box with more than two radios, because
+		// "off here" only means "onto the other one" when there is exactly one
+		// other, and quietly picking a destination is the silent failure this
+		// codebase keeps being bitten by. That refusal is gone with the reason
+		// for it: EvictFrom denies the radio being emptied rather than steering
+		// towards a chosen target, so the client picks for itself and there is
+		// nothing left to guess. A pattern authored on a two-radio box now runs
+		// unchanged when a third adapter is plugged in.
+		n, err := e.EvictFrom(f.Iface, gatherPinSec)
+		if err != nil {
+			e.logEvent(EventRadio, f.Iface, "",
+				"pattern could not evict off %s: %v", f.Iface, err)
+			return
+		}
+		if n == 0 {
+			e.logEvent(EventRadio, f.Iface, "",
+				"pattern evicted %s, which had no clients on it", f.Iface)
+			return
+		}
+		e.logEvent(EventAction, f.Iface, "",
+			"pattern pushed %d client(s) off %s; each picks where it goes", n, f.Iface)
+
+	case RadioGather:
+		// Destination-named: everyone else comes HERE. The lane it was drawn on
+		// is the target, so there is nothing to guess however many radios the
+		// box has -- and a radio plugged in after the pattern was written is
+		// included automatically, because GatherTo walks the radios that are
+		// serving now rather than the ones that existed when it was authored.
+		total, err := e.GatherTo(f.Iface, gatherPinSec)
+		if err != nil {
+			e.logEvent(EventRadio, f.Iface, "",
+				"pattern could not gather onto %s: %v", f.Iface, err)
+			return
+		}
+		if total == 0 {
+			e.logEvent(EventRadio, f.Iface, "",
+				"pattern gathered onto %s, where every client already was", f.Iface)
+			return
+		}
+		e.logEvent(EventAction, f.Iface, "",
+			"pattern moved %d client(s) onto %s", total, f.Iface)
+
+	default:
+		e.logEvent(EventRadio, f.Iface, "",
+			"pattern carried an unknown radio action %q", f.Kind)
+	}
 }

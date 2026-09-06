@@ -172,15 +172,15 @@ func (e *Engine) fireLink(f LinkFire) {
 	switch f.Kind {
 	case LinkDeadzone:
 		err = e.LinkDeadzone(f.MAC, f.DurSec, f.Scope) // clean deny-ACL block
-	case LinkNudge:
+	case LinkDisassoc:
 		if f.DurSec > 0 {
-			e.LinkFlap(f.MAC, LinkNudge, f.DurSec)
+			e.LinkFlap(f.MAC, LinkDisassoc, f.DurSec)
 		} else {
 			err = e.LinkDisassoc(f.MAC, 0)
 		}
 	default: // drop
 		if f.DurSec > 0 {
-			e.LinkFlap(f.MAC, LinkDrop, f.DurSec)
+			e.LinkFlap(f.MAC, LinkDeauth, f.DurSec)
 		} else {
 			err = e.LinkDeauth(f.MAC, 0)
 		}
@@ -206,7 +206,7 @@ func (e *Engine) LinkFlap(mac, kind string, durSec float64) {
 		deadline := time.Now().Add(time.Duration(durSec * float64(time.Second)))
 		for time.Now().Before(deadline) {
 			var err error
-			if kind == LinkNudge {
+			if kind == LinkDisassoc {
 				err = e.LinkDisassoc(mac, 0)
 			} else {
 				err = e.LinkDeauth(mac, 0)
@@ -321,16 +321,78 @@ func (e *Engine) LinkDeadzone(mac string, durSec float64, scope string) error {
 			return fmt.Errorf("deadzone on %s: %w", w, err)
 		}
 	}
+	// Registered so a hostapd restart can put it back. See Engine.deadzones.
+	e.noteDeadzone(mac, on, time.Duration(durSec*float64(time.Second)))
 	_ = e.LinkDeauth(mac, 0) // kick it off now; the ACL keeps it off
 	go func() {
 		time.Sleep(time.Duration(durSec * float64(time.Second)))
-		for _, w := range on {
-			if err := e.denyACLOn(w, "DEL", mac); err != nil {
-				log.Printf("deadzone lift %s on %s: %v", mac, w, err)
-			}
-		}
+		// Forget FIRST, so releaseDeny sees only the other claim: the deny list
+		// is the OR of this deadzone and any gather or evict pin, and neither
+		// may delete the other's entry. See stillDenied.
+		e.forgetDeadzone(mac)
+		e.releaseDeny(mac, on)
 	}()
 	return nil
+}
+
+// deadzoneBan is one ban in force: which radios it covers and when it ends.
+type deadzoneBan struct {
+	radios []string
+	until  time.Time
+}
+
+func (e *Engine) noteDeadzone(mac string, radios []string, d time.Duration) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.deadzones == nil {
+		e.deadzones = map[string]*deadzoneBan{}
+	}
+	e.deadzones[mac] = &deadzoneBan{
+		radios: append([]string(nil), radios...),
+		until:  time.Now().Add(d),
+	}
+}
+
+func (e *Engine) forgetDeadzone(mac string) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	delete(e.deadzones, mac)
+}
+
+// reapplyDeadzones puts back any ban covering this radio that has not expired.
+//
+// Called after hostapd is restarted, which erases its deny lists. Silence here
+// would end a deadzone early: the client would quietly be allowed back on
+// mid-outage, and the measurement it was part of would be wrong in a way
+// nothing on screen could show.
+func (e *Engine) reapplyDeadzones(iface string) {
+	e.mu.RLock()
+	type job struct {
+		mac  string
+		left time.Duration
+	}
+	var jobs []job
+	for mac, b := range e.deadzones {
+		if left := time.Until(b.until); left > 0 {
+			for _, w := range b.radios {
+				if w == iface {
+					jobs = append(jobs, job{mac: mac, left: left})
+					break
+				}
+			}
+		}
+	}
+	e.mu.RUnlock()
+
+	for _, j := range jobs {
+		if err := e.denyACLOn(iface, "ADD", j.mac); err != nil {
+			e.logEvent(EventWarning, iface, j.mac,
+				"could not restore the deadzone on %s after a restart: %v", iface, err)
+			continue
+		}
+		e.logEvent(EventAction, iface, j.mac,
+			"deadzone restored on %s after a restart, %.0fs left", iface, j.left.Seconds())
+	}
 }
 
 // deadzoneRadios resolves scope to the radios a deadzone must deny on, in the

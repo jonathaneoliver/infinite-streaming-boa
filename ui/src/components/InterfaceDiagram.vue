@@ -168,11 +168,17 @@ function subtitle(i: IfaceInfo): string {
 const unwatched = (i: IfaceInfo) => i.wireless && !i.serving;
 
 
-/** The radio a client could be steered to: another one actually serving. */
+/**
+ * The radio a client could be steered to: the first other one actually serving.
+ *
+ * Same rule as the rack's evict control and as OtherRadio in the daemon --
+ * first serving, in listed order -- so the diagram names the destination those
+ * would really use. The diagram is where an operator looks to understand the
+ * box, so it disagreeing with the control is worse than it saying nothing.
+ */
 function otherRadio(i: IfaceInfo): string {
-  return props.info.ifaces.find(
-    (o) => o.wireless && o.name !== i.name && o.ap?.enabled,
-  )?.name ?? '';
+  return props.info.ifaces
+    .find((o) => o.wireless && o.name !== i.name && o.ap?.enabled)?.name ?? '';
 }
 </script>
 

@@ -45,10 +45,14 @@ func (a *API) Routes() *http.ServeMux {
 	mux.HandleFunc("POST /api/bridge/radios/{iface}/deauth-all", a.postDeauthAll)
 	mux.HandleFunc("POST /api/bridge/radios/{iface}/link-all", a.postLinkAll)
 	mux.HandleFunc("POST /api/bridge/radios/{iface}/power", a.postRadioPower)
+	mux.HandleFunc("POST /api/bridge/radios/{iface}/ap", a.postAPEnabled)
+	mux.HandleFunc("POST /api/services/{name}", a.postService)
 	mux.HandleFunc("POST /api/bridge/radios/{iface}/scan", a.postScan)
 	mux.HandleFunc("POST /api/bridge/radios/{iface}/profile", a.postRadioProfile)
 	mux.HandleFunc("POST /api/bridge/radios/{iface}/threshold", a.postThreshold)
 	mux.HandleFunc("POST /api/bridge/radios/{iface}/steer", a.postSteer)
+	mux.HandleFunc("POST /api/bridge/radios/{iface}/gather", a.postGather)
+	mux.HandleFunc("POST /api/bridge/radios/{iface}/evict", a.postEvict)
 	mux.HandleFunc("PATCH /api/devices/{mac}/policy", a.patchPolicy)
 	mux.HandleFunc("POST /api/devices/{mac}/sub", a.postSub)
 	mux.HandleFunc("PATCH /api/devices/{mac}/sub/{id}", a.patchSub)
@@ -63,6 +67,10 @@ func (a *API) Routes() *http.ServeMux {
 	mux.HandleFunc("GET /api/patterns/{name}", a.getPattern)
 	mux.HandleFunc("POST /api/patterns/merge", a.mergePatterns)
 	mux.HandleFunc("POST /api/patterns/scenario", a.playScenario)
+	mux.HandleFunc("GET /api/bridge/pattern", a.getAdapterPattern)
+	mux.HandleFunc("PUT /api/bridge/pattern", a.putAdapterPattern)
+	mux.HandleFunc("POST /api/bridge/pattern/play", a.playAdapterPattern)
+	mux.HandleFunc("DELETE /api/bridge/pattern/play", a.stopAdapterPattern)
 	mux.HandleFunc("PUT /api/patterns/{name}", a.savePattern)
 	mux.HandleFunc("DELETE /api/patterns/{name}", a.deleteSavedPattern)
 	mux.HandleFunc("POST /api/devices/{mac}/pattern/select", a.selectPattern)
@@ -75,6 +83,7 @@ func (a *API) Routes() *http.ServeMux {
 	mux.HandleFunc("POST /api/devices/{mac}/link/disassoc", a.linkDisassoc)
 	mux.HandleFunc("POST /api/devices/{mac}/link/deadzone", a.linkDeadzone)
 	mux.HandleFunc("POST /api/devices/{mac}/link/steer", a.linkSteer)
+	mux.HandleFunc("POST /api/devices/{mac}/link/measure", a.linkMeasure)
 	mux.HandleFunc("DELETE /api/devices/{mac}", a.forgetDevice)
 	mux.Handle("/", cacheHeaders(http.FileServer(http.FS(a.ui))))
 	return mux
@@ -98,6 +107,15 @@ func (a *API) health(w http.ResponseWriter, r *http.Request) {
 	s := a.e.Snapshot()
 	writeJSON(w, http.StatusOK, map[string]any{
 		"ok": s.Caps.Shaping, "caps": s.Caps, "revision": s.Revision,
+		// WHICH BUILD IS ACTUALLY RUNNING. Stamped at link time and already
+		// carried in Config; it just had no way out of the process.
+		//
+		// Without it, "is my change on the box" needed SSH and `strings` over
+		// the binary, so two deploys landed on top of other people's work
+		// unnoticed on 2026-09-05 -- one of them replacing a newer build with
+		// an older tree, and costing an operator a testing session against a
+		// binary that did not contain the change under test. See #222.
+		"version": a.e.cfg.Version,
 	})
 }
 
@@ -453,12 +471,12 @@ func (a *API) postLinkAll(w http.ResponseWriter, r *http.Request) {
 	}
 	kind := strings.TrimSpace(r.URL.Query().Get("kind"))
 	if kind == "" {
-		kind = LinkDrop
+		kind = LinkDeauth
 	}
 	n, err := a.e.LinkAll(iface, kind)
 	if err != nil {
 		code := http.StatusBadGateway
-		if kind != LinkDrop && kind != LinkNudge {
+		if kind != LinkDeauth && kind != LinkDisassoc {
 			code = http.StatusBadRequest
 		}
 		writeErr(w, code, err.Error())
@@ -466,6 +484,69 @@ func (a *API) postLinkAll(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"iface": iface, "action": "link_all", "kind": kind, "stations": n,
+	})
+}
+
+// postService starts or stops one of the box's own observability services.
+//
+// The name is looked up in an allowlist and never passed through to systemctl,
+// so a request cannot name a unit of its own choosing. See services.go.
+func (a *API) postService(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	q := r.URL.Query()
+	on := q.Get("on") != "0" && !strings.EqualFold(q.Get("on"), "false")
+	if err := a.e.SetService(name, on); err != nil {
+		writeErr(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"service": name, "action": "service", "running": on,
+	})
+}
+
+// postAPEnabled takes this radio's access point down or brings it back, leaving
+// the radio powered.
+//
+// A SEPARATE verb from power, not a mode of it, because the two impairments are
+// different in the way that matters: power is rfkill and the client is told
+// nothing, while this is hostapd closing the BSS with the transmitter still on,
+// so the departure is announced. Folding them into one control would hide the
+// only variable an operator is trying to change.
+func (a *API) postAPEnabled(w http.ResponseWriter, r *http.Request) {
+	iface := r.PathValue("iface")
+	q := r.URL.Query()
+	on := q.Get("on") != "0" && !strings.EqualFold(q.Get("on"), "false")
+	// Optional, and it means something different in each direction: going down
+	// it says goodbye to the stations currently associated, coming up it
+	// announces the start to clients still holding a stale association. See
+	// SetAPEnabled. Validated rather than passed through, so a typo becomes a
+	// message instead of a silent no-op.
+	// One flag, named for the frame it sends.
+	//
+	// It used to take "drop" or "nudge" going down and "announce" coming up,
+	// behind a button labelled "tell" -- four words for one decision, in a
+	// vocabulary that named the same frames differently elsewhere. Both
+	// directions send a deauthentication, so the only real question is whether
+	// one goes out at all, and the parameter says so. See #229.
+	deauthRaw := strings.TrimSpace(q.Get("deauth"))
+	deauth := false
+	switch deauthRaw {
+	case "", "0", "false":
+	case "1", "true":
+		deauth = true
+	default:
+		writeErr(w, http.StatusBadRequest,
+			`deauth must be "1" or "0": with it the clients are `+
+				`deauthenticated so they know, without it the access point `+
+				`changes state in silence and they have to notice`)
+		return
+	}
+	if err := a.e.SetAPEnabled(iface, on, deauth); err != nil {
+		writeErr(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"iface": iface, "action": "ap", "enabled": on, "deauth": deauth,
 	})
 }
 
@@ -607,11 +688,19 @@ func (a *API) postThreshold(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// postSteer asks clients to move to the other radio via 802.11v.
+// postSteer asks clients to move to another radio via 802.11v.
 //
 // A REQUEST, not an instruction: the decision stays with the client, and
 // whether a given phone honours it is exactly the behaviour worth testing.
 // `?mac=` steers one; omitted, it asks everyone on the radio.
+//
+// `?insist=1` disassociates a client that will not go, which is what EVICT
+// means -- "get off this radio", with no claim about where it lands. Without it
+// a refusal is taken for an answer, which is what GATHER means, because a
+// gather names its destination and a forced client picks its own. See
+// steerMode: the same frame carries a different promise depending on which
+// control sent it, and conflating them is what made "gather to wlan-usb" put a
+// device on wlan0.
 func (a *API) postSteer(w http.ResponseWriter, r *http.Request) {
 	from := r.PathValue("iface")
 	if err := a.e.radioReady(from); err != nil {
@@ -628,23 +717,45 @@ func (a *API) postSteer(w http.ResponseWriter, r *http.Request) {
 				"transition request needs another access point to name")
 		return
 	}
+	mode := steerSuggest
+	insist := strings.TrimSpace(r.URL.Query().Get("insist"))
+	switch insist {
+	case "", "0", "false":
+	case "1", "true":
+		mode = steerInsist
+	default:
+		writeErr(w, http.StatusBadRequest,
+			`insist must be "1" or "0": with it a client that refuses is `+
+				`disassociated and chooses its own destination, without it a `+
+				`refusal leaves the client where it is`)
+		return
+	}
+	if mode == steerInsist {
+		// An evict tells a client to leave and lets it choose. A deny list left
+		// over from a gather takes that choice away and can leave it nothing to
+		// choose AT ALL -- evicted off the one radio it is still allowed on.
+		// The new command supersedes the old one. See clearPins.
+		a.e.clearPins("superseded by an evict")
+	}
 	if mac := strings.TrimSpace(r.URL.Query().Get("mac")); mac != "" {
-		if err := a.e.SteerClient(mac, from, to); err != nil {
+		if err := a.e.SteerClient(mac, from, to, mode); err != nil {
 			writeErr(w, http.StatusBadGateway, err.Error())
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{
-			"iface": from, "action": "steer", "to": to, "asked": 1, "mac": normMAC(mac),
+			"iface": from, "action": "steer", "to": to, "asked": 1,
+			"mac": normMAC(mac), "insist": mode == steerInsist,
 		})
 		return
 	}
-	n, err := a.e.SteerAll(from, to)
+	n, err := a.e.SteerAll(from, to, mode)
 	if err != nil {
 		writeErr(w, http.StatusBadGateway, err.Error())
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"iface": from, "action": "steer", "to": to, "asked": n,
+		"insist": mode == steerInsist,
 	})
 }
 
@@ -725,12 +836,112 @@ func (a *API) stream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// THE BRIDGE VIEW RIDES THE SAME CONNECTION, as a named event.
+	//
+	// A named frame does not reach the client's onmessage handler, so snapshot
+	// frames are untouched and an older interface simply ignores these. One
+	// connection rather than a second EventSource: browsers cap around six per
+	// origin on HTTP/1.1, and the reconnect-and-fallback logic is the part that
+	// must not be got wrong on a box whose purpose is making links unreliable --
+	// duplicating it would mean keeping two copies of it in step.
+	//
+	// Sent on CHANGE, never on a timer. The view is rebuilt every couple of
+	// seconds regardless; emitting each rebuild would push a payload that
+	// changes on the timescale of somebody plugging a cable in, at the rate of
+	// something that changes constantly. See storeBridge.
+	sendBridge := func() bool {
+		raw, err := json.Marshal(a.e.BridgeState())
+		if err != nil {
+			return true
+		}
+		if _, err := fmt.Fprintf(w, "event: bridge\ndata: %s\n\n", raw); err != nil {
+			return false
+		}
+		fl.Flush()
+		return true
+	}
+	lastBridge := a.e.BridgeVersion()
+	if !sendBridge() {
+		return
+	}
+
+	// ACTIVITY, on the same connection and the same terms.
+	//
+	// This was polled every three seconds, on the argument that events are
+	// "bursty and rare -- nothing for ten minutes, then six in a second when a
+	// radio is switched off -- so attaching them to the SSE snapshot would carry
+	// an empty array every second". That was right about riding the SNAPSHOT,
+	// and it is not an argument against a named frame: this one is written only
+	// when the log has actually gained something, so an idle box carries
+	// nothing at all. Sporadic is the best case for push, not the worst.
+	//
+	// The payload is the shape /api/events returns, so the client applies a
+	// frame and a poll response through the same code -- including the
+	// restart detection that `latest` exists for (#196).
+	sendEvents := func(since uint64) (uint64, bool) {
+		evs := a.e.Events(since, eventRing)
+		if evs == nil {
+			evs = []Event{}
+		}
+		raw, err := json.Marshal(map[string]any{
+			"events": evs,
+			"latest": a.e.LatestEventSeq(),
+		})
+		if err != nil {
+			return since, true
+		}
+		if _, err := fmt.Fprintf(w, "event: activity\ndata: %s\n\n", raw); err != nil {
+			return since, false
+		}
+		fl.Flush()
+		if n := len(evs); n > 0 {
+			since = evs[n-1].Seq
+		}
+		return since, true
+	}
+	// Everything the ring holds, once, so a reconnecting page paints its
+	// history immediately rather than looking like a box that has done nothing.
+	lastSeq, ok := sendEvents(0)
+	if !ok {
+		return
+	}
+	// Both are checked on one ticker rather than subscribed to, because each is
+	// a single integer read: the bridge view is rebuilt on a timer already and
+	// this only has to notice that one rebuild differed, and the event log
+	// hands out a sequence number that only moves when something happened.
+	//
+	// Half a second, which is below what an operator can see and well inside
+	// the one-second rebuild that feeds it. Cheap enough not to need a
+	// broadcast: two uint64 comparisons under a read lock, twice a second, per
+	// connected browser.
+	bridgeCheck := time.NewTicker(500 * time.Millisecond)
+	defer bridgeCheck.Stop()
+
 	keepalive := time.NewTicker(20 * time.Second)
 	defer keepalive.Stop()
 	for {
 		select {
 		case <-r.Context().Done():
 			return
+		case <-bridgeCheck.C:
+			if v := a.e.BridgeVersion(); v != lastBridge {
+				lastBridge = v
+				if !sendBridge() {
+					return
+				}
+			}
+			// Two integer comparisons on a shared ticker. The sequence going
+			// BACKWARDS is a daemon restart -- the ring is in memory and begins
+			// again at 1 -- and the client has to be told, or it sits holding a
+			// cursor the new run may never reach and shows a quiet box forever.
+			if v := a.e.LatestEventSeq(); v != lastSeq {
+				if v < lastSeq {
+					lastSeq = 0
+				}
+				if lastSeq, ok = sendEvents(lastSeq); !ok {
+					return
+				}
+			}
 		case s, ok := <-ch:
 			if !ok || !send(s) {
 				return
@@ -969,6 +1180,12 @@ func (a *API) putPattern(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "pattern is required")
 		return
 	}
+	// An imported file, or a client built before #229, may still carry "drop",
+	// "nudge", "off" or "apdown". Upgraded rather than refused: the pattern is
+	// perfectly valid, it just uses names this box has stopped writing.
+	if next, changed := NormalisePattern(*in.Pattern); changed {
+		in.Pattern = &next
+	}
 	if err := validPattern(*in.Pattern); err != nil {
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
@@ -1167,6 +1384,172 @@ func (a *API) playScenario(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusAccepted, map[string]any{
 		"group": id, "started": macs, "pattern": in.Pattern,
 	})
+}
+
+// adapterPatternName is where the box's own timeline lives in the pattern
+// store.
+//
+// A reserved name in the existing library rather than a new store: an adapter
+// pattern is a Pattern, and reusing the store means it is saved, listed,
+// exported and imported by machinery that already works. The name is not
+// authorable through the library, so it cannot be taken by accident.
+const adapterPatternName = "__adapter__"
+
+// getAdapterPattern returns the box's radio timeline, or an empty one.
+//
+// RECONCILED against the radios the box has now, and saved back when that
+// changes anything. An interface name here is bound to a USB socket, so
+// swapping a dongle renames it and leaves the pattern pointing at something
+// gone -- the events survive, are still sent at play time, and are skipped one
+// by one, while the editor draws no lane for them at all. See patternradios.go.
+//
+// Done on the read path rather than only at startup: the daemon does restart
+// when the radio set changes, so startup would usually be enough, and "usually"
+// is how a pattern ends up quietly naming a radio that left weeks ago.
+// Idempotent, so repeating it costs nothing.
+func (a *API) getAdapterPattern(w http.ResponseWriter, r *http.Request) {
+	p, ok := a.e.PatternStore().Get(adapterPatternName)
+	if !ok {
+		writeJSON(w, http.StatusOK, map[string]any{"pattern": nil})
+		return
+	}
+	have := a.e.Config().WlanPorts
+	if next, notes, changed := reconcileAdapterPattern(p, have); changed {
+		if err := a.e.PatternStore().Put(next); err != nil {
+			// Reported, not swallowed: the operator would otherwise be editing a
+			// pattern whose radios were renamed in memory and not on disk, and
+			// the next save would silently undo the rename.
+			a.e.logEvent(EventWarning, "", "",
+				"could not save the adapter pattern after remapping it onto the "+
+					"radios this box has now: %v", err)
+		} else {
+			p = next
+			for _, n := range notes {
+				a.e.logEvent(EventAction, "", "", "adapter pattern: %s", n)
+			}
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"pattern": p,
+		// Radios the pattern still names that this box does not have. The
+		// editor greys these lanes rather than hiding them, so events that
+		// cannot run are visible and deletable instead of invisible and saved.
+		"orphaned": OrphanedRadios(p, have),
+	})
+}
+
+// putAdapterPattern stores the box's radio timeline.
+//
+// Validated here as well as at play time, so an impossible pattern is refused
+// while the operator is still looking at the editor that produced it -- an
+// outage below the floor being the one that actually happens.
+func (a *API) putAdapterPattern(w http.ResponseWriter, r *http.Request) {
+	var in Pattern
+	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+		writeErr(w, http.StatusBadRequest, "malformed body: "+err.Error())
+		return
+	}
+	in.Name = adapterPatternName
+	// Same upgrade as putPattern: an older client may still send "off" or
+	// "apdown". See #229.
+	in, _ = NormalisePattern(in)
+	// Radios name interfaces, and an interface this box does not have would
+	// fail silently at play time as an event that fired against nothing.
+	for _, ev := range in.Radios {
+		if !a.e.Config().IsWlan(ev.Iface) {
+			writeErr(w, http.StatusBadRequest,
+				"this box has no radio named "+ev.Iface)
+			return
+		}
+	}
+	if err := validPattern(in); err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if err := a.e.PatternStore().Put(in); err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"saved": in.Name, "radios": len(in.Radios), "dur_sec": in.DurSec(),
+	})
+}
+
+// playAdapterPattern runs the box's radio timeline.
+//
+// Bound to BoxBinding rather than a MAC, so every verb the Player already has
+// applies to it -- including the scenario grouping, which is how a radio
+// outage and a client's ladder walk end up on one clock.
+func (a *API) playAdapterPattern(w http.ResponseWriter, r *http.Request) {
+	now := time.Now()
+	if err := a.e.Player().Resume(BoxBinding, now); err == nil {
+		writeJSON(w, http.StatusAccepted, map[string]any{"resumed": BoxBinding})
+		return
+	}
+	p, ok := a.e.PatternStore().Get(adapterPatternName)
+	if !ok || !p.IsAdapterPattern() {
+		writeErr(w, http.StatusBadRequest,
+			"no adapter pattern has been authored; add a radio lane before playing one")
+		return
+	}
+	// Refuse rather than degrade. A pattern that evicts or gathers needs
+	// somewhere to move clients to, and on a one-radio box a bounce is not a
+	// bounce -- it is an outage wearing the wrong name. Same answer, in the
+	// same words, that a steer already gives.
+	needsTwo := false
+	for _, ev := range p.Radios {
+		if ev.Kind == RadioEvict || ev.Kind == RadioGather {
+			needsTwo = true
+		}
+	}
+	serving := 0
+	for _, iface := range a.e.Config().WlanPorts {
+		if a.e.RadioServing(iface) {
+			serving++
+		}
+	}
+	if needsTwo && serving < 2 {
+		writeErr(w, http.StatusServiceUnavailable,
+			"nowhere to steer to: this pattern moves clients between radios and "+
+				"this box is serving only one")
+		return
+	}
+	if err := a.e.Player().Start(BoxBinding, p, now); err != nil {
+		writeErr(w, http.StatusConflict, err.Error())
+		return
+	}
+	a.e.logEvent(EventAction, "", "",
+		"adapter pattern started: %d radio events over %.0fs", len(p.Radios), p.DurSec())
+	writeJSON(w, http.StatusAccepted, map[string]any{
+		"started": BoxBinding, "radios": len(p.Radios), "dur_sec": p.DurSec(),
+	})
+}
+
+// stopAdapterPattern ends the box run.
+//
+// Unlike a device run, forgetting is not enough: a radio taken down by a
+// pattern stays down until its own restore fires, and a stop that left the AP
+// off the air would be #182 by another route. RadioOutage owns that restore and
+// clears the #203 marker, so the wait is bounded -- but the operator is told,
+// because a radio that comes back seconds after a stop looks like a fault.
+func (a *API) stopAdapterPattern(w http.ResponseWriter, r *http.Request) {
+	if err := a.e.Player().Stop(BoxBinding); err != nil {
+		writeErr(w, http.StatusConflict, err.Error())
+		return
+	}
+	var pending []string
+	for _, iface := range a.e.Config().WlanPorts {
+		if on, known := radioPowered(iface); known && !on {
+			pending = append(pending, iface)
+		}
+	}
+	out := map[string]any{"stopped": BoxBinding}
+	if len(pending) > 0 {
+		out["restoring"] = pending
+		out["note"] = "a radio outage was in force; it restores itself when its " +
+			"window ends rather than the moment you stopped the pattern"
+	}
+	writeJSON(w, http.StatusOK, out)
 }
 
 // stopPattern ends a run. The device returns to stored policy on the next tick;
@@ -2053,7 +2436,10 @@ func (a *API) linkSteer(w http.ResponseWriter, r *http.Request) {
 				"transition request needs another access point to name")
 		return
 	}
-	if err := a.e.SteerClient(mac, from, to); err != nil {
+	// steerSuggest: this control names the radio it is sending the client to,
+	// so a refusal has to leave it where it is. Forcing would send it wherever
+	// it liked while the interface said it had gone to the named one.
+	if err := a.e.SteerClient(mac, from, to, steerSuggest); err != nil {
 		writeErr(w, http.StatusBadGateway, err.Error())
 		return
 	}
@@ -2189,4 +2575,107 @@ func (a *API) forgetDevice(w http.ResponseWriter, r *http.Request) {
 	}
 	a.e.BumpControl()
 	writeJSON(w, http.StatusOK, map[string]string{"forgotten": mac})
+}
+
+// linkMeasure asks one client to measure the box's OTHER radios and report what
+// it hears (802.11k beacon request). See #228.
+//
+// Returns how many measurements were REQUESTED, not how many came back: the
+// reports arrive asynchronously through the monitor connection and land on the
+// client's own record, exactly as a steer's answer does. A client is free to
+// decline, and a decline is itself reported.
+func (a *API) linkMeasure(w http.ResponseWriter, r *http.Request) {
+	mac := normMAC(r.PathValue("mac"))
+	if !validMAC(mac) {
+		writeErr(w, http.StatusBadRequest, "not a MAC address: "+mac)
+		return
+	}
+	asked, err := a.e.RequestBeaconReports(mac)
+	if err != nil && asked == 0 {
+		// 503 rather than 400: on a box with another radio serving, the same
+		// request would work. Nothing about the MAC is wrong.
+		writeErr(w, http.StatusServiceUnavailable, err.Error())
+		return
+	}
+	out := map[string]any{"mac": mac, "action": "measure", "asked": asked}
+	if err != nil {
+		// Partial success is reported as such rather than rounded to either
+		// end: some radios were asked and some could not be, and saying only
+		// "3 asked" would hide a radio that is silently never measured.
+		out["partial"] = err.Error()
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+// postGather moves every client on the other radios onto this one and PINS them
+// there, by denying them everywhere else for a while.
+//
+// A separate endpoint from steer rather than a flag on it, because it is a
+// different kind of act. A steer is a request the client may refuse; this
+// removes the alternatives and then moves the client, so there is nothing to
+// refuse. Sharing an endpoint would put two different promises behind one name.
+//
+// `?pin=<sec>` sets how long the deny lists are held. See gather.go.
+func (a *API) postGather(w http.ResponseWriter, r *http.Request) {
+	iface := r.PathValue("iface")
+	if err := a.e.radioReady(iface); err != nil {
+		writeErr(w, http.StatusServiceUnavailable, err.Error())
+		return
+	}
+	pin := float64(gatherPinSec)
+	if v := strings.TrimSpace(r.URL.Query().Get("pin")); v != "" {
+		n, err := strconv.ParseFloat(v, 64)
+		if err != nil {
+			writeErr(w, http.StatusBadRequest, "pin must be a number of seconds")
+			return
+		}
+		pin = n
+	}
+	moved, err := a.e.GatherTo(iface, pin)
+	if err != nil && moved == 0 {
+		writeErr(w, http.StatusServiceUnavailable, err.Error())
+		return
+	}
+	out := map[string]any{
+		"iface": iface, "action": "gather", "moved": moved, "pin_sec": pin,
+	}
+	if err != nil {
+		out["partial"] = err.Error()
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+// postEvict empties one radio and denies it, so the departure sticks.
+//
+// The mirror of postGather. Both remove a choice rather than making a request:
+// gather leaves the client one radio it may join, evict leaves it every radio
+// but one. Neither is refusable, which is the point, and neither claims to be a
+// measurement of what the device would have chosen.
+func (a *API) postEvict(w http.ResponseWriter, r *http.Request) {
+	iface := r.PathValue("iface")
+	if err := a.e.radioReady(iface); err != nil {
+		writeErr(w, http.StatusServiceUnavailable, err.Error())
+		return
+	}
+	pin := float64(gatherPinSec)
+	if v := strings.TrimSpace(r.URL.Query().Get("pin")); v != "" {
+		n, err := strconv.ParseFloat(v, 64)
+		if err != nil {
+			writeErr(w, http.StatusBadRequest, "pin must be a number of seconds")
+			return
+		}
+		pin = n
+	}
+	moved, err := a.e.EvictFrom(iface, pin)
+	if err != nil && moved == 0 {
+		writeErr(w, http.StatusServiceUnavailable, err.Error())
+		return
+	}
+	out := map[string]any{
+		"iface": iface, "action": "evict", "moved": moved, "pin_sec": pin,
+	}
+	if err != nil {
+		out["partial"] = err.Error()
+	}
+	writeJSON(w, http.StatusOK, out)
 }

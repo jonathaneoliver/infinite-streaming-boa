@@ -195,7 +195,7 @@ func TestValidPatternChecksDeadzoneScope(t *testing.T) {
 		{AtSec: 10, Kind: LinkDeadzone, DurSec: 5, Scope: "both"},
 		// Scope is meaningless on a pulse, and accepting it silently would
 		// promise something the runtime does not do.
-		{AtSec: 10, Kind: LinkDrop, Scope: ScopeAll},
+		{AtSec: 10, Kind: LinkDeauth, Scope: ScopeAll},
 	}
 	for _, ev := range bad {
 		if err := validPattern(base(ev)); err == nil {

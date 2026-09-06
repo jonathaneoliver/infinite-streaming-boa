@@ -48,6 +48,9 @@ func (l *Learner) listenDHCP() {
 		// the whole point of the exchange is that the client does not have one
 		// yet, and the address it is being offered is in the server's reply,
 		// which is deliberately not read here.
-		l.storeNames(mac, nil, name)
+		// Ranked below mDNS: option 12 is a bare hostname and is often a
+		// flattened spelling of the name the device shows its owner. See
+		// storeNamesFrom.
+		l.storeNamesFrom(nameFromDHCP, mac, nil, name)
 	}
 }

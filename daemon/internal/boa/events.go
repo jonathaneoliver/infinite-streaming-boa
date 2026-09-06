@@ -181,7 +181,7 @@ func (e *Engine) labelFor(mac string) string { return e.events.label(mac) }
 // in exactly the way this panel exists to rule out.
 func (e *Engine) noteLinkAll(iface, kind string, n int) {
 	verb := "deauthenticated"
-	if kind == LinkNudge {
+	if kind == LinkDisassoc {
 		verb = "disassociated"
 	}
 	e.logEvent(EventAction, iface, "", "%s %d client(s) on %s — announced, so they reconnect",

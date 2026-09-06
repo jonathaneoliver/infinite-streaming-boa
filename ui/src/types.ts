@@ -148,13 +148,14 @@ export interface Keyframe {
  * during playback.
  */
 /** A link-lane event: a per-client Wi-Fi impairment on the pattern timeline.
- *  `kind` is "drop" (deauth), "nudge" (disassoc) or "deadzone" (a held outage).
+ *  `kind` names the 802.11 frame it sends — "deauth" or "disassoc" — or
+ *  "deadzone", a held outage that is a composition rather than a frame. See #229.
  *  `dur_sec` is the block width: 0 = a single pulse (fired on the rising edge),
  *  >0 = the disturbance holds for that long — a flap for drop/nudge, a clean
  *  block for deadzone. See #135. */
 export interface LinkEvent {
   at_sec: number;
-  kind: 'drop' | 'nudge' | 'deadzone';
+  kind: 'deauth' | 'disassoc' | 'deadzone';
   dur_sec?: number;
   /** deadzone only. Which radios the ban covers:
    *  - `current` (the default when absent) denies on the radio the client is
@@ -165,11 +166,55 @@ export interface LinkEvent {
   scope?: 'current' | 'all';
 }
 
+/** One entry on an adapter pattern's radio lanes.
+ *
+ *  `iface` is the radio the event acts ON, and that is the whole grammar: an
+ *  `off` block takes it down, `deauth` throws its clients off, `evict` sends
+ *  them away from it, and `gather` brings everyone else to it. */
+export interface RadioEvent {
+  at_sec: number;
+  iface: string;
+  kind:
+    | 'gather'
+    | 'evict'
+    | 'deauth'
+    | 'radio-off'
+    | 'disable-ap'
+    | 'deauth-disable-ap'
+    | 'scan';
+  /** `off` only — how long the radio stays down. The rest are pulses. */
+  dur_sec?: number;
+}
+
+/** The shortest outage an adapter pattern may author.
+ *
+ *  Cutting radio power is the one impairment that announces nothing, so the
+ *  client discovers it by missing beacons — tens of seconds on most devices.
+ *  A shorter block authors an outage many clients never notice at all. Use
+ *  `deauth` for a short, announced disturbance. Kept in step with
+ *  minRadioOffSec in the daemon. */
+export const MIN_RADIO_OFF_SEC = 30;
+
+/** The shortest access-point block a pattern may author.
+ *
+ *  Far below MIN_RADIO_OFF_SEC on purpose. That floor is about how long a
+ *  client takes to NOTICE silence; an access point going down is announced, so
+ *  the client acts at once -- measured at 45ms from the BSS going down to the
+ *  client appearing on the other radio. What sets this floor is the box
+ *  instead: hostapd walks DISABLED -> COUNTRY_UPDATE -> HT_SCAN -> ENABLED to
+ *  put a BSS back, about a second on these radios, so a shorter block would ask
+ *  for the access point back before it had finished leaving. Kept in step with
+ *  minAPDownSec in the daemon. */
+export const MIN_AP_DOWN_SEC = 3;
+
 export interface Pattern {
   name: string;
   keys: Keyframe[];
   loop: boolean;
   links?: LinkEvent[];
+  /** The adapter lanes. A pattern carrying these is played against the BOX
+   *  rather than a device. */
+  radios?: RadioEvent[];
 }
 
 /**
@@ -497,6 +542,11 @@ export interface Client {
    *  associated, or a box serving a single radio. Computed by the daemon so
    *  the interface does not have to infer the box's radio topology. */
   steer_to?: string;
+  /** What THIS CLIENT reported hearing, per BSS, from an 802.11k beacon
+   *  request — strongest first. Measured at the client, not at the access
+   *  point, which is what makes it the only signal figure available for a
+   *  radio the client is NOT on. Empty until somebody asks. See #228. */
+  beacon_reports?: BeaconReport[];
   present: boolean;
   shapeable: boolean;
   station?: Station;
@@ -542,8 +592,13 @@ export interface APStatus {
   /** DERIVED: hostapd has no width field. See apWidth in radioctl.go. */
   width_mhz?: number;
   mode?: string;
-  /** True only when hostapd says state=ENABLED, i.e. actually beaconing. */
+  /** hostapd says state=ENABLED AND the interface is up. Both, because
+   *  hostapd's state survives the interface being taken out from under it. */
   enabled: boolean;
+  /** hostapd claims enabled but the kernel says the interface is down, so
+   *  nothing is on air. Needs hostapd restarted, not the AP re-enabled — a
+   *  different action from a plain disabled AP, hence a different state. */
+  link_down?: boolean;
   stations: number;
   beacon_int_ms?: number;
   dtim_period?: number;
@@ -634,10 +689,33 @@ export interface ScanResult {
   note: string;
 }
 
+/** One of the box's own observability services, and whether it is running. */
+export interface ServiceInfo {
+  name: string;
+  running: boolean;
+}
+
 export interface BridgeInfo {
   bridge: string;
   ifaces: IfaceInfo[];
   notes?: Notice[];
+  /**
+   * The box's own processes -- ntopng and glances -- with a switch each.
+   *
+   * On the bridge payload rather than in caps because reading them costs a
+   * subprocess apiece, and this view is built on a timer where the snapshot is
+   * built every second.
+   */
+  services?: ServiceInfo[];
+  /**
+   * How long ago this view was built, in milliseconds.
+   *
+   * It is served from a snapshot refreshed on a timer, so it is normally a
+   * second or two old -- and can be minutes old while a radio holds rtnl_lock
+   * through a firmware reload, which is when everything else on the box stalls
+   * too. A number describing a moment has to say which moment.
+   */
+  read_age_ms?: number;
   /** The last band scan per radio, kept by the daemon so the channel plan's
    *  colours survive a reload and are the same for everyone looking. */
   scans?: Record<string, ScanSummary>;
@@ -681,6 +759,10 @@ export interface Capabilities {
   radio: boolean;
   leases: boolean;
   wlan_iface: string;
+  /** Every radio the daemon watches, in preference order. This is the set an
+   *  adapter pattern may address; wlan_iface above is the back-compat single
+   *  name and predates the box serving two. */
+  wlan_ifaces?: string[];
   uplink_if: string;
   /** The radio actually serving the AP. `bus` is "usb" or "onboard"; for a USB
    *  adapter `link_mbps` is the speed it NEGOTIATED (5000 = SuperSpeed,
@@ -695,6 +777,10 @@ export interface Capabilities {
   /** True only when the glances web UI is LISTENING, not merely installed. */
   glances: boolean;
   glances_port: number;
+  /** The box's own services and whether each is running, so the header can
+   *  offer a switch beside each link. Every controllable service appears,
+   *  running or not -- a stopped one still needs its start button. */
+  services?: ServiceInfo[];
   /** True when per-client link events (deauth/disassoc) can be driven -- i.e.
    *  hostapd is serving the AP and exposing its control socket. False on the
    *  onboard/NetworkManager radio, so the link actions are hidden rather than
@@ -756,6 +842,10 @@ export interface Snapshot {
   caps: Capabilities;
   clients: Client[];
   notices?: Notice[];
+  /** The box's own pattern run, when one is playing — carried here for the same
+   *  reason a device's is: so the adapter editor draws a moving playhead
+   *  without polling a second endpoint. */
+  adapter_run?: PatternView | null;
 }
 
 export const CLEAN: Shape = {
@@ -1326,4 +1416,23 @@ export function phyCeilingMbps(mode: string, widthMHz: number): number {
 export function phyCeilingLabel(mode: string, widthMHz: number): string {
   const n = phyCeilingMbps(mode, widthMHz);
   return n ? `up to ${Math.round(n)} Mb/s` : '';
+}
+
+/** One client's own measurement of one BSS, from an 802.11k beacon report. */
+export interface BeaconReport {
+  bssid: string;
+  /** Our interface owning that BSSID, absent when the client measured a BSS
+   *  that is not ours — which is worth showing, not hiding: a device naming a
+   *  neighbour's access point is saying where it would rather be. */
+  iface?: string;
+  channel: number;
+  rcpi: number;
+  signal_dbm: number;
+  /** False when the client answered "not available". Without this a failed
+   *  measurement reads as a real one at 0 dBm. */
+  has_signal: boolean;
+  rsni_db?: number;
+  has_rsni?: boolean;
+  at_ms: number;
+  requested: boolean;
 }

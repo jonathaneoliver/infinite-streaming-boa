@@ -1,4 +1,5 @@
 import { computed, ref, watch, onUnmounted, type Ref } from 'vue';
+import { onStream, transport } from '@/composables/useStream';
 import type { BridgeInfo, ScanResult, SurveyResult } from '@/types';
 
 /**
@@ -58,6 +59,11 @@ export function useBridge(active: Ref<boolean>) {
         return false;
       }
       actionMsg.value = describe(body);
+      // One reload, and it is honest but early: controls return as soon as a
+      // command is ACCEPTED, so the state they change has usually not changed
+      // yet. The daemon confirms a moment later and the change arrives on the
+      // stream. This used to be followed by reloads at 1.2s and 4s -- guesses
+      // at how long the box would take, made when nothing pushed.
       await load();
       return true;
     } catch (e) {
@@ -111,6 +117,56 @@ export function useBridge(active: Ref<boolean>) {
           `come back — up to about 25 on the USB adapter — and the activity log ` +
           `says when it did.`
         : `${b.iface}: powered OFF — no client was told.`,
+    );
+
+  /**
+   * Take the ACCESS POINT down, leaving the radio powered.
+   *
+   * The other half of the pair, and deliberately worded to contrast with
+   * setPower above. Same visible outcome -- the network goes away -- by the
+   * opposite mechanism: rfkill stops the transmitter so nothing can be said,
+   * while this closes the BSS with the transmitter still running, so the
+   * departure is announced and the client acts on being told rather than on
+   * working it out. That difference is the whole reason both controls exist.
+   */
+  const setAPEnabled = (iface: string, on: boolean, deauth = false) =>
+    act(
+      `/api/bridge/radios/${encodeURIComponent(iface)}/ap?on=${on ? 1 : 0}` +
+        `&deauth=${deauth ? 1 : 0}`,
+      (b) =>
+        b.enabled
+          ? b.deauth
+            ? `${b.iface}: access point back up, and its return was ANNOUNCED — ` +
+              `any client still holding a stale association was told to start ` +
+              `again rather than left to notice.`
+            : `${b.iface}: access point back up. Clients can associate again.`
+          : b.deauth
+            ? `${b.iface}: clients were told to leave (${b.deauth}), then the ` +
+              `access point went down. The goodbye is explicit here, rather ` +
+              `than whatever hostapd does on its own — and it is the same ` +
+              `frame type the AP broadcasts on its way back up.`
+            : `${b.iface}: access point DOWN — the radio is still ` +
+              `transmitting, so unlike a power cut the clients were told it ` +
+              `went away.`,
+    );
+
+  /**
+   * Start or stop one of the box's own observability services.
+   *
+   * Worth a control rather than an SSH session because of what these two cost a
+   * MEASUREMENT, not what they cost the box. ntopng inspects every packet
+   * crossing the bridge, so it works hardest exactly while a run is in
+   * progress -- 7% of a core idle, 71% under load, measured 2026-09-05. Being
+   * able to take it out of the picture for the duration of a test, and put it
+   * back afterwards, is the difference between a number and a number with a
+   * caveat.
+   */
+  const setService = (name: string, on: boolean) =>
+    act(`/api/services/${encodeURIComponent(name)}?on=${on ? 1 : 0}`, (b) =>
+      b.running
+        ? `${b.service} started.`
+        : `${b.service} stopped — it is no longer competing for CPU with what ` +
+          `you are measuring.`,
     );
 
   const powerOutage = (iface: string, sec: number) =>
@@ -222,33 +278,66 @@ export function useBridge(active: Ref<boolean>) {
     );
 
   /*
-   * EVICT and GATHER are the same endpoint read in opposite directions.
+   * EVICT and GATHER are the same endpoint, and they make OPPOSITE promises.
    *
    * `POST /radios/{iface}/steer?to={other}` asks everyone on `iface` to move to
    * `other`. Evicting a radio is that call named on the radio being emptied;
    * gathering to a radio is the same call named on the radio being filled, with
-   * the two interfaces swapped. There is no second endpoint and no new daemon
-   * code -- `to` has always been a parameter, and only the button was missing.
+   * the two interfaces swapped.
    *
-   * Both are REQUESTS. 802.11v hands the decision to the client, and whether a
-   * given phone honours it is the behaviour this box exists to test: a steer
-   * that is refused is a result, not a failure.
+   * What differs is `insist`, and it is not a preference:
+   *
+   *   - EVICT says "get off this radio" and names no destination. A client that
+   *     will not go is disassociated and then picks for itself, which is
+   *     precisely what the control claims. `insist=1`.
+   *   - GATHER says "come to THIS radio". Forcing a refusing client sends it
+   *     wherever it likes while the interface claims it went where it was told
+   *     -- observed 2026-09-06 as "gather to wlan-usb" landing a device on
+   *     wlan0, three times running. So gather asks, and a refusal is an answer.
+   *
+   * Both remain REQUESTS in the 802.11v sense: the decision is the client's, and
+   * whether a given phone honours it is the behaviour this box exists to test.
+   * A steer that is refused is a result, not a failure.
    */
   const evict = (iface: string) =>
-    act(`/api/bridge/radios/${encodeURIComponent(iface)}/steer`, (b) =>
-      `${b.iface}: asked ${b.asked} client(s) to move to ${b.to}. They may ` +
-      `refuse — 802.11v is a suggestion. Watch the stations counts to see who went.`,
+    act(`/api/bridge/radios/${encodeURIComponent(iface)}/evict`, (b) =>
+      b.moved
+        ? `${iface}: pushed ${b.moved} client(s) off and denied them here, so ` +
+          `they cannot come straight back. Each ban lifts the moment that ` +
+          `client lands somewhere, or after ${b.pin_sec}s. Where each one goes ` +
+          `is its own choice — that is what an evict is.`
+        : `${iface}: nothing to evict — no clients here.`,
     );
 
-  /** `from` is the radio being emptied, `iface` the one being filled. */
-  const gather = (iface: string, from: string) =>
+  /**
+   * Gather: PIN every other radio's clients onto this one.
+   *
+   * One call, not one per source radio, because this is no longer a steer sent
+   * to each. The daemon denies each client on every radio except the
+   * destination and then moves it off the one it is on, so its own rescan has a
+   * single access point left to choose. See gather.go.
+   *
+   * That is a different promise from the one this button used to make. Asking
+   * could not keep it: 802.11 has no request that PLACES a station on a BSS, so
+   * a client that refused — or that was disassociated and rescanned — picked for
+   * itself, and "gather to wlan-usb" was observed putting a device on wlan0.
+   * Removing the alternatives is the only deterministic answer.
+   *
+   * The cost, stated plainly because it is real: this stops being a measurement
+   * of whether the device honours a transition request. It cannot refuse what it
+   * was never asked. The per-client `steer` button on the Clients tab is still
+   * the control for that question.
+   */
+  const gather = (iface: string) =>
     act(
-      `/api/bridge/radios/${encodeURIComponent(from)}/steer` +
-        `?to=${encodeURIComponent(iface)}`,
+      `/api/bridge/radios/${encodeURIComponent(iface)}/gather`,
       (b) =>
-        `${b.to}: asked ${b.asked} client(s) on ${b.iface} to come here. They ` +
-        `may refuse — 802.11v is a suggestion. Watch the stations counts to ` +
-        `see who came.`,
+        b.moved
+          ? `${iface}: moved ${b.moved} client(s) here by denying them on the ` +
+            `other radios. Each ban lifts the moment that client arrives, or ` +
+            `after ${b.pin_sec}s if it never does. They could not refuse — this ` +
+            `removes the alternatives rather than asking.`
+          : `${iface}: nothing to gather — every client is already here.`,
     );
 
   /**
@@ -257,14 +346,14 @@ export function useBridge(active: Ref<boolean>) {
    * Both are ANNOUNCED: the clients are told and reconnect knowing why, which
    * is the whole distinction from switching the radio off.
    */
-  const linkAll = (iface: string, kind: 'drop' | 'nudge') =>
+  const linkAll = (iface: string, kind: 'deauth' | 'disassoc') =>
     act(`/api/bridge/radios/${encodeURIComponent(iface)}/link-all?kind=${kind}`, (b) =>
-      kind === 'drop'
+      kind === 'deauth'
         ? `${b.iface}: ${b.stations} station(s) deauthenticated. They were told, so they reconnect quickly.`
         : `${b.iface}: ${b.stations} station(s) disassociated — the softer transition. Some clients ride it out without a full reconnect.`,
     );
 
-  const deauthAll = (iface: string) => linkAll(iface, 'drop');
+  const deauthAll = (iface: string) => linkAll(iface, 'deauth');
 
   async function loadSurvey(iface: string) {
     try {
@@ -278,22 +367,64 @@ export function useBridge(active: Ref<boolean>) {
     }
   }
 
+  /**
+   * The view arrives on the stream when it CHANGES, and is polled otherwise.
+   *
+   * The daemon rebuilds this every couple of seconds and emits only when the
+   * content actually differs, so an idle box is quiet and a radio going down
+   * shows up within a second instead of on the next five-second tick. That is
+   * what let the post-action reload timers go: they were guesses at how long
+   * the box would take, needed only because nothing pushed.
+   *
+   * Polling stays as the fallback and is not a legacy path. Conditioning a link
+   * means the operator may have just made their own connection to this box
+   * unreliable on purpose, and the interface has to keep working while they do
+   * -- so when the stream is not up, this behaves exactly as it did before.
+   */
+  let unsubscribe: (() => void) | undefined;
+
   function start() {
     void load();
+    if (!unsubscribe) {
+      unsubscribe = onStream('bridge', (data) => {
+        // Only while this view is on screen; the connection is shared and
+        // stays open for the snapshot regardless.
+        if (active.value) {
+          info.value = data as BridgeInfo;
+          error.value = '';
+        }
+      });
+    }
+    syncPolling();
+  }
+
+  function syncPolling() {
+    if (!active.value || transport.value === 'sse') {
+      if (timer) window.clearInterval(timer);
+      timer = 0;
+      return;
+    }
     if (!timer) timer = window.setInterval(load, POLL_MS);
   }
+
   function stop() {
     if (timer) window.clearInterval(timer);
     timer = 0;
+    unsubscribe?.();
+    unsubscribe = undefined;
   }
 
   watch(active, (on) => (on ? start() : stop()), { immediate: true });
+  // The stream can come and go under a page that stays put, so the decision to
+  // poll is re-made whenever the transport changes rather than only on mount.
+  watch(transport, syncPolling);
   onUnmounted(stop);
 
   return {
     info, survey, scan, error, actionMsg, busy,
     scans, scanSummaries, airtimePct,
-    load, loadSurvey, deauthAll, setPower, powerOutage, scanBand,
+    load, loadSurvey, deauthAll, setPower, setAPEnabled, setService, powerOutage,
+    scanBand,
     applyProfile, setThreshold, evict, gather, linkAll, moveChannel,
   };
 }

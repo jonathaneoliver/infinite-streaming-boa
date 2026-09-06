@@ -1,6 +1,7 @@
 package boa
 
 import (
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"os/exec"
@@ -8,6 +9,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // The box's own interfaces: what it has, what they are called, what addresses
@@ -53,9 +55,24 @@ type APStatus struct {
 	WidthMHz int `json:"width_mhz,omitempty"`
 	// Mode is the highest enabled generation, e.g. "802.11ax".
 	Mode string `json:"mode,omitempty"`
-	// Enabled is true only when hostapd reports state=ENABLED, i.e. actually
-	// beaconing rather than merely configured.
-	Enabled  bool `json:"enabled"`
+	// Enabled means hostapd reports state=ENABLED AND the interface is up.
+	//
+	// BOTH, because hostapd's state alone is not the whole answer and once
+	// claimed to be. MEASURED 2026-09-06: NetworkManager handed wlan-usb2 from
+	// managed to unmanaged, wpa_supplicant deinit'd the interface on its way
+	// out, and hostapd logged INTERFACE-DISABLED -- while its STATUS went on
+	// answering state=ENABLED for twenty minutes. Nothing was on air, the SSID
+	// vanished from every client's list, and the rack showed the radio serving
+	// the whole time. hostapd's state survives the interface being taken out
+	// from under it, so a radio reported on the strength of that state alone is
+	// a radio reported on hostapd's memory of what it last set up.
+	Enabled bool `json:"enabled"`
+	// LinkDown records exactly that disagreement: hostapd says ENABLED, the
+	// kernel says the interface is down. Separate from a plain "not serving"
+	// because the two need different actions -- a disabled AP is enabled again,
+	// whereas this one needs hostapd restarted, and an operator who cannot tell
+	// them apart will press the wrong control and conclude the box is broken.
+	LinkDown bool `json:"link_down,omitempty"`
 	Stations int  `json:"stations"`
 	// BeaconIntMs and DTIMPeriod are the power-save timing knobs. Shown
 	// because a phone's downlink behaviour between segment fetches is governed
@@ -119,6 +136,14 @@ type BridgeInfo struct {
 	// per-channel summary travels here, never the access point list -- that is
 	// hundreds of entries on a busy band, and this payload is polled.
 	Scans map[string]ScanSummary `json:"scans,omitempty"`
+	// ReadAgeMs is how long ago this view was actually built, in milliseconds.
+	//
+	// It is built on a timer rather than per request, so it can be a couple of
+	// seconds old normally and minutes old while a radio holds rtnl_lock
+	// through a firmware reload. A view that describes a moment must say which
+	// moment, or a stale one passes for current -- and during a radio recovery
+	// that is exactly when it would mislead.
+	ReadAgeMs int `json:"read_age_ms,omitempty"`
 	// Airtime is the busy fraction of each radio's operating channel, as a
 	// percentage, for the radios whose driver reports one.
 	//
@@ -148,13 +173,145 @@ type ScanSummary struct {
 // BridgeState assembles the inventory. Best-effort by design: a box with no
 // radio, no hostapd or no USB ethernet is a normal box, and every absent piece
 // simply yields a smaller list rather than an error.
+// bridgeTTL is how old the served view may be before a refresh is started, and
+// therefore how quickly a change reaches the stream.
+//
+// One second. It was two, chosen when the view was polled every five and a
+// faster rebuild would have been rebuilding it more often than anyone read it.
+// Now that changes are pushed the moment they are noticed, this interval IS the
+// latency an operator sees, and the argument runs the other way.
+//
+// The cost was checked rather than assumed. A rebuild spawns `ip -j addr show`
+// and an `iw station dump` per radio; the two `systemctl is-active` calls that
+// used to ride along are now cached for ten seconds and invalidated on a press,
+// because service state changes when somebody clicks and not otherwise. Daemon
+// CPU measured before and after on a four-core Pi already running ntopng.
+const bridgeTTL = time.Second
+
+// BridgeState serves the last built view and never blocks.
+//
+// The build itself walks every interface and shells out to `ip`, `iw` and
+// hostapd. All of that is fine on a timer and fatal on a request: while a USB
+// radio reloads its firmware the driver holds rtnl_lock, so every one of those
+// calls stalls, and with the build inline the whole interface stalled with it
+// -- reported as "switching off the adapter has broken the web interface".
+//
+// The operator's requirement is the design here: the page must stay usable
+// enough to switch a downed radio back ON. That means the view may be a couple
+// of seconds old, and may be MINUTES old while a radio is wedged -- both of
+// which are better than a page that does not render. The age is reported so
+// the interface can say which it is looking at.
 func (e *Engine) BridgeState() BridgeInfo {
 	if e.cfg.Demo {
 		return demoBridgeState(e.cfg)
 	}
+
+	e.mu.RLock()
+	snap, at, running := e.bridgeSnap, e.bridgeSnapAt, e.bridgeSnapGo
+	e.mu.RUnlock()
+
+	if snap == nil {
+		// FIRST CALL ONLY: build it inline so the first page load is not empty.
+		// Nothing is wedged at startup, and every later call is served from the
+		// cache, so this cannot become the blocking path the rest of this
+		// comment is about.
+		built := e.buildBridgeState()
+		e.storeBridge(built)
+		return built
+	}
+
+	if time.Since(at) >= bridgeTTL && !running {
+		e.mu.Lock()
+		if !e.bridgeSnapGo {
+			e.bridgeSnapGo = true
+			// One refresh at a time. Without the guard a build stuck behind
+			// rtnl_lock would be started again by every poll -- once a second,
+			// for the whole two minutes -- which is the pile-up this exists to
+			// prevent.
+			go func() {
+				e.storeBridge(e.buildBridgeState())
+				e.mu.Lock()
+				e.bridgeSnapGo = false
+				e.mu.Unlock()
+			}()
+		}
+		e.mu.Unlock()
+	}
+
+	out := *snap
+	out.ReadAgeMs = int(time.Since(at).Milliseconds())
+	return out
+}
+
+// storeBridge records a freshly built view and reports whether it CHANGED.
+//
+// One place, because there are three callers -- the first inline build, the
+// background refresh, and freshenBridge after an action -- and a version that
+// moved in some of them and not others would leave the stream silent exactly
+// when it mattered.
+//
+// Compared by hashing the marshalled view rather than by field. The payload is
+// small, the comparison runs every couple of seconds on a background goroutine,
+// and a field-by-field diff would need updating every time the struct grows --
+// which is precisely the sort of maintenance that silently stops working.
+//
+// ReadAgeMs is not part of the hash because it is computed at serve time and is
+// different on every read by definition; hashing it would report a change on
+// every rebuild and defeat the whole mechanism.
+func (e *Engine) storeBridge(built BridgeInfo) bool {
+	var h [32]byte
+	if raw, err := json.Marshal(built); err == nil {
+		h = sha256.Sum256(raw)
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	changed := h != e.bridgeHash
+	if changed {
+		e.bridgeHash = h
+		e.bridgeVer++
+	}
+	e.bridgeSnap, e.bridgeSnapAt = &built, time.Now()
+	return changed
+}
+
+// BridgeVersion is the number of CHANGES the view has been through. A reader
+// that remembers the last value it saw can tell whether anything happened
+// without comparing payloads itself.
+func (e *Engine) BridgeVersion() uint64 {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return e.bridgeVer
+}
+
+// freshenBridge rebuilds the view NOW, off the caller's goroutine, so that a
+// deliberate change to a radio shows up on the next poll rather than whenever
+// the timer next comes round.
+//
+// Actions are not the polling path: an operator who just pressed something is
+// entitled to see the result of it, and waiting up to a full TTL to find out
+// makes a control feel broken even when it worked. The interface reloads
+// immediately after every action -- so the answer has to be ready by then, and
+// this is what readies it.
+//
+// Marks the existing snapshot stale rather than dropping it, deliberately. A nil
+// snapshot sends the next request down the INLINE build path, which is the
+// blocking one this whole design exists to avoid, and a radio being changed is
+// exactly when that build is slowest.
+func (e *Engine) freshenBridge() {
+	e.mu.Lock()
+	e.bridgeSnapAt = time.Time{}
+	e.mu.Unlock()
+	go func() {
+		e.storeBridge(e.buildBridgeState())
+	}()
+}
+
+// buildBridgeState does the actual work. BLOCKING, and only ever called from
+// BridgeState's first call or its background refresh.
+func (e *Engine) buildBridgeState() BridgeInfo {
 	bi := BridgeInfo{Bridge: e.cfg.Bridge}
 	addrs := ipAddrs()
-	country := regDomain()
+	country := e.regDomainCached()
 
 	for _, name := range netInterfaces() {
 		if name == "lo" {
@@ -176,7 +333,25 @@ func (e *Engine) BridgeState() BridgeInfo {
 			in.Powered, in.PowerKnown = radioPowered(name)
 			in.Serving = e.cfg.IsWlan(name)
 			if hostapdAvailable(name) {
+				// Read DIRECTLY. This whole function now runs on a timer rather
+				// than on a request (see BridgeState), so a blocking hostapd
+				// call here costs a slower background rebuild and nothing else.
+				//
+				// It used to go through a second cache with its own TTL, which
+				// stacked: a 3s AP reading inside a 2s view behind a 5s poll
+				// meant a radio could be reported as it was ten seconds ago.
+				// An operator pressing "disable AP" watched the activity log
+				// say it had happened and the row go on claiming otherwise.
+				// One cache, one age.
 				if ap := apStatus(name, country); ap != nil {
+					// Reconciled against the KERNEL, not taken on hostapd's
+					// word. See APStatus.Enabled for the twenty minutes this
+					// cost when it was taken on hostapd's word.
+					if ap.Enabled && !in.Up {
+						ap.Enabled = false
+						ap.LinkDown = true
+					}
+					e.noteAPLinkDown(name, ap.LinkDown)
 					in.AP = ap
 					in.Role = RoleAP
 				}
@@ -349,6 +524,47 @@ func parseIPAddrs(raw []byte) map[string]ifAddrs {
 // regDomain reads the GLOBAL regulatory domain. hostapd reports no country code
 // even when configured with one, so this is the only source. It is not
 // per-interface: one answer covers the box.
+// regDomainCached serves the last regulatory domain and refreshes it in the
+// background, so `iw reg get` never runs on a request.
+//
+// A long TTL because the answer is a property of the box, not of a moment: it
+// is set at boot and changes only when somebody reconfigures the country. The
+// point is not freshness, it is that a bridge request must not wait on
+// nl80211 -- which stalls, along with everything else on that interface, while
+// a USB radio reloads its firmware.
+//
+// An empty answer is cached like any other. `iw reg get` failing is itself
+// stable -- the binary is missing, or the call is refused -- and retrying it on
+// every request would reintroduce exactly the subprocess this removes.
+const regDomTTL = 5 * time.Minute
+
+func (e *Engine) regDomainCached() string {
+	e.mu.RLock()
+	v, at, running := e.regDom, e.regDomAt, e.regDomGo
+	e.mu.RUnlock()
+
+	if !at.IsZero() && time.Since(at) < regDomTTL {
+		return v
+	}
+	if !running {
+		e.mu.Lock()
+		if !e.regDomGo {
+			e.regDomGo = true
+			go func() {
+				got := regDomain()
+				e.mu.Lock()
+				e.regDom, e.regDomAt, e.regDomGo = got, time.Now(), false
+				e.mu.Unlock()
+			}()
+		}
+		e.mu.Unlock()
+	}
+	// The previous answer while a refresh runs, and "" on the very first call.
+	// The country is a display field; an empty one for a few milliseconds at
+	// startup is not worth blocking a page for.
+	return v
+}
+
 func regDomain() string {
 	raw, err := exec.Command("iw", "reg", "get").Output()
 	if err != nil {
@@ -365,9 +581,57 @@ func regDomain() string {
 	return ""
 }
 
+/*
+ * Reading the access point WITHOUT waiting for it.
+ *
+ * apStatus below talks to hostapd, and hostapd stops answering for minutes at a
+ * time -- after a power cut the mt7921u driver re-initialises and every command
+ * hits its 2s deadline. That is survivable in a background job and fatal on a
+ * request path: /api/bridge is polled about once a second by the interface, so
+ * a mute radio turned the whole page into a queue of stalled requests. Measured
+ * 2026-09-05: 31ms healthy, unusable for two minutes after an outage, reported
+ * as "switching off the adapter has broken the web interface".
+ *
+ * The fix is not to ask faster or to shorten the deadline. It is to stop asking
+ * on the request path at all.
+ */
+
+// noteAPLinkDown logs the hostapd/kernel disagreement ONCE per occurrence.
+//
+// Once, because buildBridgeState runs on a timer: logging every rebuild would
+// put a line a second into the activity log for as long as the fault lasted,
+// which is the same as not logging it. Logged at all, because the alternative
+// is what happened before -- the radio quietly read as serving, and the first
+// anybody knew was a client that could not join.
+func (e *Engine) noteAPLinkDown(iface string, down bool) {
+	e.mu.Lock()
+	if e.apLinkDown == nil {
+		e.apLinkDown = map[string]bool{}
+	}
+	was := e.apLinkDown[iface]
+	e.apLinkDown[iface] = down
+	e.mu.Unlock()
+
+	if down == was {
+		return
+	}
+	if down {
+		e.logEvent(EventWarning, iface, "",
+			"%s: hostapd reports the access point enabled, but the interface is "+
+				"down -- nothing is on air. Something took the interface out from "+
+				"under hostapd; restarting its hostapd will rebuild the BSS.",
+			iface)
+		return
+	}
+	e.logEvent(EventAction, iface, "",
+		"%s: interface back up and the access point is on air again", iface)
+}
+
 // apStatus asks hostapd what the AP is doing. Returns nil when the socket is
 // there but the exchange fails, so a radio is never reported as an access point
 // on the strength of a socket alone.
+//
+// BLOCKING. Only ever called from buildBridgeState, which runs on a timer.
 func apStatus(iface, country string) *APStatus {
 	status, err := hostapdCmd(iface, "STATUS")
 	if err != nil {

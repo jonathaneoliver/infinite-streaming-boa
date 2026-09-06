@@ -3,6 +3,7 @@ package boa
 import (
 	"fmt"
 	"math"
+	"strings"
 	"sync"
 	"time"
 )
@@ -58,11 +59,20 @@ type Keyframe struct {
 	Ease string `json:"ease,omitempty"`
 }
 
-// Link event kinds. drop and nudge are instant pulses; deadzone is a held
-// outage with a duration. See issue #135.
+// Link event kinds.
+//
+// NAMED FOR THE FRAME THEY SEND, because each is exactly one 802.11 frame and
+// the reader of this box already knows what those are. They were "drop" and
+// "nudge", which described the felt effect rather than the action and left the
+// same deauthentication called three different things across the interface,
+// the API and the code. See #229.
+//
+// deadzone keeps an invented name on purpose: it is a deny ACL plus a deauth
+// plus a timer, which is nothing in the standard, and giving it a
+// standard-sounding name would imply a frame that does not exist.
 const (
-	LinkDrop     = "drop"     // deauthenticate: hard link-down pulse
-	LinkNudge    = "nudge"    // disassociate: softer link-down pulse
+	LinkDeauth   = "deauth"   // 802.11 deauthentication: the harder pulse
+	LinkDisassoc = "disassoc" // 802.11 disassociation: the softer pulse
 	LinkDeadzone = "deadzone" // deauth held for DurSec: the client cannot stay on
 )
 
@@ -97,6 +107,120 @@ type LinkEvent struct {
 	Scope string `json:"scope,omitempty"`
 }
 
+// Radio event kinds -- the four things an adapter pattern can do to a radio.
+//
+// Named for what the client experiences rather than for the control command,
+// exactly as drop and deadzone are both deauth underneath. gather and evict are
+// both 802.11v BSS transition requests and differ only in which slot the lane's
+// radio fills; see radioFires.
+const (
+	// RadioGather asks every client on the OTHER radios to come to this one.
+	// Destination-named by construction -- the lane it sits on IS where they
+	// end up -- so it never needs a target and never has a default to guess.
+	RadioGather = "gather"
+	// RadioEvict asks this radio's clients to go elsewhere. Source-named, so on
+	// a box with three radios it would need a target; with two, "off here"
+	// means "onto the other" and the precondition is the one postSteer already
+	// enforces. See radioFires.
+	RadioEvict = "evict"
+	// RadioDeauth throws every client on this radio off. Announced, so they
+	// come back HERE within a second or two -- the radio is still up.
+	RadioDeauth = "deauth"
+	// RadioOff cuts this radio's power for DurSec. The one SILENT impairment:
+	// the client is told nothing and has to notice the beacons stopped, which
+	// takes it tens of seconds. See minRadioOffSec.
+	RadioOff = "radio-off"
+	// RadioAPDown takes this radio's ACCESS POINT down for DurSec, leaving the
+	// radio powered.
+	//
+	// The announced counterpart of RadioOff, and the difference is the whole
+	// reason both exist. Power is cut at the rfkill level so nothing can be
+	// transmitted and the client must work the loss out for itself -- measured
+	// on this box at 0.5 to 11 seconds. This closes the BSS with the
+	// transmitter still running, so the departure is announced and the client
+	// acts on being told: measured at 45ms from the access point going down to
+	// the client arriving on the other radio.
+	//
+	// That speed is what makes a short cycle worth authoring at all. It has no
+	// minRadioOffSec floor for the same reason: the floor exists because a
+	// silent outage shorter than a client's beacon timeout measures nothing,
+	// and an announced one is noticed immediately.
+	// Two lanes, because the button has two forms and a lane that did one
+	// while being named the other is how "client is told" ended up on a lane
+	// that told nobody.
+	//
+	// RadioAPDown closes the BSS in silence. #224 turns off hostapd's own
+	// start/stop broadcast globally, so nothing goes out and the client
+	// discovers it by missing beacons -- tens of seconds. That is a real field
+	// condition and the safe way to reproduce it: unlike a power cut it cannot
+	// wedge the radio (#182), so it needs no developer gate.
+	//
+	// RadioAPDownTell deauthenticates the associated stations first, so they
+	// know at once and move in milliseconds. The difference between the two IS
+	// the measurement the "musical chairs" preset exists to make.
+	RadioAPDown     = "disable-ap"
+	RadioAPDownTell = "deauth-disable-ap"
+	// RadioScan surveys the band from this radio.
+	//
+	// A pulse with a real cost, unlike the other three pulses: a beaconing
+	// radio cannot listen to other channels, so ScanBand takes the BSS down,
+	// looks, and puts it back -- a few seconds during which this radio serves
+	// nobody. On a two-radio box the clients land on the other band and return
+	// afterwards, which is what makes it affordable to author at all.
+	//
+	// Worth having on a timeline because the interesting question is not what
+	// the band looks like once, it is what it looks like repeatedly while
+	// something else is happening to it.
+	RadioScan = "scan"
+)
+
+// minRadioOffSec is the shortest radio outage a pattern may author.
+//
+// Not an arbitrary floor. Cutting radio power is the only impairment that
+// announces nothing, so the client discovers it by missing beacons -- tens of
+// seconds on most devices. A 10s block would author an outage a great many
+// clients never notice at all, which is a test that quietly measures nothing.
+// For a short, sharp disturbance the honest kind is RadioDeauth, which is
+// announced and immediate.
+const minRadioOffSec = 30
+
+// minAPDownSec is the shortest access-point block a pattern may author.
+//
+// Far below minRadioOffSec, and for a reason rather than by oversight: that
+// floor is about how long a client takes to NOTICE silence, and this
+// impairment is announced, so the client acts at once -- measured at 45ms from
+// the access point going down to the client appearing on the other radio.
+//
+// What sets this floor instead is the box, not the client. hostapd walks
+// DISABLED -> COUNTRY_UPDATE -> HT_SCAN -> ENABLED to bring a BSS back, about a
+// second on both radios here, so a shorter block would ask for the access point
+// back before it had finished going away.
+const minAPDownSec = 3
+
+// RadioEvent is one entry on an adapter pattern's radio lanes.
+//
+// Iface names the radio the event acts ON, and that is the whole grammar: an
+// off block takes that radio down, a deauth throws its clients off, an evict
+// sends them away from it, and a gather brings everyone else to it. One lane
+// per radio per kind, which is the link lanes' model one dimension wider.
+type RadioEvent struct {
+	AtSec float64 `json:"at_sec"`
+	Iface string  `json:"iface"`
+	Kind  string  `json:"kind"`
+	// DurSec is RadioOff and RadioAPDown only: how long the radio, or its
+	// access point, stays down. The other three are pulses and fire once as the
+	// playhead crosses them.
+	DurSec float64 `json:"dur_sec,omitempty"`
+}
+
+// RadioFire is a radio action the Player determined should happen this tick,
+// handed back to the Engine to execute, since it does network I/O.
+type RadioFire struct {
+	Iface  string
+	Kind   string
+	DurSec float64
+}
+
 // LinkFire is a link action the Player determined should happen this tick,
 // handed back to the Engine to execute against hostapd (outside the Player
 // lock, since it does network I/O).
@@ -124,6 +248,13 @@ type Pattern struct {
 	// (deadzone), as distinct from the rate/loss keyframes which condition
 	// packets. They fire as the playhead crosses them. See issue #135.
 	Links []LinkEvent `json:"links,omitempty"`
+
+	// Radios are the adapter lanes: what happens to the box's own radios on
+	// this clock, as distinct from what happens to one client's packets or one
+	// client's association. A pattern carrying these is played against the BOX
+	// rather than a device -- see BoxBinding -- and a pattern may carry both,
+	// which is how "the radio dies mid-ladder-step" is expressible at all.
+	Radios []RadioEvent `json:"radios,omitempty"`
 
 	// Recipe records how a merged pattern was made, when it was made that way.
 	// Absent on anything hand-built, which stays entirely legal. See
@@ -302,7 +433,7 @@ func validPattern(p Pattern) error {
 	}
 	for i, ev := range p.Links {
 		switch ev.Kind {
-		case LinkDrop, LinkNudge:
+		case LinkDeauth, LinkDisassoc:
 			// 0 = a single pulse; >0 = flap (repeat) for that many seconds.
 			if ev.DurSec < 0 || ev.DurSec > maxPatternSec {
 				return fmt.Errorf("link event %d: %s duration must be 0 (a pulse) to %ds", i, ev.Kind, maxPatternSec)
@@ -327,7 +458,95 @@ func validPattern(p Pattern) error {
 			return fmt.Errorf("link event %d: at %gs is out of range", i, ev.AtSec)
 		}
 	}
+	for i, ev := range p.Radios {
+		if strings.TrimSpace(ev.Iface) == "" {
+			return fmt.Errorf("radio event %d: no radio named", i)
+		}
+		switch ev.Kind {
+		case RadioGather, RadioEvict, RadioDeauth, RadioScan:
+			if ev.DurSec != 0 {
+				return fmt.Errorf(
+					"radio event %d: %s is a pulse and takes no duration", i, ev.Kind)
+			}
+		case RadioOff:
+			// The floor is the point, not a formality: a shorter outage is
+			// silent for less time than a client takes to notice one.
+			if ev.DurSec < minRadioOffSec {
+				return fmt.Errorf(
+					"radio event %d: an outage of %gs is shorter than the %ds a client "+
+						"takes to notice one, because cutting power announces nothing. "+
+						"Use %q for a short, announced disturbance",
+					i, ev.DurSec, minRadioOffSec, RadioDeauth)
+			}
+			if ev.DurSec > maxPatternSec {
+				return fmt.Errorf("radio event %d: outage must be at most %ds", i, maxPatternSec)
+			}
+		case RadioAPDown, RadioAPDownTell:
+			// NO minRadioOffSec floor for EITHER, and the reason differs.
+			//
+			// The announced lane is acted on in tens of milliseconds, so a short
+			// block is a real experiment. The silent one closes the BSS without
+			// cutting power, so unlike a power cut it costs nothing to undo --
+			// the radio never leaves, and hostapd brings the BSS straight back.
+			// The floor on RadioOff exists because an rfkill'd mt7921u can take
+			// two minutes to return (#182), which is a different hazard from a
+			// client not noticing.
+			//
+			// A lower bound all the same: the access point has to come down and
+			// go back up, and hostapd's own COUNTRY_UPDATE -> HT_SCAN -> ENABLED
+			// walk takes about a second on these radios. A block shorter than
+			// that would ask for the BSS back before it had finished leaving.
+			if ev.DurSec < minAPDownSec {
+				return fmt.Errorf(
+					"radio event %d: an access-point block of %gs is shorter than the %ds "+
+						"hostapd takes to put the BSS back, so the radio would be asked "+
+						"to return before it had finished leaving",
+					i, ev.DurSec, minAPDownSec)
+			}
+			if ev.DurSec > maxPatternSec {
+				return fmt.Errorf("radio event %d: block must be at most %ds", i, maxPatternSec)
+			}
+		default:
+			return fmt.Errorf(
+				"radio event %d: unknown kind %q (want %s, %s, %s, %s, %s, %s or %s)",
+				i, ev.Kind, RadioGather, RadioEvict, RadioDeauth, RadioOff,
+				RadioAPDown, RadioAPDownTell, RadioScan)
+		}
+		if ev.AtSec < 0 || ev.AtSec > maxPatternSec {
+			return fmt.Errorf("radio event %d: at %gs is out of range", i, ev.AtSec)
+		}
+	}
 	return nil
+}
+
+// BoxBinding is the Player key for a run that drives the box's radios rather
+// than one device's packets.
+//
+// A reserved key rather than a second map: every verb the Player already has --
+// Start, Stop, Pause, Resume, Advance, and the scenario grouping that lets a
+// box run share a clock with client runs -- then works on it unchanged. It
+// cannot collide with a device, because validMAC rejects it.
+const BoxBinding = "box"
+
+// IsAdapterPattern reports whether a pattern drives radios, and so belongs on
+// the box rather than on a device.
+func (p Pattern) IsAdapterPattern() bool { return len(p.Radios) > 0 }
+
+// radioFires reports the radio actions the playhead triggers this tick, on the
+// same crossing rule the link lane uses.
+//
+// gather and evict are both a BSS transition request and differ only in which
+// slot this lane's radio fills -- gather makes it the destination, evict the
+// source. With two radios those describe the same movement; the Engine resolves
+// which, because only it knows what is serving.
+func (p Pattern) radioFires(prev, pos float64, looped bool, dur float64) []RadioFire {
+	var out []RadioFire
+	for _, ev := range p.Radios {
+		if crossed(prev, pos, looped, dur, ev.AtSec) {
+			out = append(out, RadioFire{Iface: ev.Iface, Kind: ev.Kind, DurSec: ev.DurSec})
+		}
+	}
+	return out
 }
 
 // Player run states.
@@ -570,6 +789,14 @@ func (p *Player) Override(mac string) (down, up Shape, ok bool) {
 	if !found || r.state != PatternRunning {
 		return Shape{}, Shape{}, false
 	}
+	// A box run drives radios, not packets. Its keyframes are the two clean
+	// ones that make it a pattern, so this would hand back an all-zero Shape
+	// and ok -- an override that quietly means "condition nothing" against a
+	// key that is not a device. Nothing asks today; refusing here means nothing
+	// can start to.
+	if mac == BoxBinding {
+		return Shape{}, Shape{}, false
+	}
 	return r.down, r.up, true
 }
 
@@ -577,10 +804,11 @@ func (p *Player) Override(mac string) (down, up Shape, ok bool) {
 //
 // Called from the engine tick before reconciliation, so a keyframe boundary
 // reaches the kernel on the tick it was crossed rather than a second later.
-func (p *Player) Advance(now time.Time) []LinkFire {
+func (p *Player) Advance(now time.Time) ([]LinkFire, []RadioFire) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	var fires []LinkFire
+	var radio []RadioFire
 	for mac, r := range p.runs {
 		if r.state != PatternRunning {
 			continue
@@ -605,10 +833,17 @@ func (p *Player) Advance(now time.Time) []LinkFire {
 				r.reason = "the pattern reached its end; the device is back on its stored policy"
 			}
 		}
+		if mac == BoxBinding {
+			// A box run conditions no packets: its lanes are the radios, and
+			// asking it for a Shape would enforce one against a MAC that is
+			// not a device.
+			radio = append(radio, r.pat.radioFires(prev, r.pos, looped, dur)...)
+			continue
+		}
 		fires = append(fires, r.pat.linkFires(mac, prev, r.pos, looped, dur)...)
 		r.down, r.up, r.idx = r.pat.At(r.pos)
 	}
-	return fires
+	return fires, radio
 }
 
 // linkFires reports the link actions the playhead triggers moving from prev to

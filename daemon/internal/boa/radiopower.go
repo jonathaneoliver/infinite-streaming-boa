@@ -155,28 +155,45 @@ func (e *Engine) setRadioPower(iface string, on bool) error {
 		go e.confirmAPBack(iface)
 	}
 	e.notePower(iface, on)
+	// The interface reloads the moment this returns, and it should see the
+	// change it just made rather than the view from before it.
+	e.freshenBridge()
 	return nil
 }
 
 // confirmAPBack watches for the access point to re-form after a power-on, and
 // reports either way. Runs in the background; the switch itself has returned.
 func (e *Engine) confirmAPBack(iface string) {
-	if !hostapdAvailable(iface) {
+	if !hostapdReachable(iface) {
 		return
 	}
+	// ONE recovery per radio. See Engine.recovering: without this, cycling a
+	// radio off and on set concurrent watches rebuilding the same access point
+	// on top of each other.
+	if !e.startRecovery(iface) {
+		return
+	}
+	defer e.endRecovery(iface)
 	started := time.Now()
-	e.reenableAP(iface)
+	rebuilt := e.reenableAP(iface)
 	took := time.Since(started).Round(time.Second)
-	if apEnabled(iface) {
-		// Logged with the duration because it is the number that answers "why
-		// did my client take so long to come back", and it differs by an order
-		// of magnitude between the two radios on this box.
-		e.logEvent(EventRadio, iface, "", "%s access point back after %s", iface, took)
+
+	enabled, known := apState(iface)
+	if enabled {
+		// A rebuild announces its own success, so saying it again here would
+		// report one recovery twice.
+		if !rebuilt {
+			// Logged with the duration because it is the number that answers
+			// "why did my client take so long to come back", and it differs by
+			// an order of magnitude between the two radios on this box.
+			e.logEvent(EventRadio, iface, "", "%s access point back after %s", iface, took)
+		}
 		// Recorded so the tick does not report the same recovery a second time.
 		e.forgetRadioOn()
 		e.syncAPServing(iface)
 		return
 	}
+
 	// DELIBERATELY NOT synced.
 	//
 	// Leaving the serving state unrecorded is what hands the watch over to the
@@ -189,6 +206,20 @@ func (e *Engine) confirmAPBack(iface string) {
 	// The cache is dropped so the tick reads the radio afresh rather than
 	// trusting a snapshot taken while it was down.
 	e.forgetRadioOn()
+
+	// UNREACHABLE IS NOT DEAD, and the difference is the whole point of saying
+	// anything at all. On mt7921u the control socket stops answering for
+	// minutes while the driver re-initialises, and a STATUS that times out says
+	// nothing about whether the access point is on the air. Reporting that
+	// silence as "serving nobody" is how this path came to announce a failure
+	// about a rebuild that had worked -- twice, in the same recovery.
+	if !known {
+		e.logEvent(EventWarning, iface, "",
+			"%s is powered on but hostapd is not answering yet, so whether it is "+
+				"serving cannot be confirmed. Still watching; a recovery will be "+
+				"reported.", iface)
+		return
+	}
 	e.logEvent(EventWarning, iface, "",
 		"%s is powered on but its access point did not come back — it is serving "+
 			"nobody. Still watching; a recovery will be reported.",
@@ -219,9 +250,11 @@ func (e *Engine) notePower(iface string, on bool) {
 // reenableAP nudges hostapd to serve again after its radio comes back.
 // Best-effort and idempotent: ENABLE on an already-enabled BSS is refused
 // harmlessly, and a radio with no hostapd has nothing to re-enable.
-func (e *Engine) reenableAP(iface string) {
-	if !hostapdAvailable(iface) {
-		return
+// Returns whether a REBUILD was performed, so the caller can leave the
+// reporting to it rather than announcing the same recovery twice.
+func (e *Engine) reenableAP(iface string) bool {
+	if !hostapdReachable(iface) {
+		return false
 	}
 	// WAIT FIRST. Do not command what is already happening.
 	//
@@ -241,20 +274,495 @@ func (e *Engine) reenableAP(iface string) {
 	// turned 4.5s into 27.8s. Both were commanding a recovery that was already
 	// under way. Watch for it instead, and only intervene if it does not come.
 	if waitAPEnabled(iface, 4*time.Second) {
-		return
+		return false
 	}
 	// It did not come back by itself, which is the case ENABLE is actually for.
 	// Its reply is not the answer either: hostapd acknowledges only once the
 	// BSS is up, and on mt7921u at 80MHz that outlasts the control socket's 2s
 	// deadline, so a perfectly healthy recovery reports "i/o timeout".
-	_, _ = hostapdCmd(iface, "ENABLE")
+	reply, err := hostapdSend(iface, "ENABLE")
+
+	// A REFUSED enable, HERE, is the wedge (#182).
+	//
+	// hostapd answers FAIL to ENABLE when it believes the interface is already
+	// enabled. Reaching this line means it did NOT look enabled a moment ago --
+	// that is the only reason the wait above fell through -- so hostapd is
+	// asserting a BSS that the check just failed to find. On mt7921u that
+	// contradiction is real and durable: the USB device times out under the
+	// rfkill block and reloads its firmware, which drops the BSS out of the
+	// driver while hostapd's own state machine stays at ENABLED. The access
+	// point is then gone from the air with every status source still calling it
+	// healthy, and it stays that way -- measured at over ten hours on this box
+	// before an operator noticed a phone could not join it.
+	//
+	// This is the ONLY signal that separates the two states. Six instruments
+	// were measured on 2026-09-05 and every one is identical wedged and
+	// healthy: hostapd STATUS (state, ssid, bssid, freq, num_sta), the
+	// AP-ENABLED / INTERFACE-ENABLED events on an ATTACHed monitor, `iw dev
+	// info` including its ssid line and TXQ counters, netdev tx_packets
+	// (beacons come out of mt7921u firmware and are never counted there), `iw
+	// survey dump` transmit time (measured for issue #182 and withdrawn; absent
+	// entirely on brcmfmac), and the mt76 firmware-reload line in the kernel
+	// log, which also appears on recoveries that succeed. The contradiction is
+	// not a better instrument than those; it is the only one there is.
+	//
+	// Note what this deliberately does NOT do: treat a FAIL reply on its own as
+	// the fault. ENABLE answers FAIL on a perfectly healthy interface too --
+	// verified directly -- and writes "Enabling of interface failed" to the log
+	// when it does, which is what makes that line worthless as evidence by
+	// itself. It is the PAIRING with a failed wait that carries the meaning.
+	if err == nil && strings.HasPrefix(strings.TrimSpace(reply), "FAIL") {
+		e.rebuildBSS(iface)
+		return true
+	}
 	if waitAPEnabled(iface, 20*time.Second) {
+		return false
+	}
+	// Nothing contradicted itself; the access point simply has not come back. A
+	// rebuild is the same remedy and costs a BSS that is already down, so it is
+	// worth trying before giving up on it.
+	e.rebuildBSS(iface)
+	return true
+}
+
+// startRecovery claims the right to recover this radio, or reports that
+// somebody else already holds it.
+func (e *Engine) startRecovery(iface string) bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.recovering == nil {
+		e.recovering = map[string]bool{}
+	}
+	if e.recovering[iface] {
+		return false
+	}
+	e.recovering[iface] = true
+	return true
+}
+
+func (e *Engine) endRecovery(iface string) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	delete(e.recovering, iface)
+}
+
+/*
+ * Taking the ACCESS POINT down, as opposed to the RADIO.
+ *
+ * These are two different impairments and the box now offers both, because the
+ * difference is exactly what an operator testing client behaviour wants to vary:
+ *
+ *	power off   rfkill. The transmitter stops. Nothing can leave, so the client
+ *	            is told NOTHING and has to work the loss out from missing ACKs
+ *	            and absent beacons. Measured on this box at 2-11s to roam.
+ *	AP disable  hostapd tears the BSS down while the radio stays up. The
+ *	            hardware CAN transmit, so whatever hostapd says on the way out
+ *	            actually leaves -- a broadcast deauth by default (#224), and
+ *	            possibly per-station ones.
+ *
+ * Same visible outcome, opposite mechanism: one is a power cut, the other is an
+ * access point closing its doors and saying so. A client that is told behaves
+ * differently from one that discovers, and until now only the first was
+ * reachable from the interface.
+ */
+
+// SetAPEnabled brings this radio's access point up or down, leaving the radio
+// itself powered.
+//
+// notify announces the change, and means something different in each direction
+// because the audience is different.
+//
+// GOING DOWN, the audience is the stations currently associated, and they are
+// told individually before the BSS closes:
+//
+//	""       whatever hostapd does on DISABLE, which is not something this box
+//	         can currently observe -- proving what leaves the antenna needs a
+//	         receiver, and both radios here are access points (#136)
+//	nudge    disassociate first: the client is told to go, keeps its
+//	         authentication, and usually comes back fastest
+//	drop     deauthenticate first: the harder goodbye, authentication and all
+//
+// COMING UP, the audience is clients that still BELIEVE they are associated and
+// are not -- which is exactly the population a silent outage creates, since
+// cutting power tells nobody. hostapd's own start-time broadcast deauthentication
+// is aimed at them, telling them to start again rather than sit on a stale
+// association. This box switches that off globally (#224) because it lands on
+// the clients a measurement is watching; any non-empty notify turns it back on
+// for THIS start only.
+//
+// So it is not symmetric, and cannot be: on the way down the AP can address
+// stations it knows about, and on the way up all it can do is broadcast.
+//
+// Per request rather than a mode, in both directions, because it is a property
+// of THIS transition. An operator comparing how a device reacts to being told
+// against how it reacts to working it out wants to vary it between one press
+// and the next, not configure it once.
+func (e *Engine) SetAPEnabled(iface string, on bool, deauth bool) error {
+	if err := e.radioExists(iface); err != nil {
+		return err
+	}
+	if e.cfg.Demo {
+		return nil
+	}
+	if !hostapdReachable(iface) {
+		return fmt.Errorf("%s has no hostapd control socket, so its access point "+
+			"cannot be enabled or disabled from here", iface)
+	}
+
+	cmd := "DISABLE"
+	if on {
+		cmd = "ENABLE"
+	}
+
+	// BEFORE the teardown, and only on the way down. Reported with a count
+	// because "told 2 clients" and "told nobody" are different events and the
+	// second is worth noticing -- a goodbye nobody heard is not a goodbye.
+	if !on && deauth {
+		// ALWAYS a deauthentication, never a choice between two frames.
+		//
+		// The caller used to pass which frame to send, and the interface only
+		// ever offered one of them -- so the parameter described a decision
+		// nobody made, in a vocabulary ("drop"/"nudge") that meant a third
+		// thing elsewhere. Coming back up it is a broadcast deauthentication
+		// and cannot be anything else, so making the way down match is what
+		// lets one word mean one thing at every layer. See #229.
+		n, err := e.LinkAll(iface, LinkDeauth)
+		if err != nil {
+			// Not fatal: the access point is still going down, and refusing to
+			// take it down because the announcement failed would leave the
+			// operator with neither half of what they asked for.
+			e.logEvent(EventWarning, iface, "",
+				"could not announce the shutdown on %s: %v — taking it down anyway",
+				iface, err)
+		} else {
+			e.logEvent(EventAction, iface, "",
+				"%s deauthenticated %d client(s) before its access point went down",
+				iface, n)
+		}
+	}
+
+	// LOGGED AT THE PRESS, before anything is waited for.
+	//
+	// The outcome is logged too, below, and the two are different facts worth
+	// separate lines: when the operator asked, and when the radio actually did
+	// it. On mt7921u those can be a minute apart, and an activity log that only
+	// records the second one leaves the button press itself unattested -- so a
+	// press that achieved nothing looks identical to one that was never made.
+	asked := "asked to go down"
+	if on {
+		asked = "asked to come back up"
+	}
+	e.logEvent(EventAction, iface, "", "%s access point %s", iface, asked)
+
+	// BEFORE the ENABLE, because hostapd reads this when it starts the BSS and
+	// not when the command arrives. Restored once the access point is up, in
+	// confirmAPState, so the suppression from #224 is the standing state and
+	// this is an exception for one start.
+	announced := on && deauth
+	if announced {
+		if _, err := hostapdSend(iface, "SET broadcast_deauth 1"); err != nil {
+			fmt.Printf("infinite-streaming-boa: %s announce-on-start: %v\n", iface, err)
+			announced = false
+		} else {
+			e.logEvent(EventAction, iface, "",
+				"%s will announce its access point coming back, so clients still "+
+					"holding a stale association are told to start again", iface)
+		}
+	}
+
+	// The reply is NOT the answer, for the reason reenableAP documents at
+	// length: hostapd acknowledges ENABLE only once the BSS is up, and on
+	// mt7921u at 80MHz that outlasts the socket's 2s deadline, so a healthy
+	// recovery reports "i/o timeout". The watch below is the verdict.
+	if _, err := hostapdSend(iface, cmd); err != nil {
+		fmt.Printf("infinite-streaming-boa: %s %s: %v\n", iface, cmd, err)
+	}
+
+	// RETURNS NOW; the access point changes on its own time.
+	//
+	// The same decision the power switch documents and for the same reason: a
+	// control that holds the operator's hand down for half a minute is not a
+	// switch. Waiting here also blocked the interface's own reload, so the row
+	// they were looking at could not update until the thing it was waiting for
+	// had finished.
+	go e.confirmAPState(iface, on, announced)
+	return nil
+}
+
+// confirmAPState watches an access point actually change, and says so.
+// Background; the control has already returned.
+func (e *Engine) confirmAPState(iface string, on bool, announced bool) {
+	// Put the suppression back however this turns out. Leaving it on would make
+	// every LATER start announce itself too, which is the standing behaviour
+	// #224 exists to prevent -- and it would do so invisibly, because nothing
+	// after this press asked for it.
+	if announced {
+		defer func() {
+			if _, err := hostapdSend(iface, "SET broadcast_deauth 0"); err != nil {
+				e.logEvent(EventWarning, iface, "",
+					"could not restore the start-up silence on %s: %v — later "+
+						"restarts of this access point may announce themselves", iface, err)
+			}
+		}()
+	}
+	if !waitAPState(iface, 30*time.Second, on) {
+		e.forgetRadioOn()
+		e.freshenBridge()
+		e.logEvent(EventWarning, iface, "",
+			"%s access point did not go %s within 30s", iface,
+			map[bool]string{true: "up", false: "down"}[on])
 		return
 	}
-	// Loud, because this is the silent failure the wait exists to prevent: a
-	// radio powered on with no access point on it.
-	fmt.Printf("infinite-streaming-boa: %s came back but its access point was "+
-		"still not enabled 20s later\n", iface)
+	// SAID PLAINLY, and differently from a power cut. The event log is where an
+	// operator later reconstructs what a client was reacting to, and "the AP
+	// went away" and "the AP was switched off" produce different client
+	// behaviour -- so they must not read the same afterwards.
+	if on {
+		e.logEvent(EventRadio, iface, "", "%s access point is back up", iface)
+	} else {
+		e.logEvent(EventRadio, iface, "",
+			"%s access point is down — unlike a power cut, the radio is still on "+
+				"and clients are told it has gone", iface)
+	}
+	e.forgetRadioOn()
+	e.syncAPServing(iface)
+	// So the row the operator is watching agrees with the line they just read.
+	e.freshenBridge()
+}
+
+// hushTeardown asks hostapd to stop broadcasting a deauthentication frame when
+// the access point starts or stops.
+//
+// Not set in the shipped configs, so it defaults to 1 and the box announces
+// itself at both ends of every outage -- including the recovery from one that
+// was deliberately silent. That announcement lands on precisely the clients the
+// measurement is watching: a station that has not noticed the outage yet still
+// thinks it is associated, and the broadcast deauth on AP start is what tells
+// it otherwise. See #224.
+//
+// Best effort and quiet on failure: it is settable at runtime (verified), but
+// on a wedged radio the socket answers nothing and there is no point reporting
+// the same silence twice -- the rebuild is about to say it far more loudly.
+//
+// This governs the BROADCAST frame only. hostapd may still deauthenticate
+// stations individually while flushing them, which cannot be confirmed from
+// this box: proving what leaves the antenna needs a receiver, and both radios
+// here are access points (#136).
+func hushTeardown(iface string) {
+	_, _ = hostapdSend(iface, "SET broadcast_deauth 0")
+}
+
+// hushRadios turns off the start/stop announcement on every radio the box
+// serves, at daemon startup.
+//
+// The shipped config carries the same setting, but a config only takes effect
+// on a reflash and this takes effect on a deploy. Both, deliberately: new
+// images are right by construction, and boxes already built are fixed the next
+// time anything is pushed to them.
+//
+// Radios that cannot be reached are skipped quietly. hostapd may not be up yet
+// -- this runs early in start -- and the setting is re-applied on the next
+// daemon start anyway; a warning here would fire on every boot of a box with a
+// radio it does not serve.
+func (e *Engine) hushRadios() {
+	if e.cfg.Demo {
+		return
+	}
+	for _, w := range e.cfg.WlanPorts {
+		if hostapdReachable(w) {
+			hushTeardown(w)
+		}
+	}
+}
+
+// rebuildBSS tears the access point down and builds it again, which is the one
+// thing measured to clear the wedge.
+//
+// DISABLE then ENABLE, on the control socket -- NOT `systemctl restart`. The
+// daemon shells out to systemctl nowhere, and it does not need to here: a unit
+// restart and this pair produce the same recovery, verified on 2026-09-05 by
+// wedging the radio deliberately and watching hostapd walk the identical
+// sequence either way:
+//
+//	AP-DISABLED -> DISABLED -> COUNTRY_UPDATE -> HT_SCAN -> ENABLED -> AP-ENABLED
+//
+// DISABLE is the half that matters. ENABLE alone is refused, because the state
+// hostapd is stuck in is precisely "already enabled"; DISABLE walks it back to
+// a state from which ENABLE has something to do.
+//
+// This DOES drop any client still on the radio, which is accepted rather than
+// regretted: it runs only after a power cut, where the clients have just been
+// dropped anyway, and the alternative on the evidence above is a radio nobody
+// can join until somebody restarts hostapd by hand.
+func (e *Engine) rebuildBSS(iface string) bool {
+	e.logEvent(EventWarning, iface, "",
+		"%s came back powered but with no access point on the air — rebuilding it",
+		iface)
+	// BEFORE the teardown, so the recovery does not announce itself to clients
+	// still working out that the outage happened. See hushTeardown and #224.
+	hushTeardown(iface)
+
+	// A DISABLE THAT TIMES OUT means the control socket cannot answer, so ask
+	// systemd to replace the process instead of queueing behind it.
+	//
+	// Read the next paragraph before assuming this makes recovery quick. It
+	// does not, and the measurement that suggested it would was taken under the
+	// wrong conditions: restarts timed at ~4s were run by hand MINUTES after a
+	// wedge, when the driver had long since finished re-initialising. They
+	// measured restarting a settled zombie hostapd, not restarting one during a
+	// driver reset.
+	//
+	// Measured properly on 2026-09-06, escalating during the reset: the restart
+	// was issued at 00:06:16 and systemd did not complete it until 00:07:47 --
+	// blocked 91 seconds, because stopping hostapd waits for a process stuck in
+	// the driver, and the driver is busy reloading the adapter's firmware
+	// (vendor requests failing -110 throughout, firmware back at 00:07:45,
+	// systemd two seconds later). Total unblock-to-serving 2m12s, against ~94s
+	// for the socket route alone.
+	//
+	// THE FLOOR IS THE FIRMWARE RELOAD. Nothing above the driver beats it, and
+	// this escalation does not either.
+	//
+	// It is kept because it costs nothing on that path and covers the case the
+	// hand-run restarts actually measured: hostapd wedged while the driver is
+	// healthy, where replacing the process is the only remedy and is genuinely
+	// fast. Any queued command dies with the old process, so the two routes
+	// cannot collide.
+	if _, err := hostapdSend(iface, "DISABLE"); err != nil {
+		fmt.Printf("infinite-streaming-boa: %s DISABLE during rebuild: %v\n", iface, err)
+		if e.restartHostapd(iface) {
+			return e.finishRebuild(iface)
+		}
+		// The restart could not be done -- no unit found, or systemd refused.
+		// Fall through and wait the socket out, which is slow but has worked
+		// every time it has been tried.
+	}
+	// hostapd's teardown is not instant, and an ENABLE sent during it is
+	// refused -- which would leave the radio down having spent the one action
+	// that could have fixed it. Measured at about a second on mt7921u; waited
+	// for rather than assumed.
+	if !waitAPDisabled(iface, 10*time.Second) {
+		fmt.Printf("infinite-streaming-boa: %s did not disable; enabling anyway\n", iface)
+	}
+	if _, err := hostapdSend(iface, "ENABLE"); err != nil {
+		// Not necessarily a failure: ENABLE answers only once the BSS is up,
+		// and on mt7921u at 80MHz that outlasts the socket deadline. The wait
+		// below is the real verdict, so this is reported and not acted on.
+		fmt.Printf("infinite-streaming-boa: %s ENABLE during rebuild: %v\n", iface, err)
+	}
+	// Both routes out of here end the same way, so they cannot come to report
+	// the same recovery differently. The budget inside is generous and measured
+	// rather than guessed: the rebuild that set it completed 2m24s after the
+	// command that started it, because hostapd could not be reached to be asked
+	// in the meantime. A shorter wait does not bring the radio back sooner; it
+	// only moves the moment the daemon starts saying something untrue about it.
+	return e.finishRebuild(iface)
+}
+
+// restartHostapd replaces the hostapd process serving this radio, and reports
+// whether it managed to.
+//
+// SYSTEMCTL, which this daemon avoids everywhere else and does not avoid here.
+// The comment that used to sit in this file claiming systemctl is unreachable
+// under ProtectSystem=strict was WRONG, and was corrected after measuring it:
+// the daemon's own sandbox runs `systemctl restart` in 168ms. Connecting to the
+// D-Bus socket is not a filesystem write, so a read-only mount never blocked it.
+//
+// Reserved for the case the control socket cannot answer. When hostapd IS
+// answering, DISABLE/ENABLE is better and stays the default: it keeps the
+// process, and with it the deny lists and everything else hostapd holds in
+// memory. This throws all of that away, which is why it is the fallback rather
+// than the tool -- and why what it throws away has to be put back, below.
+//
+// NOT a speed optimisation. See the escalation comment in rebuildBSS: during a
+// driver reset systemd blocks on the stop for as long as the socket route would
+// have blocked on the queue, because both are waiting for the same firmware
+// reload. It is a DIFFERENT remedy for a different failure, not a faster one
+// for the same failure.
+func (e *Engine) restartHostapd(iface string) bool {
+	unit, err := hostapdUnitFor(iface)
+	if err != nil {
+		fmt.Printf("infinite-streaming-boa: no hostapd unit for %s: %v\n", iface, err)
+		return false
+	}
+	e.logEvent(EventAction, iface, "",
+		"%s is not answering, so its access point is being restarted rather than "+
+			"waited for", iface)
+	if out, err := exec.Command("systemctl", "restart", unit).CombinedOutput(); err != nil {
+		e.logEvent(EventWarning, iface, "",
+			"could not restart %s: %v: %s", unit, err, strings.TrimSpace(string(out)))
+		return false
+	}
+	// The deny lists went with the old process. Anything still in force has to
+	// be put back or it ends early and silently. See reapplyDeadzones.
+	e.reapplyDeadzones(iface)
+	return true
+}
+
+// hostapdUnitFor finds the systemd unit serving this interface.
+//
+// DERIVED, never hardcoded, and resolved against RUNNING units only. The
+// instance name is not the interface name -- wlan-usb is served by @usb -- and
+// the mapping lives in each instance's config file, which names the interface
+// it drives.
+//
+// Only active units are considered, and that is not tidiness. This box ships
+// boa-onboard.conf AND boa-onboard24.conf, and BOTH declare interface=wlan0;
+// only one is ever running. Matching on config files alone would pick between
+// them by directory order and could restart a unit that serves nothing.
+func hostapdUnitFor(iface string) (string, error) {
+	out, err := exec.Command("systemctl", "list-units", "--type=service",
+		"--state=active", "--no-legend", "--plain",
+		"infinite-streaming-boa-hostapd@*.service").Output()
+	if err != nil {
+		return "", fmt.Errorf("listing hostapd units: %w", err)
+	}
+	for _, line := range strings.Split(string(out), "\n") {
+		unit := strings.Fields(line)
+		if len(unit) == 0 {
+			continue
+		}
+		name := unit[0]
+		at := strings.Index(name, "@")
+		dot := strings.LastIndex(name, ".service")
+		if at < 0 || dot <= at {
+			continue
+		}
+		conf := filepath.Join("/etc/hostapd", "boa-"+name[at+1:dot]+".conf")
+		raw, err := os.ReadFile(conf)
+		if err != nil {
+			continue
+		}
+		for _, l := range strings.Split(string(raw), "\n") {
+			if strings.TrimSpace(l) == "interface="+iface {
+				return name, nil
+			}
+		}
+	}
+	return "", fmt.Errorf("no active hostapd unit serves %s", iface)
+}
+
+// finishRebuild waits for the access point to come back and reports either way.
+// Shared by both routes out of rebuildBSS so they cannot report differently.
+func (e *Engine) finishRebuild(iface string) bool {
+	if waitAPEnabled(iface, 3*time.Minute) {
+		e.logEvent(EventRadio, iface, "", "%s access point rebuilt and serving again", iface)
+		e.forgetRadioOn()
+		e.syncAPServing(iface)
+		e.freshenBridge()
+		return true
+	}
+	e.forgetRadioOn()
+	e.freshenBridge()
+	return false
+}
+
+// waitAPDisabled polls until the access point has actually gone down, or the
+// budget runs out. The mirror of waitAPEnabled, and there for the same reason:
+// the state of the BSS is a question with an answer, so the rebuild waits on
+// that answer rather than on a sleep picked to look long enough.
+func waitAPDisabled(iface string, budget time.Duration) bool {
+	return waitAPState(iface, budget, false)
 }
 
 // apEnabled reports whether hostapd is actually serving on this radio.
@@ -262,22 +770,75 @@ func (e *Engine) reenableAP(iface string) {
 // The state of the BSS is a question with an answer, which is why every wait
 // here is built on it rather than on whether a command was acknowledged.
 func apEnabled(iface string) bool {
-	st, err := hostapdCmd(iface, "STATUS")
-	return err == nil && strings.Contains(st, "state=ENABLED")
+	up, _ := apState(iface)
+	return up
+}
+
+// apState separates "the access point is down" from "hostapd did not answer".
+//
+// They are different facts and only one of them is a fault. On mt7921u the
+// control socket goes unresponsive for a long time while the driver
+// re-initialises -- measured at over two minutes on 2026-09-05, far beyond the
+// 10-25s previously recorded -- and every STATUS in that window fails. Treating
+// those failures as "not serving" is what made a WORKING rebuild report itself
+// as "could not be rebuilt ... serving nobody", twice, while the access point
+// was in fact coming up and did come up.
+//
+// Waiting still treats unknown as not-yet, which is correct: a wait wants to
+// know when the answer is definitely yes. REPORTING must not, because saying a
+// radio is serving nobody on the strength of a socket timeout is a confident
+// wrong answer about the one thing this file exists to be right about.
+func apState(iface string) (enabled, known bool) {
+	st, err := hostapdSend(iface, "STATUS")
+	if err != nil {
+		return false, false
+	}
+	return strings.Contains(st, "state=ENABLED"), true
 }
 
 // waitAPEnabled polls until the access point is serving, or the budget runs
 // out. Returns whether it came back.
 func waitAPEnabled(iface string, budget time.Duration) bool {
+	return waitAPState(iface, budget, true)
+}
+
+// waitAPState is the shared wait, backing OFF as it goes.
+//
+// A flat 200ms poll was right while the longest budget here was 20 seconds. It
+// is actively harmful at three minutes, and it made the web interface look
+// broken: /api/bridge builds its answer by asking hostapd for STATUS
+// (bridgeinfo.go), every control-socket call carries a 2s deadline, and a radio
+// re-initialising after a power cut does not answer any of them. So each poll
+// burned its full 2s and the loop immediately asked again, holding a dead
+// socket busy for the entire window while the operator's browser queued behind
+// it. Measured 2026-09-05: /api/bridge answers in 31ms healthy, and hung long
+// enough during a rebuild to be reported as a broken interface.
+//
+// Backing off keeps the same guarantee -- the wait still ends the moment the
+// answer changes -- while asking a hundred times less often at the far end of a
+// long budget. It does NOT fix the underlying coupling: the bridge view blocks
+// on hostapd whether or not this loop is running, and a radio that goes quiet
+// for two minutes will slow that endpoint regardless. That is a separate fault
+// and predates this file's involvement in it.
+func waitAPState(iface string, budget time.Duration, want bool) bool {
 	deadline := time.Now().Add(budget)
+	wait := 200 * time.Millisecond
+	const maxWait = 3 * time.Second
 	for {
-		if apEnabled(iface) {
+		if apEnabled(iface) == want {
 			return true
 		}
 		if time.Now().After(deadline) {
 			return false
 		}
-		time.Sleep(200 * time.Millisecond)
+		time.Sleep(wait)
+		if wait < maxWait {
+			// Doubling rather than a fixed step, so a recovery that arrives in
+			// the first second is still noticed in the first second.
+			if wait *= 2; wait > maxWait {
+				wait = maxWait
+			}
+		}
 	}
 }
 
@@ -398,6 +959,93 @@ func (e *Engine) clearRadioOffMarker(iface string) {
 	if err := setRadioOffMarker(iface, ""); err != nil {
 		e.logEvent(EventWarning, iface, "",
 			"could not clear the off marker for %s: %v", iface, err)
+	}
+}
+
+// logRadioIdentity records which physical adapter each interface name refers to.
+//
+// ONCE PER RUN, at startup, rather than on every line that mentions a radio. A
+// measurement has to be attributable to hardware, and the interface name is not
+// hardware: it is assigned by a udev rule, and on 2026-09-06 that rule matched
+// any USB Wi-Fi adapter, so with two identical dongles "wlan-usb" meant one of
+// them all evening and the other by morning. Every reading taken in between was
+// filed under a name that had quietly changed hands.
+//
+// The rule now names by socket, which is deterministic but makes the name
+// follow the PORT rather than the adapter -- swap two dongles and the names
+// stay while the hardware behind them trades places. So the record needs all
+// three: the name an operator reads, the socket it was plugged into, and the
+// MAC that identifies the adapter itself.
+//
+// One line per radio is enough. Within a run the mapping cannot change without
+// a hotplug, and a hotplug re-runs this; repeating a MAC on every event would
+// bury the events themselves.
+func (e *Engine) logRadioIdentity() {
+	if e.cfg.Demo {
+		return
+	}
+	for _, w := range e.cfg.WlanPorts {
+		if !LinkExists(w) {
+			continue
+		}
+		r := Radio(w)
+		switch {
+		case r.Bus == "usb":
+			e.logEvent(EventRadio, w, "",
+				"%s is adapter %s in socket %s, %s at %d Mb/s",
+				w, r.MAC, r.Socket, r.Driver, r.LinkMbps)
+		default:
+			e.logEvent(EventRadio, w, "", "%s is the onboard adapter %s (%s)",
+				w, r.MAC, r.Driver)
+		}
+	}
+}
+
+// checkRadiosAtStart looks for a radio that is powered but has no access point,
+// and rebuilds it.
+//
+// The gap this closes was found the hard way: a radio wedged, the recovery
+// started, and the daemon was restarted by a deploy 47 seconds later -- which
+// killed the goroutine doing the recovering. Nothing looked again. The radio
+// stayed powered, bridged, forwarding, reporting state=ENABLED, and joinable by
+// nobody, until an operator noticed it was broken and said so.
+//
+// restoreRadioPower already runs here and does not cover this: it turns ON a
+// radio that is OFF, which is the opposite fault. A radio in this state looks
+// fine to every check the box had.
+//
+// A restart is exactly when this needs asking. The recovery lives in a
+// goroutine with no persistence, so ANY restart during one -- a deploy, a
+// crash, a reboot -- abandons it silently, and a deploy is the single most
+// likely thing to be happening while somebody is provoking radios on purpose.
+//
+// Runs in the background: hostapd's control socket can be unresponsive for
+// minutes after a driver reset, and start() must not wait on it.
+func (e *Engine) checkRadiosAtStart() {
+	if e.cfg.Demo {
+		return
+	}
+	for _, w := range e.cfg.WlanPorts {
+		go func(iface string) {
+			// Settle first. hostapd may still be coming up alongside the
+			// daemon, and a BSS that is merely not ready yet must not be
+			// mistaken for one that is never coming.
+			time.Sleep(20 * time.Second)
+
+			if on, known := radioPowered(iface); known && !on {
+				return // deliberately off; restoreRadioPower owns that case
+			}
+			if !hostapdReachable(iface) {
+				return // no control socket: nothing to ask and nothing to fix
+			}
+			if waitAPEnabled(iface, 30*time.Second) {
+				return // serving, which is the overwhelmingly common case
+			}
+			e.logEvent(EventWarning, iface, "",
+				"%s is powered but has no access point on it after a restart — "+
+					"rebuilding it", iface)
+			e.rebuildBSS(iface)
+		}(w)
 	}
 }
 

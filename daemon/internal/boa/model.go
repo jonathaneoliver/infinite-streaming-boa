@@ -429,6 +429,19 @@ type Client struct {
 	// not currently associated, and a box with one radio.
 	SteerTo string `json:"steer_to,omitempty"`
 
+	// BeaconReports is what THIS CLIENT last reported hearing, per BSS, from an
+	// 802.11k beacon request -- strongest first. See #228.
+	//
+	// The client's own measurement, taken at the client, which is the whole
+	// point: every other signal number in this struct is measured at the access
+	// point and exists only for the radio the client is associated to. These are
+	// the only numbers the box has for a radio the client is NOT on, and so the
+	// only ones that can say why a steer to it was refused.
+	//
+	// Empty until somebody asks. A beacon request is a request, and a client is
+	// free to decline it or to answer "not available".
+	BeaconReports []BeaconReport `json:"beacon_reports,omitempty"`
+
 	// Present means currently associated to the radio. A DHCP lease alone does
 	// NOT set this: leases outlive the clients that held them.
 	Present bool `json:"present"`
@@ -542,6 +555,18 @@ type Capabilities struct {
 	// refused connection, so an image built without it degrades to silence.
 	Glances     bool `json:"glances"`
 	GlancesPort int  `json:"glances_port"`
+	// Services are the box's own observability processes and whether each is
+	// running, so the header can offer a switch beside each link.
+	//
+	// Distinct from the two booleans above, which report whether a PORT is
+	// listening and decide whether a link is worth showing at all. This lists
+	// every service the box will start or stop, running or not -- because a
+	// stopped service still needs its own start button, and gating that on the
+	// service being up would remove the only control that could bring it back.
+	//
+	// Cheap enough for the 1Hz snapshot because the reading is cached and
+	// invalidated on a press; see serviceStates.
+	Services []ServiceInfo `json:"services,omitempty"`
 	// LinkControl reports whether per-client link events (deauth/disassoc) can
 	// be driven -- i.e. hostapd is serving the AP and exposing its control
 	// socket. False on the onboard/NetworkManager radio, which offers no such
@@ -593,6 +618,10 @@ type Snapshot struct {
 	// notice belongs on screen depends on whether it is actionable: an error
 	// buried at the foot of the page is worse than clutter at the top.
 	Notices []Notice `json:"notices,omitempty"`
+	// AdapterRun is the box's own timeline, when one is playing. Carried in the
+	// snapshot for the same reason a device's run is: so the editor can draw a
+	// moving playhead without polling a second endpoint.
+	AdapterRun *PatternView `json:"adapter_run,omitempty"`
 }
 
 // Notice is one message for the operator.
