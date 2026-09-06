@@ -220,8 +220,18 @@ const tail = ref(0);
  *
  * So the difference is tracked and play refuses while it stands.
  */
-const savedJSON = ref('[]');
-const dirty = computed(() => JSON.stringify(events.value) !== savedJSON.value);
+/**
+ * What "unsaved" compares, and it includes the LOOP FLAG.
+ *
+ * It used to be the events alone, which was fine while loop had no control:
+ * nothing could change it, so nothing could differ. With a switch in the head
+ * that becomes a trap -- the box plays what is SAVED, and `play` is disabled
+ * only when dirty, so a toggled loop that did not read as a change would run
+ * the stored pattern while the checkbox showed the opposite.
+ */
+const patternJSON = () => JSON.stringify({ loop: loop.value, events: events.value });
+const savedJSON = ref(patternJSON());
+const dirty = computed(() => patternJSON() !== savedJSON.value);
 const contentEnd = computed(() => events.value.reduce((m, e) => Math.max(m, endOf(e)), 0));
 const MIN_SPAN_SEC = 60;
 const dur = computed(() => Math.max(MIN_SPAN_SEC, contentEnd.value, tail.value));
@@ -525,6 +535,26 @@ const PRESETS = computed(() => {
   const at = (i: number) => rs[i % n];
   /** Two full circuits, so every radio is visited twice however many there are. */
   const circuits = (stops: number) => Array.from({ length: stops }, (_, i) => i);
+  /**
+   * Quiet time between one radio coming back and the next going down.
+   *
+   * The alternating presets used to start each block exactly where the last
+   * ended, on the reasoning that a window with everything up is a window the
+   * client might settle back into. That reasoning had the failure backwards:
+   * hostapd takes about a second to walk COUNTRY_UPDATE -> HT_SCAN -> ENABLED
+   * on the way back -- which is what MIN_AP_DOWN_SEC exists to respect -- so
+   * "no gap" actually meant the next radio dropped BEFORE the previous one was
+   * beaconing again. On a two-radio box that is a moment with nothing on air,
+   * which turns a bounce into a brief outage: the one thing these presets
+   * promise never to be.
+   *
+   * Ten seconds, not one. It has to be long enough that the returning radio is
+   * demonstrably up and the client has had time to be somewhere, or the
+   * measurement reads as a single continuous disturbance rather than a
+   * sequence of moves. A client settling back into the radio it came from is a
+   * real result and worth seeing, not a flaw to design out.
+   */
+  const SEAT_GAP_SEC = 10;
   const list = (xs: string[]) =>
     xs.length < 2 ? xs.join('') : `${xs.slice(0, -1).join(', ')} and ${xs[xs.length - 1]}`;
 
@@ -577,23 +607,23 @@ const PRESETS = computed(() => {
     out.push({
       name: 'musical chairs',
       note:
-        `${list(rs)} close their doors in turn, 15s each from 15s — there is ` +
-        'always a seat free and the client is TOLD to take it, so it should ' +
-        'move in milliseconds. The announced half of the pair with "rolling ' +
-        'blackout"',
+        `${list(rs)} close their doors in turn, 15s each with ${SEAT_GAP_SEC}s ` +
+        'between — there is always a seat free AND it is already on air, and ' +
+        'the client is TOLD to take it, so it should move in milliseconds. The ' +
+        'announced half of the pair with "rolling blackout"',
       build: () =>
-        // Only ever ONE radio unavailable at a time, and that is the whole
-        // design: the client must always have somewhere to go, or this stops
-        // being a bounce and becomes an outage. Each block starts exactly as
-        // the last ends, so there is no window with everything up in which the
-        // client might settle back, and none with everything down at all.
+        // Only ever ONE radio unavailable at a time, with a clear gap in
+        // between where every radio is up. That is the whole design: the client
+        // must always have somewhere to go, and the somewhere must actually be
+        // ON AIR when it looks -- see SEAT_GAP_SEC for the second half of that,
+        // which the first version of this preset got wrong.
         //
         // Rotated across EVERY radio rather than the first two. On a
         // three-radio box the old version alternated two and left the third
         // untouched, so a client could sit out the whole run on a radio the
         // pattern never disturbed -- measuring nothing while looking busy.
         circuits(n).map((i) => ({
-          at_sec: 15 + i * 15,
+          at_sec: 15 + i * (15 + SEAT_GAP_SEC),
           iface: at(i),
           kind: 'deauth-disable-ap' as const,
           dur_sec: 15,
@@ -602,13 +632,14 @@ const PRESETS = computed(() => {
     out.push({
       name: 'rolling blackout',
       note:
-        `${list(rs)} lose power in turn, 30s each from 15s — the same rotation ` +
-        'with nothing announced, so the client has to notice for itself. 30s ' +
-        'rather than 15 because a shorter cut is below what a device takes to ' +
-        'notice one, and that floor is exactly what this pair measures',
+        `${list(rs)} lose power in turn, 30s each with ${SEAT_GAP_SEC}s ` +
+        'between — the same rotation with nothing announced, so the client has ' +
+        'to notice for itself. 30s rather than 15 because a shorter cut is ' +
+        'below what a device takes to notice one, and that floor is exactly ' +
+        'what this pair measures',
       build: () =>
         circuits(n).map((i) => ({
-          at_sec: 15 + i * 30,
+          at_sec: 15 + i * (30 + SEAT_GAP_SEC),
           iface: at(i),
           kind: 'radio-off' as const,
           dur_sec: 30,
@@ -776,7 +807,7 @@ async function load() {
   events.value = [...(p.radios ?? [])].sort((a, b) => a.at_sec - b.at_sec);
   loop.value = p.loop;
   tail.value = p.keys?.[p.keys.length - 1]?.at_sec ?? 0;
-  savedJSON.value = JSON.stringify(events.value);
+  savedJSON.value = patternJSON();
 }
 
 async function save() {
@@ -798,7 +829,7 @@ async function save() {
     body: JSON.stringify(pattern),
   });
   if (body) {
-    savedJSON.value = JSON.stringify(events.value);
+    savedJSON.value = patternJSON();
     msg.value = `saved — ${body.radios} radio event(s) over ${body.dur_sec}s`;
   }
 }
@@ -855,6 +886,20 @@ watch(
       <span class="meta">{{ summary }}</span>
       <span v-if="dirty" class="dirty" title="the box plays what is saved">unsaved</span>
       <span class="spacer"></span>
+      <!-- The loop switch, which the client editor has had all along.
+           `loop` was state with no control: it defaulted to true, load()
+           overwrote it with whatever was stored, and nothing could change it
+           back. A pattern saved once with loop off therefore never looped
+           again, and the summary line said "loops" or did not for reasons the
+           operator could not act on. Found on the box with __adapter__ stored
+           as loop=false and no way to reach it. -->
+      <label v-if="open" class="loop" @click.stop>
+        <input
+          type="checkbox" :checked="loop" :disabled="busy || playing"
+          @change="loop = ($event.target as HTMLInputElement).checked"
+        />
+        loop
+      </label>
       <button v-if="open" class="ghost" :disabled="busy || playing" @click="save()">save</button>
       <button v-if="playing" class="ghost" :disabled="busy" @click="stop()">stop</button>
       <button
@@ -1107,6 +1152,16 @@ button.primary { background: var(--down); border-color: var(--down); color: #fff
 
 .lane { position: relative; height: 40px; border-bottom: 1px solid var(--line-soft); }
 .lane:first-of-type { border-top: 1px solid var(--line-soft); }
+/* Sits in the folded head beside save/play, so the switch is visible without
+   opening the editor -- the same place the client editor keeps it. */
+.loop {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  font-size: 0.85em;
+  opacity: 0.85;
+  white-space: nowrap;
+}
 /* A lane whose radio has left the box. Shown rather than hidden -- its events
    are still in the saved pattern and would otherwise be invisible, unfindable
    and undeletable -- but plainly not live, and not drawable on. */
