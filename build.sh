@@ -230,6 +230,7 @@ cat <<EOF
             clients on EITHER radio are conditioned
   Web UI:   http://${BOA_HOSTNAME}.local/   or  http://${BOA_RESCUE_IP}/ (rescue)
 
-  Burn it:  ./flash.sh dist/${OUT_NAME}
+  Burn it:  write dist/${OUT_NAME} with Raspberry Pi Imager or balenaEtcher
+            (both verify the write and refuse your system disk)
 
 EOF

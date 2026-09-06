@@ -1,6 +1,6 @@
 ---
 name: reflash-preflight
-description: Run the checks that must pass BEFORE writing a new image to the SD card, then walk the reflash through to a restored box. Invoke whenever the user is about to run ./build.sh or ./flash.sh, says "reflash", "rebuild the image", "write a new card", or changes anything outside the daemon binary (network profiles, systemd units, packages, kernel settings) that only a reflash can apply. Owns the export-state / verify-env / capture-hand-changes / build / flash / rejoin / import chain.
+description: Run the checks that must pass BEFORE writing a new image to the SD card, then walk the reflash through to a restored box. Invoke whenever the user is about to run ./build.sh, says "reflash", "rebuild the image", "write a new card", or changes anything outside the daemon binary (network profiles, systemd units, packages, kernel settings) that only a reflash can apply. Owns the export-state / verify-env / capture-hand-changes / build / flash / rejoin / import chain.
 ---
 
 # reflash-preflight
@@ -17,7 +17,7 @@ survived only because an export had been taken first.
 
 ## When to use
 
-- Before `./build.sh` or `./flash.sh`
+- Before `./build.sh`
 - "reflash", "rebuild the image", "write a new card", "flash it"
 - After changing anything a deploy cannot carry: `scripts/customize.sh`,
   `overlay/`, `packages.txt`, network profiles, systemd units, kernel settings
@@ -101,8 +101,11 @@ passwordless sudo rule.
 
 ```sh
 ./build.sh          # validates .env first; ~5 min cold
-./flash.sh          # writes the newest image; macOS
 ```
+
+Then write `dist/*.img` to the card with **Raspberry Pi Imager** or
+**balenaEtcher**. There is no flashing helper in this repo, deliberately — see
+the README. Both imagers verify the write and refuse the system disk.
 
 After it boots:
 

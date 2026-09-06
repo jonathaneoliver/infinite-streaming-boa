@@ -53,7 +53,6 @@ might do — candidate work lives in GitHub issues.
 
 ```sh
 ./build.sh                      # image; validates .env first, ~5 min cold
-./flash.sh                      # write the newest image to an SD card (macOS)
 ./scripts/dev.sh                # UI with hot reload + synthetic clients, no Pi
 ./scripts/dev.sh <host>         # same, against a real Pi
 ./scripts/deploy.sh             # build + push binary and unit, restart, ~10s
