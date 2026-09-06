@@ -51,6 +51,41 @@ request shipped (see below) and no client tested here has returned a report, so
 it is not something you can currently make a device do. #228 stays open for
 that reason.
 
+### And the case for NOT using Wi-Fi at all
+
+Everything above is conditioning applied on top of a radio baseline that moves
+on its own. That is fine when the radio is the subject, and a poor trade when
+it is not: a cap measured over the air inherits the air's variance, and a run
+that cannot be repeated cannot be compared.
+
+The wired downstream port is the answer when repeatability matters more than
+convenience. Measured on this box, same adapter pair, 30s runs:
+
+| Path | Result | Repeatability |
+|---|---|---|
+| **Wired, 2.5 GbE** | 2.35 Gbit/s up, 1.91 Gbit/s down | **within 1% across four runs** |
+| Wi-Fi, 80 MHz, 802.11ax | 677 Mbit/s, sole client, ch 149 | a second, near-idle client moved a comparable measurement between 356 and 717 Mbit/s |
+
+The second row is not a bad run — it is what shared airtime does. One 802.11n
+station linked at 65 Mbit/s holds the channel roughly 18× longer per byte than
+an 802.11ax one, so its presence halved the number **while transferring 4 KB of
+its own traffic**. The 0.1.0 notes recorded the same effect from the
+other side: the radio baseline drifts ~100 Mbit/s over 90s, which is larger
+than most effects worth measuring.
+
+So: **cable the device under test when it has a port, and use Wi-Fi when it
+does not** — which for phones, tablets, watches and most streaming sticks is
+always. The wireless path exists because those devices exist, not because it is
+the better instrument. A `lan0` client is conditioned by exactly the same
+policy, pattern and sub-class machinery as a wireless one, so a test can be
+authored on the cable and repeated over the air, and the difference between the
+two runs is then attributable to the radio.
+
+Note the asymmetry reverses between them, which is worth knowing before reading
+a result: the box **receives** faster than it sends on the cable (one saturated
+CPU core on the transmit path, a USB NIC having a single queue pair), while on
+Wi-Fi the uplink is the weaker direction.
+
 110 commits. The interface was rebuilt around the change: one scrolling view of
 fabric, adapters and devices, streaming rather than polling.
 
@@ -204,8 +239,17 @@ something moved under the reader.
   677 rather than at 550. Best case lands near **85% of PHY**.
 - **Channel width, on the same radio:** 20 MHz 194 Mbit/s, 40 MHz 378 Mbit/s,
   80 MHz 677 Mbit/s.
-- **Wired reference:** 1 GbE 924 Mbit/s; 2.5 GbE 1.91 Gbit/s down, 2.35 Gbit/s
-  up.
+- **Wired downstream, 2.5 GbE at both ends** (Realtek RTL8156, direct cable,
+  SuperSpeed both ends, 30s runs): **2.35 Gbit/s** device → box, ~94% of line
+  rate, and **1.91 Gbit/s** box → device. **Repeatable to within 1% across four
+  runs** — the reason to prefer the cable when the radio is not the subject.
+  1 GbE for reference: 924 Mbit/s.
+- **The box sends more slowly than it receives, and it is structural.** CPU0
+  saturates on the downlink run (idle bottoming at 1.6%, softirq peaking at
+  93.6%) while the other three cores sit 65–100% idle. A USB NIC exposes a
+  single rx/tx queue pair and USB completions run on the core servicing the
+  xHCI interrupt, which is CPU0 for every USB device on the box. This is the
+  opposite shape to Wi-Fi, where uplink is the weaker direction.
 
 ### Known limitations
 
