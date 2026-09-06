@@ -101,33 +101,33 @@ func TestWalkaboutCrossesBandOnceEachWay(t *testing.T) {
 }
 
 /*
- * The opening roam-to cannot sit at zero.
+ * The opening pin cannot sit at zero.
  *
  * linkFires asks whether an event lies in (prev, pos], and a run starts with
  * the playhead at 0 -- so an event at 0 is never crossed and never fires. It
  * would look right in the stored pattern and do nothing at runtime, leaving the
  * walk to start on whichever band the client happened to be on.
  */
-func TestWalkaboutOpeningRoamCanActuallyFire(t *testing.T) {
+func TestWalkaboutOpeningPinCanActuallyFire(t *testing.T) {
 	p := walkabout(PatternWalkabout, 30)
 	open := p.Links[0]
 	if open.AtSec <= 0 {
-		t.Fatalf("the opening roam-to is at %gs, which can never fire", open.AtSec)
+		t.Fatalf("the opening pin is at %gs, which can never fire", open.AtSec)
 	}
 	if !crossed(0, 1, false, p.DurSec(), open.AtSec) {
-		t.Errorf("the opening roam-to at %gs is not crossed by the first one-second tick",
+		t.Errorf("the opening pin at %gs is not crossed by the first one-second tick",
 			open.AtSec)
 	}
 }
 
 /*
- * A roam-to is emitted only where the band actually changes.
+ * A pin is emitted only where the band actually changes.
  *
  * Every event asks a real client to roam, which costs auth, assoc and a 4-way
  * handshake -- 100-300ms of nothing. Emitting one per keyframe would make the
  * walk a roaming test with some impairment attached rather than the reverse.
  */
-func TestWalkaboutEmitsNoRedundantRoams(t *testing.T) {
+func TestWalkaboutEmitsNoRedundantPins(t *testing.T) {
 	m := walkModel()
 	p := walkabout(PatternWalkabout, 30)
 	levels := walkLevels(m)

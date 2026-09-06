@@ -387,22 +387,26 @@ damages packets, never link state.
   a **pattern lane** beside rate and loss — a deauth at t=120s is exactly
   reproducible, which no packet impairment is, and is the specific event this
   exists for.
-- **Two of them move a client rather than breaking its link.** `evict` asks a
-  device to leave the radio it is on; `roam-to` asks it to move to a named band.
-  Both are 802.11v requests, so a client is free to refuse and the refusal is
-  the finding. They exist because a modelled walk cannot produce a roam on its
-  own: the real signal never changes while the model runs, so the device has no
-  reason to move and would sit on 5 GHz at a modelled 40 m.
-- **`evict` is shared with the radio lane; `gather` deliberately is not.**
-  Evicting reads the same at either scope — one client off its radio, or every
-  client off a radio — so the word carries over and the lane supplies the scope.
-  Gathering does not: it means collecting many things into one place, which is
-  what the radio lane's `gather` does and what a single client cannot be the
-  subject of. So the destination-named half takes the 802.11 word for what
-  actually happens, which is that a client **roams**.
-- Unlike the other three, the two moves are **generated rather than drawn** — a
-  `roam-to` needs a destination band and the timeline has no way to ask for one
-  — but they are shown wherever a pattern uses them, and can be deleted there.
+- **One of them moves a client rather than breaking its link, and it does not
+  ask.** `pin` holds a device on a named band for the rest of a run, by denying
+  it on every radio serving another band — the radio lane's `gather`, run over a
+  single client. There is no client-scope `evict`: "leave your radio" is already
+  `deadzone` with `scope: current`.
+- **Asking was tried and measured failing.** A transition request is a
+  suggestion, and on this box an iPhone ignored a same-band one outright and
+  then refused a cross-band one, offering its own candidate list. It was right
+  to: the distance model does not move real signal strength, so its 5 GHz link
+  was excellent and it had no reason to go anywhere. A modelled walk therefore
+  cannot reach 2.4 GHz by asking, which is the same conclusion the radio
+  controls reached — 802.11 has no request that places a station on a BSS.
+- **A pin names a band, not a radio, and that makes it idempotent.** Already on
+  that band means nothing happens. The distinction is not academic on a box
+  serving two radios in one band: resolving "5 GHz" to a radio picks one of
+  them, and comparing that to where the client is would move it sideways
+  between two equally good radios on every lap of a looping walk.
+- Unlike the other three, a pin is **generated rather than drawn** — it needs a
+  destination band and the timeline has no way to ask for one — but it is shown
+  wherever a pattern uses it, and can be deleted there.
 - They require the **AP running through hostapd**, which is how both radios are
   now driven — the onboard one as well as a USB adapter — so the controls work
   whichever radio is serving. (They were USB-only while the onboard radio ran

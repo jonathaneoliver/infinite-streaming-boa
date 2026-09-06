@@ -585,59 +585,41 @@ func (e *Engine) SteerClient(mac, fromIface, toIface string, mode steerMode) err
 }
 
 /*
- * steerAway is a pattern's steer: leave whichever radio you are on.
+ * pinToBand is the link lane's pin: hold this client on a band.
  *
- * The destination is deliberately not named. A pattern that said "go to
- * wlan-usb" would be wrong on a box whose adapter is called something else, and
- * evict does not care where the client lands -- only that it stops being here.
- */
-func (e *Engine) steerAway(mac string) error {
-	from := e.radioFor(mac)
-	if from == "" {
-		return fmt.Errorf("cannot evict %s: it is not on a radio this box serves", mac)
-	}
-	to := e.OtherRadio(from)
-	if to == "" {
-		return fmt.Errorf(
-			"cannot steer %s off %s: this box serves only one radio, and a "+
-				"transition request needs another access point to name", mac, from)
-	}
-	// steerInsist, because this names no destination: "get off this radio" is a
-	// promise about where the client ISN'T, so disassociating one that will not
-	// leave on its own is exactly what the lane said it would do. See steerMode.
-	return e.SteerClient(mac, from, to, steerInsist)
-}
-
-/*
- * steerToBand is a pattern's roam-to: move to whichever radio serves this band.
+ * It runs the GATHER mechanism over one client rather than sending a transition
+ * request, and the difference is the whole point. MEASURED 2026-09-06 on this
+ * box: an iPhone ignored a same-band request outright and then refused a
+ * cross-band one, offering its own candidate list instead. It was behaving
+ * correctly -- the distance model does not move real RSSI, so its 5GHz signal
+ * was excellent and it had no reason to go anywhere. A modelled walk cannot
+ * reach 2.4GHz by asking.
  *
- * ALREADY THERE IS SUCCESS, NOT A NO-OP TO HIDE. A walkabout emits a roam-to
- * only where its model changes band, but a client can reach that band on its
- * own -- a real roam, which is the outcome the test was hoping for. Asking it
- * to move to where it already is would be rejected by SteerClient as a steer to
- * the radio it is already on, turning the best possible result into a logged
- * error.
+ * ALREADY ON THAT BAND IS ALREADY DONE, and this box shows why the check cannot
+ * be "already on that radio". It serves THREE access points -- wlan-usb on
+ * channel 40, wlan-usb2 on 149, wlan0 on 6 -- so two are 5GHz and both are
+ * serving. Resolving the band to a radio answers with the first one found,
+ * which was not the one the clients were on, so a pin to 5GHz would have walked
+ * a client sideways between two 5GHz radios on every lap of a looping walkabout.
+ *
+ * Asking the BAND question makes it idempotent, which was the whole reason the
+ * lane names a band rather than an interface.
  *
  * Having nowhere to go IS an error, and a loud one. A box with no radio on the
  * target band cannot run the second half of this walk, and a silent skip would
  * leave a pattern that reads as though it moved the client and did not.
  */
-func (e *Engine) steerToBand(mac string, mhz int) error {
+func (e *Engine) pinToBand(mac string, mhz int, durSec float64) error {
+	if r := e.radioOnFor(e.radioFor(mac)); r != nil && r.Serving && r.Band == bandOf(mhz) {
+		return nil
+	}
 	to := e.radioOnBand(mhz)
 	if to == "" {
 		return fmt.Errorf(
-			"cannot roam %s to %s: no radio on this box is serving that band",
+			"cannot pin %s to %s: no radio on this box is serving that band",
 			mac, bandOf(mhz))
 	}
-	from := e.radioFor(mac)
-	if from == to {
-		return nil
-	}
-	// steerSuggest, because this NAMES a destination. Forcing it would buy a
-	// third outcome the lane never offered: a disassociated client rescans and
-	// picks whatever it likes, which may not be the band the walk asked for --
-	// and the walk's keyframes are built for that band. See steerMode.
-	return e.SteerClient(mac, from, to, steerSuggest)
+	return e.GatherClientTo(mac, to, durSec)
 }
 
 // radioOnBand names the watched radio serving a band, or "" when none is.

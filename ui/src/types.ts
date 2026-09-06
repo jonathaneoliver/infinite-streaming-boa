@@ -150,20 +150,21 @@ export interface Keyframe {
 /** A link-lane event: a per-client Wi-Fi impairment on the pattern timeline.
  *  `kind` names the 802.11 frame it sends — "deauth" or "disassoc" — or
  *  "deadzone", a held outage that is a composition rather than a frame. See #229.
- *  The two BAND MOVES are the exception to the frame rule: "evict" (leave this
- *  radio) and "roam-to" (move to `to_band_mhz`) both send a BSS transition
- *  request, so they are named for the promise each makes instead. They do not
- *  break the link — they ASK — and a client may refuse, which is a result rather
- *  than a failure. `evict` is the radio lane's word too, since it reads the same
- *  at either scope; `gather` is not, because gathering ONE client is not a thing
- *  anyone can picture — so the destination-named half takes the 802.11 word for
- *  what actually happens, which is that a client roams.
+ *  "pin" is the exception to the frame rule, because it is not a frame: it holds
+ *  the client on the band in `to_band_mhz` by denying it everywhere else, which
+ *  is the radio lane's `gather` run over a single client. It does NOT ask — a
+ *  transition request is a suggestion, and one was measured being ignored and
+ *  then refused by an iPhone whose real signal was excellent, so a control that
+ *  names a destination keeps its word by removing the alternatives instead.
+ *  Named `pin` rather than `gather` because gathering describes filling a radio,
+ *  which one client cannot do; there is no client-scope `evict`, because that is
+ *  `deadzone` with `scope: "current"`.
  *  `dur_sec` is the block width: 0 = a single pulse (fired on the rising edge),
- *  >0 = the disturbance holds for that long — a flap for drop/nudge, a clean
- *  block for deadzone. See #135. */
+ *  >0 = the disturbance holds for that long — a flap for deauth/disassoc, a
+ *  clean block for deadzone, and how long a pin's ban may be held. See #135. */
 export interface LinkEvent {
   at_sec: number;
-  kind: 'deauth' | 'disassoc' | 'deadzone' | 'evict' | 'roam-to';
+  kind: 'deauth' | 'disassoc' | 'deadzone' | 'pin';
   dur_sec?: number;
   /** deadzone only. Which radios the ban covers:
    *  - `current` (the default when absent) denies on the radio the client is
@@ -172,7 +173,7 @@ export interface LinkEvent {
    *  - `all` denies on every radio: a real outage, long enough to drain a
    *    buffer. Refused rather than half-applied if a radio cannot be covered. */
   scope?: 'current' | 'all';
-  /** Destination band for a `roam-to`, in MHz. A band and not an interface
+  /** Destination band for a `pin`, in MHz. A band and not an interface
    *  name: a pattern is shareable and interface names are box configuration. */
   to_band_mhz?: number;
 }

@@ -25,7 +25,7 @@ package boa
  *
  * It will not happen by itself. The real signal never changes while the model
  * runs, so the client has no reason to roam and will sit on 5GHz at -34 dBm at a
- * modelled 40 m. So the walk DRIVES it, with a roam-to on the link lane at each
+ * modelled 40 m. So the walk DRIVES it, with a pin on the link lane at each
  * crossing -- and a client entitled to refuse is the finding, not a failure.
  *
  * IT OWNS EVERY AXIS AT ONCE -- rate, delay, jitter, loss, burst and corruption,
@@ -79,10 +79,10 @@ const (
 	walkReturnFactor = 1.5
 
 	/*
-	 * The opening roam-to sits half a second in, not at zero, because an event
+	 * The opening pin sits half a second in, not at zero, because an event
 	 * at zero can never fire: the playhead starts there, and linkFires asks
 	 * whether the event lies in (prev, pos], which excludes the instant the run
-	 * begins. An opening roam-to placed at 0 would silently never happen and the
+	 * begins. An opening pin placed at 0 would silently never happen and the
 	 * walk would start on whichever band the client was already on.
 	 */
 	walkOpenSec = 0.5
@@ -134,12 +134,12 @@ func walkabout(name string, dwellSec float64) Pattern {
 			Ease: EaseHold,
 		})
 		if freq != prevFreq {
-			roamAt := t
+			pinAt := t
 			if i == 0 {
-				roamAt = walkOpenSec
+				pinAt = walkOpenSec
 			}
 			links = append(links, LinkEvent{
-				AtSec: roamAt, Kind: LinkRoamTo, ToBandMHz: freq,
+				AtSec: pinAt, Kind: LinkPin, ToBandMHz: freq,
 			})
 			prevFreq = freq
 		}
@@ -151,7 +151,7 @@ func walkabout(name string, dwellSec float64) Pattern {
 	}
 
 	// Loops. The sequence ends on the level it began with, so the seam is not a
-	// step change, and the opening roam-to names the band the walk ended on --
+	// step change, and the opening pin names the band the walk ended on --
 	// so a second lap starts where the first one finished.
 	return Pattern{Name: name, Keys: keys, Links: links, Loop: true}
 }

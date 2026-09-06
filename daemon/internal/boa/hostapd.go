@@ -172,13 +172,10 @@ func (e *Engine) fireLink(f LinkFire) {
 	switch f.Kind {
 	case LinkDeadzone:
 		err = e.LinkDeadzone(f.MAC, f.DurSec, f.Scope) // clean deny-ACL block
-	// The two band moves. They must sit ABOVE the default, which deauthenticates
-	// -- a kind that falls through to it would break the link it was asked to
-	// move.
-	case LinkEvict:
-		err = e.steerAway(f.MAC)
-	case LinkRoamTo:
-		err = e.steerToBand(f.MAC, f.ToBandMHz)
+	// Must sit ABOVE the default, which deauthenticates: a kind falling through
+	// to it would break the link it was asked to hold.
+	case LinkPin:
+		err = e.pinToBand(f.MAC, f.ToBandMHz, f.DurSec)
 	case LinkDisassoc:
 		if f.DurSec > 0 {
 			e.LinkFlap(f.MAC, LinkDisassoc, f.DurSec)

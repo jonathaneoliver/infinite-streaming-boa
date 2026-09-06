@@ -317,29 +317,9 @@ func (e *Engine) GatherTo(iface string, durSec float64) (int, error) {
 			"%s is not serving an access point, so there is nothing to gather to", iface)
 	}
 
-	// Every OTHER serving radio: the ones the clients must be kept off.
-	//
-	// Strict about a radio that is present but unreachable, for the reason
-	// deadzoneRadios is: a client could still associate there, so the pin would
-	// have a hole in it and the gather would silently not be a gather.
-	var deny []string
-	for _, w := range e.cfg.WlanPorts {
-		if w == iface {
-			continue
-		}
-		switch {
-		case hostapdReachable(w):
-			deny = append(deny, w)
-		case linkPresent(w):
-			return 0, fmt.Errorf(
-				"cannot pin clients to %s: %s is present but hostapd is not serving "+
-					"it, so a client could associate there and the gather would have "+
-					"a hole in it", iface, w)
-		}
-	}
-	if len(deny) == 0 {
-		return 0, fmt.Errorf(
-			"%s is the only radio serving, so there is nothing to gather from", iface)
+	deny, err := e.gatherDeny(iface)
+	if err != nil {
+		return 0, err
 	}
 	if e.cfg.Demo {
 		return 0, nil
@@ -371,6 +351,84 @@ func (e *Engine) GatherTo(iface string, durSec float64) (int, error) {
 			"point left to choose. The bans lift together once they have all "+
 			"arrived, or after %.0fs. Not a request — they cannot refuse what "+
 			"they were not asked")
+}
+
+// gatherDeny is every OTHER serving radio: the ones a client must be kept off
+// for a pin to iface to mean anything.
+//
+// Strict about a radio that is present but unreachable, for the reason
+// deadzoneRadios is: a client could still associate there, so the pin would have
+// a hole in it and the gather would silently not be a gather.
+func (e *Engine) gatherDeny(iface string) ([]string, error) {
+	var deny []string
+	for _, w := range e.cfg.WlanPorts {
+		if w == iface {
+			continue
+		}
+		switch {
+		case hostapdReachable(w):
+			deny = append(deny, w)
+		case linkPresent(w):
+			return nil, fmt.Errorf(
+				"cannot pin clients to %s: %s is present but hostapd is not serving "+
+					"it, so a client could associate there and the gather would have "+
+					"a hole in it", iface, w)
+		}
+	}
+	if len(deny) == 0 {
+		return nil, fmt.Errorf(
+			"%s is the only radio serving, so there is nothing to gather from", iface)
+	}
+	return deny, nil
+}
+
+/*
+ * GatherClientTo pins ONE client to iface. Same mechanism, smaller client set.
+ *
+ * The reason this exists rather than a per-client transition request: MEASURED
+ * 2026-09-06 on this box, an iPhone ignored a same-band request entirely and
+ * then REFUSED a cross-band one, offering its own candidate list instead. It was
+ * behaving correctly -- the distance model does not move real RSSI, so its 5GHz
+ * signal was excellent and it had no reason to go anywhere. A modelled walk
+ * therefore cannot reach 2.4GHz by asking, which is the same conclusion the
+ * radio-lane controls reached: 802.11 has no request that places a station on a
+ * BSS, so a control naming a destination has to remove the alternatives instead.
+ *
+ * Everything that makes a gather trustworthy comes with it unchanged: the ban is
+ * registered before it is applied, lifts on arrival, lifts on a timeout
+ * regardless, and supersedes whatever was in force.
+ */
+func (e *Engine) GatherClientTo(mac, iface string, durSec float64) error {
+	if !e.LinkControlAvailable() {
+		return fmt.Errorf("link control unavailable: hostapd is not serving the AP")
+	}
+	m := normMAC(mac)
+	if !validMAC(m) {
+		return fmt.Errorf("not a MAC address: %s", mac)
+	}
+	if durSec <= 0 {
+		durSec = gatherPinSec
+	}
+	if durSec < 1 || durSec > 300 {
+		return fmt.Errorf("pin duration must be 1-300 seconds")
+	}
+	if !e.cfg.Demo && !hostapdReachable(iface) {
+		return fmt.Errorf(
+			"%s is not serving an access point, so there is nothing to pin to", iface)
+	}
+	deny, err := e.gatherDeny(iface)
+	if err != nil {
+		return err
+	}
+	if e.cfg.Demo {
+		return nil
+	}
+	e.clearPins("superseded by a pin")
+	_, err = e.runPin(&pinOp{to: iface, deny: deny}, []string{m}, iface, iface, durSec,
+		"pinning %d client(s) onto %s: denied on %s, so a rescan has one access "+
+			"point left to choose. The ban lifts on arrival, or after %.0fs. "+
+			"Not a request — it cannot refuse what it was not asked")
+	return err
 }
 
 // EvictFrom empties one radio and makes the departure stick.

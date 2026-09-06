@@ -76,32 +76,27 @@ const (
 	LinkDeadzone = "deadzone" // deauth held for DurSec: the client cannot stay on
 
 	/*
-	 * BAND MOVES. Unlike the three above, these do not break the link -- they
-	 * ASK the client to move, over 802.11v, and the client is entitled to say
-	 * no. That refusal is a result rather than a failure: whether a given phone
-	 * honours a transition request is exactly what a test wants to find out.
+	 * ONE kind, not two, and it does not ASK.
 	 *
-	 * They exist because a modelled walk cannot produce a roam on its own. The
-	 * real signal never changes while the model runs, so the client has no
-	 * reason to move and will sit on 5GHz at -34 dBm at a modelled 40 m. The
-	 * band change has to be driven, or the most interesting moment in the walk
-	 * simply never happens.
+	 * "Leave your radio" needed no new kind at all: that is deadzone with
+	 * ScopeCurrent, which denies the client on the radio it is on and nothing
+	 * else, so it lands elsewhere and cannot decline. Adding an evict here would
+	 * have been a second spelling of a shipped control.
+	 *
+	 * "Be on THIS band" has no equivalent, and it cannot be built by asking.
+	 * MEASURED 2026-09-06: an iPhone ignored a same-band transition request and
+	 * then refused a cross-band one, offering its own candidate list. It was
+	 * right to -- the distance model does not move real RSSI, so its 5GHz signal
+	 * was excellent. The radio lane reached this conclusion first and wrote it
+	 * down: 802.11 has no request that places a station on a BSS, so a control
+	 * naming a destination keeps its word by removing the alternatives.
+	 *
+	 * So pin runs the gather mechanism over a single client -- see
+	 * GatherClientTo. Named pin and not gather because gather describes filling
+	 * a RADIO, which one client cannot do; pin is what gather.go already calls
+	 * the mechanism throughout.
 	 */
-	/*
-	 * EVICT IS SHARED WITH THE RADIO LANE; GATHER IS NOT, AND CANNOT BE.
-	 *
-	 * Evicting reads the same at either scope -- one client off its radio, or
-	 * every client off a radio -- so the word carries over and the lane supplies
-	 * the scope.
-	 *
-	 * Gather does not. It means collecting many things into one place, which is
-	 * exactly what RadioGather does and exactly what this cannot: there is only
-	 * one client here, and gathering it is not a thing anyone can picture. So
-	 * the destination-named half takes the 802.11 word for what actually
-	 * happens. A client ROAMS; the access point asks it to.
-	 */
-	LinkEvict  = "evict"   // ask this client to leave whichever radio it is on
-	LinkRoamTo = "roam-to" // ask this client to move to the band named below
+	LinkPin = "pin" // hold this client on the band named below
 )
 
 // Deadzone scope: which radios a deadzone holds a client off.
@@ -132,8 +127,8 @@ type LinkEvent struct {
 	DurSec float64 `json:"dur_sec,omitempty"` // deadzone only
 
 	/*
-	 * ToBandMHz is where a roam-to sends the client -- named as a BAND, not as
-	 * an interface.
+	 * ToBandMHz is where a pin holds the client -- named as a BAND, not as an
+	 * interface.
 	 *
 	 * A pattern is a stored, shareable artifact and interface names are box
 	 * configuration: `wlan-usb` means nothing on a box whose adapter is called
@@ -146,10 +141,10 @@ type LinkEvent struct {
 	 * rather than translating it into a name and back.
 	 *
 	 * Resolution can fail -- a box with no radio on that band has nowhere to
-	 * send the client -- and that is logged rather than swallowed. See
+	 * pin the client -- and that is logged rather than swallowed. See
 	 * Engine.fireLink.
 	 */
-	ToBandMHz int `json:"to_band_mhz,omitempty"` // roam-to only
+	ToBandMHz int `json:"to_band_mhz,omitempty"` // pin only
 
 	// Scope is deadzone only, and empty means ScopeCurrent -- so a pattern
 	// saved before this field existed keeps doing exactly what it did.
@@ -278,7 +273,7 @@ type LinkFire struct {
 	Kind      string
 	DurSec    float64 // deadzone only
 	Scope     string  // deadzone only; empty means ScopeCurrent
-	ToBandMHz int     // roam-to only
+	ToBandMHz int     // pin only
 }
 
 // Pattern is an ordered list of keyframes plus how to leave the end of it.
@@ -498,20 +493,20 @@ func validPattern(p Pattern) error {
 				return fmt.Errorf("link event %d: deadzone scope must be %q or %q (got %q)",
 					i, ScopeCurrent, ScopeAll, ev.Scope)
 			}
-		case LinkEvict:
-			// Nowhere to name: the target is "whatever else is serving", which
-			// only the box knows and only at the moment it fires.
-			if ev.ToBandMHz != 0 {
-				return fmt.Errorf("link event %d: steer takes no band -- it means leave, and where to is the box's answer. Use roam-to to name a destination", i)
-			}
-		case LinkRoamTo:
-			// A roam-to with no destination is a no-op that looks like a move,
-			// which is the kind of silence this repo has been bitten by.
+		case LinkPin:
+			// A pin with no destination is a no-op that looks like a move, which
+			// is the kind of silence this repo has been bitten by.
 			if !knownBand(ev.ToBandMHz) {
-				return fmt.Errorf("link event %d: roam-to needs a band to move to -- 2412-2484 or 5150-5895 MHz, not %d", i, ev.ToBandMHz)
+				return fmt.Errorf("link event %d: pin needs a band to hold the client on -- 2412-2484 or 5150-5895 MHz, not %d", i, ev.ToBandMHz)
+			}
+			// The ban duration. Zero takes gather.go's default rather than
+			// meaning "forever", which is the one reading that could strand a
+			// client off the box.
+			if ev.DurSec < 0 || ev.DurSec > 300 {
+				return fmt.Errorf("link event %d: pin duration must be 0 (the default) to 300s", i)
 			}
 		default:
-			return fmt.Errorf("link event %d: unknown kind %q (want deauth, disassoc, deadzone, steer or gather)", i, ev.Kind)
+			return fmt.Errorf("link event %d: unknown kind %q (want deauth, disassoc, deadzone or pin)", i, ev.Kind)
 		}
 		if ev.Scope != "" && ev.Kind != LinkDeadzone {
 			return fmt.Errorf("link event %d: scope is deadzone only, not %s", i, ev.Kind)

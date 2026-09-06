@@ -649,7 +649,7 @@ function setLaneValue(lane: LaneKey, at: number, n: number, ceil: number) {
  * `manual` is whether a lane can be drawn by hand.
  *
  * The three frame lanes can: a click gives a complete event, because a deauth is
- * a deauth. A ROAM-TO cannot -- it needs a destination band, and there is no
+ * a deauth. A PIN cannot -- it needs a destination band, and there is no
  * band picker here to give it one, so a click would produce an event the
  * validator rejects. They are generated (by a walkabout) and shown, not authored.
  *
@@ -663,8 +663,7 @@ const LINK_LANES: { kind: LinkEvent['kind']; label: string; manual: boolean }[] 
   { kind: 'deauth', label: 'deauth', manual: true },
   { kind: 'disassoc', label: 'disassoc', manual: true },
   { kind: 'deadzone', label: 'deadzone', manual: true },
-  { kind: 'evict', label: 'evict', manual: false },
-  { kind: 'roam-to', label: 'roam to', manual: false },
+  { kind: 'pin', label: 'pin', manual: false },
 ];
 const PULSE_VIS_SEC = 0.5; // a zero-duration pulse still needs a grabbable width
 const DEFAULT_DEADZONE_SEC = 10;
@@ -674,13 +673,13 @@ const links = computed<LinkEvent[]>(() => props.pattern?.links ?? []);
 function laneEvents(kind: string): { ev: LinkEvent; i: number }[] {
   return links.value.map((ev, i) => ({ ev, i })).filter((x) => x.ev.kind === kind);
 }
-/** What a block says on hover. A roam-to's destination is the only thing about
+/** What a block says on hover. A pin's destination is the only thing about
  *  it worth reading, and it appears nowhere else on the timeline. */
 function linkBlockTitle(ev: LinkEvent, manual: boolean): string {
-  if (props.run) return ev.kind === 'roam-to' && ev.to_band_mhz
+  if (props.run) return ev.kind === 'pin' && ev.to_band_mhz
     ? `move to ${bandLabel(ev.to_band_mhz)}`
     : '';
-  const what = ev.kind === 'roam-to' && ev.to_band_mhz
+  const what = ev.kind === 'pin' && ev.to_band_mhz
     ? `move to ${bandLabel(ev.to_band_mhz)} — `
     : '';
   return manual
