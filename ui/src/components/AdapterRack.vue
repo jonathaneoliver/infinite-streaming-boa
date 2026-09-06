@@ -78,6 +78,32 @@ function showClient(mac: string) {
  * what made buttons vanish and then flicker while an operator worked, and it is
  * not something a button on this row should ever be saying.
  */
+/**
+ * What is wrong with this radio, in two words, or nothing.
+ *
+ * Four states rather than the two it began with, because the row grew controls
+ * that create states the badge could not describe: a radio can now have its
+ * access point taken down while staying powered, and that is invisible in a row
+ * whose other indicators all still read normally.
+ *
+ * Ordered by which fact makes the others moot. A radio with its transmitter off
+ * has no access point either, and saying so twice would be noise; a radio the
+ * daemon does not watch is not being conditioned at all, which outranks
+ * anything about its access point.
+ *
+ * "no AP" is the one that is not an operator's doing: powered, watched, and
+ * hostapd is not answering for it. That is the shape of the wedge in #182, and
+ * it is worth a badge precisely because every other indicator on the row looks
+ * healthy while it is true.
+ */
+function warnText(r: IfaceInfo): string {
+  if (!r.serving) return 'not serving';
+  if (r.power_known && !r.powered) return 'off';
+  if (!r.ap) return 'no AP';
+  if (!r.ap.enabled) return 'AP disabled';
+  return '';
+}
+
 function apLive(r: IfaceInfo): boolean {
   return r.powered !== false && r.ap?.enabled === true;
 }
@@ -196,8 +222,13 @@ function degraded(i: IfaceInfo): boolean {
                radio whose state was changing. -->
           <span
             v-if="r.wireless" class="badge warn-badge"
-            :class="{ blank: r.serving && !(r.power_known && !r.powered) }"
-          >{{ !r.serving ? 'not serving' : (r.power_known && !r.powered ? 'off' : '\u00a0') }}</span>
+            :class="{ blank: !warnText(r) }"
+            :title="warnText(r) === 'AP disabled'
+              ? `${r.name} is powered, but its access point is down — clients cannot join it.`
+              : warnText(r) === 'no AP'
+                ? `${r.name} is powered and watched, but hostapd is not answering for it.`
+                : undefined"
+          >{{ warnText(r) || '\u00a0' }}</span>
 
         <!-- The actions reached for constantly. Every one of these acts on
              EVERY client on this adapter -- which is why the devices are named
@@ -634,11 +665,15 @@ Clients ARE told it has gone, unlike a power cut.`
 .warn-line { color: var(--warn); font-size: 11px; margin: 2px 0; }
 .group-note { margin: 0 0 4px; }
 .notice.inline { margin: 8px 0 0; }
-.badge/* An empty badge keeps its box so the controls after it never move. Invisible
+/* An empty badge keeps its box so the controls after it never move. Invisible
    rather than absent: `visibility` reserves the space that `display:none` would
-   give back, which is the whole point. */
+   give back, which is the whole point.
+   Kept as its own rule and NOT folded into the selector below -- an earlier
+   edit inserted it into the middle of `.badge.warn-badge`, which left the
+   browser parsing `.badge .badge.blank` as a descendant selector that matches
+   nothing, so every quiet radio drew an empty outlined box. */
 .badge.blank { visibility: hidden; }
-.warn-badge {
+.badge.warn-badge {
   color: var(--warn);
   border-color: color-mix(in srgb, var(--warn) 45%, var(--line));
 }
