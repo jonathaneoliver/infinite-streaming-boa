@@ -319,13 +319,34 @@ thing a device reacts to: an iPhone's path monitor fires on a link drop, not on
 down rather than when packets are merely late. netem cannot express this — it
 damages packets, never link state.
 
-- Four per-client events, keyed by **MAC**: **drop** (deauthenticate), the
-  harder disconnect; **nudge** (disassociate), the softer one, usually a quicker
-  recovery; **deadzone**, a held outage for a chosen duration — long enough
-  to drain a player's buffer and force a rebuffer, which a single drop is not. A
-  deadzone denies the MAC for its length so the client cannot re-associate until
-  it lifts, rather than a repeated deauth it could slip between. And **steer**,
-  the only one that does not take the link away at all.
+- Four per-client events, keyed by **MAC**: **deauth**, the harder disconnect;
+  **disassoc**, the softer one, usually a quicker recovery; **deadzone**, a held
+  outage for a chosen duration — long enough to drain a player's buffer and
+  force a rebuffer, which a single deauth is not. A deadzone denies the MAC for
+  its length so the client cannot re-associate until it lifts, rather than a
+  repeated deauth it could slip between. And **steer**, the only one that does
+  not take the link away at all.
+- **Every action is named for what it is, and the split is not a matter of
+  taste.** An action that sends exactly one 802.11 frame takes that frame's
+  name — `deauth`, `disassoc` — because the reader of this box already knows
+  what those are, and inventing a word for them makes the interface harder to
+  read for exactly the person it is for. An action this box composed keeps a
+  plain word of its own — `deadzone`, `gather`, `evict` — because there is no
+  frame it corresponds to and a standard-sounding name would imply one.
+  The line falls exactly where the **deny ACL** does: everything that only sends
+  a frame takes the standard's name, everything that also changes what the radio
+  will accept keeps an invented one. These were once called *drop* and *nudge*
+  in the interface while the same frames were called *deauth* and *disassoc* in
+  the API and on the adapter lanes — one action under three names, so nothing
+  said that a radio lane's deauth and a client's drop were the same thing.
+- **A deadzone names how far it reaches**, because this box can serve two radios
+  from one SSID. `current` denies on the radio the client is on and nothing
+  else: measured, the client re-associates on the other radio in under a second,
+  so it is a forced **roam** — useful precisely because, unlike a steer, the
+  client cannot refuse it. `all` denies on every radio and is the **outage**
+  above. A deadzone that cannot cover every radio is refused rather than
+  half-applied, because one that reads as total and delivers a roam is worse
+  than one that did not run.
 - **Steer asks one client to move to the box's other radio** (802.11v BSS
   transition), naming it as the destination. It is a **request**: the link stays
   up, the client decides, and a device that ignores transition requests is a
@@ -340,6 +361,19 @@ damages packets, never link state.
   it was refused — rather than the number, which is a value nobody looks up.
   Whether a device honours a steer is the behaviour the control exists to
   measure, and a request whose result cannot be read measures nothing.
+- **A transition request either takes no for an answer or does not, and which
+  one is a property of the control that sent it.** The same 802.11v frame
+  carries `disassoc_imminent` or does not:
+  - a **steer** or a **gather** names a destination, so it must leave a refusing
+    client where it is. Forcing one sends it wherever it likes while the
+    interface claims it went where it was told.
+  - an **evict** names no destination, so disassociating a client that will not
+    leave is exactly what it says it does.
+  The deadline is counted from the **request**, not from a refusal, and repeating
+  the request restarts it rather than stacking — so pressing the button twice
+  makes the wait longer, not shorter. It is expressed in beacon intervals on the
+  wire, which is not seconds: a value passed as "30 seconds" was measured firing
+  after 3.
 - **Moving and answering are separate facts, and are reported separately.** A
   client can honour a transition and send no answer, or answer and not move;
   both were measured here on the same device within minutes. Nothing infers one
@@ -354,14 +388,21 @@ damages packets, never link state.
   reproducible, which no packet impairment is, and is the specific event this
   exists for.
 - **Two of them move a client rather than breaking its link.** `evict` asks a
-  device to leave the radio it is on; `gather` asks it to move to a named band.
+  device to leave the radio it is on; `roam-to` asks it to move to a named band.
   Both are 802.11v requests, so a client is free to refuse and the refusal is
   the finding. They exist because a modelled walk cannot produce a roam on its
   own: the real signal never changes while the model runs, so the device has no
-  reason to move and would sit on 5 GHz at a modelled 40 m. Unlike the other
-  three they are **generated rather than drawn** — a gather needs a destination
-  band, and the timeline has no way to ask for one — but they are shown on the
-  timeline wherever a pattern uses them, and can be deleted there.
+  reason to move and would sit on 5 GHz at a modelled 40 m.
+- **`evict` is shared with the radio lane; `gather` deliberately is not.**
+  Evicting reads the same at either scope — one client off its radio, or every
+  client off a radio — so the word carries over and the lane supplies the scope.
+  Gathering does not: it means collecting many things into one place, which is
+  what the radio lane's `gather` does and what a single client cannot be the
+  subject of. So the destination-named half takes the 802.11 word for what
+  actually happens, which is that a client **roams**.
+- Unlike the other three, the two moves are **generated rather than drawn** — a
+  `roam-to` needs a destination band and the timeline has no way to ask for one
+  — but they are shown wherever a pattern uses them, and can be deleted there.
 - They require the **AP running through hostapd**, which is how both radios are
   now driven — the onboard one as well as a USB adapter — so the controls work
   whichever radio is serving. (They were USB-only while the onboard radio ran
@@ -522,6 +563,22 @@ damages packets, never link state.
   deliberately switched **off** is not reported as a fault: not serving is the
   correct state for a radio that is off, and the power control has already said
   what it did.
+- **An access point that does not survive a power cut is rebuilt, unasked.** A
+  radio can come back from an outage with its driver reset underneath hostapd,
+  which leaves hostapd asserting a BSS that is not on the air: every status
+  source calls the radio healthy and no client can join it, indefinitely. The
+  box detects that by the one thing that separates it from a healthy recovery --
+  hostapd refusing to enable an interface that had just failed to look enabled
+  -- and tears the access point down and builds it again, which is the only
+  measured remedy. It says that it is doing so, and says whether it worked.
+  Clients on that radio are dropped by the rebuild; they have just been dropped
+  by the outage anyway, and the alternative is a radio nobody can join.
+- **"Not answering" is never reported as "not serving".** A radio's control
+  interface can go silent for minutes while its driver re-initialises, and a
+  question that could not be asked has no answer. The box says that it cannot
+  yet confirm the access point rather than asserting it is serving nobody,
+  because a confident wrong answer about a radio is what sends an operator
+  hunting a hardware fault that is not there.
 - The log is **in memory and lossy by design**: a few hundred events, cleared by
   a restart or a deploy. An association event per client per roam, persisted, is
   exactly the steady write that wears an SD card out, and every event still
@@ -562,14 +619,71 @@ damages packets, never link state.
   because the box is a single-operator instrument and because these impairments
   are unreachable any other way — not a general licence for AP-wide controls to
   appear beside per-device ones.
-- **A radio can be emptied or filled, and both are the same request.** `evict`
-  asks every client on this radio to move to the other one; `gather` asks every
-  client on the other one to come here. They are one 802.11v transition request
-  read in two directions, so there is no second mechanism and no way for the two
-  to behave differently — only the naming differs, and it names the radio the
-  operator is pointing at rather than the one being emptied. Each is disabled
-  when its source radio has nobody on it, so a dead button always means "there
-  is nobody to move" and never "this is not supported".
+- **A radio can be emptied or filled, and the two make opposite promises.**
+  `gather` fills this radio; `evict` empties it. They were once the same 802.11v
+  request read in two directions, and that was wrong: a transition request is a
+  *suggestion*, so a client that refused — or that was disassociated anyway and
+  rescanned — chose for itself, and "gather to wlan-usb" was measured putting a
+  device on wlan0 instead. A control that names a destination cannot keep its
+  word by asking, because **802.11 has no request that places a station on a
+  BSS**.
+  So neither asks. Each removes the alternatives, through the runtime deny ACL:
+  - **gather** denies the client on every serving radio **except** the
+    destination, then moves it off the one it is on. Its own rescan finds
+    exactly one access point here it may join. The promise is "it comes here",
+    and it is kept.
+  - **evict** denies the client only on the radio being emptied. It keeps every
+    choice except coming back. The promise is "it leaves" — where it goes is
+    explicitly not this box's decision, and the control says so rather than
+    implying otherwise.
+  Each is disabled when its source radio has nobody on it, so a dead button
+  always means "there is nobody to move" and never "this is not supported".
+  An evict off the **only** serving radio is refused: that would put its clients
+  off the box altogether, which is a whole-network outage and not what the
+  button offers.
+- **The bans are timed, lift on arrival, and lift together.** A deny list is a
+  real outage for that client on those radios, so it is held only for as long as
+  the decision it exists to constrain. It is released the moment the clients
+  land, and after five seconds regardless — measured, holding one longer is how
+  a device is pushed off the network entirely, because its own association
+  backoff takes over.
+  **Together**, not per client: an operation is not finished until every client
+  it covers has moved, and releasing the first arrival early would free it to
+  wander back into radios the others are still being held out of.
+- **A new movement command supersedes the last one.** Any gather or evict clears
+  every ban in force before placing its own. Two overlapping operations would
+  otherwise deny a client *everywhere* — the first holding it at A by denying B
+  and C, the second holding it at B by denying A and C — leaving it unable to
+  associate at all, with each deny list looking individually reasonable. Pressing
+  gather again means "now do this instead", never "do both".
+- **Removing the choice is not measuring the choice, and the interface says
+  which is which.** A pinned gather cannot tell you whether a device honours a
+  transition request: it was never asked. The per-client **steer** on the
+  Clients tab remains the control for that question, and the two are described
+  in their own words rather than one borrowing the other's.
+- **An access point can be taken down and brought back, and both ends can be
+  announced.** `disable` closes the BSS; `enable` reopens it. On its own, either
+  is silent — a closed BSS tells nobody, and clients discover it by timing out,
+  which is a slower and less legible outcome than a device being told.
+  So each has a **deauth +** form, and the audience differs at each end:
+  - going **down**, the audience is the stations currently associated, addressed
+    individually before the BSS closes;
+  - coming **up**, it is clients that still *believe* they are associated and
+    are not — exactly the population a silent outage creates — and the only
+    thing an access point can do for them is broadcast.
+  Both send a **deauthentication**, and the control is named for that rather
+  than for the intention behind it — it was "tell", which was friendly and hid
+  which frame went out, the same fault *drop* had for a deauthentication. An
+  earlier version sent a disassociation on the way down and a broadcast
+  deauthentication on the way up, which made the two halves of one control
+  disagree about which frame they meant. Under WPA2 both force a full reconnect,
+  so matching them costs nothing and buys one answer instead of two.
+- **The box does not announce a radio starting or stopping unless asked.**
+  hostapd broadcasts a deauthentication at both ends by default; that frame
+  lands on exactly the clients a measurement is watching, so it is switched off
+  globally and re-enabled only for the deliberate `deauth +` above. A silent outage
+  is a real field condition — a router losing power tells nobody — and it must
+  be reproducible on demand rather than drowned by the box being polite.
 - **Each box-wide control appears exactly once, on the adapter it acts on.**
   Everything that acts on a radio — switching it off, dropping, nudging or
   steering its clients, scanning, moving it, taking it away for a fixed outage,
@@ -578,6 +692,24 @@ damages packets, never link state.
   once carried these controls too, and two copies of one action is a second
   place for the two to disagree. The copy further from the thing it names is the
   one to lose.
+- **A radio switched off stays off until the operator switches it back on.**
+  Radio power is a test instrument here — the measurement IS "switch it off and
+  watch what the client does" — so an outage that ends itself early does not
+  merely surprise, it invalidates the run. Neither a radio hotplug nor the
+  daemon restart every deploy performs undoes the decision. A **reboot** does:
+  being off is bench state for the run in hand, not configuration, and a box
+  power-cycled back into service comes up serving on every radio it has.
+- A **fixed-length outage** is protected the same way and for the same reason: a
+  hotplug landing in the middle of one does not cut it short. What still ends it
+  is the box losing the process that owns it — a cut that outlives the daemon
+  that made it is not an impairment but a broken appliance, so a radio found off
+  at startup with no standing decision behind it is switched back on.
+- **Where the box does put a radio back on anyway, it says so.** A USB adapter
+  that re-enumerates returns as a fresh device with its transmitter enabled, and
+  no record the box keeps can stop the kernel handing it back that way. The
+  activity log names the radio and says that anything measured across that point
+  was not measured through an outage — the alternative is a result that is
+  quietly wrong and cannot be questioned afterwards.
 - Where a radio exposes no hostapd control socket, its controls are **shown
   disabled with the reason**, never offered and silently ignored. Where a radio
   refuses an action its driver claims to support — an 802.11h channel switch on

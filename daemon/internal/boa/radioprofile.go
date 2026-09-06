@@ -336,6 +336,84 @@ func (e *Engine) ApplyRadioProfile(iface, name string) (int, error) {
 
 // --- steering -------------------------------------------------------------
 
+// steerMode says what happens to a client that refuses.
+//
+// The two controls that steer are not the same request with a different sign,
+// and treating them as one is what produced "gather to wlan-usb" putting a
+// device on wlan0:
+//
+//   - GATHER names a destination. "Come to this radio." There are exactly two
+//     acceptable outcomes, move here or stay put, and forcing the issue buys
+//     neither: a client that refuses and is then disassociated rescans and
+//     picks whatever it likes, which is a THIRD outcome the control never
+//     offered. So gather asks, and takes no for an answer.
+//   - EVICT names no destination. "Get off this radio." Where the client goes
+//     next is explicitly not the question, so disassociating one that will not
+//     leave on its own is exactly what the control says it does. The
+//     uncertainty is the honest part.
+//
+// Same frame, opposite promises. The mode is what keeps each one's promise.
+type steerMode int
+
+const (
+	// steerSuggest leaves a refusing client exactly where it is.
+	steerSuggest steerMode = iota
+	// steerInsist disassociates a client that has not moved when the timer
+	// expires, and makes no claim about where it lands.
+	steerInsist
+)
+
+// evictDisassocSec is how long an evicted client has to leave on its own.
+//
+// Only binds the stubborn. A client that accepts moves within a second, so this
+// costs a cooperative device nothing at all -- it is purely the deadline for one
+// that ignores the request.
+//
+// FIVE seconds, CHOSEN rather than inherited. It was 30, which was never a
+// decision: the comment said thirty and the units bug meant nobody ever
+// experienced thirty, so the first time the real number ran it was a surprise.
+// MEASURED 2026-09-06, an evict off wlan0 with two Apple clients that ignored
+// the request entirely:
+//
+//	15:25:11.295  request sent
+//	15:25:16.867  reported as unanswered (btmWait)
+//	15:25:41.389  disassociated, 30s later, and only then did anything move
+//
+// Twenty-five seconds of an operator watching a control that had already said
+// "did not answer, and has not moved". A cooperative client moves inside the
+// first second, so the whole of that window was spent waiting on devices that
+// were never going to answer.
+//
+// Note it is a deadline from the REQUEST, not from a refusal -- a client that
+// says no immediately still sits out the remainder. Repeating the request
+// restarts the clock rather than stacking, so pressing the button twice makes
+// the wait longer, not shorter.
+//
+// It now equals btmWait, so an unanswered evict is disassociated at the same
+// moment its silence is reported. That is deliberate and the report says "now"
+// rather than counting down to zero -- see reportMuteSteers.
+const evictDisassocSec = 5
+
+// tbttPerSec converts seconds into beacon intervals, the unit hostapd's
+// disassoc_timer actually counts.
+//
+// MEASURED 2026-09-06. The timer was passed 30 through a parameter named
+// disassocSec, and the box disassociated the client 3 seconds after its refusal
+// -- three times out of three in one log, each gap 3s to the second. 30 TBTT at
+// the default beacon_int of 100 TU is 30 * 102.4ms = 3.07s, which is the
+// observed number. The name said seconds, the wire meant beacons, and the
+// difference was a factor of ten in the only grace period a client gets.
+//
+// beacon_int is not set in any generated config, so hostapd's default of 100 TU
+// applies; a TU is 1024 microseconds, not a millisecond, hence 1024 rather than
+// 1000. If beacon_int ever becomes configurable this has to read it.
+const beaconIntTU = 100
+
+func tbttPerSec(sec int) int {
+	// 1 TBTT = beaconIntTU * 1024 microseconds.
+	return sec * 1000000 / (beaconIntTU * 1024)
+}
+
 // btmCommand builds an 802.11v BSS Transition Management request.
 //
 // Pure and separately tested: the neighbour report is five comma-separated
@@ -343,7 +421,10 @@ func (e *Engine) ApplyRadioProfile(iface, name string) (int, error) {
 // them being wrong. Getting the operating class wrong is the easy mistake --
 // it encodes the band AND the width, so a 5GHz neighbour advertised with a
 // 2.4GHz class is a request the client will ignore rather than refuse.
-func btmCommand(mac, bssid string, channel, widthMHz int, disassocSec int) string {
+//
+// disassoc_imminent is set only for steerInsist. See steerMode for why the same
+// frame carries a different promise depending on which control sent it.
+func btmCommand(mac, bssid string, channel, widthMHz int, mode steerMode) string {
 	// bssid_info: reachable, plus the capability bits a client checks before
 	// bothering. 0x0000040f is the conventional value in hostapd's own
 	// examples and means "preauth, spectrum management, QoS, APSD, radio
@@ -357,10 +438,15 @@ func btmCommand(mac, bssid string, channel, widthMHz int, disassocSec int) strin
 		// is what makes a single-neighbour list mean "go here" rather than
 		// "here is one option among the ones you already know".
 		"abridged=1",
-		"disassoc_imminent=1",
-		fmt.Sprintf("disassoc_timer=%d", disassocSec),
-		fmt.Sprintf("neighbor=%s,%s,%d,%d,%d", bssid, bssidInfo, op, reportCh, phy),
 	}
+	if mode == steerInsist {
+		parts = append(parts,
+			"disassoc_imminent=1",
+			// In BEACON INTERVALS, not seconds. See tbttPerSec.
+			fmt.Sprintf("disassoc_timer=%d", tbttPerSec(evictDisassocSec)))
+	}
+	parts = append(parts,
+		fmt.Sprintf("neighbor=%s,%s,%d,%d,%d", bssid, bssidInfo, op, reportCh, phy))
 	return strings.Join(parts, " ")
 }
 
@@ -442,10 +528,11 @@ func opClassAndPhy(channel, widthMHz int) (opClass, reportChannel, phyType int) 
 // it -- whether a given device honours a steer is exactly the behaviour worth
 // testing, and it cannot be discovered from anything but a real request.
 //
-// disassoc_imminent is set, so a client that ignores the suggestion is
-// disassociated when the timer expires and has to make its own choice. Without
-// it a stubborn client simply stays and the test has no outcome either way.
-func (e *Engine) SteerClient(mac, fromIface, toIface string) error {
+// Whether a refusal is taken for an answer is the caller's to say, through
+// mode: a gather names a destination and must leave a refusing client where it
+// is, while an evict names none and may disassociate one that will not go. See
+// steerMode.
+func (e *Engine) SteerClient(mac, fromIface, toIface string, mode steerMode) error {
 	m := normMAC(mac)
 	if !validMAC(m) {
 		return fmt.Errorf("not a MAC address: %s", mac)
@@ -477,7 +564,7 @@ func (e *Engine) SteerClient(mac, fromIface, toIface string) error {
 		return fmt.Errorf("%s is not serving an access point to steer to", toIface)
 	}
 
-	cmd := btmCommand(m, bssid, channel, apWidth(kv), 30)
+	cmd := btmCommand(m, bssid, channel, apWidth(kv), mode)
 	reply, err := hostapdCmd(fromIface, cmd)
 	if err != nil {
 		return err
@@ -492,13 +579,13 @@ func (e *Engine) SteerClient(mac, fromIface, toIface string) error {
 	// millisecond has something to be matched against. The client's reply is
 	// asynchronous and comes back through the monitor connection, not as a
 	// reply to this command -- see hostapdmonitor.go.
-	e.notePendingSteer(m, fromIface, e.describeRadio(toIface))
+	e.notePendingSteer(m, fromIface, e.describeRadio(toIface), mode == steerInsist)
 	e.noteSteer(m, fromIface, toIface)
 	return nil
 }
 
 /*
- * steerAway is a pattern's evict: leave whichever radio you are on.
+ * steerAway is a pattern's steer: leave whichever radio you are on.
  *
  * The destination is deliberately not named. A pattern that said "go to
  * wlan-usb" would be wrong on a box whose adapter is called something else, and
@@ -512,16 +599,19 @@ func (e *Engine) steerAway(mac string) error {
 	to := e.OtherRadio(from)
 	if to == "" {
 		return fmt.Errorf(
-			"cannot evict %s from %s: this box serves only one radio, and a "+
+			"cannot steer %s off %s: this box serves only one radio, and a "+
 				"transition request needs another access point to name", mac, from)
 	}
-	return e.SteerClient(mac, from, to)
+	// steerInsist, because this names no destination: "get off this radio" is a
+	// promise about where the client ISN'T, so disassociating one that will not
+	// leave on its own is exactly what the lane said it would do. See steerMode.
+	return e.SteerClient(mac, from, to, steerInsist)
 }
 
 /*
- * steerToBand is a pattern's gather: move to whichever radio serves this band.
+ * steerToBand is a pattern's roam-to: move to whichever radio serves this band.
  *
- * ALREADY THERE IS SUCCESS, NOT A NO-OP TO HIDE. A walkabout emits a gather
+ * ALREADY THERE IS SUCCESS, NOT A NO-OP TO HIDE. A walkabout emits a roam-to
  * only where its model changes band, but a client can reach that band on its
  * own -- a real roam, which is the outcome the test was hoping for. Asking it
  * to move to where it already is would be rejected by SteerClient as a steer to
@@ -536,14 +626,18 @@ func (e *Engine) steerToBand(mac string, mhz int) error {
 	to := e.radioOnBand(mhz)
 	if to == "" {
 		return fmt.Errorf(
-			"cannot gather %s to %s: no radio on this box is serving that band",
+			"cannot roam %s to %s: no radio on this box is serving that band",
 			mac, bandOf(mhz))
 	}
 	from := e.radioFor(mac)
 	if from == to {
 		return nil
 	}
-	return e.SteerClient(mac, from, to)
+	// steerSuggest, because this NAMES a destination. Forcing it would buy a
+	// third outcome the lane never offered: a disassociated client rescans and
+	// picks whatever it likes, which may not be the band the walk asked for --
+	// and the walk's keyframes are built for that band. See steerMode.
+	return e.SteerClient(mac, from, to, steerSuggest)
 }
 
 // radioOnBand names the watched radio serving a band, or "" when none is.
@@ -566,7 +660,7 @@ func (e *Engine) radioOnBand(mhz int) string {
 // SteerAll asks every client on one radio to move to the other. Returns how
 // many were asked; how many actually went is a question only the Clients tab
 // can answer, a few seconds later.
-func (e *Engine) SteerAll(fromIface, toIface string) (int, error) {
+func (e *Engine) SteerAll(fromIface, toIface string, mode steerMode) (int, error) {
 	if err := e.radioReady(fromIface); err != nil {
 		return 0, err
 	}
@@ -574,7 +668,7 @@ func (e *Engine) SteerAll(fromIface, toIface string) (int, error) {
 	asked := 0
 	var firstErr error
 	for mac := range stations {
-		if err := e.SteerClient(mac, fromIface, toIface); err != nil {
+		if err := e.SteerClient(mac, fromIface, toIface, mode); err != nil {
 			if firstErr == nil {
 				firstErr = err
 			}
@@ -588,9 +682,23 @@ func (e *Engine) SteerAll(fromIface, toIface string) (int, error) {
 	return asked, nil
 }
 
-// OtherRadio names the radio a client could be steered to: another watched
-// radio that is serving an access point. Empty when there is nowhere to go,
-// which is the single-radio case and is why this button did not exist before.
+// OtherRadio names the radio a client could be steered to: the FIRST other
+// watched radio that is serving an access point, in WlanPorts order. Empty when
+// there is nowhere to go, which is the single-radio case and is why this button
+// did not exist before.
+//
+// First, deliberately, and NOT the emptiest.
+//
+// Choosing the emptiest was tried and reverted. It sounds better -- it spreads
+// clients instead of piling them onto whichever radio sorts first -- but it
+// makes the destination depend on transient state, so the same button press
+// resolves differently on two runs of the same test. On a box whose whole
+// subject is measuring what a client does, a control that answers differently
+// each time is not a better control, it is an unrepeatable one. WlanPorts order
+// is fixed, so this is the same answer every time and the operator can predict
+// it before pressing anything.
+//
+// Load balancing is a router's job. This is not a router.
 func (e *Engine) OtherRadio(from string) string {
 	for _, w := range e.cfg.WlanPorts {
 		if w == from {

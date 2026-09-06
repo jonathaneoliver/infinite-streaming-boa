@@ -648,10 +648,10 @@ function setLaneValue(lane: LaneKey, at: number, n: number, ceil: number) {
 /*
  * `manual` is whether a lane can be drawn by hand.
  *
- * The three link lanes can: a click gives a complete event, because a drop is a
- * drop. A GATHER cannot -- it needs a destination band, and there is no band
- * picker here to give it one, so a click would produce an event the validator
- * rejects. They are generated (by a walkabout) and shown, not authored.
+ * The three frame lanes can: a click gives a complete event, because a deauth is
+ * a deauth. A ROAM-TO cannot -- it needs a destination band, and there is no
+ * band picker here to give it one, so a click would produce an event the
+ * validator rejects. They are generated (by a walkabout) and shown, not authored.
  *
  * Shown matters. The lane machinery reveals a lane whenever a pattern uses it,
  * so leaving these two out would let a walkabout's band moves sit in the stored
@@ -660,11 +660,11 @@ function setLaneValue(lane: LaneKey, at: number, n: number, ceil: number) {
  * deletable, which is the one edit that needs no new input.
  */
 const LINK_LANES: { kind: LinkEvent['kind']; label: string; manual: boolean }[] = [
-  { kind: 'drop', label: 'drop', manual: true },
-  { kind: 'nudge', label: 'nudge', manual: true },
+  { kind: 'deauth', label: 'deauth', manual: true },
+  { kind: 'disassoc', label: 'disassoc', manual: true },
   { kind: 'deadzone', label: 'deadzone', manual: true },
   { kind: 'evict', label: 'evict', manual: false },
-  { kind: 'gather', label: 'gather', manual: false },
+  { kind: 'roam-to', label: 'roam to', manual: false },
 ];
 const PULSE_VIS_SEC = 0.5; // a zero-duration pulse still needs a grabbable width
 const DEFAULT_DEADZONE_SEC = 10;
@@ -674,13 +674,13 @@ const links = computed<LinkEvent[]>(() => props.pattern?.links ?? []);
 function laneEvents(kind: string): { ev: LinkEvent; i: number }[] {
   return links.value.map((ev, i) => ({ ev, i })).filter((x) => x.ev.kind === kind);
 }
-/** What a block says on hover. A gather's destination is the only thing about
+/** What a block says on hover. A roam-to's destination is the only thing about
  *  it worth reading, and it appears nowhere else on the timeline. */
 function linkBlockTitle(ev: LinkEvent, manual: boolean): string {
-  if (props.run) return ev.kind === 'gather' && ev.to_band_mhz
+  if (props.run) return ev.kind === 'roam-to' && ev.to_band_mhz
     ? `move to ${bandLabel(ev.to_band_mhz)}`
     : '';
-  const what = ev.kind === 'gather' && ev.to_band_mhz
+  const what = ev.kind === 'roam-to' && ev.to_band_mhz
     ? `move to ${bandLabel(ev.to_band_mhz)} — `
     : '';
   return manual

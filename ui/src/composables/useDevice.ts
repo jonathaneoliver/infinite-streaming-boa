@@ -250,12 +250,24 @@ export function useDevice() {
   function linkSteer(mac: string) {
     return send(`/api/devices/${mac}/link/steer`, 'POST', undefined);
   }
+  // measure: ask this client to go and listen to the box's OTHER radios and
+  // report what it hears (802.11k beacon request).
+  //
+  // The only way to learn the signal of a radio a client is NOT on -- every
+  // other figure in this card is measured at the access point, and exists only
+  // for the radio the client is associated to. The answers arrive
+  // asynchronously and land on the client's own record, so nothing is returned
+  // here but the count of measurements requested.
+  function linkMeasure(mac: string) {
+    return send(`/api/devices/${mac}/link/measure`, 'POST', undefined);
+  }
 
   return {
     linkDeauth,
     linkDisassoc,
     linkDeadzone,
     linkSteer,
+    linkMeasure,
     writing,
     conflict,
     patchShape,

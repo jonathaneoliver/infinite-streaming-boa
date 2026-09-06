@@ -345,6 +345,85 @@ func TestAutoCrossesOverExactlyOnce(t *testing.T) {
 	}
 }
 
+/*
+ * A BAND WHOSE UPLINK IS DEAD IS NOT A BAND, whatever its downlink says.
+ *
+ * Found by sweeping the model and reading the output rather than by reasoning:
+ * between -76 and -80 dBm a modelled phone was kept on 5GHz carrying 38 Mbit/s
+ * down while its uplink sat at 100% loss, and then "rescued" at -80 by a move to
+ * 2.4GHz where BOTH directions were healthy. The choice had scored the downlink
+ * alone, so it could not see that the link was already over.
+ *
+ * A device transmits more quietly than the access point, so its uplink reaches
+ * the floor several dB before the downlink does -- which is exactly when a real
+ * client starts looking for somewhere better, and so exactly when the switch
+ * should happen rather than several steps later.
+ *
+ * The phone matters here: with TxDb of 0 the two directions are equal and there
+ * is no window in which one is dead and the other is not, so a model without a
+ * transmit deficit cannot catch this.
+ */
+func TestAutoWillNotPickABandWhoseUplinkIsDead(t *testing.T) {
+	m := RssiModel{N: DefaultExponent, RxDb: DefaultRxDb, TxDb: DefaultTxDb}
+	checked := 0
+	for lvl := -40.0; lvl >= -100; lvl -= 0.5 {
+		freq, width := BestBandFor(lvl, m)
+		_, up := LevelsFor(PathAtBand(lvl, m, freq), m)
+		if shapeAtLevel(up, freq, width).LossPct < 100 {
+			continue
+		}
+		// The chosen band's uplink is dead. Acceptable only if every band's is
+		// -- past the range of the box entirely, where there is no better answer.
+		for _, b := range ModelBands {
+			_, u := LevelsFor(PathAtBand(lvl, m, b.FreqMHz), m)
+			if shapeAtLevel(u, b.FreqMHz, b.WidthMHz).LossPct < 100 {
+				t.Fatalf("at %.1f dBm the model chose %d MHz, whose uplink is dead, "+
+					"while %d MHz has a live one", lvl, freq, b.FreqMHz)
+			}
+		}
+		checked++
+	}
+	// Guard against the test passing because it never reached the dead region.
+	if checked == 0 {
+		t.Error("no level in the sweep had a dead uplink on the chosen band; " +
+			"this test is not exercising the rule it exists for")
+	}
+}
+
+/*
+ * PathAtBand converts through the DISTANCE, and the exponent cancels exactly.
+ *
+ * A level in dBm is meaningless without a frequency -- the same spot is 7.3 dB
+ * weaker on 5GHz -- so a band comparison has to re-express the level rather than
+ * reuse the number. Reusing it is a quiet bug: moving to 2.4GHz would look no
+ * better than staying, and the switch would read as pointless rather than as the
+ * relief it is.
+ *
+ * That the exponent drops out is worth pinning, because it says where NOT to
+ * look when a band choice comes out wrong:
+ *
+ *	RssiAt(DistanceFor(r, f0, n), f1, n) = r + FSPL(f0) - FSPL(f1)
+ *
+ * The 1 m clamp in RssiAt means the identity holds only beyond that, which on
+ * the reference band is everything below about -27.6 dBm.
+ */
+func TestPathAtBandIsIndependentOfTheExponent(t *testing.T) {
+	ref := ModelBands[0]
+	for _, n := range []float64{2.0, 2.8, 3.1, 3.8, 5.0} {
+		m := RssiModel{N: n}
+		for lvl := -40.0; lvl >= -100; lvl -= 0.5 {
+			for _, b := range ModelBands {
+				got := PathAtBand(lvl, m, b.FreqMHz)
+				want := lvl + freeSpaceAt1m(ref.FreqMHz) - freeSpaceAt1m(b.FreqMHz)
+				if math.Abs(got-want) > 1e-9 {
+					t.Fatalf("n=%g at %.1f dBm on %d MHz: got %.6f, want %.6f",
+						n, lvl, b.FreqMHz, got, want)
+				}
+			}
+		}
+	}
+}
+
 // Auto is only for a client with no radio of its own: where there is a real
 // one, the band is a fact rather than a choice.
 func TestAutoIsIgnoredWhenTheClientHasARadio(t *testing.T) {

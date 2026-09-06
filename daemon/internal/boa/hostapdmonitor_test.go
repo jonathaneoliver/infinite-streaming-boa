@@ -10,7 +10,7 @@ import (
 // three things worth reading: who, what they decided, and where they went.
 func TestBTMResponseIsParsedFromWhatHostapdSends(t *testing.T) {
 	e := &Engine{}
-	e.notePendingSteer("aa:bb:cc:dd:ee:ff", "wlan0", "5GHz")
+	e.notePendingSteer("aa:bb:cc:dd:ee:ff", "wlan0", "5GHz", false)
 	e.handleHostapdEvent("wlan0",
 		"<3>BSS-TM-RESP aa:bb:cc:dd:ee:ff status_code=0 bss_termination_delay=0 target_bssid=9c:ef:d5:f6:3f:f2")
 
@@ -30,7 +30,7 @@ func TestBTMResponseIsParsedFromWhatHostapdSends(t *testing.T) {
 // the reader has to go and look up, which means it does not get read.
 func TestARefusalIsReportedInWords(t *testing.T) {
 	e := &Engine{}
-	e.notePendingSteer("aa:bb:cc:dd:ee:ff", "wlan0", "5GHz")
+	e.notePendingSteer("aa:bb:cc:dd:ee:ff", "wlan0", "5GHz", false)
 	e.handleHostapdEvent("wlan0",
 		"<3>BSS-TM-RESP aa:bb:cc:dd:ee:ff status_code=7 bss_termination_delay=0")
 
@@ -47,7 +47,7 @@ func TestARefusalIsReportedInWords(t *testing.T) {
 // and then nothing cannot tell a refusal from a request that went nowhere.
 func TestAClientThatNeverAnswersIsReportedAsSuch(t *testing.T) {
 	e := &Engine{}
-	e.notePendingSteer("aa:bb:cc:dd:ee:ff", "wlan0", "5GHz")
+	e.notePendingSteer("aa:bb:cc:dd:ee:ff", "wlan0", "5GHz", false)
 
 	// Not yet: a client answering promptly must not be called mute first.
 	e.reportMuteSteers()
@@ -71,6 +71,37 @@ func TestAClientThatNeverAnswersIsReportedAsSuch(t *testing.T) {
 	e.reportMuteSteers()
 	if n := len(e.events.since(0, 10)); n != 1 {
 		t.Errorf("silence was reported %d times, want once", n)
+	}
+}
+
+// Silence after an INSISTED steer is not a dead end -- the client is about to be
+// disassociated -- and the log has to say so.
+//
+// Observed 2026-09-06: the log said "did not answer, and has not moved" and then
+// the device moved 25 seconds later with nothing in between, because the
+// deadline runs from the request and most of it had already elapsed by the time
+// silence was reported. An operator reading only the first line has no reason to
+// keep watching the window in which the interesting thing happens.
+func TestSilenceAfterAnInsistedSteerSaysWhatHappensNext(t *testing.T) {
+	e := &Engine{}
+	e.notePendingSteer("aa:bb:cc:dd:ee:ff", "wlan0", "5GHz", true)
+	e.mu.Lock()
+	p := e.pendingSteers["aa:bb:cc:dd:ee:ff"]
+	p.at = time.Now().Add(-btmWait - time.Second)
+	e.pendingSteers["aa:bb:cc:dd:ee:ff"] = p
+	e.mu.Unlock()
+
+	e.reportMuteSteers()
+	line := lastEventText(t, e)
+	for _, want := range []string{"disassociated", "pick a radio for itself"} {
+		if !strings.Contains(line, want) {
+			t.Errorf("an insisted steer's silence must mention %q, got: %s", want, line)
+		}
+	}
+	// And it must NOT claim the device has not moved, which was the old line's
+	// mistake: it was about to.
+	if strings.Contains(line, "has not moved") {
+		t.Errorf("an insisted steer should not report a settled outcome: %s", line)
 	}
 }
 
@@ -102,7 +133,7 @@ func TestAClientThatMovesWithoutAnsweringIsNotCalledUnresponsive(t *testing.T) {
 		cfg:          Config{WlanPorts: []string{"wlan0", "wlan-usb"}},
 		stationRadio: map[string]string{"aa:bb:cc:dd:ee:ff": "wlan-usb"},
 	}
-	e.notePendingSteer("aa:bb:cc:dd:ee:ff", "wlan0", "5GHz")
+	e.notePendingSteer("aa:bb:cc:dd:ee:ff", "wlan0", "5GHz", false)
 	e.mu.Lock()
 	p := e.pendingSteers["aa:bb:cc:dd:ee:ff"]
 	p.at = time.Now().Add(-btmWait - time.Second)

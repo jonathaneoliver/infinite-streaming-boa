@@ -1,11 +1,12 @@
 <script setup lang="ts">
 import { computed, ref, watchEffect, type Ref } from 'vue';
 import { DEVELOPER } from '@/types';
-import type { Client, IfaceInfo, Series } from '@/types';
+import type { Client, IfaceInfo, PatternView, Series } from '@/types';
 import { useBridge } from '@/composables/useBridge';
 import InterfaceDiagram from '@/components/InterfaceDiagram.vue';
 import FabricStrip from '@/components/FabricStrip.vue';
 import AdapterRack from '@/components/AdapterRack.vue';
+import AdapterPatternPanel from '@/components/AdapterPatternPanel.vue';
 import ChannelPlan from '@/components/ChannelPlan.vue';
 import { setAdapterIfaces } from '@/composables/useAdapters';
 
@@ -27,6 +28,12 @@ const props = defineProps<{
    *  SETTINGS are not passed: those live in the shared prefs store, so the fold
    *  and the client cards cannot be looking at different ranges. */
   series?: Record<string, Series>;
+  /** The radios this box watches, for the adapter timeline. From caps rather
+   *  than from the bridge's interface list: caps names the radios the DAEMON
+   *  watches, which is exactly the set an adapter pattern may address. */
+  radios?: string[];
+  /** The box's own pattern run, when one is playing. */
+  adapterRun?: PatternView | null;
 }>();
 const activeRef = computed(() => props.active) as Ref<boolean>;
 const bridge = useBridge(activeRef);
@@ -119,8 +126,21 @@ const pending = ref('');
 
 <template>
   <div class="bridge-view">
-    <div v-if="bridge.error.value" class="notice bad">{{ bridge.error.value }}</div>
-    <div v-if="bridge.actionMsg.value" class="notice">{{ bridge.actionMsg.value }}</div>
+    <!-- RESERVED, not inserted.
+         Every action here reports its outcome, and a row that appears on press
+         pushed the whole page down under the cursor -- so the next click landed
+         on whatever slid into place. In this rack that is a real hazard: the
+         button two along from `evict` is `switch off`, which takes the radio
+         down and drops every client on it. Measured on the bench: an intended
+         gather became a switch off, and the radio went dark.
+         The same reasoning as `scrollbar-gutter: stable` in style.css, which is
+         here because a scrollbar appearing shifted every right-aligned column
+         by 15px. Keep the space whether or not there is anything in it. -->
+    <div class="msg-slot">
+      <div v-if="bridge.error.value" class="notice bad">{{ bridge.error.value }}</div>
+      <div v-else-if="bridge.actionMsg.value" class="notice">{{ bridge.actionMsg.value }}</div>
+      <div v-else class="notice placeholder" aria-hidden="true">&nbsp;</div>
+    </div>
 
     <!-- Standing facts about what is and is not being conditioned. An
          unwatched radio is an error-level notice: its clients pass traffic
@@ -170,6 +190,20 @@ const pending = ref('');
         :series="series" :labels="labels"
         v-model:outage="outage"
       >
+        <!-- The radios on a clock, inside the section that names them. The
+             rack's own rule is that a control lives where its subject is named
+             exactly once, and the subject of a cross-radio timeline is the set
+             of radios rather than any one of them.
+             Worth knowing: this is the first many-subject control in this UI to
+             sit INSIDE its per-subject list. The others are a strip above the
+             list (ClientsView), a peer section (FabricStrip), or hoisted above
+             both (EventLog). If it stops earning that place -- most likely by
+             becoming part of a scenario surface, where its subject is the RUN
+             rather than the radios -- this is the seam to pull. -->
+        <template #pattern>
+          <AdapterPatternPanel :radios="props.radios ?? []" :run="props.adapterRun ?? null" />
+        </template>
+
         <template #plan="{ radio }">
           <ChannelPlan
             :radio="radio" :scans="bridge.scanSummaries.value" :busy="bridge.busy.value"
@@ -267,6 +301,10 @@ const pending = ref('');
 }
 
 .notice.inline { margin: 8px 0 0; }
+/* Holds the row's height open when there is nothing to say. Not visibility:
+   hidden on the slot -- a real notice has to be readable -- so an empty one is
+   drawn transparent instead, keeping the exact metrics of the real thing. */
+.placeholder { visibility: hidden; }
 .disabled-note { padding: 0 14px 12px; }
 
 .soon { opacity: 0.9; }

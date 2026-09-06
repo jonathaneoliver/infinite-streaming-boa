@@ -41,6 +41,7 @@ const emit = defineEmits<{
   linkNudge: [];
   linkDeadzone: [sec: number];
   linkSteer: [];
+  linkMeasure: [];
   toggle: [];
   addSub: [];
   removeSub: [string];
@@ -302,15 +303,15 @@ const connectedLabel = computed(() => {
 
 // Transient acknowledgement that a link event was sent. The lasting proof is
 // the connected-time above resetting; this just confirms the click dispatched.
-const linkFlash = ref<'drop' | 'nudge' | 'deadzone' | 'steer' | null>(null);
+const linkFlash = ref<'deauth' | 'disassoc' | 'deadzone' | 'steer' | 'measure' | null>(null);
 let linkFlashTimer: ReturnType<typeof setTimeout> | undefined;
-function flashLink(kind: 'drop' | 'nudge' | 'deadzone' | 'steer') {
+function flashLink(kind: 'deauth' | 'disassoc' | 'deadzone' | 'steer' | 'measure') {
   linkFlash.value = kind;
   clearTimeout(linkFlashTimer);
   linkFlashTimer = setTimeout(() => (linkFlash.value = null), 1400);
 }
-function fireLink(kind: 'drop' | 'nudge') {
-  if (kind === 'drop') emit('linkDrop');
+function fireLink(kind: 'deauth' | 'disassoc') {
+  if (kind === 'deauth') emit('linkDrop');
   else emit('linkNudge');
   flashLink(kind);
 }
@@ -337,6 +338,28 @@ function fireDeadzone() {
 function fireSteer() {
   emit('linkSteer');
   flashLink('steer');
+}
+
+/**
+ * Ask the client what it can hear on the radios it is NOT using.
+ *
+ * The card is full of signal figures measured at the access point, and every
+ * one of them describes the radio this client is already on. That is the wrong
+ * end of the link for the question a steer raises -- "would it be better over
+ * there" -- and there is no way to answer it from here at all. An 802.11k
+ * beacon request is the client going to look and telling us.
+ */
+function fireMeasure() {
+  emit('linkMeasure');
+  flashLink('measure');
+}
+
+/** How long ago a report was taken, because a stale measurement is worse than
+ *  none: the client may have moved, and the number will not say so. */
+function reportAge(atMs: number): string {
+  const s = Math.max(0, Math.round((Date.now() - atMs) / 1000));
+  if (s < 60) return `${s}s ago`;
+  return `${Math.round(s / 60)}m ago`;
 }
 
 // Past a few seconds of blackout a phone stops waiting and leaves the AP for
@@ -1157,13 +1180,13 @@ function fmtBytes(n: number): string {
     <div v-if="linkControl && client.present && client.medium === 'wifi'" class="link-events">
       <span class="link-label">Wi-Fi</span>
       <button
-        class="ghost" :class="{ flash: linkFlash === 'drop', active: activeLinkKinds.has('drop') }" @click="fireLink('drop')"
+        class="ghost" :class="{ flash: linkFlash === 'deauth', active: activeLinkKinds.has('deauth') }" @click="fireLink('deauth')"
         title="Deauthenticate: take this client's Wi-Fi link down; it reconnects on its own"
-      >{{ linkFlash === 'drop' ? 'sent' : 'drop' }}</button>
+      >{{ linkFlash === 'deauth' ? 'sent' : 'deauth' }}</button>
       <button
-        class="ghost" :class="{ flash: linkFlash === 'nudge', active: activeLinkKinds.has('nudge') }" @click="fireLink('nudge')"
+        class="ghost" :class="{ flash: linkFlash === 'disassoc', active: activeLinkKinds.has('disassoc') }" @click="fireLink('disassoc')"
         title="Disassociate: the softer 802.11 disconnect, usually a quicker recovery than drop"
-      >{{ linkFlash === 'nudge' ? 'sent' : 'nudge' }}</button>
+      >{{ linkFlash === 'disassoc' ? 'sent' : 'disassoc' }}</button>
       <!-- Only when the daemon says there is somewhere to send it. A transition
            request has to NAME a destination access point, so on a box serving
            one radio there is nothing to offer and the button is absent rather
@@ -1175,6 +1198,18 @@ function fmtBytes(n: number): string {
           + `The link stays up and it may refuse — whether this device honours a `
           + `transition request is the thing being tested.`"
       >{{ linkFlash === 'steer' ? 'sent' : 'steer' }}</button>
+      <!-- Present whenever the client is associated, not only when there is
+           somewhere to steer to: "what can you hear" is a question worth asking
+           of a device on a one-radio box too, and the daemon answers with a
+           clear reason when there is nothing to measure. -->
+      <button
+        v-if="client.present"
+        class="ghost" :class="{ flash: linkFlash === 'measure' }" @click="fireMeasure"
+        :title="`Ask this client to listen to the box's other radios and report `
+          + `what it hears (802.11k beacon request). The only signal figure `
+          + `available for a radio it is NOT on — everything else in this card `
+          + `is measured at the access point. It may decline.`"
+      >{{ linkFlash === 'measure' ? 'sent' : 'measure' }}</button>
       <button
         class="ghost" :class="{ flash: linkFlash === 'deadzone', active: activeLinkKinds.has('deadzone') }" @click="fireDeadzone"
         title="Hold the link down for the duration -- long enough to drain a player's buffer and force a rebuffer, unlike a single drop"
@@ -1184,6 +1219,29 @@ function fmtBytes(n: number): string {
         class="dz-dur" title="deadzone length in seconds" aria-label="deadzone seconds"
       />
       <span class="link-hint meta">watch <b>assoc</b> above reset when it lands</span>
+    </div>
+    <!-- What the CLIENT heard, which is the only place on this card where a
+         number came from the far end of the link.
+
+         Labelled as the client's own measurement rather than presented beside
+         the AP-side figures as though they were the same quantity: one is this
+         box's receiver reading the device, the other is the device's receiver
+         reading this box, and on an asymmetric link they legitimately differ.
+         Showing them as one column would invite a comparison that means
+         nothing. -->
+    <div v-if="client.beacon_reports?.length" class="beacons">
+      <span class="meta beacons-head">it hears</span>
+      <span
+        v-for="b in client.beacon_reports" :key="b.bssid"
+        class="meta beacon" :class="{ unmeasured: !b.has_signal }"
+        :title="`${b.iface ?? b.bssid} on channel ${b.channel}, measured by this `
+          + `device ${reportAge(b.at_ms)}`
+          + (b.has_signal ? ` — RCPI ${b.rcpi}` : ' — it could not measure this one')
+          + (b.iface ? '' : '. Not one of this box\'s radios.')"
+      >
+        <b>{{ b.iface ?? b.bssid }}</b>
+        {{ b.has_signal ? `${b.signal_dbm} dBm` : 'n/a' }}
+      </span>
     </div>
     <!-- A long blackout does not rebuffer, it evicts: the device leaves this AP
          and boa can no longer see or shape it until it comes back. -->
@@ -1301,6 +1359,25 @@ function fmtBytes(n: number): string {
 .swept-note {
   color: var(--warn);
   margin: 6px 0 0;
+}
+.beacons {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.25rem 0.5rem;
+  margin-top: 0.25rem;
+}
+.beacons-head {
+  opacity: 0.7;
+}
+.beacon {
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+/* A measurement the client could not take is dimmed rather than hidden: that
+   it was asked and came back empty is itself the answer. */
+.beacon.unmeasured {
+  opacity: 0.5;
 }
 .dz-warn {
   color: var(--warn);

@@ -1,4 +1,5 @@
-import { ref, shallowRef, onUnmounted } from 'vue';
+import { ref, shallowRef, onUnmounted, watch } from 'vue';
+import { onStream, transport as streamTransport } from '@/composables/useStream';
 import type { Snapshot, Client, Series } from '@/types';
 import { adapterChannel } from '@/composables/useAdapters';
 
@@ -20,7 +21,9 @@ const HISTORY = 3600;
 export function useSnapshot() {
   const snap = shallowRef<Snapshot | null>(null);
   const connected = ref(false);
-  const transport = ref<'sse' | 'poll' | 'offline'>('offline');
+  // The connection itself lives in useStream, shared with the bridge view. This
+  // is a mirror of its state so the header's indicator is unchanged.
+  const transport = streamTransport;
   const error = ref<string | null>(null);
 
   // Throughput history is accumulated on the client. The server deliberately
@@ -176,9 +179,7 @@ export function useSnapshot() {
 
   void seedFromServer(loadedSec.value);
 
-  let es: EventSource | null = null;
   let pollTimer: number | undefined;
-  let retry: number | undefined;
 
   function startPolling() {
     transport.value = 'poll';
@@ -201,46 +202,27 @@ export function useSnapshot() {
     pollTimer = undefined;
   }
 
-  function connect() {
-    if (typeof EventSource === 'undefined') {
-      startPolling();
-      return;
-    }
-    es = new EventSource('/api/state/stream');
-    es.onopen = () => {
-      transport.value = 'sse';
-      stopPolling();
-    };
-    es.onmessage = (ev) => {
-      try {
-        apply(JSON.parse(ev.data));
-      } catch {
-        /* a malformed frame is not worth tearing the stream down for */
-      }
-    };
-    es.onerror = () => {
-      connected.value = false;
-      es?.close();
-      es = null;
-      // Poll while the stream is down so the UI keeps updating, and retry the
-      // stream periodically. Conditioning a link means the operator may have
-      // just made their own connection to this box unreliable on purpose.
-      startPolling();
-      if (!retry) {
-        retry = window.setTimeout(() => {
-          retry = undefined;
-          connect();
-        }, 5000);
-      }
-    };
-  }
+  // Unnamed frames carry the snapshot. The connection, its retries and the
+  // decision to fall back all live in useStream now; this only says what to do
+  // with a frame, and when to poll instead.
+  const stop = onStream('message', (data) => apply(data as Snapshot));
 
-  connect();
+  watch(
+    transport,
+    (t) => {
+      if (t === 'sse') {
+        stopPolling();
+      } else {
+        connected.value = false;
+        startPolling();
+      }
+    },
+    { immediate: true },
+  );
 
   onUnmounted(() => {
-    es?.close();
+    stop();
     stopPolling();
-    if (retry) window.clearTimeout(retry);
   });
 
   return { snap, connected, transport, error, series, bucketMs, setRange };

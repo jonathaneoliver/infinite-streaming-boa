@@ -12,15 +12,36 @@ import type { IfaceInfo } from '@/types';
  */
 
 /**
- * The rack's order, and it is FIXED rather than sorted.
+ * The rack's order, by ROLE rather than by name.
  *
- * A rack that reorders itself is a rack you have to re-read. Radios first
- * because they are what a Wi-Fi test is about, the USB adapter before the
- * onboard one because it is the faster and more capable of the two, and the
- * wired port last. Anything not on this list sorts after it, by name, so an
- * unexpected interface appears rather than being silently dropped.
+ * A rack that reorders itself is a rack you have to re-read, so the order is
+ * still fixed -- but it is now fixed by what an interface IS, not by a list of
+ * the names this box happened to have. Radios first because they are what a
+ * Wi-Fi test is about, USB adapters before the onboard radio because they are
+ * the faster and more capable, and the wired port last.
+ *
+ * The name list this replaced ended at wlan-usb2, and its fallthrough sorted
+ * anything unknown AFTER everything on it -- so a third USB radio, which udev
+ * already names and radioplan already serves, rendered BELOW the Ethernet
+ * adapter. Ranked by role, a radio the code has never heard of still sorts
+ * among the radios.
  */
-const RACK_ORDER = ['wlan-usb', 'wlan0', 'lan0'];
+function rackRank(i: IfaceInfo): number {
+  if (!i.wireless) return 2;
+  return i.radio?.bus === 'onboard' ? 1 : 0;
+}
+
+/**
+ * The names whose colours are already spoken for, in the order they were
+ * assigned.
+ *
+ * NOT the rack's order -- see rackRank for that. This exists only so an
+ * adapter keeps the colour it has always had. Position in the RACK cannot be
+ * the colour key: unplugging wlan-usb would promote wlan-usb2 into its slot and
+ * recolour it, silently invalidating every screenshot and every log line
+ * already read. A name never moves.
+ */
+const ADAPTER_COLOUR_ORDER = ['wlan-usb', 'wlan-usb2', 'wlan0', 'lan0'];
 
 /**
  * Adapter identity colours.
@@ -72,9 +93,9 @@ export function setAdapterIfaces(list: IfaceInfo[]) {
 /** The adapters, in rack order. */
 export const rackAdapters = computed(() =>
   [...ifaces.value.filter((i) => RACK_ROLES.includes(i.role))].sort((a, b) => {
-    const ai = RACK_ORDER.indexOf(a.name);
-    const bi = RACK_ORDER.indexOf(b.name);
-    if (ai !== bi) return (ai < 0 ? 99 : ai) - (bi < 0 ? 99 : bi);
+    const ra = rackRank(a);
+    const rb = rackRank(b);
+    if (ra !== rb) return ra - rb;
     return a.name.localeCompare(b.name);
   }),
 );
@@ -82,18 +103,21 @@ export const rackAdapters = computed(() =>
 /**
  * An adapter's colour, stable for the life of the box.
  *
- * Keyed off the FIXED order rather than the order the kernel happened to list
- * them in, so unplugging one adapter does not recolour the others -- which
- * would silently invalidate every screenshot and every log line already read.
+ * Keyed off the NAME rather than the order the kernel happened to list them in,
+ * and deliberately not off the rack position either, so unplugging one adapter
+ * does not recolour the others -- which would silently invalidate every
+ * screenshot and every log line already read.
  */
 export function adapterColour(name: string): string {
-  const i = RACK_ORDER.indexOf(name);
+  const i = ADAPTER_COLOUR_ORDER.indexOf(name);
   if (i >= 0) return ADAPTER_COLOURS[i % ADAPTER_COLOURS.length];
   // Not a known adapter: derive something stable from the name rather than
-  // reusing a colour that belongs to one of the three above.
+  // reusing a colour that belongs to one of the four above.
   let h = 0;
   for (const ch of name) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
-  return ADAPTER_COLOURS[(RACK_ORDER.length + (h % 2)) % ADAPTER_COLOURS.length];
+  return ADAPTER_COLOURS[
+    (ADAPTER_COLOUR_ORDER.length + (h % 2)) % ADAPTER_COLOURS.length
+  ];
 }
 
 /** What the token prints beside the name: the channel, where there is one. */
