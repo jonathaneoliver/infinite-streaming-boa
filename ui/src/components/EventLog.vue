@@ -119,11 +119,26 @@ const unseenHidden = computed(() => Math.max(0, log.unseen.value - PREVIEW));
  * Clock time, not "3m ago". These events are read against a bench test that is
  * being watched live, so what matters is lining an event up with something on a
  * chart, and a chart is labelled in clock time.
+ *
+ * TO THE MILLISECOND, because seconds are too coarse for what this log is used
+ * to measure. A client leaving one radio and joining another is routinely a few
+ * hundred milliseconds apart -- roam latencies measured on this box run from
+ * about 500ms upwards -- and at second resolution those either collapse onto
+ * one timestamp or appear a whole second apart, depending only on where the
+ * boundary happened to fall.
+ *
+ * Be clear about what the extra digits do and do not mean. An event timestamped
+ * by hostapd's control socket, an association among them, is accurate to the
+ * millisecond. One noticed by the 1Hz tick instead is accurate only to that
+ * tick, and will cluster near second boundaries however many digits are
+ * printed. That is the distinction #215 was about; the milliseconds make it
+ * visible rather than introduce it.
  */
 function clock(ms: number): string {
   const d = new Date(ms);
   const p = (n: number) => String(n).padStart(2, '0');
-  return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+  const t = `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+  return `${t}.${String(d.getMilliseconds()).padStart(3, '0')}`;
 }
 </script>
 
