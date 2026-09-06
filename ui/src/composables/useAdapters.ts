@@ -20,7 +20,7 @@ import type { IfaceInfo } from '@/types';
  * wired port last. Anything not on this list sorts after it, by name, so an
  * unexpected interface appears rather than being silently dropped.
  */
-const RACK_ORDER = ['wlan-usb', 'wlan0', 'lan0'];
+const RACK_ORDER = ['wlan-usb', 'wlan-usb2', 'wlan0', 'lan0'];
 
 /**
  * Adapter identity colours.

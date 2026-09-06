@@ -296,6 +296,42 @@ export function useBridge(active: Ref<boolean>) {
       `refuse — 802.11v is a suggestion. Watch the stations counts to see who went.`,
     );
 
+  /**
+   * Gather from EVERY other radio, not one of them.
+   *
+   * The steer endpoint moves the clients of a single source, so gathering onto
+   * a radio means asking each of the others in turn. With two radios "the other
+   * one" was the whole answer and a single call looked correct; with three it
+   * silently addressed one peer and ignored the rest -- and since the button
+   * was also disabled on that one peer's station count, a box whose only client
+   * sat on the third radio had gather greyed out everywhere and no way to say
+   * why.
+   *
+   * Sequential rather than parallel: these are 802.11v requests to real
+   * devices, and firing them at once at every radio makes the log harder to
+   * read for no gain. The count reported is what was ASKED, which is the only
+   * thing this control can honestly claim -- a client may refuse.
+   */
+  async function gatherAll(iface: string, froms: string[]) {
+    let asked = 0;
+    for (const from of froms) {
+      const ok = await act(
+        `/api/bridge/radios/${encodeURIComponent(from)}/steer` +
+          `?to=${encodeURIComponent(iface)}`,
+        (b) => {
+          asked += Number(b.asked ?? 0);
+          return '';
+        },
+      );
+      if (!ok) return false;
+    }
+    actionMsg.value =
+      `${iface}: asked ${asked} client(s) on ${froms.join(' and ')} to come here. ` +
+      `They may refuse — 802.11v is a suggestion. Watch the stations counts to ` +
+      `see who went.`;
+    return true;
+  }
+
   /** `from` is the radio being emptied, `iface` the one being filled. */
   const gather = (iface: string, from: string) =>
     act(
@@ -391,7 +427,7 @@ export function useBridge(active: Ref<boolean>) {
     info, survey, scan, error, actionMsg, busy,
     scans, scanSummaries, airtimePct,
     load, loadSurvey, deauthAll, setPower, setAPEnabled, setService, powerOutage,
-    scanBand,
+    scanBand, gatherAll,
     applyProfile, setThreshold, evict, gather, linkAll, moveChannel,
   };
 }

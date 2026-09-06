@@ -168,11 +168,20 @@ function subtitle(i: IfaceInfo): string {
 const unwatched = (i: IfaceInfo) => i.wireless && !i.serving;
 
 
-/** The radio a client could be steered to: another one actually serving. */
+/**
+ * The radio a client could be steered to: the emptiest other one actually
+ * serving.
+ *
+ * Emptiest rather than first, matching the rack's evict control, so the diagram
+ * names the destination that button would really use. Taking the first meant
+ * the two disagreed as soon as a third radio existed -- and the diagram is
+ * where an operator looks to understand the box, so it disagreeing with the
+ * control is worse than it saying nothing.
+ */
 function otherRadio(i: IfaceInfo): string {
-  return props.info.ifaces.find(
-    (o) => o.wireless && o.name !== i.name && o.ap?.enabled,
-  )?.name ?? '';
+  return props.info.ifaces
+    .filter((o) => o.wireless && o.name !== i.name && o.ap?.enabled)
+    .sort((a, b) => (a.ap?.stations ?? 0) - (b.ap?.stations ?? 0))[0]?.name ?? '';
 }
 </script>
 

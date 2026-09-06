@@ -124,8 +124,43 @@ function apLive(r: IfaceInfo): boolean {
  * left under the pointer. On a one-radio box they are present and dead rather
  * than absent, for the same reason.
  */
-function otherRadio(r: IfaceInfo): IfaceInfo | undefined {
-  return rackAdapters.value.find((o) => o.name !== r.name && o.wireless);
+/**
+ * EVERY other radio, which is what gather actually acts on.
+ *
+ * There was a singular otherRadio() returning the FIRST other wireless
+ * interface. That was the whole answer on a two-radio box and became wrong the
+ * moment a third appeared: a client sitting on the radio that happened to sort
+ * third was invisible to every row, so gather was greyed out everywhere with
+ * nothing saying why. It is gone rather than left beside this one, because a
+ * helper that quietly picks one of three is a trap to reach for.
+ */
+function otherRadios(r: IfaceInfo): IfaceInfo[] {
+  return rackAdapters.value.filter((o) => o.name !== r.name && o.wireless);
+}
+
+/** How many clients gather would be asking to move, across all other radios. */
+function gatherable(r: IfaceInfo): number {
+  return otherRadios(r).reduce((n, o) => n + (o.ap?.stations ?? 0), 0);
+}
+
+/**
+ * Where an eviction sends them: the emptiest access point that is actually up.
+ *
+ * CHOSEN AND NAMED, rather than left to the daemon. With two radios "away from
+ * here" meant "to the other one" and needed no decision. With three it does,
+ * and the daemon's own comment says why leaving it there is wrong: OtherRadio
+ * "would pick the first serving radio in preference order -- deterministic, but
+ * not something the operator chose, and invisible once it has happened".
+ *
+ * Emptiest rather than first, so repeated evictions spread clients instead of
+ * piling them onto whichever radio happens to sort first. The tooltip says
+ * which, so the choice is visible before it is made rather than inferred from
+ * the log afterwards.
+ */
+function evictTo(r: IfaceInfo): IfaceInfo | undefined {
+  return otherRadios(r)
+    .filter((o) => o.ap?.enabled)
+    .sort((a, b) => (a.ap?.stations ?? 0) - (b.ap?.stations ?? 0))[0];
 }
 
 /**
@@ -374,26 +409,30 @@ Clients ARE told it has gone, unlike a power cut.`
                nothing to steer, and dead is the honest state. -->
           <button
             class="ghost"
-            :disabled="busy || !apLive(r) || !r.ap?.stations"
+            :disabled="busy || !apLive(r) || !r.ap?.stations || !evictTo(r)"
             :title="!apLive(r)
               ? `${r.name} has no access point up, so it has nobody to move.`
-              : otherRadio(r)
-                ? `Ask all ${r.ap?.stations ?? 0} client(s) on ${r.name} to move to `
-                  + `${otherRadio(r)!.name} (802.11v). They may refuse.`
-                : 'No other radio on this box to move them to.'"
-            @click="bridge.evict(r.name)"
+              : !evictTo(r)
+                ? 'No other access point is up to move them to.'
+                : `Ask all ${r.ap?.stations ?? 0} client(s) on ${r.name} to move to `
+                  + `${evictTo(r)!.name}, the emptiest one that is up (802.11v). `
+                  + `They may refuse.`"
+            @click="evictTo(r) && bridge.gather(evictTo(r)!.name, r.name)"
           >evict</button>
           <button
             class="ghost"
-            :disabled="busy || !apLive(r) || !otherRadio(r)?.ap?.stations"
+            :disabled="busy || !apLive(r) || !gatherable(r)"
             :title="!apLive(r)
               ? `${r.name} has no access point up, so there is nowhere here to gather them to.`
-              : otherRadio(r)
-                ? `Ask all ${otherRadio(r)!.ap?.stations ?? 0} client(s) on `
-                  + `${otherRadio(r)!.name} to move here to ${r.name} (802.11v). `
-                  + `They may refuse.`
-                : 'No other radio on this box to gather from.'"
-            @click="otherRadio(r) && bridge.gather(r.name, otherRadio(r)!.name)"
+              : !otherRadios(r).length
+                ? 'No other radio on this box to gather from.'
+                : `Ask all ${gatherable(r)} client(s) on `
+                  + `${otherRadios(r).map((o) => o.name).join(' and ')} to move here `
+                  + `to ${r.name} (802.11v). They may refuse.`"
+            @click="bridge.gatherAll(
+              r.name,
+              otherRadios(r).filter((o) => o.ap?.stations).map((o) => o.name),
+            )"
           >gather</button>
           <button
             class="ghost" :disabled="busy || !apLive(r)"
