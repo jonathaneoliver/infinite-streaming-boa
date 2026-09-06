@@ -661,8 +661,16 @@ damages packets, never link state.
   **Together**, not per client: an operation is not finished until every client
   it covers has moved, and releasing the first arrival early would free it to
   wander back into radios the others are still being held out of.
-- **A new movement command supersedes the last one.** Any gather or evict clears
-  every ban in force before placing its own. Two overlapping operations would
+- **A new movement command supersedes the last one, over the clients it
+  covers.** A box-wide gather or evict clears every ban in force before placing
+  its own; a per-client one clears only the claims on that client. The release
+  itself is not optional either way — a client is held by one operation at a
+  time, so re-claiming it without releasing first would strand the old
+  operation's bans with nothing left to lift them. But widening that release to
+  the whole box at per-client scope would let two devices running walkabouts
+  cancel each other at every band change, leaving the first free to roam off the
+  band its own pattern is still conditioning for — which is the per-device
+  independence of §6.2 broken silently. Two overlapping operations would
   otherwise deny a client *everywhere* — the first holding it at A by denying B
   and C, the second holding it at B by denying A and C — leaving it unable to
   associate at all, with each deny list looking individually reasonable. Pressing

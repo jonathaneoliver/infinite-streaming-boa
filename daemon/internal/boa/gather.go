@@ -281,6 +281,75 @@ func (e *Engine) liftPins(op *pinOp, why string) {
 // A new command SUPERSEDES the old one rather than combining with it, which is
 // also the only reading an operator would expect: pressing gather again means
 // "now do this instead", never "do both".
+/*
+ * clearPinsFor supersedes only the operations holding THESE clients.
+ *
+ * The narrow half of clearPins, and the one a per-client control must use.
+ *
+ * WHY A RELEASE IS MANDATORY BEFORE A RE-CLAIM, which is easy to read as
+ * tidiness and is not: e.pins holds ONE op per MAC. A second operation claiming
+ * a client that a first one still holds overwrites the entry, and the first op's
+ * deny entries for that client are then unreachable -- liftPins scans e.pins for
+ * its own macs, no longer finds this one, and never issues the DEL. The client
+ * stays banned on those radios until something else happens to clear them.
+ *
+ * WHY THE SCOPE MUST BE NARROW: clearPins lifts every operation in force, which
+ * is right for a box-wide control -- a gather covers every client, so every
+ * older claim is genuinely superseded. It is wrong for a per-client one. Two
+ * devices each running a walkabout would cancel each other at every crossing:
+ * A's pin holds A on 2.4GHz, B's pin calls clear, A's ban lifts, and A wanders
+ * back to 5GHz while its own pattern goes on applying 2.4GHz keyframes to it.
+ * Silent, and the exact shape of failure the per-device independence in PRD 6.2
+ * exists to prevent.
+ *
+ * A pinOp may cover several clients, so a client is taken OUT of its operation
+ * rather than the operation being torn down: the ones still in it keep their
+ * bans, and "the bans lift together" goes on meaning something for them.
+ */
+func (e *Engine) clearPinsFor(macs []string, why string) {
+	type claim struct {
+		mac string
+		op  *pinOp
+	}
+	var released []claim
+	var emptied []*pinOp
+
+	e.mu.Lock()
+	for _, mac := range macs {
+		op := e.pins[mac]
+		if op == nil {
+			continue
+		}
+		delete(e.pins, mac)
+		delete(op.pending, mac)
+		released = append(released, claim{mac, op})
+		if len(op.pending) == 0 {
+			emptied = append(emptied, op)
+		}
+	}
+	e.mu.Unlock()
+
+	// Outside the lock: releaseDeny takes it again, and holds a control-socket
+	// round trip per radio while it does.
+	for _, c := range released {
+		e.releaseDeny(c.mac, c.op.deny)
+	}
+
+	// An operation whose last client was taken out is finished. Consuming its
+	// `once` here stops its own timeout logging a lift for nobody later.
+	for _, op := range emptied {
+		op.once.Do(func() {
+			where := op.to
+			if where == "" {
+				where = joinRadios(op.deny)
+			}
+			e.logEvent(EventAction, where, "",
+				"movement on %s ended early: its last client was taken by another (%s)",
+				where, why)
+		})
+	}
+}
+
 func (e *Engine) clearPins(why string) {
 	e.mu.RLock()
 	seen := map[*pinOp]bool{}
@@ -423,7 +492,9 @@ func (e *Engine) GatherClientTo(mac, iface string, durSec float64) error {
 	if e.cfg.Demo {
 		return nil
 	}
-	e.clearPins("superseded by a pin")
+	// Narrow, not box-wide: this holds one client, so it may only supersede the
+	// claims on that client. See clearPinsFor.
+	e.clearPinsFor([]string{m}, "superseded by a pin")
 	_, err = e.runPin(&pinOp{to: iface, deny: deny}, []string{m}, iface, iface, durSec,
 		"pinning %d client(s) onto %s: denied on %s, so a rescan has one access "+
 			"point left to choose. The ban lifts on arrival, or after %.0fs. "+
@@ -487,7 +558,7 @@ func (e *Engine) EvictClient(mac string, durSec float64) error {
 	if e.cfg.Demo {
 		return nil
 	}
-	e.clearPins("superseded by an evict")
+	e.clearPinsFor([]string{m}, "superseded by an evict")
 	// to is deliberately empty: this ban says where it may NOT go.
 	_, err := e.runPin(&pinOp{deny: []string{from}}, []string{m}, from, elsewhere[0], durSec,
 		"evicting %d client(s) off %s: denied there so it cannot come back, and "+
