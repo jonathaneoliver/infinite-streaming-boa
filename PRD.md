@@ -153,8 +153,11 @@ Intended for:
 ## 4) Users & Use Cases
 
 **Primary users:** video engineers, player developers, QA — and anyone
-responsible for a mobile app that runs over Wi-Fi, or for the QoE telemetry
-that reports on one.
+building a mobile app or a Wi-Fi connected device, or responsible for the QoE
+telemetry that reports on one. For a device the case is stronger: its Wi-Fi
+behaviour ships in firmware and cannot be patched from a server, and it
+usually accepts no proxy, certificate or test harness — which is the
+constraint this appliance is designed around.
 
 ### Conditioning the link
 
