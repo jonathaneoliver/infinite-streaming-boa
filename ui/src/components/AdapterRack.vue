@@ -302,13 +302,32 @@ Clients ARE told it has gone, unlike a power cut.`
                come and go with the state of the radio it belongs to. Nothing
                on this row is conditionally rendered any more; state changes
                what a button DOES, never whether it is there. -->
+          <!-- With the access point already down this becomes the way BACK,
+               rather than sitting dead beside a button that offers it.
+
+               There is deliberately no "tell & enable". Telling means
+               disassociating the clients on this radio, and there are none
+               while it is down -- nor any at the moment it comes up. The only
+               thing an access point can say on its way up is hostapd's
+               broadcast deauthentication, aimed at clients that still believe
+               they are associated, and that is switched OFF here on purpose
+               (#224): it lands on exactly the clients a measurement is
+               watching.
+
+               So the pair is asymmetric because the underlying actions are.
+               Going down can be announced; coming up cannot. -->
           <button
-            class="ghost" :disabled="busy || !apLive(r) || !r.ap?.stations"
-            :title="`Disassociate all ${r.ap?.stations ?? 0} client(s), then take `
-              + `${r.name}'s access point down. An explicit goodbye, rather than `
-              + `whatever hostapd does on its own.`"
-            @click="bridge.setAPEnabled(r.name, false, 'nudge')"
-          >tell &amp; disable</button>
+            class="ghost" :class="{ accent: r.powered && r.ap && !r.ap.enabled }"
+            :disabled="busy || !r.powered || !r.ap
+              || (apLive(r) && !r.ap?.stations)"
+            :title="!apLive(r)
+              ? `Bring ${r.name}'s access point back up. There is no \'tell\' on the `
+                + `way up: nothing is associated yet, so there is nobody to tell.`
+              : `Disassociate all ${r.ap?.stations ?? 0} client(s), then take `
+                + `${r.name}'s access point down. An explicit goodbye, rather than `
+                + `whatever hostapd does on its own.`"
+            @click="bridge.setAPEnabled(r.name, !apLive(r), apLive(r) ? 'nudge' : '')"
+          >{{ apLive(r) ? 'tell &amp; disable' : 'enable AP' }}</button>
           <button
             class="ghost" :disabled="busy || !apLive(r) || !r.ap?.stations"
             :title="apLive(r)
