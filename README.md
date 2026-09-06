@@ -266,6 +266,45 @@ it is the right tool and this one is not.
 > contained office shows association drops that look like your pattern firing
 > and are not, with nothing on the box able to tell the two apart. See
 > [Security](#security) for what else stops being true there.
+>
+> **If you need these features at work, put the box on an isolated lab network
+> — and know that a VLAN isolates your bridge, not the air.** The wired side is
+> a policy problem with a policy answer; the radio side is a physics problem
+> that no network configuration touches. Offices are awash in Wi-Fi, and an
+> office belonging to a company that *builds streaming devices* is the worst
+> case there is: every desk carries test hardware, most of it associated to
+> something, much of it on 2.4 GHz.
+>
+> That is not a small correction to a measurement. Airtime is shared, so one
+> near-idle 802.11n client moved a measured downlink between **356 and
+> 717 Mbit/s** on this box while transferring 4 KB of its own traffic — a
+> station linked at 65 Mbit/s holds the channel roughly 18× longer per byte
+> than an 802.11ax one. A room full of them is not a quieter version of that
+> effect; it is the same effect, continuously, from devices you do not control
+> and cannot quiesce.
+>
+> What actually helps, in order:
+>
+> - **Use the wired downstream port when the radio is not the subject.** It is
+>   repeatable to within 1%; nothing over the air comes close.
+> - **Check how busy your channel actually is**, with
+>   `GET /api/bridge/radios/<iface>/survey`. It reports `busy_ms` against
+>   `active_ms` for the **operating channel only** — a radio that is beaconing
+>   never visits the others, so their counters read zero and are omitted. Cheap,
+>   non-disruptive, and the number to quote beside a result.
+> - **To pick a better channel, use `scan and move to the quietest`**, which
+>   rates candidates on *measured airtime* rather than on a count of visible
+>   networks — the distinction that matters when one loud neighbour beats five
+>   idle ones. It **takes the radio down and back up**, so it cannot be done
+>   mid-run and it will disconnect that radio's clients. Do it before a run,
+>   never during one.
+> - **Prefer UNII-3 (149–165) and 80 MHz**, and treat 2.4 GHz in an office as
+>   unusable for measurement rather than merely busy.
+> - **Re-survey between runs of an A/B.** The environment drifts on its own; the
+>   0.1.0 notes recorded the radio baseline moving ~100 Mbit/s over 90 s, which
+>   is larger than most effects worth measuring.
+> - **Capture the box's own event log alongside every run**, so a drop you did
+>   not cause is at least visible as one you did not cause.
 
 What this box was built and measured on. Nothing here is required — it is a
 Raspberry Pi 5 and a USB Wi-Fi adapter — but these are the exact parts behind
