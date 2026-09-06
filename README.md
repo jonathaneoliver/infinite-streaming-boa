@@ -136,18 +136,42 @@ delay, jitter and loss lanes unused in this run.
 
 ## Who this is for, and why the Wi-Fi control matters
 
-Anyone building or operating a **mobile app that runs over Wi-Fi** and needs to
-know how the client's relationship with the access point affects it — not only
-how much bandwidth it gets. Those are different questions, and until this box
-could drive its own radios only the second one was testable.
+Anyone building **a mobile app, or a Wi-Fi connected device**, who needs to know
+how the client's relationship with the access point affects it — not only how
+much bandwidth it gets. Those are different questions, and until this box could
+drive its own radios only the second one was testable.
 
 The link is not a dial. A real client is continuously deciding *which* access
 point to be on, whether to roam, and what to do when the one it is using stops
-answering. Those decisions surface in an app as a stall, a re-buffer, a dropped
-upload or a silent switch to cellular — and none of them reproduce by lowering a
-rate limit.
+answering. Those decisions surface as a stall, a re-buffer, a dropped upload, a
+silent switch to cellular, or a device that simply never comes back — and none
+of them reproduce by lowering a rate limit.
 
-### Testing the telemetry, not just the app
+**For a device rather than an app, the case is stronger, for two reasons.**
+
+The first is that the Wi-Fi behaviour *is* the product. How quickly a streaming
+stick reconnects after the access point disappears, whether a camera backs off
+sensibly or hammers the network, whether a speaker honours a transition request
+or clings to a radio it can barely hear, how a thermostat behaves when the band
+it prefers goes away — those are firmware, driver and silicon decisions that
+ship in the hardware and cannot be patched from a server afterwards. An app can
+be updated on Thursday; a doorbell cannot.
+
+The second is that **you usually cannot instrument the thing at all.** A TV, a
+console, a set-top box, a camera or a smart speaker takes no proxy setting, no
+installed certificate and no test harness — which is the constraint this whole
+appliance is designed around. It conditions forwarded frames, so it needs
+nothing from the device, and it drives the radios the device is associated to,
+so it can ask the questions above of hardware that offers no other way in.
+
+The awkward part of testing a device is that its worst behaviour tends to be
+the behaviour it only exhibits in a customer's house six weeks later. Roaming
+between two access points, an AP that vanishes without warning, a band that
+gets crowded at 8pm — these are ordinary domestic events that a bench with one
+router and good signal never produces. This box produces them on demand, on a
+schedule, and records what it did.
+
+### Testing the telemetry, not just the product
 
 The case this was built for. Video **QoE** systems increasingly collect Wi-Fi
 data alongside playback events — signal level, roams, disconnects — so that a
