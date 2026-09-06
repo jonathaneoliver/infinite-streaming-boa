@@ -131,6 +131,76 @@ delay, jitter and loss lanes unused in this run.
   can be measured without installing anything on the device under test. It
   measures the link **unshaped** — see below.
 
+## Who this is for, and why the Wi-Fi control matters
+
+Anyone building or operating a **mobile app that runs over Wi-Fi** and needs to
+know how the client's relationship with the access point affects it — not only
+how much bandwidth it gets. Those are different questions, and until this box
+could drive its own radios only the second one was testable.
+
+The link is not a dial. A real client is continuously deciding *which* access
+point to be on, whether to roam, and what to do when the one it is using stops
+answering. Those decisions surface in an app as a stall, a re-buffer, a dropped
+upload or a silent switch to cellular — and none of them reproduce by lowering a
+rate limit.
+
+### Testing the telemetry, not just the app
+
+The case this was built for. Video **QoE** systems increasingly collect Wi-Fi
+data alongside playback events — signal level, roams, disconnects — so that a
+re-buffer can be attributed to the network rather than to the CDN or the player,
+and so that a badly installed device can be spotted from its behaviour: one that
+roams constantly, or drops its association several times an hour.
+
+That attribution is only as good as the telemetry underneath it, **and the
+telemetry itself is almost never tested.** Not because nobody wants to, but
+because a real network will not produce a known sequence of Wi-Fi events on
+demand. You cannot ask your office AP to deauthenticate one phone at 30s, go
+away for eight seconds at 90s, and hand it to a different radio at 150s — so the
+usual practice is to trust the field data and hope.
+
+boa is that missing instrument. Script the radios, then compare:
+
+```
+  what boa did                          what the QoE report says
+  ────────────────────────────────      ──────────────────────────────
+  t+30s   steer to the other radio  →   roam recorded? same second?
+  t+90s   disable AP for 8s         →   disconnect recorded, or a gap?
+  t+150s  deauth                    →   counted once, or as three?
+  t+210s  hold at 25 metres         →   signal drop reflected at all?
+```
+
+Both directions of error become visible, and both matter:
+
+- **events the telemetry missed** — a roam that never reached the report, so the
+  field data understates how often this happens;
+- **events it invented, mistimed or double-counted** — worse, because it makes a
+  healthy install look faulty and sends somebody to a customer's house.
+
+The box keeps its own event log with millisecond timestamps, and a run can be
+captured off it as it happens:
+
+```sh
+curl -sN http://infinite-streaming-boa.local/api/events/stream > run.ndjson
+```
+
+That file is the ground truth to diff a QoE report against. It is recorded by
+the thing that *caused* the events rather than by the device experiencing them,
+which is the whole point — a client's own account of what happened to it is the
+thing under test.
+
+### Other uses this shape supports
+
+- **Roaming behaviour**: does the app survive a mid-stream move between access
+  points, and how long does it take to recover?
+- **The captive-portal and cellular-failover paths**: what an app does when Wi-Fi
+  is associated but useless is rarely tested, and is often where the worst
+  behaviour lives (see the iOS probing note in `docs/BACKLOG.md`).
+- **Poor-install signatures**: reproduce the frequent-switching or repeated-drop
+  pattern deliberately, and confirm whatever is supposed to detect it does.
+- **A weak link without a faraday cage**: the distance model degrades a device's
+  link the way distance would, uplink first, without moving anything.
+
 ## How this compares to what already exists
 
 Deliberately degrading a link is a well-worn idea, and most of the tools below
