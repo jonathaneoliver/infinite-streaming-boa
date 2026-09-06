@@ -89,6 +89,51 @@ Wi-Fi the uplink is the weaker direction.
 110 commits. The interface was rebuilt around the change: one scrolling view of
 fabric, adapters and devices, streaming rather than polling.
 
+### Upgrading from 0.1.0
+
+**A reflash is required. `deploy.sh` is not enough.**
+
+The fast loop pushes the binary and its unit; everything this release depends on
+below that line lives in the image. `scripts/customize.sh` grew by ~725 lines
+and now writes:
+
+- **udev rules naming radios by USB socket** (`KERNELS=="2-1"`), which is where
+  `wlan-usb` and `wlan-usb2` come from. Without them the daemon looks for radios
+  that do not exist under those names.
+- **templated `hostapd@` units**, one per radio, replacing the single instance.
+- **`rrm_neighbor_report` / `rrm_beacon_report`** in every generated config.
+- **`unmanaged-devices=interface-name:wlan*`** so NetworkManager stops racing
+  hostapd for the adapters.
+- **`BOA_WLAN_PORT`** listing the radios actually found.
+- `python3-venv`, for glances.
+
+Deploying 0.2.0 onto a 0.1.0 card gives you a daemon that cannot find its
+hardware. Build a fresh image, and **export your configuration first** — a
+reflash replaces the whole filesystem, including
+`/var/lib/infinite-streaming-boa/`:
+
+```sh
+curl -s http://infinite-streaming-boa.local/api/config > before.json   # keep this
+./build.sh && ./flash.sh
+curl -X POST --data-binary @before.json http://infinite-streaming-boa.local/api/config
+```
+
+**Downgrading is not clean, because the pattern migration is one-way.** On its
+first load, 0.2.0 rewrites any pattern using the old kind names and **saves the
+file back** (`patternstore.go`), so the upgrade is not redone every boot and an
+exported file carries current names. After one boot, `patterns.json` holds
+`deauth` / `disassoc` / `radio-off` / `disable-ap`; 0.1.0 does not know those
+words and would skip those lanes **in silence**. Keep the pre-upgrade export if
+going back is a possibility.
+
+**Two new `.env` variables**, both optional and both defaulting to previous
+behaviour:
+
+| Variable | Meaning |
+|---|---|
+| `BOA_USB_MAX_CURRENT` | `1` lifts the Pi 5's 600 mA USB cap — **only with a 5A PSU or a powered hub** |
+| `BOA_BRIDGE_MAC` | Pins the bridge MAC explicitly, rather than inheriting the WAN port's |
+
 ### Added
 
 #### Several radios, discovered rather than assumed
