@@ -794,6 +794,45 @@ func (e *Engine) restoreRadioPower() {
 	}
 }
 
+// logRadioIdentity records which physical adapter each interface name refers to.
+//
+// ONCE PER RUN, at startup, rather than on every line that mentions a radio. A
+// measurement has to be attributable to hardware, and the interface name is not
+// hardware: it is assigned by a udev rule, and on 2026-09-06 that rule matched
+// any USB Wi-Fi adapter, so with two identical dongles "wlan-usb" meant one of
+// them all evening and the other by morning. Every reading taken in between was
+// filed under a name that had quietly changed hands.
+//
+// The rule now names by socket, which is deterministic but makes the name
+// follow the PORT rather than the adapter -- swap two dongles and the names
+// stay while the hardware behind them trades places. So the record needs all
+// three: the name an operator reads, the socket it was plugged into, and the
+// MAC that identifies the adapter itself.
+//
+// One line per radio is enough. Within a run the mapping cannot change without
+// a hotplug, and a hotplug re-runs this; repeating a MAC on every event would
+// bury the events themselves.
+func (e *Engine) logRadioIdentity() {
+	if e.cfg.Demo {
+		return
+	}
+	for _, w := range e.cfg.WlanPorts {
+		if !LinkExists(w) {
+			continue
+		}
+		r := Radio(w)
+		switch {
+		case r.Bus == "usb":
+			e.logEvent(EventRadio, w, "",
+				"%s is adapter %s in socket %s, %s at %d Mb/s",
+				w, r.MAC, r.Socket, r.Driver, r.LinkMbps)
+		default:
+			e.logEvent(EventRadio, w, "", "%s is the onboard adapter %s (%s)",
+				w, r.MAC, r.Driver)
+		}
+	}
+}
+
 // checkRadiosAtStart looks for a radio that is powered but has no access point,
 // and rebuilds it.
 //

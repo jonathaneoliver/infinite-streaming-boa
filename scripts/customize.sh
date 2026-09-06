@@ -444,9 +444,45 @@ log "Bridge br-lan: ${BOA_WAN_PORT} (wan) + wlan0/wlan-usb (ap '${AP_SSID}', hos
 cat > "$ROOT/etc/udev/rules.d/76-infinite-streaming-boa-usb-lan.rules" <<'UDEV'
 # USB ethernet becomes lan0, the downstream wired port.
 SUBSYSTEM=="net", ACTION=="add", ENV{ID_BUS}=="usb", ENV{DEVTYPE}!="wlan", ATTR{address}!="", NAME="lan0"
-# A USB Wi-Fi adapter gets its own stable name, so it can never take lan0 and
-# so the access point can be pointed at it by name.
-SUBSYSTEM=="net", ACTION=="add", ENV{ID_BUS}=="usb", ENV{DEVTYPE}=="wlan", ATTR{address}!="", NAME="wlan-usb"
+
+# USB Wi-Fi adapters are named BY SOCKET: whatever is plugged into a given
+# physical port gets that port's name, every boot and every hotplug.
+#
+# This rule used to match any USB wlan device and call it wlan-usb. That works
+# with one adapter and breaks silently with two: the name went to whichever
+# enumerated first, so it changed hands between replugs with nothing saying so.
+# Everything downstream keys off the name -- the hostapd config that says
+# interface=wlan-usb, the daemon's watched ports, the tc filters, the channel a
+# radio is put back on -- so a measurement could be attributed to the wrong
+# adapter and nothing would look wrong. Observed 2026-09-06: wlan-usb was one
+# dongle all evening and the other by morning.
+#
+# BY SOCKET RATHER THAN BY MAC, deliberately, and the reasons are what make this
+# fit in an image at all:
+#
+#   - No MAC in the build. The same image works on every box; a MAC rule would
+#     have to be written per box, after the fact, by hand.
+#   - A REPLACEMENT dongle in the same port keeps the name, so hostapd's config
+#     still finds its interface. Under MAC naming a replacement is a new name
+#     and the radio silently fails to come up -- which is exactly why Linux
+#     abandoned 75-persistent-net-generator.rules years ago.
+#   - The physical port is what an operator reasons about here. Two of the four
+#     sockets are SuperSpeed and two are not, and a radio in the wrong one runs
+#     at 480Mb/s while reporting its full channel width -- so which hole a
+#     dongle is in already matters more than which dongle it is.
+#
+# The trade, stated plainly: move a dongle to another socket and its name
+# follows the socket, not the dongle. And behind an external hub the kernel path
+# gains a level -- 2-1 becomes 2-1.1 -- so a hubbed adapter matches none of
+# these and keeps the kernel's wlanN, visible as unconfigured rather than
+# quietly taking a name something else expects to own.
+#
+# Pi 5 paths: usb2 and usb4 are the SuperSpeed sockets, usb1 and usb3 the
+# 480Mb/s ones. Measured by moving one adapter through all four, 2026-09-06.
+SUBSYSTEM=="net", ACTION=="add", ENV{ID_BUS}=="usb", ENV{DEVTYPE}=="wlan", KERNELS=="2-1", NAME="wlan-usb"
+SUBSYSTEM=="net", ACTION=="add", ENV{ID_BUS}=="usb", ENV{DEVTYPE}=="wlan", KERNELS=="4-1", NAME="wlan-usb2"
+SUBSYSTEM=="net", ACTION=="add", ENV{ID_BUS}=="usb", ENV{DEVTYPE}=="wlan", KERNELS=="1-1", NAME="wlan-usb3"
+SUBSYSTEM=="net", ACTION=="add", ENV{ID_BUS}=="usb", ENV{DEVTYPE}=="wlan", KERNELS=="3-1", NAME="wlan-usb4"
 UDEV
 
 # Rescue address. A transparent bridge has no address of its own by design, so
@@ -724,6 +760,19 @@ EOF
 # delivered anyway. Same SSID and passphrase on both, bridged onto the same
 # segment, so a client sees one network and keeps its address across a roam.
 emit_hostapd_conf usb       usb     wlan-usb "$USB_SSID" "$AP_BAND" "$AP_CHANNEL"
+# The second USB socket, on the far end of the 5GHz band from the first.
+#
+# Same SSID, so it is a third roaming target rather than a separate network --
+# which is what makes steer, gather and evict mean anything across it. Written
+# whether or not a second adapter is present: a config costs nothing and the
+# instance only starts when select-radio sees the interface.
+#
+# Channel 36 against the first radio's 149. With 80MHz each they occupy 36-48
+# and 149-161, so they do not overlap -- two 80MHz radios on one box would
+# otherwise read each other as interference, and a roam between them could not
+# be told apart from the contention. Both are non-DFS in the US domain, so
+# neither sits out a radar check before it can beacon.
+emit_hostapd_conf usb2      usb     wlan-usb2 "$USB_SSID" a 36
 emit_hostapd_conf onboard   onboard wlan0    "$AP_SSID"  "$AP_BAND" "$AP_CHANNEL"
 emit_hostapd_conf onboard24 onboard wlan0    "$AP_SSID"  bg         "$AP_CHANNEL_24"
 
@@ -804,6 +853,7 @@ onboard_rfkill() {
 for r in $(onboard_rfkill); do echo 0 > "$r/soft" 2>/dev/null; done
 
 HAVE_USB=0; [ -d /sys/class/net/wlan-usb ] && HAVE_USB=1
+HAVE_USB2=0; [ -d /sys/class/net/wlan-usb2 ] && HAVE_USB2=1
 HAVE_ONBOARD=0; [ -d /sys/class/net/wlan0 ] && HAVE_ONBOARD=1
 
 if [ "$HAVE_USB" = 1 ]; then
@@ -839,6 +889,24 @@ else
   RUN="onboard"; STOP="usb onboard24"
   WANT="wlan0"
   log "No USB radio: hostapd on the onboard wlan0"
+fi
+
+# A SECOND USB radio, if one is in the other SuperSpeed socket.
+#
+# Added after the three-way choice above rather than folded into it, because it
+# is orthogonal: it can accompany any of those outcomes, and expanding them to
+# cover every combination would turn three branches into six that all say the
+# same thing.
+#
+# Named explicitly in STOP when absent, for the reason the comment above gives:
+# unplugging an adapter has to STOP the instance that was serving it, or hostapd
+# sits restarting forever against an interface that is gone.
+if [ "$HAVE_USB2" = 1 ]; then
+  RUN="$RUN usb2"
+  WANT="$WANT wlan-usb2"
+  log "Second USB radio: hostapd on wlan-usb2 (5GHz, low block)"
+else
+  STOP="$STOP usb2"
 fi
 
 for i in $STOP; do

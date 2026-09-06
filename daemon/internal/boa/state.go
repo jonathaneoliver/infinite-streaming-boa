@@ -385,6 +385,9 @@ func (e *Engine) Start() {
 	// reaches a box that is reflashed and this reaches one that is deployed to
 	// -- which is every box already in the field. See hushTeardown and #224.
 	e.hushRadios()
+	// WHICH ADAPTER each name refers to, before anything else is said about
+	// them, so every later line in this run can be attributed to hardware.
+	e.logRadioIdentity()
 	e.restoreRadioPower()
 	// And check the opposite fault: a radio that is ON but serving nobody,
 	// which restoreRadioPower cannot see and which a restart mid-recovery

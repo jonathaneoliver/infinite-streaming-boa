@@ -335,6 +335,26 @@ type RadioInfo struct {
 	LinkMbps int `json:"link_mbps,omitempty"`
 	// USBVersion is bcdUSB as the device declares it, e.g. "3.20" or "2.10".
 	USBVersion string `json:"usb_version,omitempty"`
+	// MAC and Socket identify the PHYSICAL adapter behind this interface name.
+	//
+	// Carried with every reading because the name is not an identity. It is
+	// assigned by a udev rule, and on 2026-09-06 the rule matched any USB Wi-Fi
+	// adapter, so with two identical dongles "wlan-usb" meant one of them all
+	// evening and the other by morning -- silently, with every measurement in
+	// between attributed to a name rather than to hardware.
+	//
+	// The rule now names by socket, which is deterministic but deliberately
+	// makes the name follow the PORT: swap two dongles between sockets and both
+	// names stay put while the hardware behind them trades places. That is the
+	// right behaviour for configuring a box and the wrong thing to record
+	// against a measurement, so a measurement records all three.
+	//
+	// MAC is the adapter. Socket is the physical port, as the kernel path --
+	// "2-1", or "2-1.1" for something behind a hub. Iface is the friendly name
+	// an operator reads. Any two of them can disagree with the third, and when
+	// they do, that disagreement is the finding.
+	MAC    string `json:"mac,omitempty"`
+	Socket string `json:"socket,omitempty"`
 }
 
 // Radio inspects the interface serving the AP. Everything comes from sysfs
@@ -344,6 +364,10 @@ func Radio(iface string) RadioInfo {
 	if iface == "" {
 		return info
 	}
+	// Read before anything can fail below: an adapter whose USB descriptors
+	// cannot be read still has an address, and a reading that names the
+	// hardware is worth more than one that gives up on identifying it.
+	info.MAC = strings.TrimSpace(readSysfs(filepath.Join("/sys/class/net", iface, "address")))
 	base := filepath.Join("/sys/class/net", iface, "device")
 	if drv, err := os.Readlink(filepath.Join(base, "driver")); err == nil {
 		info.Driver = filepath.Base(drv)
@@ -369,6 +393,9 @@ func Radio(iface string) RadioInfo {
 		return info
 	}
 	info.Bus = "usb"
+	// The kernel's path for the port, which is the socket the operator plugged
+	// into: "2-1" is a root-hub port, "2-1.1" is behind a hub on that port.
+	info.Socket = filepath.Base(parent)
 	if n, err := strconv.Atoi(speed); err == nil {
 		info.LinkMbps = n
 	}
