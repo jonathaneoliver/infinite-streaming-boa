@@ -84,7 +84,10 @@ delay, jitter and loss lanes unused in this run.
   one-shot buttons or as a lane on a pattern. A phone's path monitor and a
   player's throughput estimator react to the link going *down*, which netem
   cannot express. Needs the USB radio (hostapd); the onboard radio has no
-  control interface, so the buttons only appear when it can act.
+  control interface, so the buttons only appear when it can act. **Do not run
+  these inside a building with wireless IPS containment** — it transmits the
+  same deauthentication frames uninvited, and a run cannot tell its drops from
+  yours. See the warning under [Hardware](#hardware).
 - **Moves clients between its radios, and is honest about which moves are
   guaranteed.** The box serves one SSID from every radio it has, so a client can
   be pushed around the box the way a real network pushes it around a building.
@@ -240,6 +243,29 @@ netem cannot produce. For proving a service survives a flaky dependency in CI,
 it is the right tool and this one is not.
 
 ## Hardware
+
+> ### ⚠️ Put `eth0` on your own network, never a corporate LAN
+>
+> A transparent bridge putting many MACs onto one switch port is, to enterprise
+> network security, indistinguishable from the thing that security exists to
+> stop. Cable the WAN port to your own upstream, a home router, or a lab VLAN.
+>
+> - **Port security / 802.1X** err-disables the port on seeing a second MAC.
+>   That usually needs a network admin to clear, so the person who plugged the
+>   box in cannot undo it.
+> - **BPDU guard and DHCP snooping** exist to stop exactly this: an unexpected
+>   layer-2 device on the port, and — since clients here depend on upstream
+>   DHCP crossing the bridge — exactly the traffic snooping blocks.
+> - **Wireless IDS** sees an unknown BSSID bridging to the wired side, which is
+>   the textbook rogue-AP signature.
+>
+> **And it corrupts your measurements, which is the part that wastes an
+> afternoon.** Wireless IPS *containment* works by transmitting deauthentication
+> frames at the rogue AP's clients — so a corporate WIPS produces, uninvited and
+> untimed, the same impairment this box produces deliberately. A run inside a
+> contained office shows association drops that look like your pattern firing
+> and are not, with nothing on the box able to tell the two apart. See
+> [Security](#security) for what else stops being true there.
 
 What this box was built and measured on. Nothing here is required — it is a
 Raspberry Pi 5 and a USB Wi-Fi adapter — but these are the exact parts behind
@@ -839,6 +865,12 @@ gets past it is someone you would have let on anyway.
 boa is a **bench appliance for a network you already control**, and its whole
 security model is that one assumption — stated here so it is a choice rather than
 a surprise.
+
+**On a corporate LAN that assumption is simply false**, and every consequence
+below stops being contained: every host on that network inherits the ability to
+re-shape or black-hole every device behind the box. None of the items below are
+new bugs; what changes is that the containment argument they rest on evaporates.
+See the warning under [Hardware](#hardware).
 
 - **No login, and plain HTTP.** The interface on `:80` and ntopng on `:3000` have
   no authentication, and neither uses TLS — the box has no domain, so any
