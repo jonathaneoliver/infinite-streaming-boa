@@ -33,6 +33,10 @@ Intended for:
 - Reproducing field conditions (weak mobile, congested cell, satellite) on demand
 - Testing devices that cannot be instrumented — TVs, consoles, set-top boxes
 - Comparing several devices sharing one network
+- Exercising the client's relationship with the access point itself — roaming,
+  disconnection, an AP going away — and **validating the telemetry that reports
+  those events**, by causing them on a schedule and diffing what was reported
+  against what the box actually did
 
 ## 2) Goals
 
@@ -148,13 +152,56 @@ Intended for:
 
 ## 4) Users & Use Cases
 
-**Primary users:** video engineers, player developers, QA.
+**Primary users:** video engineers, player developers, QA — and anyone
+responsible for a mobile app that runs over Wi-Fi, or for the QoE telemetry
+that reports on one.
+
+### Conditioning the link
 
 - Throttle one device to 3 Mbps and watch a player step down, and time it.
 - Add 200 ms of latency to one device while others stay clean.
 - Hold a device at a fixed rate for a long soak.
 - Condition part of a device's traffic — a CDN, a port — leaving the rest clean.
 - Read what a device is actually doing while it is being conditioned.
+
+### Exercising the client's relationship with the network
+
+The link is not a dial. A real client is continuously choosing which access
+point to be on, whether to roam, and what to do when the one it is using stops
+answering — and none of those decisions reproduce by lowering a rate limit.
+
+- Move one device to a named radio, or force it there while denying the rest.
+- Take an access point away, with or without announcing it first.
+- Make a device re-associate, once or repeatedly.
+- Walk a device away from the router and back, changing band as it goes.
+- Ask what a device does when Wi-Fi is associated but useless — the
+  captive-portal and cellular-failover paths.
+
+### Validating QoE telemetry against ground truth
+
+The case the radio control was built for, and the one that needs the box rather
+than a script on the device.
+
+QoE systems increasingly collect Wi-Fi data alongside playback events — signal
+level, roams, disconnects — so a re-buffer can be attributed to the network
+rather than to the CDN or the player, and so a badly installed device can be
+recognised from behaviour such as constant roaming or repeated drops.
+
+**That attribution is only as good as the telemetry, and the telemetry is
+almost never tested**, because a real network will not produce a known sequence
+of Wi-Fi events on demand.
+
+- Script a run: steer at 30s, take the AP down for 8s at 90s, deauth at 150s,
+  hold the device at a modelled 25 m from 210s.
+- Capture the box's own event log for that run
+  (`GET /api/events/stream`, NDJSON, millisecond timestamps).
+- Diff the client's QoE report against it, in **both** directions: events the
+  telemetry missed, and events it invented, mistimed or double-counted. The
+  second kind matters more — it makes a healthy install look faulty.
+
+The record has to come from the thing that *caused* the events, not from the
+device experiencing them, because the device's own account is what is under
+test.
 
 ## 5) System Overview
 
