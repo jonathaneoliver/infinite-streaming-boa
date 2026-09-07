@@ -509,6 +509,26 @@ Clients ARE told it has gone, unlike a power cut.`
           :iface="r.name" :series="series" :labels="labels ?? {}"
         />
 
+        <!-- Airtime BELOW the throughput pair, on the same x-axis and in the
+             same device colours.
+
+             The pairing is the point, and neither half answers alone. Throughput
+             says what crossed the link; airtime says what it cost the radio, and
+             the two come apart badly — measured 2026-09-07, one client held 46%
+             of a radio to move 34 Mbit/s while another held 77% to move 505. On
+             the chart above, the expensive one merely looks quiet. Read together
+             they give efficiency, which is what actually says whether a device
+             is a problem for everyone else on the radio.
+
+             Only for a radio. A wired port has no airtime to divide. -->
+        <AdapterStack
+          v-if="series && r.wireless"
+          mode="airtime"
+          :iface="r.name" :series="series" :labels="labels ?? {}"
+          :airtime-known="r.airtime_cap_known"
+          :airtime-capable="r.airtime_per_client"
+        />
+
         <p v-if="degraded(r)" class="notice bad inline">
           This adapter negotiated USB 2 speed ({{ r.radio?.link_mbps }} Mb/s)<template
             v-if="r.radio?.usb_version"> while declaring USB {{ r.radio.usb_version }}</template>.

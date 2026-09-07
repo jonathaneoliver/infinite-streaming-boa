@@ -372,6 +372,36 @@ type Station struct {
 	TxFailed     uint64 `json:"tx_failed"`
 	ConnectedSec int    `json:"connected_sec"`
 	InactiveMs   int    `json:"inactive_ms"`
+
+	// TxDurationUs and RxDurationUs are cumulative AIRTIME for this station in
+	// microseconds -- how long the radio actually spent transmitting to it and
+	// receiving from it, including the per-frame overhead that bytes do not
+	// see.
+	//
+	// Not derivable from the byte counters, and the gap is large. Measured
+	// 2026-09-07 on wlan-usb: a saturated client moved 1.31 GB in 13.40s of
+	// airtime, an effective 784 Mbit/s, while `tx bitrate` read 1200.9 -- the
+	// difference is preamble, IFS and ACK, which a full A-MPDU amortises. A
+	// second client trickling 34 Mbit/s came out at 129 Mbit/s effective from
+	// the same counters, because small unaggregated frames amortise nothing.
+	// So a device can be quiet on a throughput chart and expensive on the air,
+	// and only this pair tells them apart.
+	//
+	// Verified against an independent instrument rather than assumed: over two
+	// iperf3 runs `tx bytes` matched iperf3's own byte count to 4.5% (protocol
+	// overhead) and the effective rate these imply came out at 783.8 and 789.3
+	// Mbit/s -- 0.7% apart. See docs/DATA-CONTRACT.md Source T.
+	TxDurationUs uint64 `json:"tx_duration_us,omitempty"`
+	RxDurationUs uint64 `json:"rx_duration_us,omitempty"`
+	// DurationKnown says the dump actually CARRIED those lines.
+	//
+	// The distinction is the whole contract, because zero is a legitimate
+	// reading for an idle station and also what a driver that cannot answer
+	// leaves behind. Measured 2026-09-07: mt7921u reports both lines, and the
+	// Pi's onboard brcmfmac omits them entirely -- the same driver, and the
+	// same silence, as the missing per-station `signal` noted on TxFailed
+	// above. Reporting its clients at 0% would draw a busy radio as idle.
+	DurationKnown bool `json:"duration_known,omitempty"`
 }
 
 // Counters is one class's enforcement statistics, converted to human units.
@@ -461,6 +491,22 @@ type Client struct {
 	// "streaming ten seconds ago" and "silent since Tuesday" are the difference
 	// between the one worth looking at and the rest.
 	LastActiveMs int64 `json:"last_active_ms,omitempty"`
+
+	// AirPct is how much of the radio this client cost over the last tick, as a
+	// percentage of wall clock -- transmit and receive together.
+	//
+	// The counterpart to DownCounters.ThroughputMbps and not a restatement of
+	// it: throughput says what crossed the link, this says what it took off the
+	// air, and the two come apart badly. Measured 2026-09-07 on wlan-usb, one
+	// client held 46% of the radio to move 34 Mbit/s while another held 77% to
+	// move 505.
+	//
+	// An OCCUPANCY, so a radio's clients do not sum to 100 and the remainder is
+	// not idle -- see Engine.airtimePct. Zero both for an idle client and for a
+	// radio whose driver cannot attribute airtime at all; only
+	// IfaceInfo.AirtimePerClient tells those apart, and anything drawing this
+	// must consult it first.
+	AirPct float64 `json:"air_pct,omitempty"`
 
 	// DownCounters and UpCounters are the device default class. Sub-class
 	// counters are keyed by SubClass.ID.

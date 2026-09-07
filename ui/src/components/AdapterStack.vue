@@ -31,9 +31,36 @@ import { chartNow } from '@/composables/useChartClock';
  * chart measures it -- a viewBox stretched to the column distorts the labels
  * along with the data.
  */
-const props = defineProps<{
+const props = withDefaults(defineProps<{
   /** The adapter whose traffic this is, matched against each sample's iface. */
   iface: string;
+  /**
+   * What is stacked: throughput in Mbit/s, or airtime as a percentage.
+   *
+   * One component for both because everything except the y-axis is identical --
+   * membership from the record, the shared grid, the ticking edge, the band
+   * geometry, the ordering, the legend. A second component would have been a
+   * copy of all of it, and this file already carries two scars from owning a
+   * copy of something: a hard-coded height that drifted from the cards, and a
+   * width calculation that rendered 1105px against their 1093px.
+   *
+   * The layouts differ and that is the only branch: throughput is a PAIR,
+   * because download and upload are separate questions, while airtime is one
+   * chart -- the radio's time is a single resource and transmit and receive
+   * both spend it.
+   */
+  mode?: 'throughput' | 'airtime';
+  /**
+   * Whether this radio's driver attributes airtime to individual stations.
+   *
+   * Consulted ONLY in airtime mode, and it decides between drawing an empty
+   * chart and saying the question cannot be answered here. A radio that cannot
+   * report it reads as a radio full of perfectly idle clients otherwise, which
+   * is the same absent-versus-zero trap the airtime map and the survey note
+   * already guard against elsewhere.
+   */
+  airtimeKnown?: boolean;
+  airtimeCapable?: boolean;
   /** Per-device history, keyed by MAC -- the same object the client cards read.
    *  This, and NOT the current device list, decides what the chart contains. */
   series: Record<string, Series>;
@@ -42,7 +69,7 @@ const props = defineProps<{
    *  while its last minute of traffic is still on screen, and an unnamed band
    *  is better than a disappearing one. */
   labels: Record<string, string>;
-}>();
+}>(), { mode: 'throughput', airtimeKnown: false, airtimeCapable: false });
 
 /**
  * Who was on this adapter, from the RECORD rather than from the roster.
@@ -131,7 +158,8 @@ interface Band {
   mac: string;
   label: string;
   colour: string;
-  /** Value at each grid time, in Mbit/s. Parallel to `grid`. */
+  /** Value at each grid time, in the mode's own unit -- Mbit/s for throughput,
+   *  percent of wall clock for airtime. Parallel to `grid`. */
   vals: number[];
   peak: number;
 }
@@ -201,7 +229,7 @@ const edge = computed(() => {
 const start = computed(() => edge.value - windowMs.value);
 const grid = computed(() => allTimes.value.filter((t) => t >= start.value));
 
-function bandsFor(dir: 'down' | 'up'): Band[] {
+function bandsFor(dir: 'down' | 'up' | 'air'): Band[] {
   const at = new Map(grid.value.map((t, i) => [t, i]));
   const out: Band[] = [];
   for (const mac of members.value) {
@@ -214,7 +242,7 @@ function bandsFor(dir: 'down' | 'up'): Band[] {
       if (s.iface[i] !== props.iface) continue;
       const g = at.get(s.t[i]);
       if (g === undefined) continue;
-      const v = (dir === 'down' ? s.down[i] : s.up[i]) ?? 0;
+      const v = (dir === 'down' ? s.down[i] : dir === 'up' ? s.up[i] : s.air[i]) ?? 0;
       vals[g] = v;
       if (v > peak) peak = v;
       any = true;
@@ -275,8 +303,52 @@ function fmt(v: number): string {
   return v >= 100 ? v.toFixed(0) : v >= 10 ? v.toFixed(1) : v.toFixed(2);
 }
 
-const charts = computed(() =>
-  (['down', 'up'] as const).map((dir) => {
+/** Airtime reads in whole and tenths of a percent. Two decimals on a figure
+ *  whose useful range is 0-100 is noise, and the third digit changes every
+ *  tick. */
+function fmtPct(v: number): string {
+  return v >= 10 ? v.toFixed(0) : v.toFixed(1);
+}
+
+/**
+ * The airtime axis is FIXED at 0-100%, and that is the point of it.
+ *
+ * Everywhere else here the axis adapts, because throughput has no meaningful
+ * ceiling to draw against. Airtime does: the radio's time is the whole
+ * resource, so "how full is this radio" is the only question the chart is for,
+ * and niceMax would answer it identically for a radio at 8% and one at 80%.
+ * Measured 2026-09-07, both readings occur on this box within the same minute.
+ *
+ * The stack's top edge is airtime spent on THIS BOX'S OWN CLIENTS. The gap to
+ * 100% is not free capacity -- it is beacons, management frames, multicast and
+ * every neighbour on the channel, none of which is measurable from here. So the
+ * remainder is deliberately left as plain background with no band, no shading
+ * and no label: anything drawn there would be a measurement this box never took.
+ */
+const AIRTIME_MAX = 100;
+
+const charts = computed(() => {
+  if (props.mode === 'airtime') {
+    const bands = bandsFor('air');
+    const tot = totals(bands);
+    const dp = axisDecimals(AIRTIME_MAX, PLOT_H.value);
+    return [{
+      dir: 'air' as const,
+      title: 'airtime',
+      bands,
+      max: AIRTIME_MAX,
+      peak: tot.length ? Math.max(...tot) : 0,
+      avg: tot.length ? tot.reduce((a, b) => a + b, 0) / tot.length : 0,
+      unit: '%',
+      ticks: axisTicks(AIRTIME_MAX, PLOT_H.value).map((t) => ({
+        key: t.v,
+        y: PAD.t + PLOT_H.value - t.frac * PLOT_H.value,
+        label: t.v.toFixed(dp),
+      })),
+      now: tot.length ? tot[tot.length - 1] : 0,
+    }];
+  }
+  return (['down', 'up'] as const).map((dir) => {
     const bands = bandsFor(dir);
     const tot = totals(bands);
     const peak = tot.length ? Math.max(...tot) : 0;
@@ -297,6 +369,7 @@ const charts = computed(() =>
       max,
       peak,
       avg: tot.length ? tot.reduce((a, b) => a + b, 0) / tot.length : 0,
+      unit: '',
       ticks: axisTicks(max, PLOT_H.value).map((t) => ({
         key: t.v,
         y: PAD.t + PLOT_H.value - t.frac * PLOT_H.value,
@@ -307,13 +380,27 @@ const charts = computed(() =>
       // drift apart while the chart is being watched.
       now: tot.length ? tot[tot.length - 1] : 0,
     };
-  }),
-);
+  });
+});
 
 /** Nothing recorded on this adapter yet. Said in words rather than drawn as an
  *  empty pane, which reads as a radio carrying nothing rather than as a chart
  *  with nothing in it yet. */
 const empty = computed(() => grid.value.length < 2);
+
+/**
+ * The radio's driver cannot attribute airtime to a station, so there is nothing
+ * to draw and never will be on this hardware.
+ *
+ * A DIFFERENT state from empty, and the distinction is the whole reason the
+ * flag travels: an empty chart says "nobody used this radio", which on the Pi's
+ * onboard brcmfmac would be a flat lie about a radio that may be saturated.
+ * Only claimed once a station has actually been on the radio to ask with --
+ * until then the question is open, not answered in the negative.
+ */
+const cannotMeasure = computed(
+  () => props.mode === 'airtime' && props.airtimeKnown && !props.airtimeCapable,
+);
 
 /** One legend for the pair: the same devices, the same colours, in the same
  *  order. Two copies would be two places to disagree. */
@@ -322,7 +409,7 @@ const legend = computed(() => charts.value[0].bands);
 
 <template>
   <div class="stack">
-    <div class="pair" :class="{ quiet: empty }">
+    <div class="pair" :class="{ quiet: empty || cannotMeasure, single: mode === 'airtime' }">
       <div
         v-for="(c, i) in charts" :key="c.dir" class="one"
         :ref="(el) => { if (i === 0) col = el as HTMLElement }"
@@ -333,7 +420,8 @@ const legend = computed(() => charts.value[0].bands);
                devices, so the heading carries the direction on its own. -->
           <span class="dir">{{ c.title }}</span>
           <span class="stats num">
-            peak {{ fmt(c.peak) }} · avg {{ fmt(c.avg) }} · {{ span }}
+            peak {{ mode === 'airtime' ? fmtPct(c.peak) : fmt(c.peak) }}{{ c.unit }} ·
+            avg {{ mode === 'airtime' ? fmtPct(c.avg) : fmt(c.avg) }}{{ c.unit }} · {{ span }}
           </span>
         </div>
         <svg :width="chartW" :height="H" class="plot" role="img"
@@ -354,7 +442,7 @@ const legend = computed(() => charts.value[0].bands);
           <!-- The current total, at the right-hand edge where the client
                charts put their endpoint value. -->
           <text :x="PAD.l + plotW + 6" :y="yAt(c.now, c.max) + 4" class="now num">
-            {{ fmt(c.now) }}
+            {{ mode === 'airtime' ? fmtPct(c.now) + '%' : fmt(c.now) }}
           </text>
           <!-- The time axis, in the band below the plot, exactly where a
                client chart puts it. -->
@@ -376,8 +464,17 @@ const legend = computed(() => charts.value[0].bands);
 
            Same words as before; what changed is that saying them no longer
            resizes the fold. -->
-      <p v-if="empty" class="none">
-        No traffic on {{ iface }} in the last {{ span }} — either nothing has
+      <!-- The driver's silence, not the radio's. Said before the empty message
+           and instead of it: "no traffic" would be a claim about the air, and
+           this is a claim about what can be asked of the hardware. -->
+      <p v-if="cannotMeasure" class="none">
+        This radio's driver does not report per-client airtime, so there is
+        nothing to stack — not an idle radio, no measurement. The onboard
+        brcmfmac chip omits the counters entirely; the USB adapters carry them.
+      </p>
+      <p v-else-if="empty" class="none">
+        {{ mode === 'airtime' ? 'No airtime recorded on' : 'No traffic on' }}
+        {{ iface }} in the last {{ span }} — either nothing has
         been on it, or whatever was has gone quiet long enough to scroll off.
       </p>
     </div>
@@ -438,6 +535,13 @@ const legend = computed(() => charts.value[0].bands);
   margin-right: -10px;
 }
 @media (max-width: 860px) { .pair { grid-template-columns: 1fr; } }
+/* Airtime is one chart, not a pair: the radio's time is a single resource and
+   transmit and receive both spend it, so splitting by direction would divide a
+   quantity that is not divisible that way. Full width keeps its x-axis the
+   same width as the two above it, which is the whole reason it sits there --
+   a spike in airtime and the throughput that did or did not accompany it have
+   to line up vertically to be read together. */
+.pair.single { grid-template-columns: 1fr; }
 /* Drawn, but plainly not carrying anything. An empty pane at full strength
    reads as a radio carrying nothing -- the exact misreading the message above
    exists to prevent -- so the frame recedes and the words lead. */

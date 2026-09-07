@@ -808,6 +808,33 @@ damages packets, never link state.
   The axis is floored at 1 Mbit/s rather than scaled to whatever is there: an
   idle radio otherwise scales to a trickle of ARP and mDNS chatter and draws
   background noise as a full-height mountain range.
+- **Below those, the same stack in airtime: what each device COST the radio.**
+  One chart rather than a pair, because the radio's time is a single resource
+  and transmit and receive both spend it, on the same window, the same device
+  colours and the same legend as the throughput above — so a spike in airtime
+  and the throughput that did or did not accompany it line up vertically.
+  This is the half throughput cannot show. Measured 2026-09-07, one client held
+  46% of a radio to move 34 Mbit/s while another held 77% to move 505 — six
+  times the airtime per bit, because small unaggregated frames pay preamble,
+  IFS and ACK that a full frame aggregate amortises. On the throughput chart the
+  expensive device merely looks quiet. Read together the two give efficiency,
+  which is what says whether a device is slow or is costing everyone else the
+  radio.
+  The axis is **fixed at 0–100%**, deliberately unlike every other chart here.
+  Airtime has a real ceiling — the radio's whole time — and "how full is this
+  radio" is the only question the chart is for, which a scaled axis would answer
+  identically at 8% and at 80%.
+  It is an **occupancy, never a share**: the bands do not sum to 100 and the gap
+  to the top is **not free capacity**. It is beacons, management frames,
+  multicast and every neighbour on the channel, none of which this box can
+  measure, so nothing is drawn there.
+  **A radio whose driver cannot attribute airtime says so in words** rather than
+  drawing an empty chart. The onboard `brcmfmac` chip reports no per-station
+  airtime at all, and rendering its clients at 0% would show a possibly
+  saturated radio as idle — the same absent-versus-zero rule the airtime and
+  survey readouts already follow. A radio nobody has yet been associated to is
+  not accused of the same thing; the question is left open until a client is
+  there to answer it.
 - **What an adapter carried outlives what is attached to it.** The chart's
   contents come from the recorded history, which names the adapter that carried
   each sample, and never from the list of currently-attached devices. A device
