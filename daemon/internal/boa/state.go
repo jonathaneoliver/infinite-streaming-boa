@@ -38,6 +38,16 @@ type Config struct {
 	// Demo serves synthetic clients and touches no kernel state, so the web
 	// interface can be developed without a Pi. See demo.go.
 	Demo bool
+	// Verbose adds the received management frames that are context rather than
+	// events to the activity log: capability elements on every association, and
+	// subtypes nothing acts on.
+	//
+	// Off by default because those repeat on every join and would bury the
+	// events the view exists for. The two findings that are NOT gated by it --
+	// a transition refusal's candidate list, and a client's own reason for
+	// leaving -- are rare, unrecoverable afterwards, and answer questions the
+	// interface otherwise cannot. See handleMgmtFrame.
+	Verbose bool
 }
 
 // PrimaryWlan is the radio reported wherever a single name is still wanted --
@@ -109,6 +119,12 @@ type Engine struct {
 	// request that is never answered is itself the result, which is why these
 	// are aged out loudly rather than dropped. See hostapdmonitor.go.
 	pendingSteers map[string]pendingSteer
+
+	// btmCandidates is where a transition refusal's candidate list waits for
+	// the BSS-TM-RESP event that reports the refusal, so one line can say both
+	// that a client declined and where it asked to go instead. Written and read
+	// microseconds apart on the same goroutine; see noteBTMCandidates.
+	btmCandidates map[string][]neighborCandidate
 
 	rev, ctrlRev uint64
 	snap         Snapshot

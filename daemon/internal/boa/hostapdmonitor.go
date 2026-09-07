@@ -332,6 +332,14 @@ func (e *Engine) handleHostapdEvent(iface, msg string) {
 		return
 	}
 
+	// A raw management frame, from notify_mgmt_frames=1. See mgmtframe.go.
+	//
+	//	AP-MGMT-FRAME-RECEIVED buf=<hex>
+	if rest, ok := strings.CutPrefix(msg, "AP-MGMT-FRAME-RECEIVED buf="); ok {
+		e.handleMgmtFrame(iface, rest)
+		return
+	}
+
 	rest, ok := strings.CutPrefix(msg, "BSS-TM-RESP ")
 	if !ok {
 		return
@@ -373,8 +381,163 @@ func (e *Engine) handleHostapdEvent(iface, msg string) {
 			label, to, targetNote(target))
 		return
 	}
+	// The candidate list the client sent with its refusal, recovered from the
+	// raw frame a moment ago. Without it this line says a device refused and
+	// stops there, which is the question restated rather than an answer.
 	e.logEvent(EventAction, iface, mac,
-		"%s %s (asked to move to %s)", label, btmStatus(status), to)
+		"%s %s (asked to move to %s)%s",
+		label, btmStatus(status), to, e.takeBTMCandidates(mac))
+}
+
+// noteBTMCandidates parks the candidate list from a transition refusal so the
+// BSS-TM-RESP line can carry it.
+//
+// No race and no expiry, because there is no window: hostapd emits the raw
+// frame and then its own BSS-TM-RESP from the same receive path, both on this
+// radio's control socket, and readHostapdEvents processes that socket on one
+// goroutine in order. The stash is written and read microseconds apart by the
+// same goroutine. It is a map rather than a field only because two radios have
+// two goroutines, and the mutex is for that.
+//
+// A list left behind -- a refusal hostapd did not follow with an event -- is
+// overwritten by the next one for that client rather than accumulating.
+func (e *Engine) noteBTMCandidates(mac string, cands []neighborCandidate) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.btmCandidates == nil {
+		e.btmCandidates = map[string][]neighborCandidate{}
+	}
+	e.btmCandidates[mac] = cands
+}
+
+// takeBTMCandidates renders and clears the parked candidate list, or returns
+// the empty string when the client named none.
+func (e *Engine) takeBTMCandidates(mac string) string {
+	e.mu.Lock()
+	cands := e.btmCandidates[mac]
+	delete(e.btmCandidates, mac)
+	e.mu.Unlock()
+	if len(cands) == 0 {
+		return ""
+	}
+	parts := make([]string, 0, len(cands))
+	for _, c := range cands {
+		// The radio is named where the candidate is one of ours, because
+		// "wlan0" means something to the reader and a BSSID does not. A
+		// candidate that is NOT ours is kept and shown as an address: a client
+		// asking to leave for a neighbour's network is telling us something
+		// louder than one asking for the other band.
+		//
+		// describeRadio already carries the band and channel, so the channel is
+		// added only for an address it could not name -- otherwise the line
+		// reads "wlan0 (2.4GHz ch 6) (channel 6)".
+		part := e.radioByBSSID(c.BSSID)
+		if part == "" {
+			part = fmt.Sprintf("%s (channel %d)", c.BSSID, c.Channel)
+		}
+		if c.Preference >= 0 {
+			part += fmt.Sprintf(", preference %d", c.Preference)
+		}
+		parts = append(parts, part)
+	}
+	// "named" rather than "asked for ... instead": the status this is appended
+	// to already ends in "offering its own list of candidates instead", and the
+	// line should not say instead twice.
+	return " — it named " + strings.Join(parts, ", ")
+}
+
+// handleMgmtFrame decodes one raw received management frame and says what is
+// worth saying about it.
+//
+// Two thresholds, deliberately different. The candidate list and a client's own
+// reason for leaving are always taken: both are rare, both answer a question
+// the interface currently cannot, and neither can be recovered later. Everything
+// else -- capability elements on every join, subtypes nothing acts on -- is
+// verbose only, because it repeats on every association and would bury the
+// events that matter in the same view.
+func (e *Engine) handleMgmtFrame(iface, dump string) {
+	f, err := parseMgmtFrame(dump)
+	if err != nil {
+		// Once, and only when asked. A client sending malformed management
+		// frames is a real finding, but it is also a thing that repeats every
+		// few seconds, and this must not become the loudest voice in the log.
+		if e.cfg.Verbose {
+			e.logEvent(EventWarning, iface, "",
+				"a management frame could not be read: %v", err)
+		}
+		return
+	}
+	mac := normMAC(f.Src)
+	label := e.labelFor(mac)
+
+	switch {
+	case f.IsBTMResponse:
+		// Parked rather than logged: the BSS-TM-RESP event that follows this
+		// frame carries the status code, and one line saying both is worth
+		// more than two saying half each.
+		if len(f.Candidates) > 0 {
+			e.noteBTMCandidates(mac, f.Candidates)
+		}
+
+	case f.Subtype == subtypeDeauth || f.Subtype == subtypeDisassoc:
+		// The client's OWN disconnect, not ours. This is the only thing that
+		// tells a device that roamed away from one that timed out from one
+		// that gave up on us, all of which vanish from the station table
+		// identically.
+		e.logEvent(EventLeave, iface, mac,
+			"%s %s itself from %s: %s",
+			label, map[bool]string{true: "deauthenticated", false: "disassociated"}[f.Subtype == subtypeDeauth],
+			e.describeRadio(iface), disconnectReason(f.Reason))
+
+	case e.cfg.Verbose && (f.Subtype == subtypeAssocReq || f.Subtype == subtypeReassocReq):
+		var extra string
+		if f.RMCapabilitiesSet {
+			extra = fmt.Sprintf(", 802.11k: %s", rmCapabilitySummary(f.RMCapabilities))
+		} else {
+			extra = ", claiming no 802.11k"
+		}
+		if f.CurrentAP != "" {
+			from := e.radioByBSSID(f.CurrentAP)
+			if from == "" {
+				from = f.CurrentAP
+			}
+			extra = fmt.Sprintf(", coming from %s%s", from, extra)
+		}
+		e.logEvent(EventJoin, iface, mac, "%s sent a %s%s",
+			label, subtypeName(f.Subtype), extra)
+
+	case e.cfg.Verbose:
+		e.logEvent(EventAction, iface, mac, "%s sent a %s",
+			label, subtypeName(f.Subtype))
+	}
+}
+
+// radioByBSSID names one of our own radios by the address a client used for it,
+// or "" when the address is not ours.
+//
+// Asked of the kernel rather than of hostapd: an AP interface's BSSID is its
+// hardware address, and net.InterfaceByName is one syscall against a control
+// round-trip per radio. The alternative matters because this runs while
+// rendering a log line, on the goroutine that is also reading the socket.
+//
+// A candidate that is not ours is not an error and must not be turned into one
+// -- a client asking to leave for a neighbour's network is a louder finding
+// than one asking for the other band, and the caller shows the raw address.
+func (e *Engine) radioByBSSID(bssid string) string {
+	want := normMAC(bssid)
+	if want == "" {
+		return ""
+	}
+	for _, iface := range e.cfg.WlanPorts {
+		ni, err := net.InterfaceByName(iface)
+		if err != nil || ni.HardwareAddr == nil {
+			continue
+		}
+		if normMAC(ni.HardwareAddr.String()) == want {
+			return e.describeRadio(iface)
+		}
+	}
+	return ""
 }
 
 func targetNote(bssid string) string {

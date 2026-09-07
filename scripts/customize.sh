@@ -764,6 +764,23 @@ bss_transition=1
 # that is already connected until it re-associates.
 rrm_neighbor_report=1
 rrm_beacon_report=1
+# Forward every RECEIVED management frame to the control interface, as
+# AP-MGMT-FRAME-RECEIVED buf=<hexdump>.
+#
+# hostapd's own events are summaries, and the summary discards the part worth
+# having. A client refusing a steer answers with status_code=6, "candidate list
+# provided" -- and the list is in the frame, while BSS-TM-RESP carries the
+# status code alone. MEASURED 2026-09-07: a client refusing a move named wlan0,
+# channel 6, at preference 255. It was asking for the other band, and the box
+# could only report that it had said no. See #254 and daemon mgmtframe.go.
+#
+# Note RECEIVED. Frames the access point TRANSMITS never appear here, so this
+# cannot confirm what actually went on the air -- that needs a monitor-mode
+# radio, which the onboard chip does not have.
+#
+# It must be set BEFORE the interface comes up: hostapd_cli accepts
+# `set notify_mgmt_frames 1` at runtime, answers OK, and nothing arrives.
+notify_mgmt_frames=1
 ieee80211n=1
 ieee80211ac=${_ac}
 ieee80211ax=${_ax}
@@ -1173,6 +1190,16 @@ BOA_WAN_PORT=${BOA_WAN_PORT}
 BOA_WLAN_PORT=wlan0
 BOA_LAN_PORT=lan0
 BOA_STATE=/var/lib/infinite-streaming-boa/policies.json
+# Extra daemon arguments. Empty by default; systemd expands an empty variable to
+# no argument at all, so leaving it blank changes nothing.
+#
+# Set to -verbose to add the received management frames that are context rather
+# than events -- association capabilities, subtypes nothing acts on -- to the
+# activity view, then restart infinite-streaming-boa.service. Off by default
+# because those repeat on every join and would bury what the view is for. The
+# findings that answer a question nothing else can -- a transition refusal's
+# candidate list, a client's own reason for leaving -- are logged either way.
+BOA_EXTRA_ARGS=
 EOF
 
 install -d -m 0755 "$ROOT/var/lib/infinite-streaming-boa"

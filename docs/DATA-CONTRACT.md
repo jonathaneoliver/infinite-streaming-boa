@@ -1514,3 +1514,80 @@ A subsequent hand edit cleared `rssi` and returned the enforced cap to 0.
 being one. It should be replaced band by band with a measured curve once #106
 records `signal` and airtime over time, and the provenance label is what says
 which of the two you are looking at.
+
+## Source T — hostapd `AP-MGMT-FRAME-RECEIVED` · the frames themselves
+
+**What it is.** With `notify_mgmt_frames=1` in a radio's hostapd config, hostapd
+forwards every management frame it **receives** to anything ATTACHed to that
+radio's control socket, as a hexdump:
+
+```
+<3>AP-MGMT-FRAME-RECEIVED buf=<hex>
+```
+
+Read by the same monitor connection as Source P, decoded in `mgmtframe.go`.
+This exists because hostapd's own events are *summaries*, and Source P is the
+worked example of a summary discarding the answer: a `status_code=6` refusal is
+defined as "candidate list provided", the list is in the frame, and
+`BSS-TM-RESP` carries the code alone.
+
+**RECEIVED is the load-bearing word.** Frames the access point **transmits**
+never appear. This cannot confirm that the box radiated a deauth, a
+disassociation or a transition request — only what a client sent back. Confirming
+what actually went on the air needs a monitor-mode radio, which the onboard chip
+does not have (Source L records that it has no monitor mode and no survey).
+
+**What is decoded, and what each field means.**
+
+| Frame | Field taken | Meaning |
+|---|---|---|
+| BTM Response (action, category 10, action 8) | status, dialog token | as Source P |
+| | Neighbor Report elements (ID 52) | BSSID, operating class, channel the client is naming |
+| | Candidate Preference subelement (ID 3) | 1–255, higher is more wanted; 0 means "do not use" |
+| (Re)Association Request | RM Enabled Capabilities (ID 70) | which 802.11k measurements it will perform |
+| | Extended Capabilities (ID 127) bit 19 | whether it claims BSS Transition at all |
+| Reassociation Request | Current AP Address | the BSS the client believes it just left |
+| Deauthentication / Disassociation | reason code | the client's own account of why it went |
+
+**Confidence: high, and higher than Source P for the same event.** These are the
+octets the client transmitted, not hostapd's reading of them. The claims inside
+are still the client's claims — a device advertising a capability may still not
+honour it — but nothing between the air and the daemon has reinterpreted them.
+
+**MEASURED 2026-09-07**, three radios, `hostapd v2.10`, two associated clients:
+
+- A steer of `ea:83:50:19:1f:d1` off `wlan-usb` was refused with status 6, and
+  the frame named **`wlan0` (`d8:3a:dd:ad:00:8b`), operating class 7, channel 6,
+  preference 255**. The client was not declining to move — it was asking for the
+  other band as hard as the protocol allows. `BSS-TM-RESP` reported only
+  `status_code=6`.
+- After a deauthentication by the box, the client sent **four** deauthentication
+  frames of its own, **reason 7**, then re-authenticated and reassociated.
+  Deauthenticated to fully keyed again: **~300 ms**.
+- Both clients advertise RM Enabled Capabilities of `0x41` and `0x43`: link
+  measurement and **beacon table only**, neither passive nor active beacon
+  measurement. hostapd refuses to send a measurement a client has not
+  advertised, which is why beacon requests in those modes return `FAIL` and no
+  report ever arrives. See #228 — that silence was correct behaviour, not a bug.
+
+**The trap: an empty answer is not no answer.** Every Beacon Table request these
+clients received was **answered**, with report mode `0x00` — not late, not
+incapable, not refused — and **zero** measurement report elements. Eight requests
+across five request bodies, including one issued immediately after a
+deauth-forced rescan. A client saying "measurement complete, nothing to report"
+must not be recorded as one that stayed silent; they are different findings
+about the device, and only one of them suggests the request was wrong.
+
+**Volume.** Bounded, and less than it looks. On mac80211 hostapd is not handed
+probe requests, so this is association, authentication, action and disconnect
+frames — events, not traffic. The capability elements on every association are
+nonetheless repetitive enough to bury the activity view, so they sit behind
+`BOA_EXTRA_ARGS=-verbose`; the candidate list and a client's own disconnect
+reason are always taken, because both are rare and neither can be recovered
+afterwards.
+
+**A runtime `SET` does not work.** `hostapd_cli -i <if> set notify_mgmt_frames 1`
+returns **OK** and nothing arrives; measured over 25s on a 2.4GHz radio with the
+option set that way, zero frames. It must be in the config file before the
+interface comes up, which makes it an image change and a reflash — `deploy.sh`
+cannot deliver it.

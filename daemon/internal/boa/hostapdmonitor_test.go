@@ -170,3 +170,91 @@ func lastEventText(t *testing.T, e *Engine) string {
 	}
 	return evs[len(evs)-1].Text
 }
+
+// The whole point of notify_mgmt_frames, end to end: hostapd sends the raw
+// refusal and then its own summary of it, and the two become ONE line saying
+// both that the client refused and where it asked to go instead.
+//
+// The order here is hostapd's, not a guess: it forwards the received frame from
+// its receive path and emits BSS-TM-RESP from the same path, both on this
+// radio's socket, which one goroutine reads in order.
+func TestARefusalCarriesTheCandidateListTheClientSent(t *testing.T) {
+	e := &Engine{}
+	e.notePendingSteer("fc:9c:a7:93:7f:ed", "wlan-usb", "5GHz", false)
+
+	e.handleHostapdEvent("wlan-usb", "<3>AP-MGMT-FRAME-RECEIVED buf="+btmRefusalFrame)
+	e.handleHostapdEvent("wlan-usb",
+		"<3>BSS-TM-RESP fc:9c:a7:93:7f:ed status_code=6 bss_termination_delay=0")
+
+	line := lastEventText(t, e)
+	for _, want := range []string{
+		"offering its own list", // the status, in words
+		"d8:3a:dd:ad:00:8b",     // the BSS it named
+		"channel 6",             // where that is
+		"preference 255",        // how much it wants it
+	} {
+		if !strings.Contains(line, want) {
+			t.Errorf("%q missing from: %s", want, line)
+		}
+	}
+	// One line, not two: the raw frame must not log on its own account.
+	if n := len(e.events.since(0, 10)); n != 1 {
+		t.Errorf("the refusal was reported as %d events, want 1", n)
+	}
+}
+
+// A client's own reason for leaving is always taken, verbose or not. It is the
+// only thing that separates a device that roamed away from one that timed out
+// from one that gave up on us -- all three vanish from the station table in
+// exactly the same way.
+func TestAClientsOwnDisconnectReasonIsAlwaysLogged(t *testing.T) {
+	e := &Engine{}
+	const deauthReason7 = "c0003c009cefd5f646c7fc9ca7937fed9cefd5f646c700000700"
+	e.handleHostapdEvent("wlan-usb", "<3>AP-MGMT-FRAME-RECEIVED buf="+deauthReason7)
+
+	line := lastEventText(t, e)
+	if !strings.Contains(line, "deauthenticated itself") {
+		t.Errorf("the client's own disconnect was not named: %s", line)
+	}
+	if strings.Contains(line, "reason code") {
+		t.Errorf("the raw reason code leaked into the log: %s", line)
+	}
+}
+
+// Verbose is off by default, and the activity view is unchanged when it is.
+func TestAssociationCapabilitiesAreVerboseOnly(t *testing.T) {
+	quiet := &Engine{}
+	quiet.handleHostapdEvent("wlan-usb", "<3>AP-MGMT-FRAME-RECEIVED buf="+reassocFrame)
+	if n := len(quiet.events.since(0, 10)); n != 0 {
+		t.Fatalf("a reassociation logged %d events with verbose off, want 0", n)
+	}
+
+	loud := &Engine{}
+	loud.cfg.Verbose = true
+	loud.handleHostapdEvent("wlan-usb", "<3>AP-MGMT-FRAME-RECEIVED buf="+reassocFrame)
+
+	line := lastEventText(t, loud)
+	for _, want := range []string{"beacon table", "9c:ef:d5:f6:3f:f2"} {
+		if !strings.Contains(line, want) {
+			t.Errorf("%q missing from: %s", want, line)
+		}
+	}
+}
+
+// A frame that cannot be read must not be able to shout. Client firmware sends
+// malformed management frames repeatedly, and this must never become the
+// loudest voice in the activity view.
+func TestAnUnreadableFrameIsSilentUnlessAsked(t *testing.T) {
+	quiet := &Engine{}
+	quiet.handleHostapdEvent("wlan-usb", "<3>AP-MGMT-FRAME-RECEIVED buf=zzzz")
+	if n := len(quiet.events.since(0, 10)); n != 0 {
+		t.Errorf("an unreadable frame logged %d events with verbose off, want 0", n)
+	}
+
+	loud := &Engine{}
+	loud.cfg.Verbose = true
+	loud.handleHostapdEvent("wlan-usb", "<3>AP-MGMT-FRAME-RECEIVED buf=zzzz")
+	if n := len(loud.events.since(0, 10)); n != 1 {
+		t.Errorf("an unreadable frame logged %d events with verbose on, want 1", n)
+	}
+}
