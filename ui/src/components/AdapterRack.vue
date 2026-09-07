@@ -491,11 +491,12 @@ Clients ARE told it has gone, unlike a power cut.`
         </div>
 
         <!-- WHAT IT IS CARRYING, with the facts rather than with the
-             controls: this is status, and MOVE IT still leads the controls
-             below it. It answers the question that sits between the row above
-             and the client cards below -- how the adapter's capacity is being
-             divided right now. A stream that halved because the radio halved
-             looks identical, on its own card, to one that halved by itself.
+             controls: this is status, and CHANNEL AND WIDTH still leads the
+             controls below it. It answers the question that sits between the
+             row above and the client cards below -- how the adapter's capacity
+             is being divided right now. A stream that halved because the radio
+             halved looks identical, on its own card, to one that halved by
+             itself.
              Shown on EVERY adapter, unconditionally. It was gated first on
              being a radio, which left the wired port with no chart at all, and
              then on having devices attached, which was subtler and worse: the
@@ -517,13 +518,22 @@ Clients ARE told it has gone, unlike a power cut.`
         </p>
 
         <template v-if="r.ap">
-          <!-- MOVE IT leads the CONTROLS, straight after the status above it.
-               Opening an adapter is nearly always to change where it is, and a
-               band plan is the one control here that has to be READ rather than
-               just pressed -- it is a picture of the spectrum and of where this
-               radio sits in it. What comes before it is reference; what comes
-               after is buttons you already know you want. -->
-          <h4 class="first">Move it</h4>
+          <!-- CHANNEL AND WIDTH leads the CONTROLS, straight after the status
+               above it. Opening an adapter is nearly always to change where it
+               is, and a band plan is the one control here that has to be READ
+               rather than just pressed -- it is a picture of the spectrum and
+               of where this radio sits in it. What comes before it is
+               reference; what comes after is buttons you already know you want.
+
+               NAMED FOR THE CHOICE rather than for the verb, and that is the
+               whole reason it is not "Move it". A cell in the 40 or 80 row is a
+               channel AND a width together -- 36-48 is not a channel -- which
+               is exactly why this is a band plan and not two dropdowns. A
+               heading naming only the channel would put back the split the
+               control exists to close. It also breaks the imperative voice of
+               the headings under it on purpose: those are buttons that do
+               something, this is a picture to be read first. -->
+          <h4 class="first">Channel and width</h4>
           <slot name="plan" :radio="r" />
           <div class="action-row">
             <button class="accent" :disabled="busy"
