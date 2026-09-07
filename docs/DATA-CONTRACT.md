@@ -828,8 +828,8 @@ in the daemon knows them otherwise.
   produces a negative number. There is no honest contention figure available
   from these four counters alone; `busy` is the whole of what can be said.
 
-  > **Superseded in part, 2026-09-07.** `busy` is not usable even for that on
-  > mt7921u. Measured against the per-station airtime counters over the same
+  > **Superseded in part, 2026-09-07, and the readout built on it withdrawn.**
+  > `busy` is not usable even for that on mt7921u. Measured against the per-station airtime counters over the same
   > windows, it reads roughly **5× low** — 4.97% while two stations accounted
   > for 23.24% between them, and 8.2% while one station alone held 39.7%. See
   > [Source T](#source-t--iw-station-dump-txrx-duration--airtime-per-client),
@@ -1615,9 +1615,12 @@ station counters are the pair with independent corroboration, so:
 
 - **Do not normalise per-client airtime to `busy`.** It would scale every band
   by a broken number.
-- `BridgeInfo.Airtime`, which is fed from `busy`, should be read as indicative
-  only. Its comment claims the figure is "busy INCLUDING this box's own
-  transmissions"; the measurement above says that is not what it counts.
+- **`BridgeInfo.Airtime` and the rack's `air` readout have been removed.** They
+  were fed from `busy`, and the figure claimed to be "busy INCLUDING this box's
+  own transmissions" while measuring something five times smaller. Withdrawn
+  rather than caveated: it sat one line above a per-client airtime chart
+  disagreeing with it by that factor, and a number on screen gets believed. The
+  sampler behind it (`airtime.go`) is gone with it.
 - The Source L note that `receive + transmit` can exceed `busy` now looks like a
   property of the **busy** counter rather than of the other two.
 

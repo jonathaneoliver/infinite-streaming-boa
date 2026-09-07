@@ -158,19 +158,6 @@ type BridgeInfo struct {
 	// moment, or a stale one passes for current -- and during a radio recovery
 	// that is exactly when it would mislead.
 	ReadAgeMs int `json:"read_age_ms,omitempty"`
-	// Airtime is the busy fraction of each radio's operating channel, as a
-	// percentage, for the radios whose driver reports one.
-	//
-	// A map with entries MISSING rather than zeroed, and that is the whole
-	// contract: measured 2026-09-04, brcmfmac returns no survey data at all, so
-	// a zero here would report an idle channel on a radio nobody can ask. The
-	// interface renders an absent entry as an em dash.
-	//
-	// Busy INCLUDING this box's own transmissions. Foreign airtime would be
-	// more useful and is not reliably computable on this driver -- receive plus
-	// transmit can exceed busy -- so the simpler figure is reported honestly
-	// rather than a better one that is sometimes negative. See airtime.go.
-	Airtime map[string]float64 `json:"airtime,omitempty"`
 }
 
 // ScanSummary is what a scan concluded, small enough to carry in every poll.
@@ -384,7 +371,6 @@ func (e *Engine) buildBridgeState() BridgeInfo {
 	})
 	bi.Notes = bridgeNotes(bi, e.cfg)
 	bi.Scans = e.lastScans()
-	bi.Airtime = e.AirtimePct()
 	return bi
 }
 

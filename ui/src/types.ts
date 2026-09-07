@@ -754,14 +754,6 @@ export interface BridgeInfo {
   /** The last band scan per radio, kept by the daemon so the channel plan's
    *  colours survive a reload and are the same for everyone looking. */
   scans?: Record<string, ScanSummary>;
-  /**
-   * Busy airtime per radio, percent, for radios whose driver measures it.
-   *
-   * Entries are MISSING rather than zero where the driver reports nothing --
-   * brcmfmac returns no survey blocks at all. Rendering a missing entry as 0%
-   * would claim an idle channel on a radio that has never been asked.
-   */
-  airtime?: Record<string, number>;
 }
 
 export interface SurveyChannel {
