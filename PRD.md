@@ -694,7 +694,7 @@ damages packets, never link state.
   thing as a topology.
 - **An adapter collapses to one line, and that line is a table row.** Every field
   describing the radio sits in a fixed column — the token and its channel, width
-  and mode, airtime, then the devices on it — so the rack is read down as
+  and mode, then the devices on it — so the rack is read down as
   columns rather than found again on each row. The devices are **named, not
   counted**: they are the blast radius of every control to the right of them, and
   a name says that where a tally does not. The list is capped and carries a
@@ -710,8 +710,8 @@ damages packets, never link state.
   nowhere in the device list. Discovering the hardware rather than the
   configuration is what lets the interface say this instead of leaving it to be
   inferred from a device list that is quietly short.
-- The rack offers **box-wide radio controls**: a broadcast deauthentication and
-  an airtime readout. Each states on screen that it affects **every client on
+- The rack offers **box-wide radio controls**, chiefly a broadcast
+  deauthentication. Each states on screen that it affects **every client on
   that radio**, and how many that currently is. It also warns that a client
   using a private Wi-Fi address may reassociate under a different MAC and so
   return as a new device with no policy.
@@ -837,6 +837,33 @@ damages packets, never link state.
   The axis is floored at 1 Mbit/s rather than scaled to whatever is there: an
   idle radio otherwise scales to a trickle of ARP and mDNS chatter and draws
   background noise as a full-height mountain range.
+- **Below those, the same stack in airtime: what each device COST the radio.**
+  One chart rather than a pair, because the radio's time is a single resource
+  and transmit and receive both spend it, on the same window, the same device
+  colours and the same legend as the throughput above — so a spike in airtime
+  and the throughput that did or did not accompany it line up vertically.
+  This is the half throughput cannot show. Measured 2026-09-07, one client held
+  46% of a radio to move 34 Mbit/s while another held 77% to move 505 — six
+  times the airtime per bit, because small unaggregated frames pay preamble,
+  IFS and ACK that a full frame aggregate amortises. On the throughput chart the
+  expensive device merely looks quiet. Read together the two give efficiency,
+  which is what says whether a device is slow or is costing everyone else the
+  radio.
+  The axis is **fixed at 0–100%**, deliberately unlike every other chart here.
+  Airtime has a real ceiling — the radio's whole time — and "how full is this
+  radio" is the only question the chart is for, which a scaled axis would answer
+  identically at 8% and at 80%.
+  It is an **occupancy, never a share**: the bands do not sum to 100 and the gap
+  to the top is **not free capacity**. It is beacons, management frames,
+  multicast and every neighbour on the channel, none of which this box can
+  measure, so nothing is drawn there.
+  **A radio whose driver cannot attribute airtime says so in words** rather than
+  drawing an empty chart. The onboard `brcmfmac` chip reports no per-station
+  airtime at all, and rendering its clients at 0% would show a possibly
+  saturated radio as idle — the same absent-versus-zero rule the airtime and
+  survey readouts already follow. A radio nobody has yet been associated to is
+  not accused of the same thing; the question is left open until a client is
+  there to answer it.
 - **What an adapter carried outlives what is attached to it.** The chart's
   contents come from the recorded history, which names the adapter that carried
   each sample, and never from the list of currently-attached devices. A device
@@ -851,11 +878,15 @@ damages packets, never link state.
   stopped telling the time would be most misleading exactly when "nothing is
   happening" is the finding. The edge is held still while a chart is being
   read, so the point under the pointer stays the point measured.
-- The airtime readout is labelled as the **operating channel only**. It is not a
-  survey of the band: a beaconing radio never visits other channels, so their
-  counters are zero, and one driver measured here mislabels the frequency
-  outright. Choosing a quieter channel needs a radio that is not serving, and
-  that is left unbuilt rather than approximated.
+- **The channel-busy airtime readout has been withdrawn, because it was wrong.**
+  It came from `iw dev <if> survey dump`, and on the mt7921u radios that counter
+  reads roughly **5x low**: measured 2026-09-07 it reported 4.97% busy over a
+  window in which two stations accounted for 23.24% between them, and 8.2% while
+  a single station held 39.7%. It is gone rather than caveated, because a figure
+  on screen gets believed and this one sat beside a per-client airtime chart
+  saying something five times larger. Airtime is now reported **per client**,
+  from the station counters, which were verified against iperf3 — see
+  DATA-CONTRACT Source T, and Source L for what the survey counter does say.
 - A radio is moved by **picking a cell from its band plan**, not from two
   independent dropdowns — a cell is a channel and a width together, which is
   the choice that actually exists. Only channels the box will accept are drawn:

@@ -70,6 +70,30 @@ type Sample struct {
 	PhyDown float64 `json:"phy_down,omitempty"`
 	PhyUp   float64 `json:"phy_up,omitempty"`
 
+	// Air is the percentage of wall clock the radio spent transmitting to and
+	// receiving from this client over the tick that produced this sample.
+	//
+	// Recorded per sample for the same reason Cap and the PHY rates are, and
+	// with more force: airtime is what a client COSTS the radio, and it does
+	// not follow throughput. Measured 2026-09-07, one client held 46% of
+	// wlan-usb while moving 34 Mbit/s and another held 77% while moving 505 --
+	// six times the airtime per bit, because small unaggregated frames pay
+	// preamble, IFS and ACK that an A-MPDU amortises. On a throughput trace the
+	// first client merely looks quiet.
+	//
+	// An OCCUPANCY, never a share. The values across a radio's clients do not
+	// sum to 100 and the remainder is not idle -- see Engine.airtimePct.
+	//
+	// Zero when the driver cannot report it, which is NOT the same as an idle
+	// client, and the difference cannot be carried here: a pointer costs 8
+	// bytes plus an allocation against the 7.4MB budget computed below, for a
+	// fact that is a property of the RADIO rather than of the moment. It lives
+	// on IfaceInfo.AirtimePerClient instead, and the interface consults that
+	// before drawing anything from this. The Pi's onboard brcmfmac reports no
+	// per-station airtime at all, so its clients would otherwise be drawn as a
+	// radio full of perfectly idle devices.
+	Air float64 `json:"air,omitempty"`
+
 	// Iface is the bridge port this client was attached to at this instant,
 	// and Channel is the channel that radio was on.
 	//
@@ -251,6 +275,7 @@ func (h *History) Window(dur time.Duration, maxPoints int) (series map[string][]
 		var ifaceFirst string
 		var chanFirst int
 		var sumPD, sumPU float64
+		var sumAir float64
 
 		flush := func() {
 			if n == 0 {
@@ -267,6 +292,12 @@ func (h *History) Window(dur time.Duration, maxPoints int) (series map[string][]
 				// a bucket, and its mean is the honest summary of that span.
 				PhyDown: sumPD / float64(n),
 				PhyUp:   sumPU / float64(n),
+				// MEANED like the PHY rates, and for the same reason: airtime is
+				// a measurement that genuinely moves within a bucket. The mean is
+				// also the right summary for a stack -- a bucket's mean airtime
+				// is the fraction of that whole span the client held, which is
+				// exactly what its band should be as wide as.
+				Air: sumAir / float64(n),
 				// FIRST, for the same reason the cap is: these are categorical.
 				// There is no mean of "wlan0" and "wlan-usb", and a bucket
 				// spanning a roam has to name one of them. Taking the first
@@ -276,7 +307,7 @@ func (h *History) Window(dur time.Duration, maxPoints int) (series map[string][]
 				Iface:   ifaceFirst,
 				Channel: chanFirst,
 			})
-			sumD, sumU, sumPD, sumPU, n = 0, 0, 0, 0, 0
+			sumD, sumU, sumPD, sumPU, sumAir, n = 0, 0, 0, 0, 0, 0
 		}
 
 		for _, sm := range all {
@@ -295,6 +326,7 @@ func (h *History) Window(dur time.Duration, maxPoints int) (series map[string][]
 			sumU += sm.Up
 			sumPD += sm.PhyDown
 			sumPU += sm.PhyUp
+			sumAir += sm.Air
 			n++
 		}
 		flush()

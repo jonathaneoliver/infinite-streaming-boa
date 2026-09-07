@@ -30,7 +30,7 @@ import (
  * RECEIVES is the load-bearing word. Frames the access point TRANSMITS never
  * appear here, so this cannot witness whether the box actually radiated a
  * deauth -- that needs a monitor-mode radio, and the onboard chip has none. See
- * docs/DATA-CONTRACT.md, source N.
+ * docs/DATA-CONTRACT.md, source L for the chip and source U for this.
  *
  * Everything below is pure: bytes in, a struct out, no kernel and no sockets.
  * That is deliberate. Frame parsing goes wrong on lengths, and a parser that
