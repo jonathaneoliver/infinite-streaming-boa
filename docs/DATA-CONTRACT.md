@@ -1581,10 +1581,17 @@ about the device, and only one of them suggests the request was wrong.
 **Volume.** Bounded, and less than it looks. On mac80211 hostapd is not handed
 probe requests, so this is association, authentication, action and disconnect
 frames — events, not traffic. The capability elements on every association are
-nonetheless repetitive enough to bury the activity view, so they sit behind
-`BOA_EXTRA_ARGS=-verbose`; the candidate list and a client's own disconnect
-reason are always taken, because both are rare and neither can be recovered
-afterwards.
+nonetheless repetitive enough to bury the activity view, so they sit behind a
+switch in the activity log's own bar (`POST /api/verbose?on=1`, reported back as
+`caps.verbose`; `BOA_EXTRA_ARGS=-verbose` sets only its state at startup). The
+candidate list and a client's own disconnect reason are always taken, because
+both are rare and neither can be recovered afterwards.
+
+That switch gates what is **written**, not what is displayed. The event ring
+holds 500 entries, so logging everything and filtering in the browser would let
+capability chatter from every association evict the refusals and disconnect
+reasons before a reader went looking for them — which is exactly the history
+this source exists to keep.
 
 **A runtime `SET` does not work.** `hostapd_cli -i <if> set notify_mgmt_frames 1`
 returns **OK** and nothing arrives; measured over 25s on a 2.4GHz radio with the

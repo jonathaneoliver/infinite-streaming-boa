@@ -573,6 +573,15 @@ type Capabilities struct {
 	// control, so the UI hides the actions rather than offer a dead button.
 	// See hostapd.go and issue #135.
 	LinkControl bool `json:"link_control"`
+	// Verbose is whether the activity log is also carrying the received
+	// management frames that are context rather than events -- capability
+	// elements on every association, subtypes nothing acts on.
+	//
+	// Reported so the control can show its own state: a switch that does not
+	// say whether it is on is one the operator has to press to find out, and
+	// pressing it is the thing they were trying to decide about. See
+	// handleMgmtFrame for what it gates and what it does not.
+	Verbose bool `json:"verbose"`
 	// NamesLearned is how many address-to-name bindings mDNS has yielded, and
 	// NamesByMAC how many of the MAC-keyed bindings that actually label a
 	// client. Zero means nothing is being heard; a healthy number while a

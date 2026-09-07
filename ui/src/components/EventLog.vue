@@ -16,6 +16,20 @@ import { useEvents } from '@/composables/useEvents';
  * memory, so a deploy clears it. Persisting an association event per client per
  * roam is exactly the steady write that wears an SD card out.
  */
+/**
+ * Whether the daemon is also logging what clients SAY, as opposed to what they
+ * do -- capability elements on every association, frame types nothing acts on.
+ *
+ * A box-wide setting shown here rather than a local filter, and the distinction
+ * matters: this changes what the daemon WRITES to its ring. The ring holds 500
+ * entries, so filtering in the browser instead would let capability noise from
+ * every association push the refusals and disconnect reasons out of the buffer
+ * — and a reader who turned it on and off again would find the lines they
+ * wanted already gone. It follows that it is shared: another tab sees it move.
+ */
+const props = defineProps<{ verbose: boolean }>();
+const emit = defineEmits<{ 'update:verbose': [boolean] }>();
+
 const OPEN_KEY = 'boa.activity.open';
 
 /** Rows shown while collapsed. Enough for a roam and the context around it. */
@@ -143,25 +157,51 @@ function clock(ms: number): string {
 </script>
 
 <template>
+  <!-- A row holding two controls, not one control: the verbose switch cannot
+       live inside the expander because a button may not contain a button, and
+       it must not merely ride on it because expanding the log and changing what
+       the box records are different acts with different costs. -->
   <section class="log" :class="{ open }">
-    <button
-      class="bar"
-      :aria-expanded="open"
-      :title="open ? 'Collapse the activity log' : 'What has happened on the box'"
-      @click="open = !open"
-    >
-      <span class="caret">{{ open ? '▾' : '▸' }}</span>
-      <span class="k">activity</span>
-      <!-- The bar carries no event text of its own: the rows below always show
-           the newest lines, and repeating one of them here reads as a stutter.
-           It says what is NOT on screen instead. -->
-      <span class="line quiet">
-        <template v-if="!log.events.value.length">nothing yet</template>
-        <template v-else-if="hidden > 0">{{ hidden }} more</template>
-        <template v-else>{{ log.events.value.length }} since the daemon started</template>
-      </span>
-      <span v-if="!open && unseenHidden" class="badge">{{ unseenHidden }}</span>
-    </button>
+    <div class="bar">
+      <button
+        class="expand"
+        :aria-expanded="open"
+        :title="open ? 'Collapse the activity log' : 'What has happened on the box'"
+        @click="open = !open"
+      >
+        <span class="caret">{{ open ? '▾' : '▸' }}</span>
+        <span class="k">activity</span>
+        <!-- The bar carries no event text of its own: the rows below always show
+             the newest lines, and repeating one of them here reads as a stutter.
+             It says what is NOT on screen instead. -->
+        <span class="line quiet">
+          <template v-if="!log.events.value.length">nothing yet</template>
+          <template v-else-if="hidden > 0">{{ hidden }} more</template>
+          <template v-else>{{ log.events.value.length }} since the daemon started</template>
+        </span>
+        <span v-if="!open && unseenHidden" class="badge">{{ unseenHidden }}</span>
+      </button>
+
+      <!-- Named for what it ADDS rather than "verbose", which says how much and
+           not what of. The title carries the part that cannot be a label: this
+           changes what the box records, so it is not a view setting and it is
+           not private to this tab. -->
+      <button
+        class="verbose"
+        :class="{ on: props.verbose }"
+        role="switch"
+        :aria-checked="props.verbose"
+        :title="
+          props.verbose
+            ? 'Stop recording what clients say when they associate. Refusals and disconnect reasons are kept either way.'
+            : 'Also record what clients say when they associate — capabilities, and frame types nothing acts on. Changes what the box records, for everyone.'
+        "
+        @click="emit('update:verbose', !props.verbose)"
+      >
+        <span class="led" :class="{ on: props.verbose }" />
+        what clients say
+      </button>
+    </div>
 
     <div ref="rows" class="rows" :class="{ scroll: open }" @scroll="onScroll">
       <!-- The failure is shown IN the log rather than beside it: an activity
@@ -201,6 +241,16 @@ function clock(ms: number): string {
   align-items: center;
   gap: 8px;
   width: 100%;
+  padding-right: 10px;
+}
+/* The expander keeps the whole width it had: the click target for opening the
+   log should not shrink because a switch moved in beside it. */
+.expand {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+  min-width: 0;
   padding: 6px 10px;
   background: none;
   border: 0;
@@ -210,7 +260,34 @@ function clock(ms: number): string {
   text-align: left;
   cursor: pointer;
 }
-.bar:hover { color: var(--ink); }
+.expand:hover { color: var(--ink); }
+/* Deliberately quiet until it is on. Off is the normal state and the control
+   is not the point of the panel; on, it has to be obvious, because it is the
+   only thing explaining why the log suddenly has more in it.
+   The lamp is the shared .led from style.css rather than a second convention:
+   every other switch on this page reads the same way, and a lamp that meant
+   something slightly different here would be the one worth misreading. */
+.verbose {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  flex: none;
+  padding: 3px 8px;
+  background: none;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  color: var(--ink-faint);
+  font-family: var(--sans);
+  font-size: 11px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.verbose:hover { color: var(--ink); border-color: var(--line-soft); }
+.verbose.on { color: var(--ink-dim); border-color: var(--line-soft); }
+.verbose .led { pointer-events: none; }
+/* The switch is a control, so it must be findable and legible by keyboard. */
+.verbose:focus-visible,
+.expand:focus-visible { outline: 2px solid var(--ok); outline-offset: -2px; }
 .caret { color: var(--ink-faint); width: 8px; }
 .k {
   text-transform: uppercase;

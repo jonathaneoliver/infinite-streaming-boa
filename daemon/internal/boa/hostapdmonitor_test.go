@@ -230,7 +230,7 @@ func TestAssociationCapabilitiesAreVerboseOnly(t *testing.T) {
 	}
 
 	loud := &Engine{}
-	loud.cfg.Verbose = true
+	loud.setVerbose(true)
 	loud.handleHostapdEvent("wlan-usb", "<3>AP-MGMT-FRAME-RECEIVED buf="+reassocFrame)
 
 	line := lastEventText(t, loud)
@@ -252,9 +252,36 @@ func TestAnUnreadableFrameIsSilentUnlessAsked(t *testing.T) {
 	}
 
 	loud := &Engine{}
-	loud.cfg.Verbose = true
+	loud.setVerbose(true)
+	// setVerbose announces itself, so count what arrived AFTER that rather than
+	// the whole ring.
+	before := len(loud.events.since(0, 10))
 	loud.handleHostapdEvent("wlan-usb", "<3>AP-MGMT-FRAME-RECEIVED buf=zzzz")
-	if n := len(loud.events.since(0, 10)); n != 1 {
+	if n := len(loud.events.since(0, 10)) - before; n != 1 {
 		t.Errorf("an unreadable frame logged %d events with verbose on, want 1", n)
+	}
+	if line := lastEventText(t, loud); !strings.Contains(line, "could not be read") {
+		t.Errorf("the unreadable frame was not reported: %s", line)
+	}
+}
+
+// Turning the switch off makes lines stop appearing, which is exactly what a
+// box that went quiet looks like. The log has to say which happened.
+func TestTogglingVerboseIsItselfRecorded(t *testing.T) {
+	e := &Engine{}
+	e.setVerbose(true)
+	if line := lastEventText(t, e); !strings.Contains(line, "what clients say") &&
+		!strings.Contains(line, "associate") {
+		t.Errorf("turning verbose on was not recorded: %s", line)
+	}
+	e.setVerbose(false)
+	if line := lastEventText(t, e); !strings.Contains(line, "events only") {
+		t.Errorf("turning verbose off was not recorded: %s", line)
+	}
+	// Setting it to what it already is must not fill the log with noise.
+	n := len(e.events.since(0, 20))
+	e.setVerbose(false)
+	if got := len(e.events.since(0, 20)); got != n {
+		t.Errorf("a no-op toggle logged %d extra events", got-n)
 	}
 }

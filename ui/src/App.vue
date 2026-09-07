@@ -33,6 +33,19 @@ async function toggleService(name: string, on: boolean) {
     svcBusy.value = '';
   }
 }
+/*
+ * The activity log's verbose switch.
+ *
+ * Nothing optimistic is held here: the state comes back on the snapshot that is
+ * already arriving every second, exactly as the service switches above do. A
+ * local mirror would disagree with the daemon for a second after every press,
+ * and this is a control whose whole purpose is to be trusted about what the log
+ * is currently showing.
+ */
+async function setVerbose(on: boolean) {
+  await fetch(`/api/verbose?on=${on ? 1 : 0}`, { method: 'POST' });
+}
+
 const dev = useDevice();
 
 /*
@@ -276,7 +289,7 @@ the file are replaced, devices not mentioned are left alone.">
     <!-- Above everything, because it belongs to the box rather than to any one
          part of it: a client roaming between radios is a fact about the radio
          and about the device at the same time. -->
-    <EventLog />
+    <EventLog :verbose="caps?.verbose ?? false" @update:verbose="setVerbose" />
 
     <div v-if="cfgErr" class="notice bad">{{ cfgErr }}</div>
     <div v-if="cfgMsg" class="notice">{{ cfgMsg }}</div>

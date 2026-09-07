@@ -343,6 +343,23 @@ func disconnectReason(code int) string {
 	}
 }
 
+// withArticle prefixes "a" or "an" as the following word requires.
+//
+// Small, and worth having rather than hardcoding "a" at the call site: the
+// subtype names include "authentication" and "action frame", which produced
+// "sent a authentication" in the activity log on the first run of this. A log
+// that reads like it was assembled by string concatenation is one people stop
+// reading carefully.
+func withArticle(s string) string {
+	if s == "" {
+		return s
+	}
+	if strings.ContainsRune("aeiou", rune(s[0])) {
+		return "an " + s
+	}
+	return "a " + s
+}
+
 // subtypeName renders a management subtype for a verbose log line.
 func subtypeName(subtype int) string {
 	switch subtype {

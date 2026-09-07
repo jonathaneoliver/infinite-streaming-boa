@@ -371,6 +371,11 @@ func (e *Engine) demoTick() {
 			// be developed against.
 			LinkControl: true,
 			LossBurst:   true,
+			// The real value, not a hardcoded one: the toggle is in the
+			// activity log's own bar, and a switch that will not move under
+			// dev.sh cannot be developed against. Nothing raises a management
+			// frame here, so it changes the switch and not the log.
+			Verbose: e.verbose(),
 		},
 		Notices: []Notice{
 			{"error", "DEMO MODE - these clients are synthetic. No traffic is being conditioned."},

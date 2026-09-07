@@ -801,6 +801,12 @@ export interface Capabilities {
    *  onboard/NetworkManager radio, so the link actions are hidden rather than
    *  offered as dead buttons. */
   link_control: boolean;
+  /** True when the activity log is also carrying the management frames that
+   *  are context rather than events -- what a client claims when it associates,
+   *  and frame types nothing acts on. Toggled from the log's own bar; it
+   *  changes what the daemon LOGS, not what this filters, because the ring
+   *  holds 500 entries and capability noise would push the rest out of it. */
+  verbose: boolean;
   /** True when this kernel's netem accepts a Gilbert-Elliott loss model,
    *  asked at startup rather than assumed. False disables the burst control
    *  with `loss_burst_note` as the reason: a control that says "bursty" while

@@ -446,6 +446,37 @@ func (e *Engine) takeBTMCandidates(mac string) string {
 	return " — it named " + strings.Join(parts, ", ")
 }
 
+// verbose reports whether the activity log is currently carrying the received
+// management frames that are context rather than events.
+//
+// A live value, not the flag it started as. The moment anyone wants this is in
+// the middle of watching something, and a setting that needs a daemon restart
+// to change is one that gets turned on for the run that has already finished.
+func (e *Engine) verbose() bool { return e.verboseOn.Load() }
+
+// SetVerbose is the API's way in. See setVerbose.
+func (e *Engine) SetVerbose(on bool) { e.setVerbose(on) }
+
+// setVerbose turns that on or off, and says so in the log it is about.
+//
+// The log records the change in itself deliberately: turning verbose off makes
+// lines stop appearing, which is indistinguishable from a box that went quiet
+// unless something says which happened.
+func (e *Engine) setVerbose(on bool) {
+	if e.verboseOn.Swap(on) == on {
+		return
+	}
+	if on {
+		e.logEvent(EventAction, "", "",
+			"activity log is now also showing what clients say when they "+
+				"associate — capabilities, and frame types nothing acts on")
+		return
+	}
+	e.logEvent(EventAction, "", "",
+		"activity log is back to events only — refusals and disconnect "+
+			"reasons are still shown")
+}
+
 // handleMgmtFrame decodes one raw received management frame and says what is
 // worth saying about it.
 //
@@ -461,7 +492,7 @@ func (e *Engine) handleMgmtFrame(iface, dump string) {
 		// Once, and only when asked. A client sending malformed management
 		// frames is a real finding, but it is also a thing that repeats every
 		// few seconds, and this must not become the loudest voice in the log.
-		if e.cfg.Verbose {
+		if e.verbose() {
 			e.logEvent(EventWarning, iface, "",
 				"a management frame could not be read: %v", err)
 		}
@@ -489,7 +520,7 @@ func (e *Engine) handleMgmtFrame(iface, dump string) {
 			label, map[bool]string{true: "deauthenticated", false: "disassociated"}[f.Subtype == subtypeDeauth],
 			e.describeRadio(iface), disconnectReason(f.Reason))
 
-	case e.cfg.Verbose && (f.Subtype == subtypeAssocReq || f.Subtype == subtypeReassocReq):
+	case e.verbose() && (f.Subtype == subtypeAssocReq || f.Subtype == subtypeReassocReq):
 		var extra string
 		if f.RMCapabilitiesSet {
 			extra = fmt.Sprintf(", 802.11k: %s", rmCapabilitySummary(f.RMCapabilities))
@@ -503,12 +534,12 @@ func (e *Engine) handleMgmtFrame(iface, dump string) {
 			}
 			extra = fmt.Sprintf(", coming from %s%s", from, extra)
 		}
-		e.logEvent(EventJoin, iface, mac, "%s sent a %s%s",
-			label, subtypeName(f.Subtype), extra)
+		e.logEvent(EventJoin, iface, mac, "%s sent %s%s",
+			label, withArticle(subtypeName(f.Subtype)), extra)
 
-	case e.cfg.Verbose:
-		e.logEvent(EventAction, iface, mac, "%s sent a %s",
-			label, subtypeName(f.Subtype))
+	case e.verbose():
+		e.logEvent(EventAction, iface, mac, "%s sent %s",
+			label, withArticle(subtypeName(f.Subtype)))
 	}
 }
 

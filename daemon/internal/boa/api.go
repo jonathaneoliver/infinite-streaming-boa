@@ -47,6 +47,7 @@ func (a *API) Routes() *http.ServeMux {
 	mux.HandleFunc("POST /api/bridge/radios/{iface}/power", a.postRadioPower)
 	mux.HandleFunc("POST /api/bridge/radios/{iface}/ap", a.postAPEnabled)
 	mux.HandleFunc("POST /api/services/{name}", a.postService)
+	mux.HandleFunc("POST /api/verbose", a.postVerbose)
 	mux.HandleFunc("POST /api/bridge/radios/{iface}/scan", a.postScan)
 	mux.HandleFunc("POST /api/bridge/radios/{iface}/profile", a.postRadioProfile)
 	mux.HandleFunc("POST /api/bridge/radios/{iface}/threshold", a.postThreshold)
@@ -502,6 +503,25 @@ func (a *API) postService(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"service": name, "action": "service", "running": on,
 	})
+}
+
+// postVerbose turns the activity log's verbose mode on or off.
+//
+// A LIVE setting rather than a daemon flag, because of when it is wanted: in
+// the middle of watching a device misbehave. A switch that needs a restart is
+// one that gets turned on for the run that has already finished, and the
+// restart clears the very log it was turned on to read -- the ring is in
+// memory, by design (see events.go).
+//
+// It changes what is LOGGED, not what is displayed. The ring holds 500 entries;
+// filtering at the browser would let capability elements from every association
+// push the events worth keeping out of the buffer, so a reader who turned
+// verbose on and off again would find the interesting lines already gone.
+func (a *API) postVerbose(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	on := q.Get("on") != "0" && !strings.EqualFold(q.Get("on"), "false")
+	a.e.SetVerbose(on)
+	writeJSON(w, http.StatusOK, map[string]any{"action": "verbose", "verbose": on})
 }
 
 // postAPEnabled takes this radio's access point down or brings it back, leaving
