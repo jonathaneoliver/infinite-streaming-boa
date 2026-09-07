@@ -93,10 +93,18 @@ func TestSilenceAfterAnInsistedSteerSaysWhatHappensNext(t *testing.T) {
 
 	e.reportMuteSteers()
 	line := lastEventText(t, e)
-	for _, want := range []string{"disassociated", "pick a radio for itself"} {
+	for _, want := range []string{"disassociated", "radio for itself"} {
 		if !strings.Contains(line, want) {
 			t.Errorf("an insisted steer's silence must mention %q, got: %s", want, line)
 		}
+	}
+	// btmWait is longer than evictDisassocSec, so by the time silence is
+	// reported the disassociation has already happened and the line must say so
+	// in the past tense. Claiming it "is being disassociated now" seven seconds
+	// after the fact is the same class of lie as calling a client mute after it
+	// answered -- which is the bug that moved btmWait in the first place.
+	if evictDisassocSec < int(btmWait/time.Second)-1 && !strings.Contains(line, "was disassociated") {
+		t.Errorf("the disassociation was already past but the line is not in the past tense: %s", line)
 	}
 	// And it must NOT claim the device has not moved, which was the old line's
 	// mistake: it was about to.

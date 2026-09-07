@@ -31,12 +31,21 @@ import (
 // btmWait is how long a steered client has to answer before its silence is
 // reported as the outcome.
 //
-// A BSS Transition Management Response is sent immediately on receipt -- it
-// carries no scanning, only a decision -- so a client that has not answered in
-// this long is not thinking about it. Generous rather than tight, because the
-// cost of waiting is a later log line and the cost of being early is calling a
-// slow client mute.
-const btmWait = 5 * time.Second
+// It was 5s, on the reasoning that a BSS Transition Management Response carries
+// a decision and no scanning, so a client that has not answered promptly is not
+// thinking about it. The reasoning was wrong about real clients. MEASURED
+// 2026-09-07 on this box: an iPhone and a MacBook each answered a steer between
+// eight and nine seconds after the request, repeatedly, and were reported mute
+// every time -- the answer then arriving with no pending request to attach it
+// to, so the line read "asked to move to another radio" instead of naming the
+// destination. Twelve seconds covers what was measured with margin.
+//
+// Generous rather than tight, because the two errors are not symmetric: waiting
+// too long costs a later log line, while being early calls a client mute that
+// was about to speak and then mis-attributes its answer when it does.
+//
+// NOT equal to evictDisassocSec any more, which it used to be -- see there.
+const btmWait = 12 * time.Second
 
 // pendingSteer is a request whose answer has not arrived yet.
 type pendingSteer struct {
@@ -150,21 +159,28 @@ func (e *Engine) reportMuteSteers() {
 		if m.p.insist {
 			// Says what happens NEXT, because something does. The deadline is
 			// measured from the request, so by the time silence is reported
-			// most of it has already elapsed -- and an operator told only
-			// "has not moved" has no reason to keep watching the very window
-			// in which the interesting thing happens.
+			// most or all of it has already elapsed -- and an operator told
+			// only "has not moved" has no reason to keep watching the very
+			// window in which the interesting thing happens.
 			//
-			// "now" rather than a countdown to zero: with evictDisassocSec at
-			// or below btmWait the deadline has already arrived by the time
-			// this runs, and "in about 0s" reads as a bug.
-			when := "now"
-			if left := evictDisassocSec - int(btmWait/time.Second); left > 1 {
-				when = fmt.Sprintf("in about %ds", left)
+			// Three cases, because btmWait is now longer than
+			// evictDisassocSec and the tense has to follow: still to come,
+			// arriving about now, or already past. Saying "is being
+			// disassociated now" seven seconds after it happened would be the
+			// same class of lie as reporting a mute client that had answered.
+			left := evictDisassocSec - int(btmWait/time.Second)
+			var when string
+			switch {
+			case left > 1:
+				when = fmt.Sprintf("It is being disassociated in about %ds and will then pick", left)
+			case left > -2:
+				when = "It is being disassociated now and will then pick"
+			default:
+				when = fmt.Sprintf("It was disassociated about %ds ago and is picking", -left)
 			}
 			e.logEvent(EventAction, m.p.iface, m.mac,
-				"%s did not answer the request to leave for %s. It is being "+
-					"disassociated %s and will then pick a radio for itself — "+
-					"which need not be that one",
+				"%s did not answer the request to leave for %s. %s a radio for "+
+					"itself — which need not be that one",
 				label, m.p.to, when)
 			continue
 		}
