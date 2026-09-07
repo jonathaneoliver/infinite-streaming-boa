@@ -115,6 +115,29 @@ never as presence.
   constantly. It must not be surfaced as a fault.
 - `backlog` is the honest real-time congestion signal: sustained non-zero
   backlog means the client is actively being held back right now.
+- **These classes only see FORWARDED traffic, so anything terminating on the box
+  is invisible to them — including the box's own `iperf3` server.** The classes
+  hang off the forwarding path; traffic addressed to the Pi never reaches them,
+  and the device's throughput readout stays at zero while the link is saturated.
+
+  Measured 2026-09-07, a 145 Mbit/s `iperf3` uplink from a MacBook to the box's
+  own server on `:5201`:
+
+  | Reading | Value |
+  |---|---|
+  | `iperf3` reported | 145 Mbit/s |
+  | `UpCounters.ThroughputMbps` | **0.0** |
+  | `DownCounters.ThroughputMbps` | 3.4 — the TCP ACK stream, 2.3% of the uplink |
+  | `Client.AirPct` (Source T) | **80–86%** |
+
+  So a device saturating the radio can read as idle on its own card. The README
+  already says an `iperf3` to the box measures the link **unshaped**; this is
+  the other half of that — it is also **uncounted**. Per-client airtime is
+  currently the only instrument here that sees such traffic at all, because it
+  comes from the radio rather than from the forwarding path.
+
+  For traffic that should appear in both, run `iperf3` between two devices
+  *through* the box rather than against it.
 
 ## Source E — `tc -s -j qdisc show dev <iface>` · netem parameters
 
