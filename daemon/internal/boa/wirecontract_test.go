@@ -64,6 +64,7 @@ var wireRoots = []wireRoot{
 var handWrittenKeys = []string{
 	"ok", "caps", "revision", // GET /api/health
 	"interval_ms", "bucket_ms", "window_sec", "now", "clients", // GET /api/history
+	"events", "latest", // GET /api/events
 }
 
 // serverOnly are wire fields the UI is not expected to name, each with the

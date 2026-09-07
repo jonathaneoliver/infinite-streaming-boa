@@ -68,6 +68,28 @@ cd daemon && go vet ./... && go test ./internal/boa/ -count=1
 cd ui && npm run typecheck
 ```
 
+Two of those tests guard contracts rather than behaviour, and both fail loudly
+rather than drifting:
+
+- `TestWireContractMirroredInUI` -- every field a response carries must be named
+  somewhere in `ui/src`, or it is computed and thrown away. Its `knownGaps` list
+  is a baseline to burn down, not a set of exemptions.
+- `TestAPIDocsUpToDate` -- `docs/API.md` is generated from this package's own
+  source. Change a route or a doc comment and regenerate it:
+
+```sh
+cd daemon && go test ./internal/boa/ -run TestAPIDocs -update
+```
+
+`boactl` drives a box from a terminal, and `boactl probe` asserts the box is
+really doing its job instead of printing numbers to be eyeballed. Prefer it over
+hand-assembled `curl`:
+
+```sh
+cd daemon && go build -o ~/.local/bin/boactl ./cmd/boactl
+boactl devices && boactl probe -ssh
+```
+
 The daemon compiles on macOS (Linux-only paths are behind build tags) so it can
 be developed without the hardware.
 
@@ -113,6 +135,7 @@ index file, will abort the script — both have caused real breakage here.
 
 | File | What it answers |
 |---|---|
+| `docs/API.md` | Every HTTP endpoint and payload field. GENERATED -- never hand-edit |
 | `docs/DATA-CONTRACT.md` | Where every displayed number comes from, and its units |
 | `docs/LICENSING.md` | What may be redistributed, and what may not |
 | `docs/BACKLOG.md` | Candidate work, with the constraint each item runs into |
