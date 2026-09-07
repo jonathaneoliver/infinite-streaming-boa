@@ -68,6 +68,15 @@ type counterSample struct {
 	at    time.Time
 }
 
+// airSample remembers one station's cumulative airtime so the next tick can
+// difference it. Transmit and receive are kept apart on the way in and summed
+// on the way out, so a counter epoch in one of them cannot be hidden by the
+// other still climbing.
+type airSample struct {
+	tx, rx uint64
+	at     time.Time
+}
+
 // Engine owns all mutable state and is the only thing that talks to the Shaper.
 //
 // Revisions follow the pattern proven in the streaming test harness:
@@ -98,11 +107,6 @@ type Engine struct {
 	radioMu    sync.Mutex
 	radioLocks map[string]*sync.Mutex
 
-	// airtime holds the last survey read per radio and the busy fraction
-	// derived from the delta. Sampled on its own slow timer, never on the tick:
-	// see airtime.go for why fifteen seconds is the floor.
-	airtime airtimeWatch
-
 	// pendingSteers is every 802.11v transition request still waiting for the
 	// client's answer, keyed by MAC. The answer arrives asynchronously on the
 	// monitor connection, so it has to be matched against something; and a
@@ -115,6 +119,10 @@ type Engine struct {
 
 	// prev is keyed "dev/minor" and holds the last byte count seen there.
 	prev map[string]counterSample
+
+	// airPrev is keyed by MAC and holds the last airtime counters seen for that
+	// station, so the tick can difference them into a percentage.
+	airPrev map[string]airSample
 
 	// lastAssoc is when each MAC was last present in the radio's station
 	// table. Wi-Fi association is the one fact about a wireless client that is
@@ -260,6 +268,17 @@ type Engine struct {
 	// moment, and a stale one restored from disk would be worse than none.
 	scanSeen map[string]ScanSummary
 
+	// airSeen records, per radio, whether its LAST station dump carried the
+	// airtime lines -- the driver's answer to "can you attribute airtime to a
+	// client", asked by observation rather than by driver name.
+	//
+	// Only meaningful for a radio that had at least one station to ask about,
+	// so an entry is absent until one does. That is deliberate and not a gap:
+	// a radio with no clients has no bands to draw either way, and inventing a
+	// "cannot report" for an empty radio would put a warning on a radio that
+	// may well be able to.
+	airSeen map[string]bool
+
 	// lastActive is when each MAC was last moving more than a trickle.
 	// Telemetry, so it is held in memory and never written to the store: it
 	// rebuilds itself within seconds of a restart for anything actually doing
@@ -318,6 +337,7 @@ func NewEngine(cfg Config) *Engine {
 		chp:          NewChannelStore(channelsPathFor(cfg.StatePath)),
 		learn:        NewLearner(cfg.Bridge, append(append([]string{}, cfg.WlanPorts...), cfg.LanPort)...),
 		prev:         map[string]counterSample{},
+		airPrev:      map[string]airSample{},
 		lastActive:   map[string]int64{},
 		lastAssoc:    map[string]int64{},
 		stationRadio: map[string]string{},
@@ -415,9 +435,6 @@ func (e *Engine) Start() {
 	// Everything else here talks to hostapd in request/reply, which cannot see
 	// a client's answer to a steer -- see hostapdmonitor.go.
 	e.watchHostapdEvents()
-	// How busy each radio's channel is, sampled slowly. Its own goroutine
-	// because the interval that makes it meaningful is far longer than a tick.
-	go e.watchAirtime()
 	// Devices announce only occasionally -- on join, on wake, when services
 	// change -- so an in-memory-only name table means every daemon restart
 	// drops every client back to a bare MAC until the next announcement,
@@ -555,6 +572,93 @@ func (e *Engine) rate(key string, bytes uint64, now time.Time) float64 {
 	return float64(bytes-p.bytes) * 8 / dt / 1e6
 }
 
+// rememberAirSeen stores what the last tick's dumps revealed about each radio's
+// ability to attribute airtime, for the inventory to report.
+//
+// MERGED rather than replaced, so a radio whose clients have all left keeps the
+// answer it gave while it had some. The question is about the driver, and a
+// momentarily empty radio has not forgotten how to answer it.
+func (e *Engine) rememberAirSeen(seen map[string]bool) {
+	if len(seen) == 0 {
+		return
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.airSeen == nil {
+		e.airSeen = map[string]bool{}
+	}
+	for iface, ok := range seen {
+		e.airSeen[iface] = ok
+	}
+}
+
+// airtimeSeen copies out which radios attribute airtime per client. An absent
+// entry means the question has not been answerable yet -- see airSeen.
+func (e *Engine) airtimeSeen() map[string]bool {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	if len(e.airSeen) == 0 {
+		return nil
+	}
+	out := make(map[string]bool, len(e.airSeen))
+	for k, v := range e.airSeen {
+		out[k] = v
+	}
+	return out
+}
+
+// airtimePct turns a station's cumulative airtime counters into the percentage
+// of WALL CLOCK the radio spent on that client since the previous tick.
+//
+// The denominator is elapsed real time, deliberately, and not the channel-busy
+// figure from `iw survey dump`. Measured 2026-09-07 on wlan-usb: over one 20s
+// window these counters put two stations at 23.2% between them while survey
+// reported 4.97% busy, and under an iperf3 load a single station reached 77%
+// against a survey reading of 11%. A radio cannot spend 77% of the time talking
+// to a client while the medium is busy 11% of the time, and the station
+// counters are the pair with independent corroboration -- see Source T in
+// docs/DATA-CONTRACT.md. Normalising to survey would have scaled every band by
+// a broken number.
+//
+// So the result is an OCCUPANCY, not a share: the values across a radio's
+// clients do not sum to 100, and the remainder is not idle time. It is beacons,
+// management frames, multicast and every neighbour on the channel, none of
+// which this box can measure. Anything drawn from these must not imply
+// otherwise.
+//
+// Zero on the first sample and across a counter reset, which is what a
+// re-association looks like -- the driver restarts both counters at zero, and
+// without the check a rejoining client renders as a negative spike. Same reason
+// rate() checks, and the same reason surveyPrev does in radioctl.go.
+func (e *Engine) airtimePct(mac string, st *Station, now time.Time) float64 {
+	if st == nil || !st.DurationKnown {
+		// Not a quiet client: a driver that never answers. The caller decides
+		// how to render that, and Sample.Air documents why it cannot be a
+		// number.
+		delete(e.airPrev, mac)
+		return 0
+	}
+	p, ok := e.airPrev[mac]
+	e.airPrev[mac] = airSample{tx: st.TxDurationUs, rx: st.RxDurationUs, at: now}
+	if !ok || st.TxDurationUs < p.tx || st.RxDurationUs < p.rx {
+		return 0
+	}
+	dt := now.Sub(p.at).Microseconds()
+	if dt <= 0 {
+		return 0
+	}
+	used := (st.TxDurationUs - p.tx) + (st.RxDurationUs - p.rx)
+	pct := float64(used) / float64(dt) * 100
+	// A radio cannot transmit and receive at once, so the pair cannot exceed
+	// the clock. Clamped rather than trusted: a driver quirk that produced 140%
+	// would otherwise push a band off the top of a fixed axis and take the
+	// bands below it with it.
+	if pct > 100 {
+		pct = 100
+	}
+	return pct
+}
+
 const ntopngPort = 3000
 
 // glancesPort is where the glances web UI listens; the unit that puts it there
@@ -636,13 +740,19 @@ func (e *Engine) tick() {
 	// hostapd has never heard of.
 	stations := map[string]*Station{}
 	stationRadio := map[string]string{}
+	// Whether each radio's driver attributes airtime to a station, learned from
+	// the dump it just produced rather than from the driver's name. Only
+	// recorded for a radio that HAD a station to answer for -- see airSeen.
+	airSeen := map[string]bool{}
 	for _, w := range e.cfg.WlanPorts {
 		for mac, st := range StationDump(w) {
 			stations[mac] = st
 			stationRadio[mac] = w
+			airSeen[w] = airSeen[w] || st.DurationKnown
 		}
 	}
 	e.stationRadio = stationRadio
+	e.rememberAirSeen(airSeen)
 	fdb := BridgeFDB(e.cfg.Bridge, e.cfg.WANPort, e.cfg.WlanPorts)
 	// ARP is the primary source for both address and port: it observes the
 	// client directly, whereas the forwarding database depends on MAC learning
@@ -1002,6 +1112,15 @@ func (e *Engine) tick() {
 		if c.Station != nil {
 			phyDown, phyUp = c.Station.TxPhyMbps, c.Station.RxPhyMbps
 		}
+		// What the client cost the radio, as against what crossed the link.
+		// Differenced here rather than in the collector so it shares the tick's
+		// single `now` with the throughput beside it -- two series drawn on one
+		// x-axis have to be sampled on one clock.
+		air := e.airtimePct(c.MAC, c.Station, now)
+		// On the client too, not only in the series: the live stream appends
+		// from the snapshot, so a value that existed only in history would
+		// leave the chart flat until the next page load.
+		c.AirPct = air
 		// Where it was attached, and on what channel. Only while PRESENT: a
 		// listed device that has gone away keeps its port for display, and
 		// recording that as the sample's adapter would draw an unbroken band
@@ -1019,6 +1138,7 @@ func (e *Engine) tick() {
 			Cap:     c.DownCounters.CapMbps,
 			PhyDown: phyDown,
 			PhyUp:   phyUp,
+			Air:     air,
 			Iface:   sIface,
 			Channel: sChan,
 		})

@@ -13,9 +13,16 @@ import AdapterToken from './AdapterToken.vue';
  * One fold per adapter in a FIXED order, because the question this answers is
  * "what is each radio doing" and a list that reorders itself is one you have to
  * re-read every time. The collapsed row carries what you look at constantly --
- * where it is, how many clients, how busy the air is -- and the actions you
- * reach for constantly. Everything else is one click away, in place, so opening
- * a fold never moves the fold you were reading.
+ * where it is and who is on it -- and the actions you reach for constantly.
+ * Everything else is one click away, in place, so opening a fold never moves
+ * the fold you were reading.
+ *
+ * It used to carry a channel-busy airtime figure too, from `iw survey dump`.
+ * That is gone: on mt7921u the counter reads about five times low, and it sat
+ * one line above a per-client airtime chart disagreeing with it by that factor.
+ * A number on screen gets believed, so a wrong one is worse than none. Airtime
+ * now lives in the fold, per client, from counters that were checked against
+ * iperf3 -- see DATA-CONTRACT Source T.
  *
  * This rack is now the ONE home for these controls. They used to be split
  * between the bridge diagram's nodes and a panel below it, and before that they
@@ -195,19 +202,6 @@ function summary(r: IfaceInfo): string {
     .join(' · ');
 }
 
-/**
- * Airtime, where the driver measures it.
- *
- * An em dash where it does not, and that is not a rendering fallback: measured
- * 2026-09-04, `iw dev wlan0 survey dump` on brcmfmac returns nothing at all,
- * so there is no figure to show and inventing a zero would report an idle
- * channel on a radio that has never been asked. See DATA-CONTRACT Source L.
- */
-function airtime(r: IfaceInfo): string {
-  const pct = props.bridge.airtimePct.value[r.name];
-  return pct === undefined ? '—' : `${pct.toFixed(0)}%`;
-}
-
 function degraded(i: IfaceInfo): boolean {
   return i.radio?.bus === 'usb' && !!i.radio.link_mbps && i.radio.link_mbps < 5000;
 }
@@ -238,10 +232,6 @@ function degraded(i: IfaceInfo): boolean {
         <AdapterToken :name="r.name" head />
 
         <span class="sum">{{ summary(r) }}</span>
-
-        <span class="stat" title="Airtime measured busy on the operating channel">
-          {{ airtime(r) }}<span class="unit">air</span>
-        </span>
 
 
         <!-- WHO is on this radio, after everything describing the radio itself.
@@ -509,6 +499,26 @@ Clients ARE told it has gone, unlike a power cut.`
           :iface="r.name" :series="series" :labels="labels ?? {}"
         />
 
+        <!-- Airtime BELOW the throughput pair, on the same x-axis and in the
+             same device colours.
+
+             The pairing is the point, and neither half answers alone. Throughput
+             says what crossed the link; airtime says what it cost the radio, and
+             the two come apart badly — measured 2026-09-07, one client held 46%
+             of a radio to move 34 Mbit/s while another held 77% to move 505. On
+             the chart above, the expensive one merely looks quiet. Read together
+             they give efficiency, which is what actually says whether a device
+             is a problem for everyone else on the radio.
+
+             Only for a radio. A wired port has no airtime to divide. -->
+        <AdapterStack
+          v-if="series && r.wireless"
+          mode="airtime"
+          :iface="r.name" :series="series" :labels="labels ?? {}"
+          :airtime-known="r.airtime_cap_known"
+          :airtime-capable="r.airtime_per_client"
+        />
+
         <p v-if="degraded(r)" class="notice bad inline">
           This adapter negotiated USB 2 speed ({{ r.radio?.link_mbps }} Mb/s)<template
             v-if="r.radio?.usb_version"> while declaring USB {{ r.radio.usb_version }}</template>.
@@ -728,14 +738,6 @@ Clients ARE told it has gone, unlike a power cut.`
   white-space: nowrap;
   color: var(--ink-dim);
 }
-.stat {
-  font-family: var(--mono);
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--ink);
-  font-variant-numeric: tabular-nums;
-}
-.unit { color: var(--ink-faint); font-size: 9px; margin-left: 2px; }
 /* The devices on this radio. Buttons, because each one goes to that device's
    card -- the mirror of the token's arrow going the other way. */
 .who {

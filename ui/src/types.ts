@@ -572,6 +572,13 @@ export interface Client {
   sub_counters?: Record<string, Counters>;
   /** Last time this device moved more than a trickle, unix ms. 0 = never. */
   last_active_ms?: number;
+  /** What this client cost the radio over the last tick, as a percentage of
+   *  wall clock — transmit and receive together. The counterpart to throughput,
+   *  not a restatement of it. An occupancy, so a radio's clients do not sum to
+   *  100 and the remainder is not idle. 0 for a wired client, for an idle one,
+   *  and for a radio whose driver cannot attribute airtime; only the adapter's
+   *  `airtime_per_client` tells the last of those apart. See `Series.air`. */
+  air_pct?: number;
   sweep?: SweepView;
   pattern_run?: PatternView;
 }
@@ -647,6 +654,19 @@ export interface IfaceInfo {
    *  not render as "off", which would show a healthy radio as dead. */
   powered: boolean;
   power_known: boolean;
+  /**
+   * Whether this radio's driver attributes airtime to individual stations, so
+   * the per-client airtime series means anything on it.
+   *
+   * `airtime_cap_known` is false when no station has yet been on the radio to
+   * ask with — two flags for the same reason `power_known` sits beside
+   * `powered`: "cannot report" and "not asked yet" are different claims, and a
+   * radio with nobody on it must not be labelled incapable. Measured 2026-09-07
+   * — mt7921u reports it, the Pi's onboard brcmfmac does not, and its clients
+   * would otherwise draw as a radio full of perfectly idle devices.
+   */
+  airtime_per_client: boolean;
+  airtime_cap_known: boolean;
 }
 
 export interface ScanAP {
@@ -734,14 +754,6 @@ export interface BridgeInfo {
   /** The last band scan per radio, kept by the daemon so the channel plan's
    *  colours survive a reload and are the same for everyone looking. */
   scans?: Record<string, ScanSummary>;
-  /**
-   * Busy airtime per radio, percent, for radios whose driver measures it.
-   *
-   * Entries are MISSING rather than zero where the driver reports nothing --
-   * brcmfmac returns no survey blocks at all. Rendering a missing entry as 0%
-   * would claim an idle channel on a radio that has never been asked.
-   */
-  airtime?: Record<string, number>;
 }
 
 export interface SurveyChannel {
@@ -974,6 +986,26 @@ export interface Series {
    */
   phyDown: number[];
   phyUp: number[];
+  /**
+   * The share of WALL CLOCK the radio spent on this client at each sample,
+   * transmit and receive together, as a percentage.
+   *
+   * The counterpart to `down`/`up` rather than a restatement: throughput is
+   * what crossed the link, this is what it cost the air, and they come apart.
+   * Measured 2026-09-07, one client held 46% of a radio to move 34 Mbit/s while
+   * another held 77% to move 505 — six times the airtime per bit, because small
+   * unaggregated frames pay preamble, IFS and ACK that an A-MPDU amortises. On
+   * a throughput trace the expensive one merely looks quiet.
+   *
+   * An OCCUPANCY, never a share: the clients on a radio do not sum to 100, and
+   * the remainder is NOT idle. It is beacons, management frames, multicast and
+   * every neighbour on the channel, none of which this box can measure — so
+   * nothing drawn from this may render the gap as free capacity.
+   *
+   * 0 both for an idle client and for a radio whose driver cannot attribute
+   * airtime. Only the adapter's `airtime_per_client` separates those.
+   */
+  air: number[];
   /**
    * Which adapter carried this client at each sample, and on what channel.
    *

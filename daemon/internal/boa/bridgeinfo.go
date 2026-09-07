@@ -117,6 +117,20 @@ type IfaceInfo struct {
 	// not render as "off", which would show a healthy radio as dead.
 	Powered    bool `json:"powered"`
 	PowerKnown bool `json:"power_known"`
+
+	// AirtimePerClient says this radio's driver attributes airtime to
+	// individual stations, so the per-client airtime series means something on
+	// it. AirtimeCapKnown is false when no station has been on the radio to ask
+	// with -- the question is answered by observing a dump, not by driver name.
+	//
+	// Two flags rather than one for the same reason PowerKnown exists beside
+	// Powered: "cannot report" and "not asked yet" are different claims, and
+	// collapsing them would put a permanent warning on a radio that simply has
+	// nobody on it. Measured 2026-09-07 -- mt7921u reports it, the onboard
+	// brcmfmac does not, and its clients would otherwise draw as a radio full
+	// of idle devices.
+	AirtimePerClient bool `json:"airtime_per_client"`
+	AirtimeCapKnown  bool `json:"airtime_cap_known"`
 }
 
 // BridgeInfo is the whole answer for the bridge view.
@@ -144,19 +158,6 @@ type BridgeInfo struct {
 	// moment, or a stale one passes for current -- and during a radio recovery
 	// that is exactly when it would mislead.
 	ReadAgeMs int `json:"read_age_ms,omitempty"`
-	// Airtime is the busy fraction of each radio's operating channel, as a
-	// percentage, for the radios whose driver reports one.
-	//
-	// A map with entries MISSING rather than zeroed, and that is the whole
-	// contract: measured 2026-09-04, brcmfmac returns no survey data at all, so
-	// a zero here would report an idle channel on a radio nobody can ask. The
-	// interface renders an absent entry as an em dash.
-	//
-	// Busy INCLUDING this box's own transmissions. Foreign airtime would be
-	// more useful and is not reliably computable on this driver -- receive plus
-	// transmit can exceed busy -- so the simpler figure is reported honestly
-	// rather than a better one that is sometimes negative. See airtime.go.
-	Airtime map[string]float64 `json:"airtime,omitempty"`
 }
 
 // ScanSummary is what a scan concluded, small enough to carry in every poll.
@@ -312,6 +313,11 @@ func (e *Engine) buildBridgeState() BridgeInfo {
 	bi := BridgeInfo{Bridge: e.cfg.Bridge}
 	addrs := ipAddrs()
 	country := e.regDomainCached()
+	// What the tick's station dumps revealed about per-client airtime support.
+	// Taken from the tick rather than re-dumped here: this runs on its own
+	// timer, and a second dump would be another read of the same table at a
+	// different moment for no gain.
+	airSeen := e.airtimeSeen()
 
 	for _, name := range netInterfaces() {
 		if name == "lo" {
@@ -332,6 +338,7 @@ func (e *Engine) buildBridgeState() BridgeInfo {
 			in.Radio = &r
 			in.Powered, in.PowerKnown = radioPowered(name)
 			in.Serving = e.cfg.IsWlan(name)
+			in.AirtimePerClient, in.AirtimeCapKnown = airSeen[name]
 			if hostapdAvailable(name) {
 				// Read DIRECTLY. This whole function now runs on a timer rather
 				// than on a request (see BridgeState), so a blocking hostapd
@@ -364,7 +371,6 @@ func (e *Engine) buildBridgeState() BridgeInfo {
 	})
 	bi.Notes = bridgeNotes(bi, e.cfg)
 	bi.Scans = e.lastScans()
-	bi.Airtime = e.AirtimePct()
 	return bi
 }
 

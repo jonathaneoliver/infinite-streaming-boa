@@ -115,6 +115,29 @@ never as presence.
   constantly. It must not be surfaced as a fault.
 - `backlog` is the honest real-time congestion signal: sustained non-zero
   backlog means the client is actively being held back right now.
+- **These classes only see FORWARDED traffic, so anything terminating on the box
+  is invisible to them — including the box's own `iperf3` server.** The classes
+  hang off the forwarding path; traffic addressed to the Pi never reaches them,
+  and the device's throughput readout stays at zero while the link is saturated.
+
+  Measured 2026-09-07, a 145 Mbit/s `iperf3` uplink from a MacBook to the box's
+  own server on `:5201`:
+
+  | Reading | Value |
+  |---|---|
+  | `iperf3` reported | 145 Mbit/s |
+  | `UpCounters.ThroughputMbps` | **0.0** |
+  | `DownCounters.ThroughputMbps` | 3.4 — the TCP ACK stream, 2.3% of the uplink |
+  | `Client.AirPct` (Source T) | **80–86%** |
+
+  So a device saturating the radio can read as idle on its own card. The README
+  already says an `iperf3` to the box measures the link **unshaped**; this is
+  the other half of that — it is also **uncounted**. Per-client airtime is
+  currently the only instrument here that sees such traffic at all, because it
+  comes from the radio rather than from the forwarding path.
+
+  For traffic that should appear in both, run `iperf3` between two devices
+  *through* the box rather than against it.
 
 ## Source E — `tc -s -j qdisc show dev <iface>` · netem parameters
 
@@ -804,6 +827,15 @@ in the daemon knows them otherwise.
   "how much of this channel is somebody else" readout, and on real hardware it
   produces a negative number. There is no honest contention figure available
   from these four counters alone; `busy` is the whole of what can be said.
+
+  > **Superseded in part, 2026-09-07, and the readout built on it withdrawn.**
+  > `busy` is not usable even for that on mt7921u. Measured against the per-station airtime counters over the same
+  > windows, it reads roughly **5× low** — 4.97% while two stations accounted
+  > for 23.24% between them, and 8.2% while one station alone held 39.7%. See
+  > [Source T](#source-t--iw-station-dump-txrx-duration--airtime-per-client),
+  > which also supplies the per-client contention figure this paragraph says is
+  > unavailable. The overlap noted just above now looks like a property of the
+  > **`busy`** counter rather than of `receive` and `transmit`.
 - A genuine cross-channel survey needs a radio that is **not** beaconing —
   a second adapter, or the onboard one while the dongle serves. That is why
   scanning for a best channel is not implemented against the serving radio.
@@ -1514,3 +1546,121 @@ A subsequent hand edit cleared `rssi` and returned the enforced cap to 0.
 being one. It should be replaced band by band with a measured curve once #106
 records `signal` and airtime over time, and the provenance label is what says
 which of the two you are looking at.
+
+## Source T — `iw station dump` `tx/rx duration` · airtime, per client
+
+Where the per-client airtime series comes from, and why it is trusted over the
+channel-busy figure in [Source L](#source-l--iw-dev-if-survey-dump--airtime-on-the-operating-channel-only).
+
+| Field | Meaning | Confidence |
+|---|---|---|
+| `tx duration` | Cumulative µs the radio spent transmitting **to** this station | certain |
+| `rx duration` | Cumulative µs spent receiving **from** it | certain |
+| `Sample.Air` / `Client.AirPct` | Their delta over the tick, ÷ elapsed wall clock, ×100 | derived |
+| `IfaceInfo.AirtimePerClient` | Whether the driver emits those lines at all | observed per radio |
+
+- **Microseconds, cumulative, monotonic since association.** Only *differences
+  between two reads* mean anything, exactly as with Source L's counters. A
+  re-association restarts both at zero, which without a guard renders as a
+  negative spike.
+- **The denominator is elapsed WALL CLOCK, never `channel busy time`.** That is
+  the load-bearing decision here and it is measured, not assumed — see below.
+- **Airtime is not derivable from bytes.** Measured 2026-09-07 on `wlan-usb`, a
+  saturated client moved 1.31 GB in 13.40 s of airtime, an effective
+  **784 Mbit/s**, while `tx bitrate` read **1200.9**. The gap is preamble, IFS
+  and ACK, which a full A-MPDU amortises and a trickle does not: a second client
+  on the same radio doing 34 Mbit/s came out at **129 Mbit/s** effective from
+  the same counters. So a device can look quiet on a throughput chart and be
+  expensive on the air, and only these counters tell the two apart.
+
+### The counters were verified against an independent instrument
+
+Two `iperf3` downlink runs to a MacBook on `wlan-usb`, 2026-09-07:
+
+| | run 1 (20 s) | run 2 (15 s) |
+|---|---|---|
+| iperf3 payload | 1.17 GiB | 920 MiB |
+| `tx bytes` delta | 1 312 631 891 B | 1 009 073 732 B |
+| against iperf3 | **+4.5%** | **+4.6%** |
+| `tx duration` delta | 13 397 704 µs | 10 226 885 µs |
+| implied effective rate | **783.8 Mbit/s** | **789.3 Mbit/s** |
+
+`tx bytes` matches iperf3's own byte count to within protocol overhead both
+times, and the effective rate the durations imply agrees with itself across two
+independent runs to **0.7%**. That is what the series rests on.
+
+### Correction to Source L: `channel busy time` contradicts these by ~5×
+
+Source L states that `busy` is "the whole of what can be said" about
+contention. On the mt7921u radios it is not usable even for that.
+
+Measured 2026-09-07 on `wlan-usb`, one 20 s window with no synthetic load:
+
+```
+fc:9c:a7:93:7f:ed   tx 4 439 373 µs + rx 217 006 µs  = 23.22% of the window
+ea:83:50:19:1f:d1   tx     1 486 µs + rx   1 224 µs  =  0.01%
+                                              total  = 23.24%
+survey channel busy    996 ms / 20 058 ms            =  4.97%
+```
+
+A radio cannot spend 23% of the time transmitting to and receiving from its own
+clients while the medium is busy 5% of the time. Under an `iperf3` load the same
+contradiction held: one station alone at **39.7%** against a survey reading of
+**8.2%**, and across fifteen 2 s samples the stacked station total ranged 3–80%
+while survey never left 3–13%.
+
+`busy` does rise when the radio is loaded (5.0% → 8.2%), so it is not simply
+excluding our own transmissions — it responds, nowhere near proportionally. The
+station counters are the pair with independent corroboration, so:
+
+- **Do not normalise per-client airtime to `busy`.** It would scale every band
+  by a broken number.
+- **`BridgeInfo.Airtime` and the rack's `air` readout have been removed.** They
+  were fed from `busy`, and the figure claimed to be "busy INCLUDING this box's
+  own transmissions" while measuring something five times smaller. Withdrawn
+  rather than caveated: it sat one line above a per-client airtime chart
+  disagreeing with it by that factor, and a number on screen gets believed. The
+  sampler behind it (`airtime.go`) is gone with it.
+- The Source L note that `receive + transmit` can exceed `busy` now looks like a
+  property of the **busy** counter rather than of the other two.
+
+### It is an occupancy, not a share
+
+The per-client values across a radio **do not sum to 100**, and the remainder is
+**not idle**. It is beacons, management frames, multicast and every neighbour on
+the channel — on ch40 here, five other beacon streams from two physical
+routers — none of which this box can measure. Nothing rendered from these
+numbers may draw the gap as free capacity.
+
+A radio's own stack peaked at **80.03%** under saturation and never exceeded
+100%, which is the expected shape: IFS, contention and the neighbours take the
+rest.
+
+### Absent is not zero, again
+
+**The onboard `brcmfmac` radio emits no `tx duration` or `rx duration` line at
+all** — the same silence as its missing per-station `signal` and its empty
+`survey dump`. Measured 2026-09-07 with the same client visible on both radios
+seconds apart:
+
+```
+wlan0 (brcmfmac)              wlan-usb (mt7921u)
+inactive time                 inactive time
+rx/tx bytes, packets          rx/tx bytes, packets
+tx failed                     tx retries, tx failed
+—                             signal: -32 [-33, -36] dBm
+tx bitrate: 72.2 MBit/s       tx bitrate: 1200.9 MBit/s 80MHz HE-MCS 11 NSS 2
+—                             tx duration / rx duration
+```
+
+Zero is a legitimate reading for an idle station and also what a driver that
+cannot answer leaves behind, so the capability is carried separately and
+observed rather than inferred from the driver name:
+`Station.DurationKnown` per dump, `IfaceInfo.AirtimePerClient` per radio, with
+`AirtimeCapKnown` distinguishing "cannot" from "not asked yet". Drawing
+`brcmfmac`'s clients at 0% would render a possibly-saturated radio as idle.
+
+**Conclusion for the product:** per-client airtime is the honest contention
+signal this box lacked. Read beside throughput it gives efficiency — Mbit/s per
+% of airtime — which is what says whether a device is merely slow or is costing
+everyone else the radio.

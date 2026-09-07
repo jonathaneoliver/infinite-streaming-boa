@@ -823,6 +823,34 @@ that a cap is working.
 | Wired 1 GbE, for reference | 924 Mbit/s | — | — | 8s |
 | Wired 2.5 GbE, for reference | **1.91 Gbit/s** | **2.35 Gbit/s** | — | 30s, 2026-09-03 |
 | PAU0F on **USB 3.0** | **677 Mbit/s** | — | 80 MHz, 802.11ax, **ch 149** | 12s, sole client, 2026-09-04 |
+| PAU0F on **USB 3.0** | **462 Mbit/s** | **145 Mbit/s** | 80 MHz, 802.11ax, ch 40 | 26s each way, 2 clients, 2026-09-07 |
+
+That last row is the same radio and channel as the 544–552 Mbit/s above and
+came out **80 Mbit/s lower**, which is what a shared radio costs. The per-client
+airtime series says so directly: the box's own stack sat pinned near **77%**
+throughout, and every time the second client took 13–19% of the air the
+MacBook's throughput fell by about 100 Mbit/s. A ceiling measured with another
+device on the radio is a ceiling for that pair, not for the radio.
+
+**Uplink costs about four times the airtime per bit that downlink does.** From
+the same run:
+
+| Direction | Throughput | Airtime | Per 100% airtime |
+|---|---|---|---|
+| Downlink | 546 Mbit/s | 77.3% | **707 Mbit/s** |
+| Uplink | 145 Mbit/s | ~82% | **177 Mbit/s** |
+
+The client transmits with less aggregation and a weaker radio than the access
+point does, so the same air buys far fewer bits going up. Worth knowing before
+reading an uplink number as though it were a downlink one.
+
+> **An `iperf3` run against the box does not appear on the device's own
+> throughput chart.** It terminates *on* the box rather than being forwarded, so
+> it never crosses the shaper's classes: during a 145 Mbit/s uplink the client
+> card read `up` **0.0 Mbit/s** and `down` 3.4 Mbit/s — that being the TCP ACK
+> stream — while the airtime chart read **80–86%**. The device looks idle. Use
+> the airtime chart, or `iperf3` between two devices *through* the box, if you
+> need the traffic to show up in the readouts as well as on the air.
 
 ### Channel width, and what it is worth
 

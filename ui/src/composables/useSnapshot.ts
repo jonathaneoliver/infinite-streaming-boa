@@ -43,7 +43,7 @@ export function useSnapshot() {
     const next = { ...series.value };
     for (const c of clients) {
       const s = next[c.mac] ??
-        { t: [], down: [], up: [], cap: [], phyDown: [], phyUp: [], iface: [], chan: [] };
+        { t: [], down: [], up: [], cap: [], phyDown: [], phyUp: [], air: [], iface: [], chan: [] };
       next[c.mac] = {
         t: [...s.t, now].slice(-HISTORY),
         down: [...s.down, c.down_counters.throughput_mbps].slice(-HISTORY),
@@ -55,6 +55,10 @@ export function useSnapshot() {
         // which the chart draws as a gap rather than as a floor.
         phyDown: [...s.phyDown, c.station?.tx_phy_mbps ?? 0].slice(-HISTORY),
         phyUp: [...s.phyUp, c.station?.rx_phy_mbps ?? 0].slice(-HISTORY),
+        // What the client cost the radio, beside what crossed the link. Zero
+        // for a wired client and for a radio that cannot attribute airtime —
+        // the adapter's own flag is what distinguishes those, not this.
+        air: [...s.air, c.air_pct ?? 0].slice(-HISTORY),
         // Where it was attached, and on what channel. Empty while it is not
         // present: a device that has gone away keeps its port for display, and
         // recording that would draw an unbroken band under a client that was
@@ -106,7 +110,8 @@ export function useSnapshot() {
           string,
           {
             t: number; down: number; up: number; cap?: number;
-            phy_down?: number; phy_up?: number; iface?: string; channel?: number;
+            phy_down?: number; phy_up?: number; air?: number;
+            iface?: string; channel?: number;
           }[]
         >,
       )) {
@@ -120,6 +125,11 @@ export function useSnapshot() {
           // Absent on history written before PHY was recorded; 0 draws no line.
           phyDown: samples.map((x) => x.phy_down ?? 0),
           phyUp: samples.map((x) => x.phy_up ?? 0),
+          // Absent on history written before airtime was recorded, and absent
+          // for a radio whose driver cannot attribute it. 0 draws an empty
+          // band; whether that means "idle" or "unmeasurable" is answered by
+          // the adapter's airtime_per_client flag, never from this value.
+          air: samples.map((x) => x.air ?? 0),
           // Absent on history written before the adapter was recorded. An
           // empty interface reads as "not attached", which draws a gap — the
           // honest rendering of "this box does not know".
@@ -152,6 +162,7 @@ export function useSnapshot() {
                 down: [...seed.down, ...live.down.slice(from)],
                 up: [...seed.up, ...live.up.slice(from)],
                 cap: [...seed.cap, ...live.cap.slice(from)],
+                air: [...seed.air, ...live.air.slice(from)],
                 phyDown: [...seed.phyDown, ...live.phyDown.slice(from)],
                 phyUp: [...seed.phyUp, ...live.phyUp.slice(from)],
                 iface: [...seed.iface, ...live.iface.slice(from)],

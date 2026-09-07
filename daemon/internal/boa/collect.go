@@ -24,13 +24,20 @@ import (
 // Counter direction is from the ACCESS POINT's point of view: the AP's tx is
 // the client's download. Inverting this would flip every graph in the UI.
 func StationDump(iface string) map[string]*Station {
-	out := map[string]*Station{}
 	raw, err := exec.Command("iw", "dev", iface, "station", "dump").Output()
 	if err != nil {
-		return out
+		return map[string]*Station{}
 	}
+	return parseStationDump(string(raw))
+}
+
+// parseStationDump is the parsing half, split out so it can be tested against
+// real dumps from both drivers -- which differ in which lines they emit at all,
+// and that difference is now load-bearing. See Station.DurationKnown.
+func parseStationDump(raw string) map[string]*Station {
+	out := map[string]*Station{}
 	var cur *Station
-	sc := bufio.NewScanner(strings.NewReader(string(raw)))
+	sc := bufio.NewScanner(strings.NewReader(raw))
 	for sc.Scan() {
 		line := strings.TrimSpace(sc.Text())
 		if strings.HasPrefix(line, "Station ") {
@@ -71,6 +78,16 @@ func StationDump(iface string) map[string]*Station {
 			cur.ConnectedSec = atoiSafe(f[0])
 		case "inactive time":
 			cur.InactiveMs = atoiSafe(f[0])
+		// Airtime, in microseconds. DurationKnown is set from the LINE being
+		// present rather than from its value, because a driver that omits it
+		// and an idle station that genuinely used none both leave a zero. See
+		// Station.DurationKnown.
+		case "tx duration":
+			cur.TxDurationUs = atou64(f[0])
+			cur.DurationKnown = true
+		case "rx duration":
+			cur.RxDurationUs = atou64(f[0])
+			cur.DurationKnown = true
 		}
 	}
 	return out

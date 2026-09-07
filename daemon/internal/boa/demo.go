@@ -37,6 +37,31 @@ type demoClient struct {
 	// generic model just tracks the cap, so every level reads as saturated and
 	// the whole feature is undevelopable without hardware.
 	ladder []float64
+	// effMbps is what this device gets out of 100% of the radio's time: its
+	// throughput at full occupancy, and therefore what converts one into the
+	// other.
+	//
+	// Per device and deliberately spread wide, because a demo where airtime is
+	// a constant multiple of throughput would make the airtime chart a second
+	// copy of the one above it and hide the only thing it exists to show. The
+	// spread is the measured one: 2026-09-07 on wlan-usb a saturated client ran
+	// at 784 Mbit/s effective while one trickling alongside it managed 129,
+	// because small unaggregated frames pay preamble, IFS and ACK that a full
+	// A-MPDU amortises. Zero for a wired client, which has no airtime at all.
+	effMbps float64
+}
+
+// demoAirPct converts a demo device's throughput into the airtime it would have
+// cost, so the stacked airtime chart can be developed without hardware.
+func demoAirPct(d *demoClient, mbps float64) float64 {
+	if d == nil || d.wired || d.effMbps <= 0 {
+		return 0
+	}
+	pct := mbps / d.effMbps * 100
+	if pct > 100 {
+		pct = 100
+	}
+	return pct
 }
 
 // demoSegmentSec is the synthetic content's segment duration. It sets the
@@ -120,21 +145,25 @@ func (d *demoClient) abrRate(capMbps float64) float64 {
 func newDemoFleet() []*demoClient {
 	return []*demoClient{
 		{mac: "a4:83:e7:2c:19:04", label: "iPhone 15", medium: "wifi", port: "wlan0",
-			ip: "192.168.1.42", present: true, phase: 0, baseMbps: 45, signal: -52},
+			ip: "192.168.1.42", present: true, phase: 0, baseMbps: 45, signal: -52,
+			effMbps: 640},
 		// Two ABR players with deliberately different ladders, because the
 		// point of keying a ladder by service is that no two are alike.
 		{mac: "dc:a6:32:6b:80:11", label: "Apple TV", medium: "wifi", port: "wlan0",
 			ip: "192.168.1.51", present: true, phase: 2.1, baseMbps: 78, signal: -61,
-			ladder: []float64{0.4, 0.9, 1.8, 3.2, 5.8, 9.5, 15}},
+			effMbps: 780, ladder: []float64{0.4, 0.9, 1.8, 3.2, 5.8, 9.5, 15}},
 		{mac: "00:1a:2b:3c:4d:5e", label: "Test rig (wired)", medium: "wired", port: "lan0",
 			ip: "192.168.1.77", present: true, phase: 4.2, baseMbps: 94, signal: 0, wired: true,
 			ladder: []float64{0.3, 0.75, 1.5, 3, 6, 12}},
 		{mac: "f0:18:98:1d:aa:7c", label: "Pixel 8", medium: "wifi", port: "wlan0",
-			ip: "192.168.1.63", present: true, phase: 1.1, baseMbps: 22, signal: -74},
+			ip: "192.168.1.63", present: true, phase: 1.1, baseMbps: 22, signal: -74,
+			// The expensive one: a fifth of the Apple TV's efficiency, so it
+			// costs a wide band while barely showing on the chart above.
+			effMbps: 130},
 		// Associated but has not completed DHCP: real, common, and the state
 		// that most often renders badly because nobody sees it while building.
 		{mac: "b8:27:eb:44:31:9a", label: "", medium: "wifi", port: "wlan0",
-			ip: "", present: true, phase: 3.3, baseMbps: 0, signal: -68},
+			ip: "", present: true, phase: 3.3, baseMbps: 0, signal: -68, effMbps: 300},
 		// Configured earlier, not currently on the network.
 		{mac: "3c:22:fb:81:52:d0", label: "Roku (bedroom)", medium: "", port: "",
 			ip: "", present: false, phase: 0, baseMbps: 0, signal: 0},
@@ -177,6 +206,7 @@ func (e *Engine) demoBackfill() {
 			offer := demoOffer(d, float64(at.UnixMilli())/1000.0) * (0.85 + 0.3*rand.Float64())
 			e.hist.Add(d.mac, Sample{
 				T: at.UnixMilli(), Down: offer, Up: offer * 0.12,
+				Air: demoAirPct(d, offer*1.12),
 			})
 		}
 	}
@@ -287,6 +317,13 @@ func (e *Engine) demoTick() {
 	// Recorded before publishing, exactly as the real tick does, so the demo
 	// exercises the same history path the interface reads back -- and so the
 	// sweep's detector has real telemetry to work from here too.
+	// Keyed by MAC rather than by position: the client list is built from the
+	// fleet but nothing here promises the two stay index-aligned, and an
+	// airtime band attached to the wrong device would be a convincing lie.
+	byMAC := make(map[string]*demoClient, len(e.demo))
+	for _, d := range e.demo {
+		byMAC[d.mac] = d
+	}
 	for i := range clients {
 		// Adapter and channel too, so the band under the chart can be designed
 		// against a fleet that actually moves between radios rather than
@@ -306,11 +343,17 @@ func (e *Engine) demoTick() {
 				sChan = 36
 			}
 		}
+		// Both directions spend the radio's time, so both count -- the same sum
+		// Engine.airtimePct takes from the real counters.
+		air := demoAirPct(byMAC[clients[i].MAC],
+			clients[i].DownCounters.ThroughputMbps+clients[i].UpCounters.ThroughputMbps)
+		clients[i].AirPct = air
 		e.hist.Add(clients[i].MAC, Sample{
 			T:       now.UnixMilli(),
 			Down:    clients[i].DownCounters.ThroughputMbps,
 			Up:      clients[i].UpCounters.ThroughputMbps,
 			Cap:     clients[i].DownCounters.CapMbps,
+			Air:     air,
 			Iface:   sIface,
 			Channel: sChan,
 		})
@@ -457,6 +500,12 @@ func demoBridgeState(cfg Config) BridgeInfo {
 			Up: true, Carrier: true, CarrierKnown: true,
 			Master: cfg.Bridge, Wireless: true, Serving: true,
 			Powered: true, PowerKnown: true,
+			// mt7921u reports per-station airtime, so the stacked chart is
+			// developable here. The 2.4GHz radio below is deliberately left
+			// unable to, so the "this driver cannot answer" state has somewhere
+			// to be seen without a Pi -- it is the state most likely to be
+			// styled badly precisely because it needs specific hardware.
+			AirtimePerClient: true, AirtimeCapKnown: true,
 			Radio: &RadioInfo{
 				Iface: cfg.PrimaryWlan(), Driver: "mt7921u", Bus: "usb",
 				Vendor: "Panda Wireless", Product: "PAU0F AXE3000",
@@ -474,6 +523,9 @@ func demoBridgeState(cfg Config) BridgeInfo {
 			Up: true, Carrier: true, CarrierKnown: true,
 			Master: cfg.Bridge, Wireless: true, Serving: false,
 			Powered: true, PowerKnown: true,
+			// Asked and cannot answer -- the brcmfmac case, kept in the fixture
+			// so that state is visible in demo mode. See the radio above.
+			AirtimePerClient: false, AirtimeCapKnown: true,
 			Radio: &RadioInfo{
 				Iface: "wlan1", Driver: "mt7921u", Bus: "usb",
 				Vendor: "Panda Wireless", Product: "PAU0F AXE3000",
