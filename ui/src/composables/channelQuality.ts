@@ -88,6 +88,47 @@ export function rateFor(scan: ScanSummary | undefined, channel: number): Quality
   return rateChannel(scan.channels?.find((c) => c.channel === channel));
 }
 
+/**
+ * One channel table from every scan held, freshest reading per channel.
+ *
+ * Built because the radio that can afford to scan is not the radio you want to
+ * know about. The onboard brcmfmac radio sweeps BOTH bands while it keeps
+ * serving; the mt7921u adapters refuse to scan while beaconing and have to have
+ * their access point taken down for it. Keyed per-radio, a 5GHz radio's band
+ * plan could therefore only be coloured by dropping that radio's clients.
+ *
+ * Merged, one free scan on the onboard radio colours every plan on the box.
+ *
+ * FRESHEST wins rather than the radio's own reading, because a scan describes a
+ * moment that moves: measured 2026-09-07, channel 40 read 9.8% busy at idle and
+ * 69.8% under load minutes apart. A stale first-hand number is worth less than
+ * a current second-hand one.
+ *
+ * Returns undefined when nothing has been scanned at all, which `rateFor` reads
+ * as 'unknown' — the state that stops an unscanned box drawing a wall of green.
+ */
+export function mergeScans(
+  scans: Record<string, ScanSummary> | undefined,
+): ScanSummary | undefined {
+  if (!scans) return undefined;
+  const all = Object.values(scans);
+  if (all.length === 0) return undefined;
+
+  // Per channel, remember WHICH scan's reading won, so a later-iterated but
+  // older scan cannot overwrite a newer one.
+  const best = new Map<number, { at: number; c: ScanChannel }>();
+  let newest = 0;
+  for (const s of all) {
+    const at = s.at ?? 0;
+    if (at > newest) newest = at;
+    for (const c of s.channels ?? []) {
+      const prev = best.get(c.channel);
+      if (!prev || at > prev.at) best.set(c.channel, { at, c });
+    }
+  }
+  return { at: newest, channels: [...best.values()].map((b) => b.c) };
+}
+
 /** What the colour is claiming, for a tooltip. */
 export function describeChannel(
   scan: ScanSummary | undefined,

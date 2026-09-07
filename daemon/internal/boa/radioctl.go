@@ -3,6 +3,7 @@ package boa
 import (
 	"fmt"
 	"os/exec"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -90,6 +91,57 @@ var apChannels = map[int]apChannel{
 // channel is not on it. One source, so the two callers cannot drift apart or
 // go stale the next time the table changes.
 const offeredChannels = "2.4GHz 1/6/11, 5GHz 36/40/44/48 and 149/153/157/161/165"
+
+// scanFreqs is where a scan actually has to LISTEN, which is a wider set than
+// apChannels and a much narrower one than everything the regulatory domain
+// allows.
+//
+// Wider, because interference does not respect the allowlist. The loudest
+// neighbours measured here sit on channel 2 at -8 dBm -- a channel this box
+// will never serve on, overlapping both 1 and 6, which it will. Restricting the
+// scan to apChannels would not hear them at all and would report the two
+// busiest channels in the building as quiet.
+//
+// Narrower, because an unrestricted `iw scan` walks every channel the domain
+// knows, and the DFS ones cost the most: a radio may not probe there until it
+// has heard a beacon, so each is a passive dwell of a full beacon interval
+// rather than a ~60ms active one. The box cannot serve on DFS at all, so that
+// time buys nothing.
+//
+// MEASURED 2026-09-07 on wlan0, same radio, same minute:
+//
+//	unrestricted   4047 ms   16 BSS
+//	this list      1298 ms   14-17 BSS
+//
+// Same access points, a third of the time off channel. That matters because
+// scanning is the one thing here that takes a serving radio away from its
+// clients, and it is the difference between a poll that costs 2.2% of the radio
+// and one that costs 6.7%.
+// scanChannels is scanFreqs as channel numbers -- what a scan LISTENED to,
+// recorded on the result so a channel it heard nothing on can be told from a
+// channel it never visited. See ScanSummary.Looked.
+func scanChannels() []int {
+	out := make([]int, 0, 22)
+	for ch := 1; ch <= 13; ch++ {
+		out = append(out, ch)
+	}
+	out = append(out, 36, 40, 44, 48, 149, 153, 157, 161, 165)
+	return out
+}
+
+func scanFreqs() []string {
+	// Every 2.4GHz channel, not just 1/6/11: they all overlap each other, so a
+	// neighbour on 2 is a neighbour on 1 and on 6.
+	out := make([]string, 0, 22)
+	for ch := 1; ch <= 13; ch++ {
+		out = append(out, strconv.Itoa(2407+5*ch))
+	}
+	// 5GHz: the non-DFS blocks only, which is exactly what apChannels offers.
+	for _, ch := range []int{36, 40, 44, 48, 149, 153, 157, 161, 165} {
+		out = append(out, strconv.Itoa(apChannels[ch].FreqMHz))
+	}
+	return out
+}
 
 // is24 reports whether a channel is in the 2.4GHz band, where neither 40MHz
 // (antisocial in a crowded band) nor 80MHz (does not exist) is offered.

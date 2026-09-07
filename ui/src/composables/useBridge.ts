@@ -196,6 +196,14 @@ export function useBridge(active: Ref<boolean>) {
    * evaporates when you press F5 is one nobody comes to trust.
    */
   const scanSummaries = computed(() => info.value?.scans ?? {});
+  /**
+   * How contested each radio's channel is, resolved by the daemon from
+   * whichever scan measured it — usually not that radio's own.
+   *
+   * Absent for a channel nobody has scanned. That is 'no measurement', not
+   * 0%, and callers must render the two differently.
+   */
+  const air = computed(() => info.value?.air ?? {});
   /** Which radio was scanned most recently, for the panel's single readout. */
   const lastScanned = ref('');
   const scan = computed<ScanResult | null>(() =>
@@ -414,7 +422,7 @@ export function useBridge(active: Ref<boolean>) {
 
   return {
     info, survey, scan, error, actionMsg, busy,
-    scans, scanSummaries,
+    scans, scanSummaries, air,
     load, loadSurvey, deauthAll, setPower, setAPEnabled, setService, powerOutage,
     scanBand,
     applyProfile, setThreshold, evict, gather, linkAll, moveChannel,

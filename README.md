@@ -760,7 +760,7 @@ every number in this document.
 | Part | What was used | Why it matters |
 |---|---|---|
 | Board | [Raspberry Pi 5 Model B, 4 GB](https://www.amazon.com/dp/B0CK3L9WD3?tag=jonathaneoliv-20) — or the cheaper [2 GB](https://www.amazon.com/dp/B0DDL91V2R?tag=jonathaneoliv-20), see below | A Pi 4 works; the onboard NIC must not be USB, which is why a Pi 3 does not — see the udev rule in `scripts/customize.sh` |
-| Power | [Official Raspberry Pi 27 W USB-C PSU](https://www.amazon.com/dp/B0CW7XCY75?tag=jonathaneoliv-20), or the [CanaKit 45 W USB-C PD supply](https://www.amazon.com/dp/B07H125ZRL?tag=jonathaneoliv-20) which also delivers 5 A | A SuperSpeed Wi-Fi adapter is a real load. **5 A is what `BOA_USB_MAX_CURRENT` needs** — under it the Pi 5 caps every USB port at 600 mA between them, which reads as a flaky adapter rather than a power problem. Check `vcgencmd get_throttled` reads `0x0` |
+| Power | [Official Raspberry Pi 27 W USB-C PSU](https://www.amazon.com/dp/B0CW7XCY75?tag=jonathaneoliv-20), or the [CanaKit 45 W USB-C PD supply](https://www.amazon.com/dp/B07H125ZRL?tag=jonathaneoliv-20) which also delivers 5 A | A SuperSpeed Wi-Fi adapter is a real load. **5 A is what `BOA_USB_MAX_CURRENT` needs** — under it the Pi 5 caps every USB port at 600 mA between them, which reads as a flaky adapter rather than a power problem. Check `vcgencmd get_throttled` reads `0x0` — and if it does not, or a radio keeps dropping off the bus, see [Power](#power) |
 | Storage | [SanDisk Ultra 16 GB microSDHC](https://www.amazon.com/dp/B074B4P7KD?tag=jonathaneoliv-20) | What was used, and enough — the finished image is ~4.6 GB. A 32 GB card costs little more and leaves room for `ntopng` data |
 | Wi-Fi adapter | [Panda Wireless PAU0F AXE3000 (mt7921u)](https://www.amazon.com/dp/B0D972VY9B?tag=jonathaneoliv-20) | Optional, and the single biggest change to what the box can test — see below |
 | Wired downstream | Any USB ethernet adapter — e.g. [UGREEN USB-C 2.5 GbE](https://www.amazon.com/dp/B0CD1FDKT1?tag=jonathaneoliv-20); the figures below are a Realtek RTL8156 at both ends | Becomes `lan0`. Optional. 2.5 GbE needs a SuperSpeed link end to end, and a USB-C part reaches the Pi's USB-A socket through a converter that is usually the weak point — see [The cable decides whether you get 2.5 GbE at all](#the-cable-decides-whether-you-get-25-gbe-at-all) |
@@ -824,6 +824,69 @@ that a cap is working.
 | Wired 2.5 GbE, for reference | **1.91 Gbit/s** | **2.35 Gbit/s** | — | 30s, 2026-09-03 |
 | PAU0F on **USB 3.0** | **677 Mbit/s** | — | 80 MHz, 802.11ax, **ch 149** | 12s, sole client, 2026-09-04 |
 | PAU0F on **USB 3.0** | **462 Mbit/s** | **145 Mbit/s** | 80 MHz, 802.11ax, ch 40 | 26s each way, 2 clients, 2026-09-07 |
+| PAU0F on **USB 3.0** | **683 Mbit/s** | — | 80 MHz, 802.11ax, **ch 149** | 70s, sole client, 2026-09-07 |
+| PAU0F on **USB 3.0** | **536 Mbit/s** | — | 80 MHz, 802.11ax, ch 40 | 70s, sole client, 2026-09-07 |
+
+> **Every figure above this pair was measured on a Pi that was browning out.**
+> The supply negotiated 900 mA rather than 5 A — no USB-PD objects were
+> exchanged at all — so the firmware fell back to the USB default while two
+> mt7921u adapters drew against it. 269 under-voltage events in a day, and
+> adapters dropping off the bus *mid-transfer* three times. Replacing the cable
+> restored PD negotiation (`max_current` 900 → 5000) and the events stopped
+> dead. See [Power](#power).
+>
+> The older rows are **depressed rather than wrong**, and by less than that
+> story suggests: re-measured on healthy power the same channel and client went
+> 556 → 660 Mbit/s, about **+19%**. Individual samples were already reaching
+> 725–751 Mbit/s while the box was failing — the radio was always capable, it
+> simply could not *sustain* it, and the sustained totals were dragged down by
+> collapses, retransmits and twice by an adapter vanishing altogether.
+>
+> What actually changed is the **variance**. Runs used to swing between 398 and
+> 725 Mbit/s for reasons unconnected to anything under test. On a box whose
+> whole purpose is measuring what an impairment does to a link, an unshaped
+> baseline that moves by a factor of two is the fault that matters, more than
+> any single number above it.
+
+### What a channel is worth
+
+The last two rows are the same radio, the same client and the same 70-second
+transfer, minutes apart, on a box with its power fixed. Nothing differs but the
+channel:
+
+| | ch 149 | ch 40 |
+|---|---|---|
+| Throughput | **683 Mbit/s** | **536 Mbit/s** |
+| Our airtime | 91.2% | 74.6% |
+| PHY rate | 1200.9 Mbit/s | 1200.9 Mbit/s |
+| Retransmits | 0 | 0 |
+| Efficiency | **798 Mbit/s per 100% airtime** | **722** |
+| Neighbours on the channel | none in earshot | **75–82%, four reporting** |
+| Sample-to-sample spread | ±3% | ±33% |
+
+**It is not link quality.** The PHY rate is identical and neither run dropped a
+retransmit — the radio negotiates exactly the same rate either way. The
+difference is contention, and it lands in two places: we get 16 points less of
+the air, and each slice we do get is worth 10% less because backoff eats into
+the TXOPs.
+
+The best evidence arrived mid-run, when the neighbours got busy:
+
+```
+ 0s   609 Mbit/s   others 18-38% x4
+12s   256 Mbit/s   others 78-82% x4     <- neighbours ramp, our throughput halves
+18s   561 Mbit/s   others 78-82% x4
+```
+
+Four independent access points reported the channel going from 18–38% to
+78–82%, agreeing within four points, in the same sample where our own
+throughput collapsed from 565 to 256 Mbit/s. A throughput chart alone shows an
+unexplained crater there; the contention figures name the cause.
+
+**The variance may matter more than the mean.** ch 149 held ±3% for seventy
+seconds while ch 40 swung ±33%. For a box whose whole purpose is measuring what
+an impairment does to a link, an unshaped baseline that moves by a third
+between samples makes every conditioned measurement above it noisier.
 
 That last row is the same radio and channel as the 544–552 Mbit/s above and
 came out **80 Mbit/s lower**, which is what a shared radio costs. The per-client
@@ -1129,6 +1192,70 @@ USB 2.0 cable, not a marginal one.
 USB 2.0 mode it printed `Supported link modes: 10baseT/Half 10baseT/Full` while
 simultaneously reporting `Speed: 1000Mb/s`. Trust the speed line and the USB
 descriptor, not the mode table.
+
+## Power
+
+**A Pi 5 that is not offered USB-PD falls back to 900 mA, and two Wi-Fi
+adapters will brown it out.** This cost most of a day on 2026-09-07, and every
+symptom pointed somewhere other than the supply.
+
+What it looks like from above: a USB radio *unregisters mid-transfer*, hostapd
+loses the interface, `select-radio` re-plans around the missing adapter and
+restarts the daemon, clients scatter onto whichever radio is left, and an
+`iperf3` run that was doing 725 Mbit/s finishes at 398 with retransmits and a
+PHY rate that collapsed to 6.0. It reads exactly like a Wi-Fi fault. It is not.
+
+### Ask the firmware what it negotiated
+
+```sh
+for f in /proc/device-tree/chosen/power/*; do
+  printf '%-28s ' "$(basename "$f")"; od -An -tu4 --endian=big "$f"; done
+vcgencmd get_throttled
+journalctl -b | grep -ci undervoltage
+```
+
+| Reading | Healthy | Measured while failing |
+|---|---|---|
+| `max_current` | **5000** | **900** |
+| `usbpd_power_data_objects` | several non-zero words | **all zero** |
+| `vcgencmd get_throttled` | `0x0` | `0x50000` |
+| under-voltage events | 0 | 269 in a day |
+
+`usbpd_power_data_objects` being entirely zero is the tell: the Pi did not
+receive a *rejected* or *small* PD offer, it received **nothing**, and fell back
+to the plain USB default of 900 mA. `max_current` then reads 900 instead of the
+5000 an official 27 W supply reports.
+
+**The supply was fine; the path to it was not.** Replacing the cable restored
+negotiation — `max_current` 900 → 5000, PD objects populated, `get_throttled`
+back to `0x0` — and under-voltage stopped instantly. A USB-A-to-C cable cannot
+carry PD at all, and a charge-only or degraded C-to-C will not either. This is
+the same lesson as [the 2.5 GbE cable](#the-cable-decides-whether-you-get-25-gbe-at-all),
+one layer down.
+
+### `BOA_USB_MAX_CURRENT` is applied at IMAGE BUILD time only
+
+`usb_max_current_enable=1` lifts the Pi 5's 600 mA cap on *peripheral* current.
+`scripts/customize.sh` writes it into `config.txt` when `BOA_USB_MAX_CURRENT=1`
+— **during the build**, and nowhere else.
+
+So a `.env` that has said `1` for months does not mean the running box has it.
+Ours did, and did not: the image predated the setting, and the box had been
+capped at 600 mA since June without anything saying so. Check the box, never the
+`.env`:
+
+```sh
+grep usb_max_current_enable /boot/firmware/config.txt
+```
+
+It can be set live — `config.txt` is on the boot partition and takes effect on
+the next reboot — which is far cheaper than a reflash.
+
+> **Do not enable it to fix a brownout.** The 600 mA cap is *proactive* and
+> never trips the under-voltage flag. If you are seeing under-voltage, the rail
+> is already sagging and lifting the cap lets the Pi draw harder into it. Fix
+> the negotiation first, confirm `max_current` reads 5000, and only then raise
+> the cap.
 
 ## Build an image
 
