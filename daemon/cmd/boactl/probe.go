@@ -376,7 +376,7 @@ func checkKernelOverSSH(rep *report, host string, s boa.Snapshot) {
 	}
 	all := strings.Join(mapValues(filters), "\n")
 
-	missing := 0
+	missing, conditioned := 0, 0
 	for _, cl := range s.Clients {
 		if !cl.Present || !cl.Policy.Enabled {
 			continue
@@ -384,6 +384,7 @@ func checkKernelOverSSH(rep *report, host string, s boa.Snapshot) {
 		if cl.Policy.Down.IsClean() && cl.Policy.Up.IsClean() {
 			continue
 		}
+		conditioned++
 		addrs := append([]string{}, cl.IPv6...)
 		if cl.IP != "" {
 			addrs = append(addrs, cl.IP)
@@ -401,8 +402,14 @@ func checkKernelOverSSH(rep *report, host string, s boa.Snapshot) {
 				shortMAC(cl.MAC), strings.Join(absent, ", ")))
 		}
 	}
-	if missing == 0 {
-		rep.add(pass, "filter per address", "every address of every conditioned client has a filter")
+	switch {
+	case conditioned == 0:
+		// Saying PASS here would be a check that examined nothing reporting
+		// success, which is the failure this whole command exists to catch.
+		rep.add(warn, "filter per address", "no client is conditioned; no filter was checked")
+	case missing == 0:
+		rep.add(pass, "filter per address", fmt.Sprintf(
+			"every address of %d conditioned client(s) has a filter", conditioned))
 	}
 
 	// hostapd's own view. The templated units are the real ones; the bare
