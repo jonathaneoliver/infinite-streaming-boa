@@ -79,23 +79,36 @@ func TestOurOwnAPIsNotCountedAsCompetition(t *testing.T) {
 	}
 }
 
-func TestScanSummaryDropsOtherBands(t *testing.T) {
-	// Both chips are dual-band and scan BOTH, so a 2.4GHz radio's scan returns
-	// 5GHz neighbours -- measured on hardware, a scan from wlan0 listed a
-	// channel 40 access point. Those rows mean nothing in a 2.4GHz table: the
-	// radio cannot move there, and a recommendation can never use them.
+// REVERSED 2026-09-07, and the old expectation is worth recording. This used to
+// assert that a 2.4GHz scan DROPPED its 5GHz rows, on the reasoning that a radio
+// cannot move to another band so those rows mean nothing to it.
+//
+// True of the recommendation, false of the measurement -- and the difference
+// cost an outage every time a 5GHz band plan wanted colouring. Both chips scan
+// both bands; the onboard one does it while continuing to serve, and the mt7921u
+// adapters cannot do it at all without their access point coming down. So the
+// only radio that can look for free was discarding everything it saw about the
+// two radios that cannot. Keeping the other band is what lets one free wlan0
+// scan answer for channel 40 and channel 149 as well. See airview.go.
+//
+// The in-band guarantee that actually mattered is unchanged and still tested
+// directly below: pickBestChannel never recommends across bands.
+func TestScanSummaryKeepsOtherBandsSoOneScanAnswersForEveryRadio(t *testing.T) {
 	aps := []ScanAP{
 		{BSSID: "aa:00:00:00:00:01", FreqMHz: 2412, Channel: 1, SignalDBm: -40},
 		{BSSID: "aa:00:00:00:00:02", FreqMHz: 5200, Channel: 40, SignalDBm: -71},
 	}
 	res := summariseScan("wlan0", "2.4GHz", aps)
+	got := map[int]bool{}
 	for _, c := range res.Channels {
-		if c.Channel > 14 {
-			t.Errorf("5GHz channel %d listed in a 2.4GHz scan", c.Channel)
-		}
+		got[c.Channel] = true
 	}
-	if len(res.Channels) != 1 {
-		t.Errorf("want only the 2.4GHz channel, got %+v", res.Channels)
+	if !got[1] || !got[40] {
+		t.Errorf("want both bands kept, got %+v", res.Channels)
+	}
+	// And the recommendation still goes only where the radio can actually go.
+	if res.Best > 14 {
+		t.Errorf("2.4GHz radio recommended channel %d, which it cannot reach", res.Best)
 	}
 }
 

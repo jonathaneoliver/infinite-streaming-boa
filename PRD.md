@@ -893,6 +893,37 @@ damages packets, never link state.
   2.4GHz 1/6/11, and the non-DFS 5GHz channels 36/40/44/48 and
   149/153/157/161/165. DFS is excluded because neither radio can serve an
   access point on one.
+  **Where the radio is now is filled in the accent colour**, the same treatment
+  a chosen profile gets, so "you are here" reads the same way everywhere in the
+  interface rather than being inferred from a slightly different shade.
+  **A block another of the box's own radios occupies is hatched and refused**,
+  naming that radio and saying to move it first. Two of our access points on one
+  channel split it between themselves and gain nothing while the rest of the band
+  sits empty, and a cell that is merely unclickable reads as a bug rather than as
+  an answer.
+- **Each radio's row carries what the air around it is doing**: the best PHY rate
+  its clients have negotiated, our own access point and the loudest neighbour in
+  dBm, our own airtime over the last five seconds, and what neighbouring access
+  points report for the channel.
+  The last two answer different questions and only one of them is ours. **Our
+  airtime** comes from the station counters, is summed across the radio's
+  clients, and is the same total the stacked chart draws. **Others** is what
+  neighbours advertise about the whole channel, shown as a **range with a
+  reporter count** because they disagree — five access points on one channel
+  reported 19% to 33% of the same medium from different rooms — and because a
+  single distant reporter is not the same evidence as four that agree. It is
+  weakest exactly where a channel is quiet, since quiet means nobody is near
+  enough to ask, and an absent figure is drawn as absent rather than as zero.
+  Both are averaged over five seconds, which is what a neighbour's own figure
+  already is, so the two describe the same span.
+- **The figures are refreshed by scanning, and a background scan may never cost
+  an outage.** One radio here scans both bands while it keeps serving; the others
+  refuse to scan while beaconing and can only do it with their access point
+  taken down. So the box learns which of its radios is the cheap one by asking,
+  records the answer, and thereafter polls only that one — a refusal costs
+  nothing and is a complete answer. One such scan describes every radio's
+  channel, so no radio is ever taken off the air to find out how busy its own
+  channel is.
 - **A chosen channel is remembered, and a radio is put back on it.** The move
   itself is applied to the running access point and lasts only as long as that
   process, so a restart, a reboot, a USB re-enumeration or a driver reload

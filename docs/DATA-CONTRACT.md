@@ -1595,6 +1595,29 @@ Two `iperf3` downlink runs to a MacBook on `wlan-usb`, 2026-09-07:
 times, and the effective rate the durations imply agrees with itself across two
 independent runs to **0.7%**. That is what the series rests on.
 
+### Re-measured on healthy power, and the counters held
+
+Everything above was measured on a Pi that was browning out — the supply was
+negotiating 900 mA instead of 5 A and adapters were dropping off the bus
+mid-transfer. See [Power](../README.md#power). The counters were re-checked
+afterwards on the repaired box, one client, 70 s per channel:
+
+| | ch 149 | ch 40 |
+|---|---|---|
+| iperf3 | 683 Mbit/s | 536 Mbit/s |
+| this series | 91.2% airtime | 74.6% |
+| implied effective rate | **798 Mbit/s** | **722** |
+| PHY as reported | 1200.9 | 1200.9 |
+| retransmits | 0 | 0 |
+
+Two things worth keeping. The effective rate on a clear channel — **798** —
+lands within 2% of the 783.8 and 789.3 measured before the power was fixed, so
+the counter itself was never the thing at fault. And the 722 on a contested
+channel is the same counter reporting a real loss: identical PHY, zero
+retransmits, and each slice of airtime worth 10% fewer bits because backoff eats
+into the TXOPs. A figure derived from `tx bitrate` alone would show no
+difference between those two columns at all.
+
 ### Correction to Source L: `channel busy time` contradicts these by ~5×
 
 Source L states that `busy` is "the whole of what can be said" about

@@ -667,6 +667,61 @@ export interface IfaceInfo {
    */
   airtime_per_client: boolean;
   airtime_cap_known: boolean;
+  /**
+   * Share of this radio's time spent on OUR OWN clients, averaged over the last
+   * five seconds and summed across them.
+   *
+   * The trustworthy half of the pair. It comes from our own station counters —
+   * verified against iperf3 — and is the same total the stacked chart draws.
+   * `air.util_pct` answers a different question, how much of the CHANNEL
+   * everyone else is using, and is only as good as the access points in
+   * earshot. Measured 2026-09-07 on a quiet channel 149 with both clients idle:
+   * this read 1.3% while the neighbours' figure read 32%.
+   *
+   * Five seconds to match the neighbours' own averaging window, so two figures
+   * side by side describe the same length of time.
+   *
+   * `own_air_known` false means the driver cannot attribute airtime — not 0%.
+   */
+  own_air_pct?: number;
+  own_air_known?: boolean;
+}
+
+/** How contested one radio's channel is. See `BridgeInfo.air`. */
+export interface AirView {
+  channel: number;
+  /** Which radio took the scan this came from. */
+  from: string;
+  /** Unix ms of that scan. A scan describes a moment, so the age matters:
+   *  channel 40 measured 9.8% idle and 69.8% under load minutes apart. */
+  at: number;
+  /**
+   * Measured airtime on the channel, 0–100, as the loudest reporting neighbour
+   * saw it. `util_known` false means NOBODY advertised BSS Load — not an idle
+   * channel, no measurement, and it must not draw as 0%.
+   *
+   * Verified 2026-09-07 against our own per-client counters, the one instrument
+   * here checked against iperf3: over the same 4.1s window our stations held
+   * 78.04% of wlan-usb while two independent neighbours reported channel 40 at
+   * 69.8% and 83.9%, bracketing it.
+   */
+  util_pct: number;
+  util_known: boolean;
+  /** The spread and the sample size behind `util_pct`, which is the HIGHEST of
+   *  them. Measured 2026-09-07, five APs on channel 2 reported 19–33% and three
+   *  on channel 40 reported 9–20%: they sit in different rooms and hear
+   *  different amounts of the same medium, so the gap is physical. The reporter
+   *  count is the confidence — one faint AP describing its own corner reads
+   *  differently from five that agree. */
+  util_min_pct?: number;
+  util_reporters?: number;
+  /** Strongest NEIGHBOUR on the channel, ours excluded. 0 when nothing was
+   *  heard, which for a scan is evidence of a clear channel rather than a gap. */
+  loudest_dbm?: number;
+  /** This radio's own AP as the scanning radio heard it. Absent for the radio
+   *  that took the scan — a radio cannot hear itself. */
+  ours_dbm?: number;
+  ours_known?: boolean;
 }
 
 export interface ScanAP {
@@ -705,6 +760,9 @@ export interface ScanSummary {
   at: number;
   band?: string;
   channels?: ScanChannel[];
+  /** Our OTHER radios as this scan heard them, keyed by interface, in dBm.
+   *  The scanning radio is never in its own map. */
+  ours?: Record<string, number>;
   best_channel?: number;
 }
 
@@ -754,6 +812,21 @@ export interface BridgeInfo {
   /** The last band scan per radio, kept by the daemon so the channel plan's
    *  colours survive a reload and are the same for everyone looking. */
   scans?: Record<string, ScanSummary>;
+  /**
+   * How contested each radio's own channel is, keyed by interface, resolved by
+   * the daemon from whichever scan measured that channel most recently — which
+   * is usually NOT a scan by that radio.
+   *
+   * That indirection is the point. The onboard radio scans both bands while it
+   * keeps serving; the USB adapters cannot scan at all without their access
+   * point coming down. So one free scan on the onboard radio answers for every
+   * radio on the box, and no 5GHz client is ever dropped to find out how busy
+   * its channel is.
+   *
+   * An entry is ABSENT for a channel nobody has scanned yet. That is not 0% —
+   * it is "no measurement", and the two must render differently.
+   */
+  air?: Record<string, AirView>;
 }
 
 export interface SurveyChannel {

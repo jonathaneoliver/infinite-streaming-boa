@@ -204,9 +204,10 @@ const pending = ref('');
           <AdapterPatternPanel :radios="props.radios ?? []" :run="props.adapterRun ?? null" />
         </template>
 
-        <template #plan="{ radio }">
+        <template #plan="{ radio, others }">
           <ChannelPlan
             :radio="radio" :scans="bridge.scanSummaries.value" :busy="bridge.busy.value"
+            :others="others"
             @move="(ch: number, w: number) => bridge.moveChannel(radio.name, ch, w)"
           />
         </template>

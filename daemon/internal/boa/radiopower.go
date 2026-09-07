@@ -1413,6 +1413,10 @@ type ScanChannel struct {
 	// advertised is not an idle one, and treating it as 0% would paint the
 	// busiest channel green.
 	UtilFrom int `json:"util_from,omitempty"`
+	// UtilMinPct is the LOWEST reading on this channel, where UtilPct is the
+	// highest. Both, because the neighbours disagree by 11-14 points here and
+	// the gap between them is how much of a guess the number is.
+	UtilMinPct float64 `json:"util_min_pct,omitempty"`
 	// Stations is the total client count the BSS Load elements reported.
 	Stations int `json:"stations,omitempty"`
 }
@@ -1464,7 +1468,32 @@ type ScanResult struct {
 // CHAN_SWITCH (see issue #154): nothing is announced to anyone, the access
 // point simply reappears somewhere else and clients rediscover it. Most
 // consumer routers change channel exactly this way.
+// ScanBand scans on behalf of a person who asked for it, and may take the
+// access point down to do so where the driver leaves no choice.
 func (e *Engine) ScanBand(iface string, apply bool) (ScanResult, error) {
+	return e.scanBand(iface, apply, true)
+}
+
+// scanBandFree scans ONLY if it costs nothing, and gives up otherwise.
+//
+// For the background poll, where an 8-second outage to learn something is never
+// a fair trade. A driver refusing to scan while serving answers the question
+// completely -- `Operation not supported (-95)` means "not free", recorded at
+// no cost to anybody -- so there is nothing left for the disruptive path to
+// find out.
+//
+// The distinction exists because the poll was taking radios off the air to
+// establish facts it did not need. MEASURED 2026-09-07: a USB adapter dropped
+// off the bus, select-radio re-planned, the daemon restarted, the in-memory
+// record of which radio scans for free was wiped, and the poll relearned it by
+// putting an idle radio down for 8 seconds -- three times over. Nobody was
+// dropped, because the guard held, but nothing was bought either: wlan0 scans
+// both bands for free and one of its scans answers for every radio on the box.
+func (e *Engine) scanBandFree(iface string) (ScanResult, error) {
+	return e.scanBand(iface, false, false)
+}
+
+func (e *Engine) scanBand(iface string, apply, allowOutage bool) (ScanResult, error) {
 	if err := e.radioReady(iface); err != nil {
 		return ScanResult{}, err
 	}
@@ -1503,7 +1532,10 @@ func (e *Engine) ScanBand(iface string, apply bool) (ScanResult, error) {
 	//
 	// The cost is a few beacon gaps rather than a disconnection: clients stay
 	// associated throughout and nobody is dropped.
-	raw, err := exec.Command("iw", "dev", iface, "scan").Output()
+	// Restricted to the channels that can actually matter -- see scanFreqs for
+	// the measurement. A third of the time off channel, for the same answer.
+	scanArgs := append([]string{"dev", iface, "scan", "freq"}, scanFreqs()...)
+	raw, err := exec.Command("iw", scanArgs...).Output()
 	disrupted := false
 	if err != nil {
 		// This driver will not scan while it is serving. Take the BSS down,
@@ -1520,6 +1552,18 @@ func (e *Engine) ScanBand(iface string, apply bool) (ScanResult, error) {
 		// makes the onboard radio's scan cost nothing while still letting the
 		// adapter scan at all. The `ip link set up` matters: DISABLE takes the
 		// interface down, and a down interface cannot scan.
+		if !allowOutage {
+			// A background caller. The refusal IS the answer, so RECORD it --
+			// this radio cannot be scanned for free and never will be, and the
+			// poll must stop asking. Without this the cost stayed unknown, the
+			// poll retried the same radio every 15s for ever, and never reached
+			// the one that scans for nothing. Observed on the box: four
+			// consecutive rounds all spent failing on wlan-usb.
+			e.rememberScanCost(iface, true)
+			return ScanResult{}, fmt.Errorf(
+				"%s will not scan while serving (%w), and a background scan may "+
+					"not take it down", iface, err)
+		}
 		disrupted = true
 		if wasEnabled {
 			if _, derr := hostapdCmd(iface, "DISABLE"); derr != nil {
@@ -1531,7 +1575,7 @@ func (e *Engine) ScanBand(iface string, apply bool) (ScanResult, error) {
 			defer e.reenableAP(iface)
 		}
 		_ = exec.Command("ip", "link", "set", iface, "up").Run()
-		raw, err = exec.Command("iw", "dev", iface, "scan").Output()
+		raw, err = exec.Command("iw", scanArgs...).Output()
 		if err != nil {
 			return ScanResult{}, fmt.Errorf(
 				"scan on %s failed even with the access point stopped: %w", iface, err)
@@ -1681,6 +1725,10 @@ func (e *Engine) ScanBand(iface string, apply bool) (ScanResult, error) {
 	}
 	e.syncRadioState(iface)
 	e.rememberScan(iface, res)
+	// What it COST, so the background poll knows whether it may repeat this
+	// unattended. Recorded after the move above, which is the only other
+	// thing that can take the radio down.
+	e.rememberScanCost(iface, res.OutageSec > 0)
 	return res, nil
 }
 
@@ -1747,9 +1795,25 @@ func scanFindings(res ScanResult) string {
 // the result and it is only interesting while the scan is on screen; what has
 // to survive is the summary the colours are drawn from.
 func (e *Engine) rememberScan(iface string, res ScanResult) {
+	// Our own access points are dropped from the CHANNEL summary, so that the
+	// channel a radio is already on does not read as permanently busiest. Their
+	// signal is kept here instead: it is the one thing in a scan that describes
+	// our own hardware, and the interface shows it beside the neighbours'.
+	ours := map[string]float64{}
+	byIface := e.ownBSSIDsByIface()
+	for _, a := range res.APs {
+		if !a.Ours {
+			continue
+		}
+		if w := byIface[strings.ToLower(a.BSSID)]; w != "" && w != iface {
+			ours[w] = a.SignalDBm
+		}
+	}
 	sum := ScanSummary{
 		At: time.Now().UnixMilli(), Band: res.Band,
-		Channels: res.Channels, Best: res.Best,
+		Channels: res.Channels, Best: res.Best, Ours: ours,
+		// What was LISTENED to, not what was heard. See ScanSummary.Looked.
+		Looked: scanChannels(),
 	}
 	e.mu.Lock()
 	if e.scanSeen == nil {
@@ -1777,6 +1841,21 @@ func (e *Engine) lastScans() map[string]ScanSummary {
 // not counted as competition on the channel it is asking about.
 func (e *Engine) ownBSSIDs() map[string]bool {
 	out := map[string]bool{}
+	for bssid := range e.ownBSSIDsByIface() {
+		out[bssid] = true
+	}
+	return out
+}
+
+// ownBSSIDsByIface maps each of our BSSIDs to the radio serving it.
+//
+// The same question ownBSSIDs asks, keeping the answer it throws away. A scan
+// hears our OTHER radios -- wlan0 heard wlan-usb at -27 dBm and wlan-usb2 at
+// -38 -- and that is only useful if the BSSID can be turned back into an
+// interface name. A radio never hears itself, so its own entry is simply
+// absent from any scan it took.
+func (e *Engine) ownBSSIDsByIface() map[string]string {
+	out := map[string]string{}
 	for _, w := range e.cfg.WlanPorts {
 		if !hostapdAvailable(w) {
 			continue
@@ -1784,7 +1863,7 @@ func (e *Engine) ownBSSIDs() map[string]bool {
 		if st, err := hostapdCmd(w, "STATUS"); err == nil {
 			for k, v := range parseHostapdKV(st) {
 				if strings.HasPrefix(k, "bssid[") && v != "" {
-					out[strings.ToLower(v)] = true
+					out[strings.ToLower(v)] = w
 				}
 			}
 		}
@@ -2006,9 +2085,18 @@ func summariseScan(iface, band string, aps []ScanAP) ScanResult {
 	byChan := map[int]*ScanChannel{}
 	for _, a := range aps {
 		// Our own access points would make the channel we are already on look
-		// permanently busiest. Other bands cannot be moved to, so counting them
-		// would put rows in the table that no recommendation can ever use.
-		if a.Ours || a.Channel == 0 || (band != "" && bandOf(a.FreqMHz) != band) {
+		// permanently busiest.
+		//
+		// The OTHER band is kept, which it was not before. A radio can only be
+		// MOVED within its own band -- pickBestChannel still enforces that --
+		// but the scan hears both, and throwing half of it away meant the only
+		// radio that can scan for free knew nothing it could tell the others.
+		// Measured 2026-09-07: a wlan0 scan returns 16 access points spanning
+		// 2417 to 5745 MHz and the summary kept channels [2 6 11]. Colouring
+		// the 5GHz band plan therefore required scanning a 5GHz radio, which on
+		// mt7921u means taking its access point down and dropping its clients.
+		// Keeping both bands is what makes that outage unnecessary.
+		if a.Ours || a.Channel == 0 {
 			continue
 		}
 		at := func(ch int) *ScanChannel {
@@ -2050,6 +2138,13 @@ func summariseScan(iface, band string, aps []ScanAP) ScanResult {
 			pct := float64(a.UtilRaw) / 255 * 100
 			if pct > cc.UtilPct {
 				cc.UtilPct = pct
+			}
+			// The LOWEST too, so the spread survives. Measured 2026-09-07, five
+			// access points on channel 2 reported 19% to 33% of the same medium
+			// from different rooms; quoting only the maximum made a 14-point
+			// disagreement look like a precise reading.
+			if cc.UtilFrom == 0 || pct < cc.UtilMinPct {
+				cc.UtilMinPct = pct
 			}
 			cc.UtilFrom++
 			cc.Stations += a.Stations

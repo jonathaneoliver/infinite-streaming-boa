@@ -550,6 +550,26 @@ func demoBridgeState(cfg Config) BridgeInfo {
 			Master: cfg.Bridge,
 		},
 	}
+	// Contention per radio, so the rack's figures can be designed without a Pi.
+	//
+	// Both states are here on purpose. The 5GHz radio carries a full reading
+	// taken by the OTHER radio -- which is the whole point of the merge, since
+	// on real hardware an mt7921u cannot scan without dropping its clients. The
+	// 2.4GHz radio is the one that did the scanning, so it has no "ours"
+	// figure: a radio cannot hear itself, and that em dash is a state which
+	// only ever appears on the scanner and would otherwise never get styled.
+	now := time.Now().UnixMilli()
+	bi.Air = map[string]AirView{
+		cfg.PrimaryWlan(): {
+			Channel: 36, From: "wlan1", At: now - 12_000,
+			UtilPct: 36, UtilKnown: true, LoudestDBm: -18,
+			OursDBm: -27, OursKnown: true,
+		},
+		"wlan1": {
+			Channel: 6, From: "wlan1", At: now - 12_000,
+			UtilPct: 12, UtilKnown: true, LoudestDBm: -34,
+		},
+	}
 	bi.Notes = bridgeNotes(bi, cfg)
 	return bi
 }

@@ -202,6 +202,133 @@ function summary(r: IfaceInfo): string {
     .join(' · ');
 }
 
+/**
+ * How contested this radio's channel is, from whichever scan measured it.
+ *
+ * Three separate facts, and they stay separate on purpose:
+ *
+ *   ours     our own access point as ANOTHER radio heard it. Absent for the
+ *            radio that took the scan -- a radio cannot hear itself.
+ *   loudest  the strongest NEIGHBOUR on the channel. This is the one that
+ *            explains contention: one AP at -18dBm costs far more airtime than
+ *            three at -75.
+ *   util     measured airtime on the channel, from neighbours' BSS Load.
+ *
+ * An em dash means "nobody has scanned this channel yet", never zero. Absence
+ * and idleness are different facts and this box has been wrong about that
+ * before: the survey-derived readout these replace reported a saturated radio
+ * at 2.5% for exactly that kind of reason.
+ */
+function airOf(r: IfaceInfo) {
+  return props.bridge.air.value[r.name];
+}
+
+/**
+ * The three figures, each as a value and its unit, or null when unmeasured.
+ *
+ * Null rather than a formatted '—' so the template can drop the UNIT along with
+ * the number. "— dBm" claims a signal reading exists and is merely being
+ * displayed oddly; a bare em dash says there is no measurement, which is the
+ * fact. Same reason the numbers carry units at all: -27 on its own is not
+ * self-describing, and a reader should not have to know that this column is
+ * signal strength to read it.
+ */
+/**
+ * The best PHY rate any client on this radio is currently negotiating, Mbit/s.
+ *
+ * The HIGHEST rather than a mean, because the question a radio's headline
+ * answers is "what is this link capable of right now" -- and a mean across one
+ * saturated laptop and one dozing phone describes neither. Which client it
+ * belongs to is on that client's own card.
+ *
+ * The NEGOTIATED rate, not the theoretical ceiling phyCeilingLabel computes
+ * from mode and width. Those differ by a lot and only one of them is a
+ * measurement: the same radio advertises 802.11ax at 80MHz whether a client is
+ * running MCS 11 beside it or MCS 2 through a wall.
+ *
+ * Taken from the recorded series rather than the roster, so it is the same
+ * number the client's chart is drawing at that instant and the two cannot
+ * disagree.
+ */
+function phyOf(r: IfaceInfo): number | null {
+  let best = 0;
+  for (const c of on(r)) {
+    const s = props.series?.[c.mac];
+    const v = s?.phyDown?.length ? (s.phyDown[s.phyDown.length - 1] ?? 0) : 0;
+    if (v > best) best = v;
+  }
+  return best > 0 ? best : null;
+}
+
+function oursOf(r: IfaceInfo): number | null {
+  const a = airOf(r);
+  return a?.ours_known && a.ours_dbm !== undefined ? a.ours_dbm : null;
+}
+
+function loudestOf(r: IfaceInfo): number | null {
+  const a = airOf(r);
+  // Zero means nothing was heard on the channel, which a scan reports as a
+  // genuine absence of neighbours rather than a 0 dBm signal.
+  return a?.loudest_dbm ? a.loudest_dbm : null;
+}
+
+/**
+ * OUR OWN airtime on this radio: the five-second average, summed across its
+ * clients, straight from the station counters.
+ *
+ * The headline, because it is the one figure here that actually answers "how
+ * busy is this radio" and the one that was verified against iperf3. Absent
+ * where the driver cannot attribute airtime, which is not 0%.
+ */
+function ownAirOf(r: IfaceInfo): number | null {
+  return r.own_air_known && r.own_air_pct !== undefined ? r.own_air_pct : null;
+}
+
+/**
+ * What the NEIGHBOURS say about the channel, as a range.
+ *
+ * A range and not a number, because they disagree: measured 2026-09-07, five
+ * access points on channel 2 reported 19% to 33% of the same medium from
+ * different rooms. Quoting the maximum alone made a 14-point spread look
+ * precise. Collapses to a single figure when only one access point reports,
+ * which is itself worth seeing -- one faint stranger's account of its own
+ * corner of the world is not the same evidence as five that agree.
+ *
+ * Null when nobody advertised it. That is not an idle channel, and on a QUIET
+ * channel it is the normal case: quiet means there is nobody nearby to ask.
+ */
+function othersOf(r: IfaceInfo): string | null {
+  const a = airOf(r);
+  if (!a?.util_known) return null;
+  const hi = a.util_pct;
+  const lo = a.util_min_pct ?? hi;
+  return Math.round(lo) === Math.round(hi)
+    ? `${hi.toFixed(0)}%`
+    : `${lo.toFixed(0)}–${hi.toFixed(0)}%`;
+}
+
+/** Where the figures came from and when, since a scan describes a moment. */
+function airTitle(r: IfaceInfo): string {
+  const a = airOf(r);
+  if (!a) {
+    return `Nothing has scanned channel ${r.ap?.channel ?? '?'} yet, so there is no measurement — which is not the same as a quiet channel.`;
+  }
+  const age = Math.max(0, Math.round((Date.now() - a.at) / 1000));
+  const who = a.from === r.name ? 'this radio itself' : a.from;
+  return (
+    `Channel ${a.channel}, measured by ${who} ${age}s ago.\n` +
+    `ours — this radio's own access point, in dBm, as ${a.from} heard it` +
+    (a.ours_known ? '.' : ' — absent, because a radio cannot hear itself.') +
+    `\nloudest — the strongest neighbouring access point on this channel, in dBm. ` +
+    'Signal matters more than a headcount: one AP at -20 dBm costs more airtime than three at -75.' +
+    `\nair — what THIS radio spent on its own clients, averaged over 5s, from our own counters. The figure the stacked chart draws.` +
+    `\nothers — ` +
+    (a.util_known
+      ? `${a.util_reporters ?? 0} neighbouring access point(s) advertise ${a.util_min_pct !== undefined && Math.round(a.util_min_pct) !== Math.round(a.util_pct) ? `${a.util_min_pct.toFixed(0)}–${a.util_pct.toFixed(0)}%` : `${a.util_pct.toFixed(0)}%`} busy on this channel, each averaged over about 5 seconds. They sit in different rooms and hear different amounts, so a wide range is real disagreement rather than noise.`
+      : 'no neighbour on this channel advertised it. Not an idle channel — on a quiet channel there is often nobody near enough to ask.')
+  );
+}
+
 function degraded(i: IfaceInfo): boolean {
   return i.radio?.bus === 'usb' && !!i.radio.link_mbps && i.radio.link_mbps < 5000;
 }
@@ -232,6 +359,56 @@ function degraded(i: IfaceInfo): boolean {
         <AdapterToken :name="r.name" head />
 
         <span class="sum">{{ summary(r) }}</span>
+
+        <!-- Contention, in the fixed column the old survey-derived `air` badge
+             used to hold. Three figures rather than one because they answer
+             different questions and no single number could: how well the box
+             hears its own radio, how loud the competition is, and how much of
+             the channel is actually in use.
+
+             Every one carries a LABEL and a UNIT. "-27" and "9%" are not
+             self-describing, and a reader should not have to already know that
+             this column is signal strength and channel airtime to read it. The
+             unit is dropped along with the number when there is no measurement,
+             so an unscanned channel is a bare em dash rather than "— dBm",
+             which would claim a reading exists. -->
+        <!-- The cell is ALWAYS present, and empty for a wired port.
+             `v-if` on the whole span looked right and broke the row: this is a
+             fixed-column grid, so removing an element slides every later cell
+             one track left and lan0's device list rendered in the contention
+             column. Only the CONTENTS are conditional -- a wired port has no
+             channel, so no neighbours and no airtime, and three em dashes there
+             would invite the reader to wonder what had failed to be measured
+             about a cable. -->
+        <span class="air" :title="r.wireless ? airTitle(r) : ''">
+          <template v-if="r.wireless">
+          <!-- PHY leads, because it is the only one of these four that is about
+               the LINK rather than about the channel, and it is the number an
+               operator checks first. Em dash when no client is associated:
+               there is no negotiated rate without a station to negotiate with,
+               and the mode-and-width ceiling beside it is not a substitute. -->
+          <span class="k">PHY</span
+          ><span class="v num">{{ phyOf(r)?.toFixed(0) ?? '—'
+            }}<span v-if="phyOf(r) !== null" class="unit">Mb/s</span></span>
+          <span class="k">ours</span
+          ><span class="v num">{{ oursOf(r)?.toFixed(0) ?? '—'
+            }}<span v-if="oursOf(r) !== null" class="unit">dBm</span></span>
+          <span class="k">loudest</span
+          ><span class="v num">{{ loudestOf(r)?.toFixed(0) ?? '—'
+            }}<span v-if="loudestOf(r) !== null" class="unit">dBm</span></span>
+          <!-- OURS first, because it is the trustworthy one: our own counters,
+               five-second average, the same total the chart draws. The
+               neighbours' figure beside it answers a different question and
+               says so in its label. -->
+          <span class="k">air</span
+          ><span class="v num">{{ ownAirOf(r)?.toFixed(0) ?? '—'
+            }}<span v-if="ownAirOf(r) !== null" class="unit">%</span></span>
+          <span class="k">others</span
+          ><span class="v num">{{ othersOf(r) ?? '—'
+            }}<span v-if="othersOf(r) && (airOf(r)?.util_reporters ?? 0) > 0"
+              class="unit">×{{ airOf(r)?.util_reporters }}</span></span>
+          </template>
+        </span>
 
 
         <!-- WHO is on this radio, after everything describing the radio itself.
@@ -544,7 +721,7 @@ Clients ARE told it has gone, unlike a power cut.`
                the headings under it on purpose: those are buttons that do
                something, this is a picture to be read first. -->
           <h4 class="first">Channel and width</h4>
-          <slot name="plan" :radio="r" />
+          <slot name="plan" :radio="r" :others="otherRadios(r)" />
           <div class="action-row">
             <button class="accent" :disabled="busy"
               :title="`Survey ${r.name}'s band and move it to the quietest channel found. Takes the radio down and back up.`"
@@ -699,9 +876,15 @@ Clients ARE told it has gone, unlike a power cut.`
   display: grid;
   grid-template-columns:
     28px                 /* caret */
-    minmax(0, 200px)     /* adapter token: name and channel */
-    minmax(0, 168px)     /* width and mode, or the wired link speed */
-    64px                 /* airtime */
+    /* Both of these were cut when the contention column arrived, because they
+       were the two with slack: the token holds "wlan-usb ch 149" and the next
+       cell "80 MHz · 802.11ax", neither of which grows. The device names are
+       what a narrow window would otherwise crush -- they sit in the 1fr track,
+       so every fixed track above is taken out of THEM -- and a name matters
+       more than whitespace beside a channel number. */
+    minmax(0, 168px)     /* adapter token: name and channel */
+    minmax(0, 144px)     /* width and mode, or the wired link speed */
+    minmax(0, 408px)     /* PHY, signals, our airtime, the neighbours' */
     minmax(0, 1fr)       /* the devices on it, and the slack */
     auto;                /* badges and actions, pinned right */
   align-items: center;
@@ -738,6 +921,25 @@ Clients ARE told it has gone, unlike a power cut.`
   white-space: nowrap;
   color: var(--ink-dim);
 }
+/* The contention triple. Keys are faint and small so the numbers lead: the
+   labels are read once and the figures are read every time. Tabular numerals so
+   the column does not jitter as values change. */
+.air { display: inline-flex; align-items: baseline; gap: 3px; white-space: nowrap; }
+.air .k { color: var(--ink-faint); font-size: 9px; }
+.air .v {
+  font-family: var(--mono);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--ink);
+  font-variant-numeric: tabular-nums;
+}
+/* The unit rides tight against its number and recedes, so the row reads as
+   three values rather than six tokens. Same treatment the old badge gave its
+   own unit, kept so this column looks like the rest of the interface. */
+.air .unit { color: var(--ink-faint); font-size: 9px; margin-left: 1px; }
+/* A gap before each label, so "ours -27dBm" groups more tightly than
+   "-27dBm loudest" and the pairs do not run together. */
+.air .k:not(:first-child) { margin-left: 6px; }
 /* The devices on this radio. Buttons, because each one goes to that device's
    card -- the mirror of the token's arrow going the other way. */
 .who {

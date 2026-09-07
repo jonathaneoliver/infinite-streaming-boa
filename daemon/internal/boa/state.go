@@ -299,6 +299,12 @@ type Engine struct {
 	// moment, and a stale one restored from disk would be worse than none.
 	scanSeen map[string]ScanSummary
 
+	// scanFree records, per radio, whether a scan of it kept the access point
+	// on the air. Written from what a scan actually did rather than from the
+	// driver's name, and consulted by the background poll -- which will not
+	// touch a radio unless the answer is known to be yes. See airpoll.go.
+	scanFree map[string]bool
+
 	// airSeen records, per radio, whether its LAST station dump carried the
 	// airtime lines -- the driver's answer to "can you attribute airtime to a
 	// client", asked by observation rather than by driver name.
@@ -473,6 +479,9 @@ func (e *Engine) Start() {
 	// Everything else here talks to hostapd in request/reply, which cannot see
 	// a client's answer to a steer -- see hostapdmonitor.go.
 	e.watchHostapdEvents()
+	// Contention figures, refreshed on a radio that can scan for free. Its own
+	// goroutine because a scan takes seconds and must never sit on the tick.
+	go e.watchAir()
 	// Devices announce only occasionally -- on join, on wake, when services
 	// change -- so an in-memory-only name table means every daemon restart
 	// drops every client back to a bare MAC until the next announcement,

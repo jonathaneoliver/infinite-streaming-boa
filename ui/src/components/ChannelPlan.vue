@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue';
 import type { IfaceInfo, ScanSummary } from '@/types';
-import { describeChannel, rateFor, type Quality } from '@/composables/channelQuality';
+import { describeChannel, mergeScans, rateFor, type Quality } from '@/composables/channelQuality';
 
 /**
  * One radio's band plan: the channels it may be moved to, drawn as a ruler.
@@ -22,8 +22,32 @@ const props = defineProps<{
   radio: IfaceInfo;
   scans?: Record<string, ScanSummary>;
   busy?: boolean;
+  /**
+   * The box's OTHER radios, so the plan can show where they already are.
+   *
+   * Without this the grid happily offers a channel one of our own radios is
+   * sitting on, and moving there makes the box interfere with itself for no
+   * gain whatever -- two of our access points splitting one channel while the
+   * rest of the band sits empty. Measured here: wlan-usb2 occupies 149-161 at
+   * 80MHz, which is four of the nine cells wlan-usb is offered.
+   */
+  others?: IfaceInfo[];
 }>();
 const emit = defineEmits<{ (e: 'move', channel: number, width: number): void }>();
+
+/**
+ * EVERY scan, not this radio's own.
+ *
+ * Was `props.scans?.[radio.name]`, which tied a plan's colours to a scan by
+ * that radio -- and on the mt7921u adapters a scan means taking the access
+ * point down and dropping every client. So colouring a 5GHz plan cost an
+ * outage, every time.
+ *
+ * The onboard radio scans both bands while it keeps serving and hears channel
+ * 40 and channel 149 perfectly well, so merging removes that cost entirely.
+ * Freshest reading per channel wins; see mergeScans.
+ */
+const merged = computed(() => mergeScans(props.scans));
 
 /*
  * A COMPUTED, not `const radio = props.radio`.
@@ -193,6 +217,45 @@ function plan(radio: IfaceInfo): { cols: string; rows: PlanRow[] } | null {
   };
 }
 
+/**
+ * Which channels each OTHER radio of ours occupies, keyed by channel.
+ *
+ * The whole block it fills, not the one it beacons on: a radio on 149 at 80MHz
+ * is using 149, 153, 157 and 161, and a plan that only marked 149 would offer
+ * 157 as though it were free. Same widening the scan applies to a neighbour's
+ * spectrum -- ours is no different from anyone else's, except that we can see
+ * it exactly rather than inferring it from a beacon.
+ */
+const takenBy = computed<Map<number, string>>(() => {
+  const out = new Map<number, string>();
+  for (const o of props.others ?? []) {
+    const ch = o.ap?.channel ?? 0;
+    const w = o.ap?.width_mhz ?? 20;
+    if (!ch || !o.ap?.enabled) continue;
+    // A radio with its access point down occupies nothing, and blocking a
+    // channel on its behalf would be blocking it for a radio that is not there.
+    const block = BLOCKS_5.find((b) => b.includes(ch));
+    let held = [ch];
+    if (block && w >= 80) held = block;
+    else if (block && w >= 40) {
+      const i = block.indexOf(ch);
+      held = block.slice(i - (i % 2), i - (i % 2) + 2);
+    }
+    for (const c of held) out.set(c, o.name);
+  }
+  return out;
+});
+
+/** The radio of ours sitting on this cell, or '' -- any overlap counts, since
+ *  a cell you cannot have all of is a cell you cannot have. */
+function takenName(cell: PlanCell): string {
+  for (const c of cell.channels) {
+    const who = takenBy.value.get(c);
+    if (who) return who;
+  }
+  return '';
+}
+
 /** The cell the radio is running right now: same width, and holding its channel. */
 function isCurrent(radio: IfaceInfo, row: PlanRow, cell: PlanCell): boolean {
   return (radio.ap?.width_mhz ?? 0) === row.width && cell.channels.includes(radio.ap?.channel ?? 0);
@@ -207,7 +270,7 @@ function cellClass(radio: IfaceInfo, cell: PlanCell): string {
   const order: Quality[] = ['unknown', 'clear', 'busy', 'crowded'];
   let worst: Quality = 'clear';
   for (const c of cell.channels) {
-    const q = rateFor(props.scans?.[radio.name], c);
+    const q = rateFor(merged.value, c);
     if (q === 'unknown') return 'q-unknown';
     if (order.indexOf(q) > order.indexOf(worst)) worst = q;
   }
@@ -216,9 +279,21 @@ function cellClass(radio: IfaceInfo, cell: PlanCell): string {
 
 function cellNote(radio: IfaceInfo, row: PlanRow, cell: PlanCell): string {
   const per = cell.channels
-    .map((c) => `ch ${c}: ${describeChannel(props.scans?.[radio.name], c)}`)
+    .map((c) => `ch ${c}: ${describeChannel(merged.value, c)}`)
     .join('; ');
   if (isCurrent(radio, row, cell)) return `${radio.name} is here now. ${per}`;
+  // Our OWN radio, which is a refusal rather than a warning: putting two of the
+  // box's access points on one channel halves both for nothing, while the rest
+  // of the band sits empty. Named, so the answer to "why can I not press this"
+  // is on the cell rather than left to be worked out.
+  const who = takenName(cell);
+  if (who) {
+    return (
+      `${who} is already here, so ${radio.name} cannot move onto it — two of ` +
+      `this box's own radios sharing a channel split it between themselves ` +
+      `and gain nothing. Move ${who} first if you want this block. ${per}`
+    );
+  }
   return (
     `Move ${radio.name} to ${cell.label} at ${row.width} MHz. ${per}. ` +
     `Takes the radio down and brings it back, so all ${radio.ap?.stations ?? 0} ` +
@@ -257,9 +332,13 @@ function cellNote(radio: IfaceInfo, row: PlanRow, cell: PlanCell): string {
         />
         <button
           v-else
-          class="cell" :class="[cellClass(radio, cell), { here: isCurrent(radio, row, cell) }]"
+          class="cell"
+          :class="[cellClass(radio, cell), {
+            here: isCurrent(radio, row, cell),
+            taken: !isCurrent(radio, row, cell) && !!takenName(cell),
+          }]"
           :style="{ gridColumn: `span ${cell.span}` }"
-          :disabled="busy || isCurrent(radio, row, cell)"
+          :disabled="busy || isCurrent(radio, row, cell) || !!takenName(cell)"
           :title="cellNote(radio, row, cell)"
           @click="emit('move', cell.channels[0], row.width)"
         >{{ cell.label }}</button>
@@ -318,15 +397,6 @@ function cellNote(radio: IfaceInfo, row: PlanRow, cell: PlanCell): string {
 }
 .cell:hover:not(:disabled) { background: var(--line); color: var(--ink); }
 .cell:disabled { cursor: default; }
-/* Where the radio is now. Filled rather than outlined, so it reads as a
-   position on the ruler rather than as one more thing to press. */
-.cell.here {
-  background: var(--line);
-  color: var(--ink);
-  font-weight: 600;
-  border-color: var(--ink-faint);
-  opacity: 1;
-}
 .plan.working .cell { cursor: progress; }
 /* Colour is a MEASUREMENT, so it only appears once a scan has been taken:
    q-unknown is the plain cell, and a box nobody has scanned shows no opinion
@@ -334,5 +404,40 @@ function cellNote(radio: IfaceInfo, row: PlanRow, cell: PlanCell): string {
 .cell.q-clear { border-color: var(--ok); color: var(--ok); }
 .cell.q-busy { border-color: var(--warn); color: var(--warn); }
 .cell.q-crowded { border-color: var(--bad); color: var(--bad); }
+/* Where the radio is NOW, and it has to win the row at a glance.
+   
+   The same treatment `button.accent` gives a chosen profile -- filled in the
+   accent colour with the background as the text -- because that is already what
+   "this is the selected one" looks like everywhere else here, and a grid of
+   forty cells is the last place to invent a second vocabulary for it.
+   
+   It was a grey fill (`--line`) with a faint border, which lost twice over: the
+   fill was barely a shade off the unselected `--panel-2` beside it, and the
+   border it set was then overridden by the quality rules above, so "here" came
+   down to slightly bolder text in a 10px font.
+   
+   AFTER the quality rules, deliberately. Those set `color` as well as
+   `border-color`, so declared earlier this would have had its text colour
+   replaced by the channel's rating and rendered green-on-blue. Only `color` and
+   `background` are set here, which leaves `border-color` to the rating -- so a
+   crowded channel you are sitting on still shows a red edge around the blue.
+   Both facts, one cell. */
+.cell.here {
+  background: var(--down);
+  color: var(--bg);
+  font-weight: 700;
+  opacity: 1;
+}
+/* Occupied by ANOTHER of our radios. Struck through and dimmed rather than
+   merely disabled, because a cell that is simply unclickable reads as a bug --
+   the operator presses it, nothing happens, and nothing says why. The tooltip
+   names which radio is there and what to do about it. */
+.cell.taken {
+  background: repeating-linear-gradient(
+    -45deg, var(--panel-2) 0 3px, var(--line-soft) 3px 6px);
+  color: var(--ink-faint);
+  border-color: var(--line);
+  cursor: not-allowed;
+}
 .node.unwatched .name { fill: var(--warn); }
 </style>

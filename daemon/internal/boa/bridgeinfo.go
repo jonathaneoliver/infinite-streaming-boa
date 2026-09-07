@@ -131,6 +131,22 @@ type IfaceInfo struct {
 	// of idle devices.
 	AirtimePerClient bool `json:"airtime_per_client"`
 	AirtimeCapKnown  bool `json:"airtime_cap_known"`
+
+	// OwnAirPct is the share of this radio's time spent on OUR OWN clients,
+	// averaged over the last five seconds, summed across them.
+	//
+	// The trustworthy half of the pair, and the one that answers "how busy is
+	// this radio". It comes from our own station counters, which were verified
+	// against iperf3, and it is the same total the stacked chart draws. The
+	// neighbours' figure in AirView answers a different question -- how much of
+	// the CHANNEL everyone else is using -- and is only as good as the access
+	// points within earshot. Measured 2026-09-07 on a quiet channel 149 with
+	// both clients idle: this read 1.3% and the neighbours' figure read 32%.
+	//
+	// OwnAirKnown is false where the driver cannot attribute airtime, which is
+	// not 0% -- see AirtimePerClient.
+	OwnAirPct   float64 `json:"own_air_pct,omitempty"`
+	OwnAirKnown bool    `json:"own_air_known,omitempty"`
 }
 
 // BridgeInfo is the whole answer for the bridge view.
@@ -150,6 +166,12 @@ type BridgeInfo struct {
 	// per-channel summary travels here, never the access point list -- that is
 	// hundreds of entries on a busy band, and this payload is polled.
 	Scans map[string]ScanSummary `json:"scans,omitempty"`
+	// Air is how contested each radio's own channel is, resolved from
+	// whichever scan measured that channel most recently -- which is usually
+	// NOT a scan by that radio. See AirView, and airview.go for why.
+	//
+	// Entries are absent rather than zeroed for a channel nobody has scanned.
+	Air map[string]AirView `json:"air,omitempty"`
 	// ReadAgeMs is how long ago this view was actually built, in milliseconds.
 	//
 	// It is built on a timer rather than per request, so it can be a couple of
@@ -158,6 +180,60 @@ type BridgeInfo struct {
 	// moment, or a stale one passes for current -- and during a radio recovery
 	// that is exactly when it would mislead.
 	ReadAgeMs int `json:"read_age_ms,omitempty"`
+}
+
+// AirView is how contested one radio's channel is, from whichever scan
+// measured it -- not necessarily a scan by that radio.
+//
+// That indirection is the point. On mt7921u a scan means taking the access
+// point down, so a 5GHz radio can only describe its own channel by dropping its
+// clients. The onboard brcmfmac radio scans BOTH bands while it keeps serving,
+// so one free scan there answers for every radio on the box. From records which
+// radio actually measured it, because "wlan-usb2's channel is at 2%" is a
+// different claim depending on who heard it and from where.
+type AirView struct {
+	Channel int    `json:"channel"`
+	From    string `json:"from"`
+	At      int64  `json:"at"` // unix ms of the scan this came from
+
+	// UtilPct is the measured airtime on this channel, 0-100, as the loudest
+	// reporting neighbour saw it. UtilKnown is false when nobody on the channel
+	// advertised BSS Load -- which is NOT an idle channel, and must not render
+	// as 0%.
+	//
+	// VERIFIED against our own per-client counters 2026-09-07, the one
+	// instrument here checked against iperf3. Over the same 4.1s window our
+	// stations accounted for 78.04% of wlan-usb while two independent
+	// neighbours reported channel 40 at 69.8% and 83.9% -- bracketing it. At
+	// idle the same neighbours read 9.8% and 20.0% against ~0% of our own, so
+	// the figure tracks load in the right direction and the right magnitude.
+	// See DATA-CONTRACT Source O.
+	UtilPct   float64 `json:"util_pct"`
+	UtilKnown bool    `json:"util_known"`
+	// UtilMinPct and UtilReporters are the spread and the sample size behind
+	// UtilPct, which is the HIGHEST of them.
+	//
+	// The neighbours on one channel do not agree, and by a lot: measured
+	// 2026-09-07, five access points on channel 2 reported 19% to 33%, and
+	// three on channel 40 reported 9% to 20%. They sit in different rooms and
+	// genuinely hear different amounts of the same medium, so the spread is
+	// physical rather than noise. Showing only the maximum hid an 11-14 point
+	// disagreement behind a number that looked precise.
+	//
+	// UtilReporters is the confidence: one faint access point describing its own
+	// corner of the world deserves to read differently from five that agree.
+	UtilMinPct    float64 `json:"util_min_pct,omitempty"`
+	UtilReporters int     `json:"util_reporters,omitempty"`
+
+	// LoudestDBm is the strongest NEIGHBOUR heard on this channel, ours
+	// excluded. Zero when nothing was heard, which for a scan is real evidence
+	// of a clear channel rather than a gap -- a scan lists everything audible.
+	LoudestDBm float64 `json:"loudest_dbm,omitempty"`
+	// OursDBm is this radio's own access point as the SCANNING radio heard it.
+	// Absent for the radio that took the scan, since a radio cannot hear
+	// itself, and absent when no scan has covered it yet.
+	OursDBm   float64 `json:"ours_dbm,omitempty"`
+	OursKnown bool    `json:"ours_known,omitempty"`
 }
 
 // ScanSummary is what a scan concluded, small enough to carry in every poll.
@@ -169,6 +245,25 @@ type ScanSummary struct {
 	Band     string        `json:"band,omitempty"`
 	Channels []ScanChannel `json:"channels,omitempty"`
 	Best     int           `json:"best_channel,omitempty"`
+	// Ours is each of our OTHER radios as this scan heard it, keyed by
+	// interface, in dBm. The scanning radio is never in its own map.
+	Ours map[string]float64 `json:"ours,omitempty"`
+	// Looked is every channel this scan actually LISTENED to, as against the
+	// channels it found something on.
+	//
+	// The difference is load-bearing and cost a wrong reading to find. Channels
+	// only appear in Channels when an access point was heard there, so a
+	// genuinely clear channel produces no entry at all -- and a merge that
+	// asks "does this scan know about channel 149" by looking in Channels
+	// concludes "no" and falls back to an older scan that happened to hear
+	// something. MEASURED 2026-09-07: wlan-usb2 was saturated at 87% airtime on
+	// a clear channel 149 while the interface showed 2%, from a scan three
+	// minutes old, because every fresh scan heard nothing there and was judged
+	// to have said nothing.
+	//
+	// Hearing nothing on a channel you listened to is a measurement. This is
+	// what records that it was taken.
+	Looked []int `json:"looked,omitempty"`
 }
 
 // BridgeState assembles the inventory. Best-effort by design: a box with no
@@ -371,6 +466,31 @@ func (e *Engine) buildBridgeState() BridgeInfo {
 	})
 	bi.Notes = bridgeNotes(bi, e.cfg)
 	bi.Scans = e.lastScans()
+	// Each radio's contention, from whoever measured its channel. Built here
+	// rather than in the UI so the title bar and the band plan colours cannot
+	// disagree about the same channel.
+	chanOf := map[string]int{}
+	for _, in := range bi.Ifaces {
+		if in.Wireless && in.AP != nil {
+			chanOf[in.Name] = in.AP.Channel
+		}
+	}
+	bi.Air = airViews(bi.Scans, chanOf)
+	// And what OUR OWN clients are costing each radio, which is the half of the
+	// picture the neighbours cannot tell us. Set after the ifaces are built, so
+	// it can be gated on the radio that actually reports per-station airtime.
+	capable := map[string]bool{}
+	for _, in := range bi.Ifaces {
+		if in.AirtimePerClient {
+			capable[in.Name] = true
+		}
+	}
+	own := e.ownAirtime(time.Now(), capable)
+	for i := range bi.Ifaces {
+		if v, ok := own[bi.Ifaces[i].Name]; ok {
+			bi.Ifaces[i].OwnAirPct, bi.Ifaces[i].OwnAirKnown = v, true
+		}
+	}
 	return bi
 }
 
