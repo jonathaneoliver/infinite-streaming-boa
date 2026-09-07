@@ -389,9 +389,21 @@ const (
 // restarts the clock rather than stacking, so pressing the button twice makes
 // the wait longer, not shorter.
 //
-// It now equals btmWait, so an unanswered evict is disassociated at the same
-// moment its silence is reported. That is deliberate and the report says "now"
-// rather than counting down to zero -- see reportMuteSteers.
+// It used to equal btmWait, so an unanswered evict was disassociated at the
+// same moment its silence was reported. It no longer does: btmWait went to 12s
+// because real clients were measured answering a steer at eight to nine
+// seconds, and this deliberately did NOT follow.
+//
+// They answer different questions and only looked like one. This is how long a
+// client gets to leave POLITELY before it is pushed, which is a property of the
+// eviction and of how long an operator will tolerate a device sitting on the
+// radio they asked it to leave. btmWait is how long to wait before concluding a
+// client will never answer, which is a property of client firmware. Raising
+// this to match would have made every evict take twice as long for no reason
+// anybody asked for.
+//
+// The consequence is that an evicted client is now disassociated BEFORE its
+// silence is reported, so reportMuteSteers has to say so in the past tense.
 const evictDisassocSec = 5
 
 // tbttPerSec converts seconds into beacon intervals, the unit hostapd's

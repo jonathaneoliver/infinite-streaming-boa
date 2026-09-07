@@ -1179,7 +1179,13 @@ moved. So:
 - **Moving and answering are independent**, and the log reports them as two
   facts. A client that moves in silence must not be described as unresponsive —
   it plainly acted.
-- **Silence is reported, not left as an absence** (after 5s). A reader who sees
+- **Silence is reported, not left as an absence** (after 12s). It was 5s, on the
+  reasoning that a response carries a decision and no scanning so it should be
+  immediate. MEASURED 2026-09-07: an iPhone and a MacBook each answered a steer
+  **eight to nine seconds** after the request, repeatedly — so both were called
+  mute, and the answer then arrived with no pending request to attach it to,
+  reported as "asked to move to another radio" rather than naming the
+  destination. A reader who sees
   "asked to move" and then nothing cannot otherwise tell a refusal from a
   request that went nowhere.
 
