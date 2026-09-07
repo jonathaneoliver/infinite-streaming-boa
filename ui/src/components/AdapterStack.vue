@@ -48,6 +48,10 @@ const props = withDefaults(defineProps<{
    * because download and upload are separate questions, while airtime is one
    * chart -- the radio's time is a single resource and transmit and receive
    * both spend it.
+   *
+   * Airtime keeps the pair's GRID regardless, sitting in the download column
+   * with a filler beside it, so both plots carry the same window over the same
+   * pixels and a vertical line through the fold means one instant.
    */
   mode?: 'throughput' | 'airtime';
   /**
@@ -453,6 +457,12 @@ const legend = computed(() => charts.value[0].bands);
         </svg>
       </div>
 
+      <!-- Holds the second column open so the airtime plot keeps the download
+           plot's width and therefore its time axis. `1fr 1fr` with a single
+           child still stretches that child across the track it is in; only an
+           actual second item makes the first one half. -->
+      <div v-if="mode === 'airtime'" class="one filler" aria-hidden="true" />
+
       <!-- OVER the plots, not INSTEAD of them.
 
            "in the last 5m", not "yet". Both states reach here and they are
@@ -537,11 +547,25 @@ const legend = computed(() => charts.value[0].bands);
 @media (max-width: 860px) { .pair { grid-template-columns: 1fr; } }
 /* Airtime is one chart, not a pair: the radio's time is a single resource and
    transmit and receive both spend it, so splitting by direction would divide a
-   quantity that is not divisible that way. Full width keeps its x-axis the
-   same width as the two above it, which is the whole reason it sits there --
-   a spike in airtime and the throughput that did or did not accompany it have
-   to line up vertically to be read together. */
-.pair.single { grid-template-columns: 1fr; }
+   quantity that is not divisible that way.
+
+   But it keeps the PAIR'S GRID and sits in the download column, rather than
+   spanning the fold. Stretching it to full width was the first attempt and it
+   defeated the entire point of the chart's position: a plot twice as wide
+   carries the same five minutes over twice the pixels, so a spike in airtime
+   sat at a different x from the throughput that caused it, and the two could
+   not be read against each other by eye. Same column, same 1fr, same 1px gap,
+   so the time axes are identical and a vertical line through both means one
+   instant.
+
+   The second column is held open by a filler rather than collapsed, because
+   `1fr 1fr` with one child would still stretch it. */
+.pair.single .filler { background: var(--panel); }
+/* Below the collapse the pair is one column, so download is full width and the
+   filler has nothing left to reserve -- it would stack under the plot as an
+   empty panel the height of a chart. The airtime plot is full width there too,
+   which is still the download plot's width, so the axes stay aligned. */
+@media (max-width: 860px) { .pair.single .filler { display: none; } }
 /* Drawn, but plainly not carrying anything. An empty pane at full strength
    reads as a radio carrying nothing -- the exact misreading the message above
    exists to prevent -- so the frame recedes and the words lead. */
