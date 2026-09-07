@@ -15,7 +15,8 @@ ExecStart=/usr/local/bin/boad \
   -wan ${BOA_WAN_PORT} \
   -wlan ${BOA_WLAN_PORT} \
   -lan ${BOA_LAN_PORT} \
-  -state ${BOA_STATE}
+  -state ${BOA_STATE} \
+  $BOA_EXTRA_ARGS
 Restart=always
 RestartSec=3
 

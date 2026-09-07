@@ -623,6 +623,35 @@ damages packets, never link state.
   answers "what is true now" and is silent about "what just happened", which on
   a two-radio box is the more interesting question -- a device that moved to the
   other band is simply on the other band, with nothing saying it moved.
+- **A refused steer says where the client asked to go instead.** A client that
+  declines a transition request may answer "candidate list provided" and name
+  the BSS it would rather have, with a preference from 1 to 255. The box reads
+  that list out of the response frame itself and puts it on the same line as the
+  refusal, naming one of its own radios where the candidate is one, so a refusal
+  reads as a preference rather than a dead end. Measured on this hardware, a
+  client refusing a move to one 5GHz radio asked for the 2.4GHz one at the
+  maximum preference: it was not declining to move, it was choosing a band.
+- **A client that leaves of its own accord says why.** Its deauthentication or
+  disassociation carries a reason code, and that is the only thing separating a
+  device that roamed away from one that timed out from one that gave up on this
+  network — all three simply stop appearing. What the box itself sends is not
+  reported this way and cannot be: an access point sees the frames it receives,
+  not the ones it transmits.
+- **Everything else a client says is available behind a switch in the log's own
+  bar.** Capability elements on every association, and frame types nothing acts
+  on, are context rather than events: they repeat on every join and would bury
+  what the log is for, so they are off by default and the log is unchanged when
+  they are. The switch is in the activity bar because that is where the question
+  is asked, and it takes effect immediately — the moment anyone wants this is
+  while watching a device misbehave, and a setting needing a restart is one that
+  gets turned on for the run that has already finished.
+- **That switch changes what the box RECORDS, not what one reader sees.** It is
+  shared, and another browser sees it move. This is deliberate: the log keeps a
+  fixed number of lines, so recording everything and filtering per reader would
+  let capability chatter push the refusals and disconnect reasons out of the
+  history before anyone came looking for them. Turning it on and off is itself
+  recorded, because otherwise lines ceasing to appear is indistinguishable from
+  a box that went quiet.
 - **A radio that stops serving is reported, and so is its recovery.** Whether a
   radio is powered is not the same question as whether it has a working access
   point on it, and the second one is what decides if anybody can connect: a

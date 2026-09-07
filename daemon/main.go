@@ -51,6 +51,9 @@ func main() {
 	flag.IntVar(&tickMs, "tick", 1000, "telemetry poll interval in milliseconds")
 	flag.BoolVar(&cfg.Demo, "demo", false,
 		"serve synthetic clients and touch no kernel state; for UI development")
+	flag.BoolVar(&cfg.Verbose, "verbose", false,
+		"log the received management frames that are context rather than events: "+
+			"association capabilities, and subtypes nothing acts on")
 	flag.BoolVar(&showVersion, "version", false, "print the version and exit")
 	flag.Parse()
 

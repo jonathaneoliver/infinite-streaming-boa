@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -38,6 +39,21 @@ type Config struct {
 	// Demo serves synthetic clients and touches no kernel state, so the web
 	// interface can be developed without a Pi. See demo.go.
 	Demo bool
+	// Verbose is the STARTING state of the activity log's verbose mode, which
+	// adds the received management frames that are context rather than events:
+	// capability elements on every association, and subtypes nothing acts on.
+	//
+	// Off by default because those repeat on every join and would bury the
+	// events the view exists for. The two findings that are NOT gated by it --
+	// a transition refusal's candidate list, and a client's own reason for
+	// leaving -- are rare, unrecoverable afterwards, and answer questions the
+	// interface otherwise cannot. See handleMgmtFrame.
+	//
+	// Only the starting state: the interface toggles it live, because the
+	// moment anyone wants it is in the middle of watching something, and a
+	// setting that needs a restart to change is one that gets turned on
+	// afterwards, for the run that has already finished.
+	Verbose bool
 }
 
 // PrimaryWlan is the radio reported wherever a single name is still wanted --
@@ -113,6 +129,21 @@ type Engine struct {
 	// request that is never answered is itself the result, which is why these
 	// are aged out loudly rather than dropped. See hostapdmonitor.go.
 	pendingSteers map[string]pendingSteer
+
+	// btmCandidates is where a transition refusal's candidate list waits for
+	// the BSS-TM-RESP event that reports the refusal, so one line can say both
+	// that a client declined and where it asked to go instead. Written and read
+	// microseconds apart on the same goroutine; see noteBTMCandidates.
+	btmCandidates map[string][]neighborCandidate
+
+	// verboseOn is the activity log's verbose mode: seeded from Config.Verbose
+	// and toggled live from the interface.
+	//
+	// Atomic rather than under e.mu because of where it is read -- once per
+	// received management frame, on the monitor goroutine that must not block
+	// on the same lock the 1Hz tick holds while it builds a snapshot. Written
+	// rarely, from an API handler.
+	verboseOn atomic.Bool
 
 	rev, ctrlRev uint64
 	snap         Snapshot
@@ -328,6 +359,13 @@ func NewEngine(cfg Config) *Engine {
 	if cfg.Tick == 0 {
 		cfg.Tick = time.Second
 	}
+	e := newEngine(cfg)
+	// -verbose is the STARTING state only; the interface owns it from here.
+	e.verboseOn.Store(cfg.Verbose)
+	return e
+}
+
+func newEngine(cfg Config) *Engine {
 	return &Engine{
 		cfg:          cfg,
 		sh:           NewShaper(cfg.WANPort, cfg.Bridge, managementPorts(cfg.Addr)),
@@ -1169,6 +1207,7 @@ func (e *Engine) tick() {
 			Glances: PortListening(glancesPort), GlancesPort: glancesPort,
 			Services:    serviceStates(),
 			LinkControl: e.anyLinkControl(),
+			Verbose:     e.verbose(),
 			LossBurst:   burstOK, LossBurstNote: burstNote,
 			NamesLearned: len(names), NamesByMAC: len(macNames),
 		},
