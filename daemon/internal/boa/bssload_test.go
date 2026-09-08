@@ -90,7 +90,7 @@ func TestBSSLoadRebuildsTheBeacon(t *testing.T) {
 	sent := captureHostapd(t, nil)
 
 	e := &Engine{cfg: Config{Demo: true, WlanPorts: []string{"wlan-usb"}}}
-	if _, err := e.SetBSSLoad("wlan-usb", true, 12, 60); err != nil {
+	if _, err := e.SetBSSLoad("wlan-usb", true, false, 12, 60); err != nil {
 		t.Fatalf("SetBSSLoad: %v", err)
 	}
 
@@ -115,7 +115,7 @@ func TestBSSLoadFailsLoudlyWhenTheBeaconIsNotRebuilt(t *testing.T) {
 	})
 
 	e := &Engine{cfg: Config{Demo: true, WlanPorts: []string{"wlan-usb"}}}
-	_, err := e.SetBSSLoad("wlan-usb", true, 12, 60)
+	_, err := e.SetBSSLoad("wlan-usb", true, false, 12, 60)
 	if err == nil {
 		t.Fatal("SetBSSLoad reported success after hostapd refused to rebuild the beacon")
 	}
@@ -140,10 +140,10 @@ func TestReapplyOnlyRestoresRadiosStillClaiming(t *testing.T) {
 	sent := captureHostapd(t, nil)
 	e := &Engine{cfg: Config{Demo: true, WlanPorts: []string{"wlan-usb", "wlan-usb2", "wlan0"}}}
 
-	if _, err := e.SetBSSLoad("wlan-usb", true, 12, 60); err != nil {
+	if _, err := e.SetBSSLoad("wlan-usb", true, false, 12, 60); err != nil {
 		t.Fatalf("SetBSSLoad wlan-usb: %v", err)
 	}
-	if _, err := e.SetBSSLoad("wlan-usb2", false, 3, 20); err != nil {
+	if _, err := e.SetBSSLoad("wlan-usb2", false, false, 3, 20); err != nil {
 		t.Fatalf("SetBSSLoad wlan-usb2: %v", err)
 	}
 	_ = sent() // the setup traffic; what matters is what the restart replays.
@@ -166,14 +166,14 @@ func TestBSSLoadKeepsItsNumbersWhileSwitchedOff(t *testing.T) {
 	captureHostapd(t, nil)
 	e := &Engine{cfg: Config{Demo: true, WlanPorts: []string{"wlan-usb"}}}
 
-	if _, err := e.SetBSSLoad("wlan-usb", true, 12, 60); err != nil {
+	if _, err := e.SetBSSLoad("wlan-usb", true, false, 12, 60); err != nil {
 		t.Fatalf("SetBSSLoad on: %v", err)
 	}
-	if _, err := e.SetBSSLoad("wlan-usb", false, 12, 60); err != nil {
+	if _, err := e.SetBSSLoad("wlan-usb", false, false, 12, 60); err != nil {
 		t.Fatalf("SetBSSLoad off: %v", err)
 	}
 
-	st := e.BSSLoadStates([]string{"wlan-usb"})["wlan-usb"]
+	st := e.BSSLoadStates([]string{"wlan-usb"}, nil)["wlan-usb"]
 	if st.On {
 		t.Fatal("still advertising after being switched off")
 	}
@@ -209,7 +209,7 @@ func TestTheFloorIsAppliedAtSendTimeAndNeverRatchets(t *testing.T) {
 	e := &Engine{cfg: Config{Demo: true, WlanPorts: []string{"wlan-usb"}}}
 
 	// Claimed while the radio is quiet: the ask reaches the air unchanged.
-	if _, err := e.SetBSSLoad("wlan-usb", true, 4, 20); err != nil {
+	if _, err := e.SetBSSLoad("wlan-usb", true, false, 4, 20); err != nil {
 		t.Fatalf("SetBSSLoad: %v", err)
 	}
 	if got := onlyLoadArg(t, sent()); got != "4:51:0" {
@@ -234,7 +234,7 @@ func TestTheFloorIsAppliedAtSendTimeAndNeverRatchets(t *testing.T) {
 
 	// And the stored ask is still the ask, so the interface draws the handle
 	// where it was put rather than where the traffic left it.
-	if st := e.BSSLoadStates([]string{"wlan-usb"})["wlan-usb"]; st.UtilPct != 20 {
+	if st := e.BSSLoadStates([]string{"wlan-usb"}, nil)["wlan-usb"]; st.UtilPct != 20 {
 		t.Fatalf("stored claim is %v%%, want the operator's 20%%", st.UtilPct)
 	}
 }
@@ -285,7 +285,7 @@ func TestAClaimSurvivesADaemonRestart(t *testing.T) {
 		cfg:     Config{Demo: true, WlanPorts: []string{"wlan-usb"}},
 		bssLoad: bssLoadStore{path: path},
 	}
-	if _, err := first.SetBSSLoad("wlan-usb", true, 39, 85); err != nil {
+	if _, err := first.SetBSSLoad("wlan-usb", true, false, 39, 85); err != nil {
 		t.Fatalf("SetBSSLoad: %v", err)
 	}
 	_ = sent()
@@ -303,7 +303,7 @@ func TestAClaimSurvivesADaemonRestart(t *testing.T) {
 			"39:217:0 — the interface would be reporting nothing while the beacon "+
 			"carried 85%%", got)
 	}
-	if st := second.BSSLoadStates([]string{"wlan-usb"})["wlan-usb"]; !st.On || st.UtilPct != 85 {
+	if st := second.BSSLoadStates([]string{"wlan-usb"}, nil)["wlan-usb"]; !st.On || st.UtilPct != 85 {
 		t.Fatalf("restarted daemon reports on=%v at %v%%, want on at 85%%",
 			st.On, st.UtilPct)
 	}
@@ -329,6 +329,105 @@ func TestStartupClearsAClaimItHasNoRecordOf(t *testing.T) {
 	}
 	if got := sent(); !sameCalls(got, want) {
 		t.Fatalf("startup sent %v, want every radio explicitly cleared: %v", got, want)
+	}
+}
+
+/*
+ * THE CORRECTION: ADVERTISING WHAT THIS BOX ACTUALLY MEASURES.
+ *
+ * hostapd fills the element in from the survey counter, and on this hardware
+ * that counter is broken in a way one command's own output contradicts.
+ * MEASURED 2026-09-08 over a 22.3s window at 494 Mbit/s:
+ *
+ *	survey 'channel busy time'      11.9%   <- what hostapd advertises
+ *	survey receive + transmit       71.6%   <- same command, same window
+ *	our own per-station tx+rx       78.9%   <- verified against iperf3
+ *
+ * So the correction is not an opinion about hostapd's number, it is a
+ * replacement for one the driver disagrees with itself about.
+ */
+func TestTheCorrectionAdvertisesTheLargerLowerBound(t *testing.T) {
+	var floor float64
+	var neighbour float64
+	var neighbourKnown bool
+
+	origFloor := bssFloorFor
+	t.Cleanup(func() { bssFloorFor = origFloor })
+	bssFloorFor = func(*Engine, string) BSSLoadState {
+		return BSSLoadState{FloorStations: 2, FloorUtilPct: floor, FloorKnown: true}
+	}
+	origNb := neighbourUtilFor
+	t.Cleanup(func() { neighbourUtilFor = origNb })
+	neighbourUtilFor = func(*Engine, string) (float64, bool) { return neighbour, neighbourKnown }
+
+	sent := captureHostapd(t, nil)
+	e := &Engine{cfg: Config{Demo: true, WlanPorts: []string{"wlan-usb"}}}
+
+	// Our own airtime is the bigger of the two lower bounds.
+	floor, neighbour, neighbourKnown = 78.9, 74.5, true
+	if _, err := e.SetBSSLoad("wlan-usb", false, true, 0, 0); err != nil {
+		t.Fatalf("SetBSSLoad: %v", err)
+	}
+	// 78.9% -> 201/255, and the station count is the REAL one, not a claim.
+	if got := onlyLoadArg(t, sent()); got != "2:201:0" {
+		t.Fatalf("advertised %q, want our own 78.9%% as 2:201:0", got)
+	}
+
+	// The neighbours are the bigger one: an idle radio on a channel somebody
+	// else is filling. Adding them would double-count the same medium.
+	floor, neighbour = 0, 30
+	e.reapplyBSSLoad()
+	if got := onlyLoadArg(t, sent()); got != "2:77:0" {
+		t.Fatalf("advertised %q, want the neighbours' 30%% as 2:77:0", got)
+	}
+}
+
+// Nothing measured and nobody to ask. Sending 0 would be indistinguishable from
+// hostapd's own zero while claiming to be a correction, so the correction stands
+// down rather than dressing an absence up as a measurement -- the same rule the
+// air view follows in refusing to render "no scan yet" as 0%.
+func TestTheCorrectionStandsDownWithNothingToCorrectWith(t *testing.T) {
+	origFloor := bssFloorFor
+	t.Cleanup(func() { bssFloorFor = origFloor })
+	bssFloorFor = func(*Engine, string) BSSLoadState {
+		return BSSLoadState{FloorStations: 0} // FloorKnown false: brcmfmac
+	}
+	origNb := neighbourUtilFor
+	t.Cleanup(func() { neighbourUtilFor = origNb })
+	neighbourUtilFor = func(*Engine, string) (float64, bool) { return 0, false }
+
+	sent := captureHostapd(t, nil)
+	e := &Engine{cfg: Config{Demo: true, WlanPorts: []string{"wlan0"}}}
+	if _, err := e.SetBSSLoad("wlan0", false, true, 0, 0); err != nil {
+		t.Fatalf("SetBSSLoad: %v", err)
+	}
+	for _, c := range sent() {
+		if c[1] != "UPDATE_BEACON" && c[1] != "SET bss_load_test 0:0:0" {
+			t.Fatalf("sent %q with nothing to correct with; expected no claim", c[1])
+		}
+	}
+}
+
+// A deliberate claim outranks the correction. The operator asked for something
+// specific, and it is floored at the truth anyway -- so there is no state in
+// which having both switches on advertises LESS than the correction would.
+func TestADeliberateClaimOutranksTheCorrection(t *testing.T) {
+	origFloor := bssFloorFor
+	t.Cleanup(func() { bssFloorFor = origFloor })
+	bssFloorFor = func(*Engine, string) BSSLoadState {
+		return BSSLoadState{FloorStations: 2, FloorUtilPct: 10, FloorKnown: true}
+	}
+	origNb := neighbourUtilFor
+	t.Cleanup(func() { neighbourUtilFor = origNb })
+	neighbourUtilFor = func(*Engine, string) (float64, bool) { return 30, true }
+
+	sent := captureHostapd(t, nil)
+	e := &Engine{cfg: Config{Demo: true, WlanPorts: []string{"wlan-usb"}}}
+	if _, err := e.SetBSSLoad("wlan-usb", true, true, 40, 90); err != nil {
+		t.Fatalf("SetBSSLoad: %v", err)
+	}
+	if got := onlyLoadArg(t, sent()); got != "40:230:0" {
+		t.Fatalf("advertised %q, want the operator's 40 stations at 90%% as 40:230:0", got)
 	}
 }
 

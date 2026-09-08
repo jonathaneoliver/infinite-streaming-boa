@@ -660,6 +660,25 @@ func (a *API) postScan(w http.ResponseWriter, r *http.Request) {
 // rather than refuses. Overstating load pushes devices away, which is what a
 // genuinely busy access point does anyway; understating it pulls them in, and
 // that lands on neighbours nobody here can see or ask.
+//
+// `fix=1` is the other mode and the honest one: advertise the box's own
+// estimate of the channel's congestion instead of hostapd's, which on this
+// hardware is a permanent 0% derived from a survey counter that reads 11.9%
+// while the radio is 78.9% busy. It is a separate switch because it is a
+// different act -- `on` is a claim, `fix` is a correction -- and `on` wins where
+// both are set.
+//
+// Neither one is silence. VERIFIED three ways: the element cannot be taken out
+// of the beacon on this build, so "off" means advertising a zero nobody chose.
+// boolParam reads a switch off the query string, defaulting to TRUE.
+//
+// Absent means on because these are POSTs from controls that name the thing
+// they turn on: a caller who did not mention a switch is not asking for it to
+// be silently turned off.
+func boolParam(v string) bool {
+	return v != "0" && !strings.EqualFold(v, "false")
+}
+
 func (a *API) postBSSLoad(w http.ResponseWriter, r *http.Request) {
 	iface := r.PathValue("iface")
 	if err := a.e.radioReady(iface); err != nil {
@@ -667,8 +686,9 @@ func (a *API) postBSSLoad(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	q := r.URL.Query()
-	on := q.Get("on") != "0" && !strings.EqualFold(q.Get("on"), "false")
-	st, err := a.e.SetBSSLoad(iface, on, atoiSafe(q.Get("stations")), atofSafe(q.Get("util_pct")))
+	on := boolParam(q.Get("on"))
+	fix := boolParam(q.Get("fix"))
+	st, err := a.e.SetBSSLoad(iface, on, fix, atoiSafe(q.Get("stations")), atofSafe(q.Get("util_pct")))
 	if err != nil {
 		writeErr(w, http.StatusBadGateway, err.Error())
 		return

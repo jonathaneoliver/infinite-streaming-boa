@@ -77,6 +77,21 @@ type bssLoadOverride struct {
 	// default that is already wrong in the direction this control is forbidden
 	// to move in.
 	On bool `json:"on"`
+	// Fix advertises the box's OWN estimate instead of hostapd's, and it is a
+	// separate switch from On because it is a different kind of act.
+	//
+	// There is no honest "off" to fall back to. VERIFIED 2026-09-08 three ways
+	// -- `SET bss_load_test 0:0:0`, an empty value, and
+	// `SET bss_load_update_period 0` -- the element stays in the beacon reading
+	// 0 stations and 0/255, and so does a radio that has never been configured
+	// with either. On this build it is simply always there.
+	//
+	// So the default state is not silence, it is a WRONG NUMBER, and one wrong
+	// in the direction that pulls clients towards us. Fix replaces it with the
+	// best figure this box actually has. On beats Fix where both are set: a
+	// deliberate claim is the operator asking for something specific, and it is
+	// floored at the truth anyway.
+	Fix bool `json:"fix"`
 }
 
 // BSSLoadState is one radio's override and the floor it may not go below.
@@ -109,6 +124,13 @@ type BSSLoadState struct {
 	// the utilisation floor is a guess rather than a measurement. The onboard
 	// brcmfmac radio is the case: no per-station duration counters at all.
 	FloorKnown bool `json:"floor_known"`
+
+	// Fix is on when this radio advertises the box's own estimate rather than
+	// hostapd's zero. FixUtilPct is that estimate and FixKnown says whether
+	// there is one -- see correctedUtil.
+	Fix        bool    `json:"fix"`
+	FixUtilPct float64 `json:"fix_util_pct"`
+	FixKnown   bool    `json:"fix_known"`
 }
 
 /*
@@ -222,6 +244,10 @@ func (e *Engine) assertBSSLoad() {
 				"%s is advertising %d station(s) and %.0f%% channel utilisation again "+
 					"— a claim from before this daemon started, restored so the "+
 					"interface and the air agree", w, ov.Stations, ov.UtilPct)
+		} else if ov.Fix {
+			e.logEvent(EventRadio, w, "",
+				"%s is advertising this box's own congestion estimate again, from "+
+					"before this daemon started", w)
 		}
 	}
 }
@@ -236,7 +262,7 @@ func (e *Engine) assertBSSLoad() {
 //
 // The override is stored even when `on` is false, so switching the element back
 // on does not lose the numbers the operator had already dialled in.
-func (e *Engine) SetBSSLoad(iface string, on bool, stations int, utilPct float64) (BSSLoadState, error) {
+func (e *Engine) SetBSSLoad(iface string, on, fix bool, stations int, utilPct float64) (BSSLoadState, error) {
 	if err := e.radioReady(iface); err != nil {
 		return BSSLoadState{}, err
 	}
@@ -245,7 +271,7 @@ func (e *Engine) SetBSSLoad(iface string, on bool, stations int, utilPct float64
 	if e.bssLoad.by == nil {
 		e.bssLoad.by = map[string]bssLoadOverride{}
 	}
-	e.bssLoad.by[iface] = bssLoadOverride{Stations: stations, UtilPct: utilPct, On: on}
+	e.bssLoad.by[iface] = bssLoadOverride{Stations: stations, UtilPct: utilPct, On: on, Fix: fix}
 	// Written down before it is applied, so a daemon that dies between the two
 	// comes back knowing about a claim it may have made. The other order loses
 	// exactly the case this file exists for.
@@ -261,7 +287,8 @@ func (e *Engine) SetBSSLoad(iface string, on bool, stations int, utilPct float64
 		return BSSLoadState{}, err
 	}
 	st := e.bssLoadFloor(iface)
-	st.On, st.Stations, st.UtilPct = on, stations, utilPct
+	st.On, st.Fix, st.Stations, st.UtilPct = on, fix, stations, utilPct
+	st.FixUtilPct, st.FixKnown = e.correctedUtil(iface, st)
 	if on {
 		// The EFFECTIVE figures, because that is what went on the air. Logging
 		// the ask would leave the record disagreeing with the beacon whenever the
@@ -272,11 +299,16 @@ func (e *Engine) SetBSSLoad(iface string, on bool, stations int, utilPct float64
 				"beacon — a claim, not a measurement, and at or above the %.0f%% it "+
 				"is really using",
 			iface, gotSt, gotUtil, st.FloorUtilPct)
+	} else if fix {
+		e.logEvent(EventRadio, iface, "",
+			"%s now advertises %d station(s) and %.0f%% channel utilisation — this "+
+				"box's own estimate, replacing the 0%% hostapd would otherwise put "+
+				"in every beacon", iface, st.FloorStations, st.FixUtilPct)
 	} else {
 		e.logEvent(EventRadio, iface, "",
-			"%s stopped overriding its BSS Load, so its beacon is back to the "+
-				"0 stations and 0%% utilisation hostapd advertises by default — "+
-				"which is itself an understatement, not a measurement", iface)
+			"%s is back to the 0 stations and 0%% utilisation hostapd advertises by "+
+				"default — which is a wrong number rather than silence: the element "+
+				"cannot be taken out of the beacon on this hardware", iface)
 	}
 	return st, nil
 }
@@ -325,6 +357,68 @@ func raiseToFloor(stations int, utilPct float64, floor BSSLoadState) (int, float
 	return capToRange(stations, utilPct)
 }
 
+// correctedUtil is the best figure this box actually has for how busy its
+// channel is, as a percentage, and whether there is one at all.
+//
+// TWO halves, and neither is sufficient alone:
+//
+//	our own airtime      measured at OUR antenna, from the per-station duration
+//	                     counters verified against iperf3 (Source T). Certain,
+//	                     and a LOWER bound -- it counts only our own traffic.
+//	neighbours' reports  the highest BSS Load advertised by anyone else on this
+//	                     channel. The only evidence available about the rest of
+//	                     the medium, up to 15s stale, and absent on a channel
+//	                     with nobody near enough to ask.
+//
+// The LARGER of the two, because each is a lower bound on the same quantity and
+// the element is defined as how busy the AP sensed the medium. Adding them
+// would double-count: measured 2026-09-08, with our radio at 78.9% the nearest
+// neighbours reported 74.5%, which is mostly the same traffic seen twice.
+//
+// Still a lower bound after all that. Neither half can see a source that does
+// not beacon -- a microwave, a baby monitor, a cordless phone -- because this
+// box has no spectral scan. Real utilisation can exceed this with nothing here
+// able to say why.
+func (e *Engine) correctedUtil(iface string, floor BSSLoadState) (float64, bool) {
+	out, known := floor.FloorUtilPct, floor.FloorKnown
+	if n, ok := e.neighbourUtil(iface); ok {
+		if !known || n > out {
+			out = n
+		}
+		known = true
+	}
+	return out, known
+}
+
+// neighbourUtil is what the busiest access point on this radio's channel says
+// about it, from the last scan that covered it.
+//
+// Read off the CACHED bridge snapshot rather than rebuilt, because this is
+// called from the apply path and building one takes hostapd round-trips per
+// radio. A snapshot a few seconds old is the right input for a figure whose
+// scan is up to 15s old anyway.
+func (e *Engine) neighbourUtil(iface string) (float64, bool) {
+	return neighbourUtilFor(e, iface)
+}
+
+// neighbourUtilFor is the seam a test replaces, so the other half of the
+// estimate can be moved without a roomful of access points to move it.
+var neighbourUtilFor = (*Engine).scannedNeighbourUtil
+
+func (e *Engine) scannedNeighbourUtil(iface string) (float64, bool) {
+	e.mu.RLock()
+	snap := e.bridgeSnap
+	e.mu.RUnlock()
+	if snap == nil {
+		return 0, false
+	}
+	a, ok := snap.Air[iface]
+	if !ok || !a.UtilKnown {
+		return 0, false
+	}
+	return a.UtilPct, true
+}
+
 // bssLoadArg is the bss_load_test parameter for one override.
 //
 // TWO conversions live here and both have bitten this repo before:
@@ -364,8 +458,25 @@ func (e *Engine) applyBSSLoad(iface string) error {
 	// only when it was made is stale almost immediately -- and the interface was
 	// already drawing the raised figure, which left the screen and the air
 	// disagreeing whenever traffic outran the claim.
-	if ov.On {
+	// THREE states, and the order is the whole rule. A deliberate claim wins,
+	// because it is the operator asking for something specific and it is floored
+	// at the truth anyway. Failing that, the corrected estimate. Failing that,
+	// hostapd's own zero -- which is not silence, only the wrong number nobody
+	// chose.
+	switch {
+	case ov.On:
 		ov.Stations, ov.UtilPct = raiseToFloor(ov.Stations, ov.UtilPct, e.bssLoadFloor(iface))
+	case ov.Fix:
+		floor := e.bssLoadFloor(iface)
+		util, known := e.correctedUtil(iface, floor)
+		if !known {
+			// Nothing measured and nobody to ask. Advertising 0 here would be
+			// indistinguishable from hostapd's zero while claiming to be a
+			// correction, so the correction stands down and says so.
+			return nil
+		}
+		ov.On = true // so bssLoadArg emits the values rather than 0:0:0
+		ov.Stations, ov.UtilPct = capToRange(floor.FloorStations, util)
 	}
 	if _, err := hostapdSend(iface, "SET bss_load_test "+bssLoadArg(ov)); err != nil {
 		return fmt.Errorf("setting bss_load_test on %s: %w", iface, err)
@@ -388,7 +499,10 @@ func (e *Engine) reapplyBSSLoad() {
 	e.bssLoad.mu.RLock()
 	ifaces := make([]string, 0, len(e.bssLoad.by))
 	for w, ov := range e.bssLoad.by {
-		if ov.On {
+		// Fix as well as On, and for a second reason: a corrected figure is a
+		// MEASUREMENT, so re-sending it is how it stays current rather than
+		// merely how it survives a restart. This loop is the refresh.
+		if ov.On || ov.Fix {
 			ifaces = append(ifaces, w)
 		}
 	}
@@ -431,7 +545,12 @@ func (e *Engine) measuredBSSLoadFloor(iface string) BSSLoadState {
 }
 
 // BSSLoadStates is every radio's override and floor, for the inventory.
-func (e *Engine) BSSLoadStates(ifaces []string) map[string]BSSLoadState {
+// air is passed in rather than read off the cached snapshot, because this runs
+// INSIDE the build that produces the next one. Reading the cache here reported
+// an estimate one build behind the `air` figure printed beside it -- visible
+// after every restart as two numbers on one screen disagreeing about the same
+// channel, which is exactly the fault this feature exists to avoid.
+func (e *Engine) BSSLoadStates(ifaces []string, air map[string]AirView) map[string]BSSLoadState {
 	if len(ifaces) == 0 {
 		return nil
 	}
@@ -442,7 +561,12 @@ func (e *Engine) BSSLoadStates(ifaces []string) map[string]BSSLoadState {
 		ov, ok := e.bssLoad.by[w]
 		e.bssLoad.mu.RUnlock()
 		if ok {
-			st.On, st.Stations, st.UtilPct = ov.On, ov.Stations, ov.UtilPct
+			st.On, st.Fix = ov.On, ov.Fix
+			st.Stations, st.UtilPct = ov.Stations, ov.UtilPct
+		}
+		st.FixUtilPct, st.FixKnown = st.FloorUtilPct, st.FloorKnown
+		if a, ok := air[w]; ok && a.UtilKnown && (!st.FixKnown || a.UtilPct > st.FixUtilPct) {
+			st.FixUtilPct, st.FixKnown = a.UtilPct, true
 		}
 		out[w] = st
 	}

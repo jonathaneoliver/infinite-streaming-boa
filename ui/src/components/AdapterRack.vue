@@ -360,6 +360,19 @@ function bssOn(r: IfaceInfo): boolean {
   return bssOf(r)?.on === true;
 }
 
+/** Advertising the box's own estimate rather than hostapd's zero. */
+function bssFix(r: IfaceInfo): boolean {
+  return bssOf(r)?.fix === true;
+}
+
+/** The estimate `fix` would advertise, or null where there is nothing to
+ *  correct with — no measured airtime and no neighbour on the channel saying
+ *  anything. */
+function bssFixUtil(r: IfaceInfo): number | null {
+  const s = bssOf(r);
+  return s?.fix_known ? s.fix_util_pct : null;
+}
+
 /**
  * The floors: what the radio is REALLY doing, and the lowest either handle can
  * go.
@@ -419,10 +432,10 @@ function stageBSS(r: IfaceInfo, patch: BSSPatch) {
  * floor this may well have been dragged below, and a handle left where it was
  * released would be showing a claim the box is not making.
  */
-async function commitBSS(r: IfaceInfo, on: boolean, patch: BSSPatch = {}) {
+async function commitBSS(r: IfaceInfo, on: boolean, patch: BSSPatch = {}, fix?: boolean) {
   const next = { stations: bssStations(r), util: bssUtil(r), ...patch };
   stageBSS(r, next);
-  await props.bridge.setBSSLoad(r.name, on, next.stations, next.util);
+  await props.bridge.setBSSLoad(r.name, on, fix ?? bssFix(r), next.stations, next.util);
   const rest = { ...bssDraft.value };
   delete rest[r.name];
   bssDraft.value = rest;
@@ -931,13 +944,31 @@ Clients ARE told it has gone, unlike a power cut.`
           </p>
           <div class="action-row">
             <label class="chk"
+              title="hostapd fills in a BSS Load element in every beacon from the driver&#39;s survey counter. On this hardware that counter is broken: measured over one 22.3s window at 494 Mbit/s it reported the channel 11.9% busy while the radio&#39;s own transmit and receive counters — from the same command — said 71.6%, and boa&#39;s per-station figures said 78.9%. So hostapd advertises a permanent 0%.&#10;&#10;Ticking this replaces it with the larger of what this radio measures at its own antenna and what the busiest neighbour on the channel reports. Still a lower bound: neither half can see a source that does not beacon, because this box has no spectral scan.&#10;&#10;Unticking is NOT silence. The element cannot be taken out of the beacon on this build — verified three ways — so unticked means advertising a 0% nobody chose, which is wrong in the direction that pulls clients towards us.">
+              <input
+                type="checkbox" :checked="bssFix(r)" :disabled="busy"
+                @change="commitBSS(r, bssOn(r), {}, ($event.target as HTMLInputElement).checked)"
+              />
+              fix the BSS Load value
+              <span class="fixv num">{{
+                bssFixUtil(r) === null
+                  ? '(nothing measured, and no neighbour to ask)'
+                  : `(would advertise ${bssFixUtil(r)!.toFixed(0)}% · hostapd says 0%)`
+              }}</span>
+            </label>
+          </div>
+          <div class="action-row">
+            <label class="chk"
               title="hostapd fills in a BSS Load element in every beacon by itself, from the driver&#39;s survey counter. Ticking this replaces its two numbers with the ones below, from the next beacon onwards. No restart, and nobody is dropped.&#10;&#10;What is being overridden is worthless on this hardware: that survey counter reads near zero on the mt7921u while the radio is 80% busy, so hostapd&#39;s own figure is a permanent 0 stations and 0%. Unticking restores that default, which is not silence and not a measurement.&#10;&#10;Moving either handle ticks this on its own — the sliders are the claim, so setting one is asking for it. Untick to stop, which is the only way back: a claim stays on the air until it is switched off, across daemon restarts and deploys.">
               <input
                 type="checkbox" :checked="bssOn(r)" :disabled="busy"
                 @change="commitBSS(r, ($event.target as HTMLInputElement).checked)"
               />
-              override the BSS Load hostapd computes
+              override it with the values below
             </label>
+            <span v-if="bssOn(r) && bssFix(r)" class="meta">
+              a deliberate claim wins over the correction
+            </span>
           </div>
           <div class="load-row" :class="{ off: !bssOn(r) }">
             <label>utilisation</label>
@@ -1210,6 +1241,9 @@ Clients ARE told it has gone, unlike a power cut.`
   cursor: pointer;
 }
 .action-row .chk input { cursor: pointer; }
+/* The estimate rides on the switch that would send it, so "what would this
+   actually advertise" is answered where it is decided rather than a row away. */
+.action-row .chk .fixv { color: var(--ink-faint); font-size: 11px; }
 .load-row > label { color: var(--ink-faint); }
 .load-row input[type='range'] { width: 100%; }
 .load-row .val { text-align: right; color: var(--ink-dim); }

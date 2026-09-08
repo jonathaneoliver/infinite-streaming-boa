@@ -300,20 +300,42 @@ export function useBridge(active: Ref<boolean>) {
    * access point does anyway; understating it would pull them in, onto
    * neighbours' equipment nobody here can see.
    */
-  const setBSSLoad = (iface: string, on: boolean, stations: number, utilPct: number) =>
+  const setBSSLoad = (
+    iface: string,
+    on: boolean,
+    fix: boolean,
+    stations: number,
+    utilPct: number,
+  ) =>
     act(
       `/api/bridge/radios/${encodeURIComponent(iface)}/bssload` +
-        `?on=${on ? 1 : 0}&stations=${Math.round(stations)}&util_pct=${utilPct.toFixed(1)}`,
-      (b) =>
-        b.bss_load?.on
-          ? `${b.iface}: beacon now claims ${b.bss_load.stations} station(s) and ` +
-            `${Math.round(b.bss_load.util_pct)}% channel utilisation` +
-            (b.bss_load.floor_known
-              ? ` — really ${b.bss_load.floor_stations} and ` +
-                `${Math.round(b.bss_load.floor_util_pct)}%.`
+        `?on=${on ? 1 : 0}&fix=${fix ? 1 : 0}` +
+        `&stations=${Math.round(stations)}&util_pct=${utilPct.toFixed(1)}`,
+      (b) => {
+        const s = b.bss_load;
+        if (s?.on) {
+          return (
+            `${b.iface}: beacon now claims ${s.stations} station(s) and ` +
+            `${Math.round(s.util_pct)}% channel utilisation` +
+            (s.floor_known
+              ? ` — really ${s.floor_stations} and ${Math.round(s.floor_util_pct)}%.`
               : ' — this radio reports no airtime of its own to compare it with.')
-          : `${b.iface}: no longer claiming — the beacon is back to the 0% ` +
-            'hostapd advertises by default.',
+          );
+        }
+        if (s?.fix) {
+          return s.fix_known
+            ? `${b.iface}: beacon now carries this box's own estimate — ` +
+              `${s.floor_stations} station(s) and ${Math.round(s.fix_util_pct)}% ` +
+              'channel utilisation, in place of the 0% hostapd puts there.'
+            : `${b.iface}: nothing to correct with — this radio measures no airtime ` +
+              'and no neighbour on its channel advertises any, so the beacon keeps ' +
+              "hostapd's 0%.";
+        }
+        return (
+          `${b.iface}: back to the 0% hostapd advertises. Not silence — the ` +
+          'element cannot be taken out of the beacon on this hardware.'
+        );
+      },
     );
 
   /*

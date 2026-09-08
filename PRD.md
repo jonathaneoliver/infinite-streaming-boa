@@ -796,11 +796,34 @@ damages packets, never link state.
   the radio is really doing next to what it is advertising. A control that can
   state something untrue about the box is only safe while what it is lying about
   is visible next to it.
+- **The box can also advertise its own corrected figure, which is a different
+  act from claiming one.** A second switch per radio replaces hostapd's number
+  with the larger of what the radio measures at its own antenna and what the
+  busiest neighbour on the channel reports. Both are lower bounds on the same
+  quantity, so the larger is taken rather than the sum — measured, with our
+  radio at 78.9% the nearest neighbours reported 74.5%, which is mostly the same
+  traffic counted twice. A deliberate claim outranks the correction, and since a
+  claim is floored at the truth there is no state in which having both on
+  advertises less than the correction would.
+- **The correction is still a lower bound, and is refused rather than faked.**
+  Neither half can see a source that does not beacon — a microwave, a baby
+  monitor, a cordless phone — because this box has no spectral scan. Where
+  nothing is measured and no neighbour on the channel advertises anything, the
+  correction stands down rather than sending a zero that would be
+  indistinguishable from hostapd's while claiming to be a measurement.
+- **What is being corrected is a number the driver contradicts itself about.**
+  Measured over one 22.3s window at 494 Mbit/s, a single `survey dump` reported
+  the channel **11.9% busy** while its own receive and transmit counters, from
+  the same command, totalled **71.6%**, against **78.9%** from boa's per-station
+  figures. The medium cannot be less occupied than the radio's own
+  transmissions make it, so this is not a conservative reading but a broken one.
 - **Switching the claim off is not the same as saying nothing, and the
   interface does not pretend it is.** Measured on this hardware, hostapd puts a
   BSS Load element in every beacon whether or not anything has been configured;
-  stopping the override returns it to **0 stations and 0%**, which is a default
-  rather than a measurement. The box cannot advertise its own honest figure
+  stopping both switches returns it to **0 stations and 0%**, which is a default
+  rather than a measurement. Verified three ways — `bss_load_test 0:0:0`, an
+  empty value, and `bss_load_update_period 0` — the element stays, and so does
+  it on a radio never configured with either. The box cannot advertise its own honest figure
   instead: hostapd derives BSS Load from the driver's survey counter, and on the
   `mt7921u` that counter reads near zero while the radio is 80% busy. So the box
   already understates its load to every client that asks, the one direction this

@@ -493,7 +493,7 @@ func (e *Engine) buildBridgeState() BridgeInfo {
 			wl = append(wl, in.Name)
 		}
 	}
-	bi.BSSLoad = e.BSSLoadStates(wl)
+	bi.BSSLoad = e.BSSLoadStates(wl, bi.Air)
 	// And what OUR OWN clients are costing each radio, which is the half of the
 	// picture the neighbours cannot tell us. Set after the ifaces are built, so
 	// it can be gated on the radio that actually reports per-station airtime.

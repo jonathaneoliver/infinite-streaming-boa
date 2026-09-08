@@ -751,6 +751,28 @@ export interface BSSLoadState {
    */
   on: boolean;
   /**
+   * Advertise the box's own estimate of the channel's congestion instead of
+   * hostapd's, which on this hardware is a permanent 0%.
+   *
+   * A separate switch from `on` because it is a different act: `on` is a claim,
+   * this is a correction. `on` wins where both are set.
+   *
+   * Neither being set is NOT silence. Verified three ways — `bss_load_test
+   * 0:0:0`, an empty value, and `bss_load_update_period 0` — the element stays
+   * in the beacon reading zero, and so does a radio that has never been
+   * configured with either. The element cannot be removed on this build, so the
+   * default state is a wrong number rather than no number.
+   */
+  fix: boolean;
+  /** The estimate `fix` would advertise: the larger of our own measured airtime
+   *  and the busiest neighbour's report on this channel. Both are lower bounds
+   *  on the same quantity, so the larger is used rather than the sum. */
+  fix_util_pct: number;
+  /** False where nothing is measured and no neighbour advertises, in which case
+   *  `fix` has nothing to say and stands down rather than sending a 0 that would
+   *  be indistinguishable from hostapd's. */
+  fix_known: boolean;
+  /**
    * What was ASKED for — where the handle sits, not necessarily what is on the
    * air.
    *

@@ -259,20 +259,7 @@ told about them.
 
 ### POST /api/bridge/radios/{iface}/bssload
 
-postBSSLoad sets what a radio ADVERTISES about its own congestion, which is
-not what it measures.
-
-An impairment aimed at the client's DECISION rather than at its packets. The
-BSS Load element carries a station count and a channel utilisation, and some
-clients weigh both when choosing between access points -- so this is the one
-control here that can offer a device a reason to move rather than ordering it
-to. `on=0` withdraws the element entirely, which is not the same as
-advertising zero.
-
-Values may only be raised ABOVE what is really happening, and this clamps
-rather than refuses. Overstating load pushes devices away, which is what a
-genuinely busy access point does anyway; understating it pulls them in, and
-that lands on neighbours nobody here can see or ask.
+_No description: `postBSSLoad` has no doc comment._
 
 ### POST /api/bridge/radios/{iface}/threshold
 
@@ -1037,6 +1024,15 @@ BSSLoadState is one radio's override and the floor it may not go below.
 > FloorKnown is false where the driver cannot report per-client airtime, so
 > the utilisation floor is a guess rather than a measurement. The onboard
 > brcmfmac radio is the case: no per-station duration counters at all.
+
+**`fix`** `bool`
+> Fix is on when this radio advertises the box's own estimate rather than
+> hostapd's zero. FixUtilPct is that estimate and FixKnown says whether
+> there is one -- see correctedUtil.
+
+**`fix_util_pct`** `float64`
+
+**`fix_known`** `bool`
 
 ### BeaconReport
 
