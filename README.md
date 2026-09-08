@@ -1724,6 +1724,60 @@ there is nothing stable to bind a per-app policy to. If you need true per-player
 separation on a single device, put a port-allocating proxy in the path and match
 on the ports it hands out — the two compose.
 
+## What it is not, and what the radios will not do
+
+boa is a **link conditioner that happens to serve Wi-Fi**, not an access point
+that happens to condition. Several things you would expect of an ordinary router
+— or of OpenWrt on the same silicon — are missing, and the useful question about
+each is *why*, because only one of the three answers is fixable here.
+
+**It is not a router at all.** No NAT, no DHCP server, no firewall, no routing:
+`dnsmasq`, `nftables` and `iptables` are all inactive by design. It is a
+transparent bridge, your existing router keeps every one of those jobs, and that
+is the whole point — devices under test keep their normal addresses and cannot
+tell the box is there.
+
+### The radio features, and why each is absent
+
+| | Status | Why |
+|---|---|---|
+| **OFDMA / MU-MIMO scheduling** | not done | Driver. The hardware advertises HE and `Full Bandwidth UL MU-MIMO`, but mt76 exposes no MU counters and every frame is single-user — see [above](#this-box-does-not-do-ofdma-and-that-bounds-every-figure-above) |
+| **160 MHz channels** | not possible | Hardware. `iw phy` lists no 160 MHz capability on either adapter |
+| **6 GHz (Wi-Fi 6E)** | **not implemented** | **Ours.** The adapter is an AX**E**3000 and the PHY offers 59 usable 6 GHz channels with AP mode among its HE Iftypes. boa neither scans nor serves there because `scanFreqs()` and `apChannels` stop at 5 GHz |
+| **DFS channels (52–144)** | deliberate | Ours. The Pi cannot serve an access point on DFS, so offering one produces a radio that refuses to start. Excluded from `apChannels` on purpose |
+| **Mesh / 802.11s** | not used | Ours. Both adapters list `mesh point` among their interface modes; nothing here builds on it |
+| **WPA3 / SAE, and PMF** | not configured | Ours. hostapd supports `sae_password`; the generated config is `wpa=2`, `WPA-PSK`, `CCMP`, with no `ieee80211w`. Two neighbours here already run WPA3 transition mode |
+| **Automatic channel selection** | half | Hardware. ACS needs survey data, which the onboard brcmfmac radio does not provide at all. The USB adapters can be scanned and moved instead — see [the band plan](#the-controls-one-by-one) |
+| **Band steering** | manual | Ours. 802.11v BSS Transition is advertised and the controls exist, but nothing steers on its own — deliberately, since a destination that moves with transient state is one you cannot run the same test against twice |
+
+**The 6 GHz row is the one worth acting on.** Nothing about the hardware or the
+regulatory domain prevents it: `iw reg get` allows 5925–7125 MHz at 12 dBm as
+low-power indoor. It is simply not wired up. Adding it would widen the
+contention picture considerably, since 6 GHz is where a modern router puts its
+quietest, fastest BSS.
+
+There was no 6 GHz traffic to hear when this was written — a scan of 5955–6215
+MHz found nothing, and no neighbour's 5 GHz beacon carried a **Reduced Neighbor
+Report**, which is how 6 GHz access points are actually discovered. The
+6E-capable TP-Link nearby is heard at −19 dBm on 5 GHz with no RNR, so its
+6 GHz radio is simply switched off.
+
+### The two radios are not equivalent, and the gaps are asymmetric
+
+| | Onboard (brcmfmac) | USB (mt7921u) |
+|---|---|---|
+| Scan while serving | **yes**, both bands, ~1.3 s, no outage | **no** — refuses; needs the BSS taken down |
+| Per-station signal (RSSI) | **absent from `iw station dump` entirely** | yes, with per-antenna values |
+| Per-station airtime | **absent** | yes — `tx/rx duration` |
+| Channel survey / airtime | **returns nothing at all**, not zero | yes, though `busy` reads ~5× low |
+| Monitor mode | **refused** (`-95`), not in supported modes | yes, and a monitor vif coexists with a live AP |
+
+So the onboard radio is the only one that can *look*, and the USB adapters are
+the only ones that can *report*. That asymmetry is why one free scan on the
+onboard radio answers for every radio on the box, and why the per-client airtime
+chart is blank on the onboard one — see
+[DATA-CONTRACT](docs/DATA-CONTRACT.md) Sources L, O and T.
+
 ## Things that will mislead you if nobody says them
 
 - **Wi-Fi airtime is shared.** Conditioning is *additive on top of* a variable
