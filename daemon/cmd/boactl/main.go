@@ -343,7 +343,8 @@ Change -- these act on a live network:
   shape <mac|label> [flags]    condition one device's traffic
   sweep <mac|label> -service S measure a rendition ladder (owns the cap)
   pattern play|stop|list       play a timeline, per device or box-wide
-  radio <iface> -channel N     move a radio; DROPS every client on it
+  radio <iface> <verb>         scan, channel, power, ap, deauth-all,
+                               gather, evict -- all AP-wide
   link <mac|label> <action>    deauth, disassoc, deadzone, steer or measure
   config apply <file>          replace every policy on the box
   config get [-o file]         export them first

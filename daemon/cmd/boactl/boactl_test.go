@@ -184,3 +184,38 @@ func TestSSHHostFromEveryFormOfBox(t *testing.T) {
 		}
 	}
 }
+
+func TestScanResultDecodesTheDaemonsRealTags(t *testing.T) {
+	// Written after a hand-rolled struct guessed `was` and `best` against a
+	// payload that says `was_channel` and `best_channel`. Those decode to zero,
+	// and the command printed a confident "was=0 best=0" -- a wrong answer
+	// delivered without hesitation, which is the failure this tool exists to
+	// stop. `go vet` caught the duplicate tag; nothing would have caught the
+	// wrong one.
+	//
+	// The fix was to decode into the daemon's own boa.ScanResult rather than a
+	// local copy of it. This pins that: the payload below is the shape the box
+	// actually sends, so a tag renamed upstream fails here rather than in the
+	// field.
+	const payload = `{"iface":"wlan0","band":"2.4GHz","scan_sec":1.3,
+		"best_channel":11,"was_channel":6,"now_channel":6,"applied":false,
+		"channels":[{},{}],"aps":[{},{},{}],"note":"nobody was dropped"}`
+
+	var got boa.ScanResult
+	if err := json.Unmarshal([]byte(payload), &got); err != nil {
+		t.Fatalf("decoding: %v", err)
+	}
+	if got.Best != 11 || got.Was != 6 {
+		t.Errorf("best/was = %d/%d, want 11/6 -- the *_channel tags are not being read",
+			got.Best, got.Was)
+	}
+	if got.Iface != "wlan0" || got.Band != "2.4GHz" || got.ScanSec != 1.3 {
+		t.Errorf("header fields wrong: %+v", got)
+	}
+	if len(got.Channels) != 2 || len(got.APs) != 3 {
+		t.Errorf("counts = %d channels, %d APs; want 2 and 3", len(got.Channels), len(got.APs))
+	}
+	if got.Note == "" {
+		t.Error("note is what says whether the scan cost an outage; it must survive decoding")
+	}
+}

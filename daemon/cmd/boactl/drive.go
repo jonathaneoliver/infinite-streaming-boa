@@ -13,8 +13,6 @@ import (
 	"os"
 	"sort"
 	"strings"
-
-	"github.com/jonathaneoliver/infinite-streaming-boa/daemon/internal/boa"
 )
 
 // --- sweep ------------------------------------------------------------------
@@ -256,68 +254,5 @@ func patternPlay(c *client, verb string, args []string) error {
 	}
 	fmt.Printf("%s  pattern playing\n", cl.MAC)
 	fmt.Fprintln(os.Stderr, "follow the playhead with: boactl devices, or boactl history")
-	return nil
-}
-
-// --- radio ------------------------------------------------------------------
-
-func cmdRadio(c *client, args []string) error {
-	fs := flag.NewFlagSet("radio", flag.ExitOnError)
-	channel := fs.Int("channel", 0, "move to this channel")
-	width := fs.Int("width", 0, "channel width in MHz (20, 40, 80); default 20")
-	if helpWanted(args) {
-		fmt.Fprint(os.Stderr, "boactl radio <iface> [flags] -- move a radio\n\n")
-		fs.SetOutput(os.Stderr)
-		fs.PrintDefaults()
-		fmt.Fprint(os.Stderr, "\nThis takes the access point DOWN and brings it back on the new channel.\n"+
-			"Every client on that radio is dropped and must rediscover it; they are not\n"+
-			"told. That is not a shortcut -- 802.11h CHAN_SWITCH, which would let them\n"+
-			"follow, is refused by both drivers on this box (issue #154), and down-up is\n"+
-			"what consumer routers do anyway.\n\nboactl bridge lists the radios.\n")
-		return nil
-	}
-	if len(args) == 0 {
-		return errors.New("radio needs an interface, e.g. boactl radio wlan-usb -channel 149")
-	}
-	iface := args[0]
-	if err := fs.Parse(args[1:]); err != nil {
-		return err
-	}
-	if *channel == 0 {
-		return errors.New("radio needs -channel; nothing else about a radio is settable here yet")
-	}
-
-	// Say what it will cost BEFORE doing it, using the box's own count rather
-	// than a guess. The response reports how many were actually dropped.
-	var s boa.Snapshot
-	if err := c.get("/api/state", &s); err == nil {
-		on := 0
-		for _, cl := range s.Clients {
-			if cl.Present && cl.RadioOn != nil && cl.RadioOn.Iface == iface {
-				on++
-			}
-		}
-		if on > 0 {
-			fmt.Fprintf(os.Stderr, "%s is serving %d client(s); they will be dropped and must rejoin\n",
-				iface, on)
-		}
-	}
-
-	path := fmt.Sprintf("/api/bridge/radios/%s/move-channel?channel=%d", iface, *channel)
-	if *width > 0 {
-		path += fmt.Sprintf("&width=%d", *width)
-	}
-	var res struct {
-		Iface           string `json:"iface"`
-		Channel         int    `json:"channel"`
-		WidthMHz        int    `json:"width_mhz"`
-		StationsDropped int    `json:"stations_dropped"`
-	}
-	if err := c.postJSON(path, nil, &res); err != nil {
-		return err
-	}
-	fmt.Printf("%s  channel %d at %d MHz  (%d station(s) dropped)\n",
-		res.Iface, res.Channel, res.WidthMHz, res.StationsDropped)
-	fmt.Fprintln(os.Stderr, "clients rediscover it on their own schedule; boactl devices to watch them return")
 	return nil
 }
