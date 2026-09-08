@@ -807,10 +807,23 @@ damages packets, never link state.
   control is otherwise forbidden to move in, and the interface says so where an
   operator switches the claim off rather than leaving it to be discovered.
 - **The claim survives the things that restart hostapd.** It lives in the
-  running process and nowhere else, so a profile, a width change, a power cycle
-  or a USB re-enumeration would each silently drop it. It is re-asserted on the
-  same timer that refreshes the contention figures, which covers the paths
-  nobody has thought of yet rather than the four that are known.
+  running process, so a profile, a width change, a power cycle or a USB
+  re-enumeration would each silently drop it. It is re-asserted on the same
+  timer that refreshes the contention figures, which covers the paths nobody has
+  thought of yet rather than the four that are known.
+- **It survives a daemon restart too, and the box asserts that rather than
+  assuming it.** The override belongs to hostapd, not to the daemon, so the two
+  can disagree — and measured, they did: a deploy restarted the daemon and the
+  box carried on beaconing 39 stations at 85% while the interface reported it
+  was claiming nothing. hostapd cannot be asked what it is advertising, so at
+  startup **every** radio is told something: the stored claim where there is
+  one, an explicit clear where there is not. A radio holding a claim this box
+  has no record of is the one state that must not persist.
+- **That failure is the worst one this control can have, which is why it gets
+  its own rule.** Everything else here is safe because the truth is drawn beside
+  the claim — and that promise is void the moment the interface does not know
+  what the claim *is*. A box that lies to clients is the instrument; a box that
+  lies to its operator about lying to clients is a broken one.
 - **An access point can be taken down and brought back, and both ends can be
   announced.** `disable` closes the BSS; `enable` reopens it. On its own, either
   is silent — a closed BSS tells nobody, and clients discover it by timing out,

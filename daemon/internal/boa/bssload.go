@@ -1,7 +1,10 @@
 package boa
 
 import (
+	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"sync"
 	"time"
 )
@@ -108,9 +111,119 @@ type BSSLoadState struct {
 	FloorKnown bool `json:"floor_known"`
 }
 
+/*
+ * WHY THIS IS ON DISK, when the value it mirrors lives in a running process.
+ *
+ * The override is set through hostapd's control socket, so it belongs to that
+ * process and not to this one. That makes the two able to disagree, and MEASURED
+ * 2026-09-08 they did: a deploy restarted the daemon, the in-memory store went
+ * with it, and the box carried on beaconing 39 stations at 85% while the API
+ * and the interface both reported it was claiming nothing.
+ *
+ * Which is the worst failure this feature can have. Everything else here is
+ * arguably safe because the truth is drawn beside the claim -- and that promise
+ * is void the moment the interface does not know what the claim IS. A box that
+ * lies to clients is the instrument; a box that lies to its operator about
+ * lying to clients is a broken instrument.
+ *
+ * So the ask is written down, and assertBSSLoad reconciles the two at startup
+ * in the only direction that cannot lie: every radio is told something, whether
+ * or not this daemon has ever set one. hostapd cannot be asked -- GET
+ * bss_load_test returns FAIL, verified -- so adopting the live value is not
+ * available and asserting is the only way the two can be made to agree.
+ *
+ * Same shape and same reason as ChannelStore, and a separate file for the same
+ * reason: policy.json is a bare object keyed by MAC, and folding a box-level
+ * value into it would change its shape and need a migration on every box.
+ */
 type bssLoadStore struct {
-	mu sync.RWMutex
-	by map[string]bssLoadOverride
+	mu   sync.RWMutex
+	path string
+	by   map[string]bssLoadOverride
+}
+
+func (s *bssLoadStore) load() {
+	raw, err := os.ReadFile(s.path)
+	if err != nil {
+		return // first run: an absent file is normal, not an error
+	}
+	var by map[string]bssLoadOverride
+	if json.Unmarshal(raw, &by) == nil {
+		s.by = by
+	}
+}
+
+// save writes atomically, for the reason the other stores do: a Pi loses power
+// without warning, and this box loses it ON PURPOSE.
+//
+// Caller holds the lock.
+func (s *bssLoadStore) save() error {
+	if s.path == "" {
+		return nil // a test engine, or demo mode: nothing to persist to
+	}
+	if err := os.MkdirAll(filepath.Dir(s.path), 0o755); err != nil {
+		return err
+	}
+	raw, err := json.MarshalIndent(s.by, "", "  ")
+	if err != nil {
+		return err
+	}
+	tmp := s.path + ".tmp"
+	if err := os.WriteFile(tmp, raw, 0o644); err != nil {
+		return err
+	}
+	return os.Rename(tmp, s.path)
+}
+
+// assertBSSLoad makes the running access points agree with what is written
+// down, and is called once at startup.
+//
+// EVERY radio, not only the ones with an override. A radio with nothing stored
+// is explicitly cleared, because the mismatch that has to be closed is exactly
+// the one where hostapd is still carrying a claim this daemon has no record of
+// -- which is what a deploy mid-experiment produces, and what made the box
+// beacon 85% while reporting 0%.
+//
+// Failures are logged rather than returned. A radio that is down, or whose
+// hostapd is not up yet, is a normal state at startup and not something to
+// abort a boot over -- but it must not pass silently, because the thing being
+// asserted is whether the box is telling the truth.
+func (e *Engine) assertBSSLoad() {
+	for _, w := range e.cfg.WlanPorts {
+		if e.radioReady(w) != nil {
+			continue
+		}
+		e.bssLoad.mu.RLock()
+		ov, ok := e.bssLoad.by[w]
+		e.bssLoad.mu.RUnlock()
+		if !ok {
+			// Nothing stored, so assert the absence: clear whatever a previous
+			// daemon may have left in this hostapd.
+			if _, err := hostapdSend(w, "SET bss_load_test 0:0:0"); err != nil {
+				e.logEvent(EventRadio, w, "",
+					"could not clear %s's advertised BSS Load at startup, so it may "+
+						"still be claiming something this box has no record of: %v", w, err)
+				continue
+			}
+			if _, err := hostapdSend(w, "UPDATE_BEACON"); err != nil {
+				e.logEvent(EventRadio, w, "",
+					"cleared %s's BSS Load but could not rebuild its beacon, so a "+
+						"stale claim may still be on the air: %v", w, err)
+			}
+			continue
+		}
+		if err := e.applyBSSLoad(w); err != nil {
+			e.logEvent(EventRadio, w, "",
+				"could not restore %s's advertised BSS Load at startup: %v", w, err)
+			continue
+		}
+		if ov.On {
+			e.logEvent(EventRadio, w, "",
+				"%s is advertising %d station(s) and %.0f%% channel utilisation again "+
+					"— a claim from before this daemon started, restored so the "+
+					"interface and the air agree", w, ov.Stations, ov.UtilPct)
+		}
+	}
 }
 
 // SetBSSLoad records what a radio has been asked to advertise and applies it
@@ -133,7 +246,16 @@ func (e *Engine) SetBSSLoad(iface string, on bool, stations int, utilPct float64
 		e.bssLoad.by = map[string]bssLoadOverride{}
 	}
 	e.bssLoad.by[iface] = bssLoadOverride{Stations: stations, UtilPct: utilPct, On: on}
+	// Written down before it is applied, so a daemon that dies between the two
+	// comes back knowing about a claim it may have made. The other order loses
+	// exactly the case this file exists for.
+	saveErr := e.bssLoad.save()
 	e.bssLoad.mu.Unlock()
+	if saveErr != nil {
+		e.logEvent(EventRadio, iface, "",
+			"could not write down %s's BSS Load claim, so a daemon restart will "+
+				"leave it on the air with nothing here knowing: %v", iface, saveErr)
+	}
 
 	if err := e.applyBSSLoad(iface); err != nil {
 		return BSSLoadState{}, err

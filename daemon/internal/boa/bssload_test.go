@@ -2,6 +2,7 @@ package boa
 
 import (
 	"errors"
+	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -260,6 +261,75 @@ func onlyLoadArg(t *testing.T, calls [][2]string) string {
 			"never reached the air", arg)
 	}
 	return arg
+}
+
+/*
+ * A DAEMON RESTART MUST NOT LEAVE A CLAIM ON THE AIR THAT NOTHING KNOWS ABOUT.
+ *
+ * MEASURED 2026-09-08 and this is the bug, not a hypothetical: a `deploy.sh
+ * --ui-only` restarted the daemon, the in-memory store went with it, and the
+ * box carried on beaconing 39 stations at 85% while the API and the interface
+ * both reported it was claiming nothing. hostapd keeps bss_load_test across a
+ * daemon restart and will not report it back -- GET bss_load_test returns FAIL
+ * -- so the value cannot be adopted, only asserted.
+ *
+ * Which makes this the worst failure the feature can have. The whole safety
+ * argument is that the truth is drawn beside the claim, and that is void the
+ * moment the interface does not know what the claim IS.
+ */
+func TestAClaimSurvivesADaemonRestart(t *testing.T) {
+	sent := captureHostapd(t, nil)
+	path := filepath.Join(t.TempDir(), "bssload.json")
+
+	first := &Engine{
+		cfg:     Config{Demo: true, WlanPorts: []string{"wlan-usb"}},
+		bssLoad: bssLoadStore{path: path},
+	}
+	if _, err := first.SetBSSLoad("wlan-usb", true, 39, 85); err != nil {
+		t.Fatalf("SetBSSLoad: %v", err)
+	}
+	_ = sent()
+
+	// The daemon dies and comes back. Nothing is carried over but the file.
+	second := &Engine{
+		cfg:     Config{Demo: true, WlanPorts: []string{"wlan-usb"}},
+		bssLoad: bssLoadStore{path: path},
+	}
+	second.bssLoad.load()
+	second.assertBSSLoad()
+
+	if got := onlyLoadArg(t, sent()); got != "39:217:0" {
+		t.Fatalf("after a restart the radio was told %q, want the claim back as "+
+			"39:217:0 — the interface would be reporting nothing while the beacon "+
+			"carried 85%%", got)
+	}
+	if st := second.BSSLoadStates([]string{"wlan-usb"})["wlan-usb"]; !st.On || st.UtilPct != 85 {
+		t.Fatalf("restarted daemon reports on=%v at %v%%, want on at 85%%",
+			st.On, st.UtilPct)
+	}
+}
+
+// The other half, and the one a stored claim cannot cover: hostapd is holding a
+// claim from a daemon whose state file is gone. Silence would leave the box
+// lying with nothing on the box aware of it, so every radio is told something.
+func TestStartupClearsAClaimItHasNoRecordOf(t *testing.T) {
+	sent := captureHostapd(t, nil)
+
+	e := &Engine{
+		cfg:     Config{Demo: true, WlanPorts: []string{"wlan-usb", "wlan0"}},
+		bssLoad: bssLoadStore{path: filepath.Join(t.TempDir(), "bssload.json")},
+	}
+	e.assertBSSLoad()
+
+	want := [][2]string{
+		{"wlan-usb", "SET bss_load_test 0:0:0"},
+		{"wlan-usb", "UPDATE_BEACON"},
+		{"wlan0", "SET bss_load_test 0:0:0"},
+		{"wlan0", "UPDATE_BEACON"},
+	}
+	if got := sent(); !sameCalls(got, want) {
+		t.Fatalf("startup sent %v, want every radio explicitly cleared: %v", got, want)
+	}
 }
 
 // --- helpers -------------------------------------------------------------

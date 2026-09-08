@@ -446,8 +446,8 @@ function bssFloorTitle(r: IfaceInfo, what: 'util' | 'stations'): string {
     '\n\nThe floor is live, so the claim follows it up and comes back down: start ' +
     'traffic and the beacon carries the real figure even if it is above what was ' +
     'set here, and when the traffic stops the setting is still the setting.' +
-    '\n\nMoving a handle starts claiming; "stop" returns the beacon to the zeros ' +
-    'hostapd advertises by default.'
+    '\n\nMoving a handle ticks the override on. Unticking it is the only way ' +
+    'back: the beacon then returns to the zeros hostapd advertises by default.'
   );
 }
 
@@ -926,22 +926,18 @@ Clients ARE told it has gone, unlike a power cut.`
             channel is this busy; the link is exactly as it was. Some clients
             weigh it when choosing between access points, which makes this the
             one control here that offers a device a <em>reason</em> to move
-            rather than ordering it to. Nobody is dropped.
+            rather than ordering it to. Nobody is dropped — and nothing here
+            lifts on its own, so an override left on is still on tomorrow.
           </p>
           <div class="action-row">
-            <label class="k">advertise</label>
-            <div class="seg" role="group" aria-label="advertised BSS Load">
-              <button
-                class="seg-btn" :class="{ on: !bssOn(r) }" :disabled="busy"
-                title="Stop claiming. Measured on this hardware, that is not silence: hostapd puts a BSS Load element in every beacon regardless, and with nothing set it reads 0 stations and 0% — which is itself an understatement rather than a measurement."
-                @click="commitBSS(r, false)"
-              >stop</button>
-              <button
-                class="seg-btn" :class="{ on: bssOn(r) }" :disabled="busy"
-                title="Put the station count and utilisation below into every beacon, from the next one onwards. No restart, and nobody is dropped."
-                @click="commitBSS(r, true)"
-              >claim this</button>
-            </div>
+            <label class="chk"
+              title="hostapd fills in a BSS Load element in every beacon by itself, from the driver&#39;s survey counter. Ticking this replaces its two numbers with the ones below, from the next beacon onwards. No restart, and nobody is dropped.&#10;&#10;What is being overridden is worthless on this hardware: that survey counter reads near zero on the mt7921u while the radio is 80% busy, so hostapd&#39;s own figure is a permanent 0 stations and 0%. Unticking restores that default, which is not silence and not a measurement.&#10;&#10;Moving either handle ticks this on its own — the sliders are the claim, so setting one is asking for it. Untick to stop, which is the only way back: a claim stays on the air until it is switched off, across daemon restarts and deploys.">
+              <input
+                type="checkbox" :checked="bssOn(r)" :disabled="busy"
+                @change="commitBSS(r, ($event.target as HTMLInputElement).checked)"
+              />
+              override the BSS Load hostapd computes
+            </label>
           </div>
           <div class="load-row" :class="{ off: !bssOn(r) }">
             <label>utilisation</label>
@@ -1201,6 +1197,19 @@ Clients ARE told it has gone, unlike a power cut.`
   margin: 3px 0;
   font-size: 12px;
 }
+/* The switch reads as a sentence rather than a pair of verbs, because there is
+   only one thing to decide: whether the radio is lying. A two-button segment
+   said "stop / claim this", which implied two actions where dragging a handle
+   was already the second one. */
+.action-row .chk {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--ink-dim);
+  cursor: pointer;
+}
+.action-row .chk input { cursor: pointer; }
 .load-row > label { color: var(--ink-faint); }
 .load-row input[type='range'] { width: 100%; }
 .load-row .val { text-align: right; color: var(--ink-dim); }
