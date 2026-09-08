@@ -1957,7 +1957,8 @@ ssh-copy-id boa@infinite-streaming-boa.local
 ### 4. Driving a box from the terminal — `boactl`
 
 ```sh
-cd daemon && go build -o ~/.local/bin/boactl ./cmd/boactl
+cd daemon && go build -ldflags "-X main.version=$(../scripts/version.sh)" \
+    -o ~/.local/bin/boactl ./cmd/boactl
 ```
 
 The API has 54 endpoints and they were previously reached with hand-assembled
