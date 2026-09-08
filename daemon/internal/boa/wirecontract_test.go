@@ -94,7 +94,6 @@ var serverOnly = map[string]string{}
 // each field for what it is for.
 var knownGaps = map[string]string{
 	"looked":         "BridgeInfo.Scans.Looked -- records that a channel was listened to and heard nothing",
-	"socket":         "Snapshot.Caps.Adapter.Socket -- physical USB port, the tiebreak when MAC and iface disagree",
 	"names_learned":  "Snapshot.Caps.NamesLearned -- mDNS bindings seen; 0 distinguishes a dead capture socket from a quiet client",
 	"names_by_mac":   "Snapshot.Caps.NamesByMAC -- the MAC-keyed count, which is the one that proves the filtered socket opened",
 	"throttle":       "Snapshot.Clients.Policy.Ladders.Throttle -- the starved-client measurement point",

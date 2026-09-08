@@ -500,6 +500,11 @@ func (e *Engine) Start() {
 	// Contention figures, refreshed on a radio that can scan for free. Its own
 	// goroutine because a scan takes seconds and must never sit on the tick.
 	go e.watchAir()
+	// The kernel's own account of the USB bus every adapter hangs off. Nothing
+	// above this line can see a dongle whose USB link has died: hostapd keeps
+	// reporting ENABLED, the bridge keeps forwarding, and the radio is off the
+	// air. See usbfault.go -- this is the watch that catches that.
+	go e.watchUSBFaults()
 	// Devices announce only occasionally -- on join, on wake, when services
 	// change -- so an in-memory-only name table means every daemon restart
 	// drops every client back to a bare MAC until the next announcement,

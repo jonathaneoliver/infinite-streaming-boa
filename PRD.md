@@ -673,6 +673,31 @@ damages packets, never link state.
   measured remedy. It says that it is doing so, and says whether it worked.
   Clients on that radio are dropped by the rebuild; they have just been dropped
   by the outage anyway, and the alternative is a radio nobody can join.
+- **A USB fault is reported against the adapter it happened to, and the device
+  is reset when it is not coming back.** An adapter's USB link can fail while
+  every layer above it goes on looking healthy: hostapd reports the access point
+  ENABLED with the right SSID on the right channel, the bridge goes on
+  forwarding, the interface stays UP — and there is nothing on the air, so
+  clients steered onto that radio simply vanish. Nothing in the paragraphs above
+  can see this, because none of them is wrong; the failure is below all of them.
+  The box therefore reads the kernel's own error log directly and reports what
+  it finds, naming the interface rather than a bus path. A burst of identical
+  errors is reported once, with the failure arriving in the hundreds inside a
+  few milliseconds. A device that is not recovering — either a failure already
+  measured to be terminal, or any device still failing after repeated attempts —
+  has its driver reloaded, which restores the firmware and brings the adapter
+  back without anyone touching the hardware. The box says what it is doing and
+  whether it worked, and if the same device fails again immediately it stops and
+  says so rather than resetting in a loop: a fault that survives a reset is a
+  cable, a port or a hub, and that is a person's job. This is deliberately not
+  specific to any adapter, driver or socket — the kernel attributes the fault
+  and the box believes it — so a dongle moved between a hub and a port directly
+  on the Pi is covered without changing anything.
+- **Each adapter shows the physical USB port it is plugged into.** The interface
+  name is deliberately stable across replugging, which is what makes it useful
+  and also means it cannot tell you where the hardware is. The port does: it is
+  the identifier the kernel blames a fault on, so it is what connects a warning
+  in the log to a socket somebody can reach.
 - **"Not answering" is never reported as "not serving".** A radio's control
   interface can go silent for minutes while its driver re-initialises, and a
   question that could not be asked has no answer. The box says that it cannot

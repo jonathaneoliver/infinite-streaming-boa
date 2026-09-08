@@ -325,8 +325,8 @@ func WANSideMACs(bridge, wanPort string) map[string]bool {
 	return out
 }
 
-// RadioInfo describes the interface serving the access point: whether it is
-// the onboard chip or a plugged-in USB adapter, and for USB, which speed the
+// RadioInfo describes the USB device behind an interface: whether it is
+// the onboard chip or a plugged-in adapter, and for USB, which speed the
 // link actually negotiated.
 //
 // The speed is here because getting it wrong is invisible and expensive. A USB
@@ -336,6 +336,12 @@ func WANSideMACs(bridge, wanPort string) map[string]bool {
 // 802.11ax, same PHY rate over 1 Gbit/s -- while delivering about a sixth of
 // the throughput. Measured here: 717 Mbit/s on USB 3.0 against 117 on USB 2.0,
 // same adapter, same radio settings, no error logged anywhere.
+//
+// NAMED FOR A RADIO, carried by any USB-backed interface. It is attached to the
+// USB ethernet adapters too, because none of what it holds is a property of
+// being a radio: the ethernet adapters hang off the same hub, negotiate the
+// same bus speeds and fail the same way. The JSON key stays "radio" because
+// renaming a wire field costs more than the inaccuracy does.
 type RadioInfo struct {
 	Iface  string `json:"iface"`
 	Driver string `json:"driver,omitempty"`

@@ -780,6 +780,16 @@ Clients ARE told it has gone, unlike a power cut.`
           <div><span class="k">adapter</span>
             <span class="v">{{ [r.radio?.vendor, r.radio?.product].filter(Boolean).join(' ') || '—' }}</span></div>
           <div><span class="k">driver</span><span class="v num">{{ r.radio?.driver || '—' }}</span></div>
+          <!-- THE PHYSICAL PORT, which is the identifier the kernel uses and
+               the operator can reach. A USB fault is reported against this path
+               and nothing else, so it is what connects a warning in the
+               activity log to a socket to unplug. "2-1" is straight into the
+               Pi; "4-1.3" is the third port of a hub on bus 4 -- and moving an
+               adapter between the two changes this while the interface name
+               deliberately does not. Only for USB: the onboard radio is on
+               mmc and has no port to name. -->
+          <div v-if="r.radio?.bus === 'usb'"><span class="k">USB port</span>
+            <span class="v num">{{ r.radio.socket || '—' }}</span></div>
           <div><span class="k">MAC</span><span class="v num">{{ r.mac }}</span></div>
           <div><span class="k">bridge port</span><span class="v num">{{ r.master || 'not bridged' }}</span></div>
           <template v-if="r.ap">

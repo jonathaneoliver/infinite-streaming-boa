@@ -591,6 +591,18 @@ export interface RadioInfo {
   vendor?: string;
   link_mbps?: number;
   usb_version?: string;
+  /** The adapter's own MAC. The name is assigned by a udev rule; this is the
+   *  hardware. When the two disagree, that disagreement is the finding. */
+  mac?: string;
+  /** The physical USB port as the kernel path: "2-1" straight into the Pi,
+   *  "4-1.3" for the third port of a hub on bus 4.
+   *
+   *  Worth showing rather than hiding because it is how a fault is addressed.
+   *  The kernel blames a USB error on this path and nothing else, so it is the
+   *  one string that connects a line in the activity log to a socket you can
+   *  physically reach — and moving an adapter between a hub and a direct port
+   *  changes it while the interface name deliberately stays put. */
+  socket?: string;
 }
 
 /**
