@@ -233,6 +233,48 @@ const edge = computed(() => {
 const start = computed(() => edge.value - windowMs.value);
 const grid = computed(() => allTimes.value.filter((t) => t >= start.value));
 
+/**
+ * Break the stack where the record stops, exactly as the client charts do.
+ *
+ * This chart used to draw ONE polygon across the whole grid. A daemon restart,
+ * a sleeping laptop or a dropped stream leaves a hole in the timestamps, and a
+ * single polygon spans it with a straight edge -- so a 25-second outage came
+ * out as a clean diagonal ramp from full rate down to zero, which reads as a
+ * transfer winding down rather than as time nobody observed. Reported from a
+ * screenshot on 2026-09-08 and reproduced by stopping the daemon for 25s: one
+ * path element, one jump of 247px where the median spacing was 3.3px.
+ *
+ * The threshold is derived from the samples rather than assumed, because one
+ * point covers a second on a short range and several on a long one -- the same
+ * rule and the same 2.5x as TrafficChart, which had this and this component
+ * never got.
+ */
+const stepMs = computed(() => {
+  const g = grid.value;
+  if (g.length < 3) return 1000;
+  const diffs: number[] = [];
+  for (let i = 1; i < g.length; i++) diffs.push(g[i] - g[i - 1]);
+  diffs.sort((a, b) => a - b);
+  return Math.max(500, diffs[Math.floor(diffs.length / 2)]);
+});
+
+/** Index ranges of the grid that are continuous, as [from, to] inclusive. */
+const runs = computed<[number, number][]>(() => {
+  const g = grid.value;
+  if (g.length === 0) return [];
+  const gap = stepMs.value * 2.5;
+  const out: [number, number][] = [];
+  let from = 0;
+  for (let i = 1; i < g.length; i++) {
+    if (g[i] - g[i - 1] > gap) {
+      out.push([from, i - 1]);
+      from = i;
+    }
+  }
+  out.push([from, g.length - 1]);
+  return out;
+});
+
 function bandsFor(dir: 'down' | 'up' | 'air'): Band[] {
   const at = new Map(grid.value.map((t, i) => [t, i]));
   const out: Band[] = [];
@@ -284,6 +326,10 @@ const yAt = (v: number, max: number) =>
  *
  * Built from the cumulative sums rather than from each band's height, so
  * adjacent bands share exact boundaries and no seam or overlap appears.
+ *
+ * One SUBPATH PER RUN, so a hole in the record leaves a hole in the chart. A
+ * single subpath across the whole grid draws a straight edge over the missing
+ * span, which is the chart inventing traffic for time the box never watched.
  */
 function area(bands: Band[], n: number, max: number): string {
   const g = grid.value;
@@ -296,11 +342,21 @@ function area(bands: Band[], n: number, max: number): string {
     below.push(acc);
     above.push(acc + bands[n].vals[i]);
   }
-  const top = g.map((t, i) => `${xAt(t).toFixed(1)},${yAt(above[i], max).toFixed(1)}`);
-  const bot = g
-    .map((t, i) => `${xAt(t).toFixed(1)},${yAt(below[i], max).toFixed(1)}`)
-    .reverse();
-  return `M${top.join('L')}L${bot.join('L')}Z`;
+  const parts: string[] = [];
+  for (const [from, to] of runs.value) {
+    // A single point cannot be a filled band, and a hairline at one x reads as
+    // a stray mark rather than as a measurement.
+    if (to <= from) continue;
+    const top: string[] = [];
+    const bot: string[] = [];
+    for (let i = from; i <= to; i++) {
+      const x = xAt(g[i]).toFixed(1);
+      top.push(`${x},${yAt(above[i], max).toFixed(1)}`);
+      bot.push(`${x},${yAt(below[i], max).toFixed(1)}`);
+    }
+    parts.push(`M${top.join('L')}L${bot.reverse().join('L')}Z`);
+  }
+  return parts.join('');
 }
 
 function fmt(v: number): string {
