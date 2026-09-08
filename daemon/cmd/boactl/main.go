@@ -32,6 +32,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -228,30 +229,60 @@ func run(c *client, args []string) error {
 	}
 }
 
+// usage is grouped by what a command DOES, not alphabetically. Two of these
+// change a live network -- shape conditions a real device's traffic and config
+// apply rewrites every policy on the box -- and a flat list gives a reader no
+// way to tell those from the ones that only look.
 func usage() {
-	fmt.Fprint(os.Stderr, `boactl -- drive an infinite-streaming-boa appliance
+	fmt.Fprintf(os.Stderr, `boactl -- drive an infinite-streaming-boa appliance
 
-  boactl [flags] <command> [args]
+  boactl [-box HOST] [-json] <command> [args]
 
-Commands:
-  state                 what the box is doing right now
-  devices               one line per client, with what is imposed on it
-  bridge                radios, channels, and how contested each one is
-  events [-since N] [-follow]
-                        what has happened, newest last
-  survey <iface>        a radio's airtime counters
-  shape <mac|label> [-down M] [-up M] [-delay ms] [-jitter ms]
-        [-loss pct] [-burst pkts] [-dir down|up|both] [-clear]
-                        impose conditioning on one device
-  config get [-o file]  export the box's configuration
-  config apply <file>   send a configuration back
-  probe [-ssh] [-settle 5s]
-                        assert the box is really doing what it claims
+Look:
+  state                        what the box is doing right now
+  devices                      a line per client: what is imposed, and by what
+  bridge                       radios, channels, how contested each one is
+  survey <iface>               one radio's airtime counters (always JSON)
+  events [-since N] [-follow]  what has happened, newest last
 
-Flags:
-`)
-	flag.PrintDefaults()
-	fmt.Fprintf(os.Stderr, "\nThe box defaults to $BOA_BOX, then %s.\n", defaultBox)
+Change -- these act on a live network:
+  shape <mac|label> [flags]    condition one device's traffic
+  config apply <file>          replace every policy on the box
+  config get [-o file]         export them first
+
+Check:
+  probe [-ssh] [-settle D]     assert the box is really doing its job;
+                               exits non-zero when it is not
+
+Global flags, which must come BEFORE the command:
+  -box HOST   box hostname or URL (default $BOA_BOX, then %s)
+  -json       raw JSON instead of the summary
+
+A command's own flags come after it, and %s <command> -h lists them.
+
+Examples:
+  boactl devices
+  boactl shape "Apple TV" -down 5 -delay 40   # 5 Mbps, 40 ms one way
+  boactl shape "Apple TV" -clear
+  boactl probe -ssh                           # also reads the kernel over SSH
+  boactl events -follow > run.ndjson          # ground truth for a test run
+`, defaultBox, "boactl")
+}
+
+// helpWanted reports whether the first argument is asking for help rather than
+// naming a thing. Without it `boactl shape -h` looked for a device called "-h"
+// and reported that no device matched, and `config -h` called it an unknown
+// subcommand -- while `probe -h` and `events -h` worked, because those parse a
+// FlagSet before touching their arguments.
+func helpWanted(args []string) bool {
+	if len(args) == 0 {
+		return false
+	}
+	switch args[0] {
+	case "-h", "--help", "-help", "help":
+		return true
+	}
+	return false
 }
 
 // --- commands ---------------------------------------------------------------
@@ -386,6 +417,11 @@ func cmdSurvey(c *client, iface string) error {
 }
 
 func cmdConfig(c *client, args []string) error {
+	if helpWanted(args) {
+		fmt.Fprint(os.Stderr, "boactl config get [-o file]   export the box's configuration\n"+
+			"boactl config apply <file>    send one back, replacing every policy\n")
+		return nil
+	}
 	if len(args) == 0 {
 		return errors.New("config needs get or apply")
 	}
@@ -436,21 +472,76 @@ func cmdConfig(c *client, args []string) error {
 	}
 }
 
+// optFloat is a float flag that knows whether it was given at all.
+//
+// The daemon draws the same distinction and for the same reason: every field of
+// policyPatch is a pointer so that "absent" and "set to zero" cannot be
+// confused, because a client sending only a label change would otherwise clear
+// every shaping value to 0. A CLI that collapses them has the same bug one
+// layer out.
+//
+// It replaces a -1 sentinel, which had two faults. It printed "(default -1)"
+// against every numeric flag in the help, reading as though minus one Mbps were
+// the default; and `-down -1` was silently taken as "unset", so a typo did
+// nothing at all rather than being refused.
+type optFloat struct {
+	val float64
+	set bool
+}
+
+// String returns "" when unset, which is what stops flag.PrintDefaults from
+// printing a "(default ...)" for a value that has none.
+func (f *optFloat) String() string {
+	if f == nil || !f.set {
+		return ""
+	}
+	return strconv.FormatFloat(f.val, 'g', -1, 64)
+}
+
+func (f *optFloat) Set(s string) error {
+	v, err := strconv.ParseFloat(s, 64)
+	if err != nil {
+		return fmt.Errorf("not a number: %q", s)
+	}
+	if v < 0 {
+		return fmt.Errorf("must not be negative, got %v", v)
+	}
+	f.val, f.set = v, true
+	return nil
+}
+
+// apply writes the value only if the flag was actually given.
+func (f *optFloat) apply(dst *float64) {
+	if f.set {
+		*dst = f.val
+	}
+}
+
 // cmdShape sets what a device gets. The box's whole purpose, and the one
 // command here that changes anything on a live network.
 func cmdShape(c *client, args []string) error {
+	fs := flag.NewFlagSet("shape", flag.ExitOnError)
+	var down, up, delay, jitter, loss, burst optFloat
+	fs.Var(&down, "down", "downlink cap in Mbps (0 = unlimited)")
+	fs.Var(&up, "up", "uplink cap in Mbps (0 = unlimited)")
+	fs.Var(&delay, "delay", "added latency in ms, ONE direction")
+	fs.Var(&jitter, "jitter", "randomise delay by +/- this many ms")
+	fs.Var(&loss, "loss", "packet loss, 0-100")
+	fs.Var(&burst, "burst", "mean loss burst length in packets; 1 is uniform loss")
+	dir := fs.String("dir", "down", "which direction -delay/-jitter/-loss/-burst apply to: down, up or both")
+	clear := fs.Bool("clear", false, "remove all conditioning from this device")
+	if helpWanted(args) {
+		fmt.Fprint(os.Stderr, "boactl shape <mac|label> [flags] -- condition one device's traffic\n\n")
+		fs.SetOutput(os.Stderr)
+		fs.PrintDefaults()
+		fmt.Fprint(os.Stderr, "\nThe device is matched by MAC, or by any unique part of its label or\n"+
+			"hostname; an ambiguous match is refused rather than guessed. Delay is per\n"+
+			"direction, so -dir both gives roughly twice the -delay value as round trip.\n")
+		return nil
+	}
 	if len(args) == 0 {
 		return errors.New("shape needs a MAC, or part of a device label")
 	}
-	fs := flag.NewFlagSet("shape", flag.ExitOnError)
-	down := fs.Float64("down", -1, "downlink cap in Mbps (0 = unlimited)")
-	up := fs.Float64("up", -1, "uplink cap in Mbps (0 = unlimited)")
-	delay := fs.Float64("delay", -1, "added latency in ms, ONE direction")
-	jitter := fs.Float64("jitter", -1, "randomise delay by +/- this many ms")
-	loss := fs.Float64("loss", -1, "packet loss, 0-100")
-	burst := fs.Float64("burst", -1, "mean loss burst length in packets; 1 is uniform loss")
-	dir := fs.String("dir", "down", "which direction -delay/-jitter/-loss/-burst apply to: down, up or both")
-	clear := fs.Bool("clear", false, "remove all conditioning from this device")
 	if err := fs.Parse(args[1:]); err != nil {
 		return err
 	}
@@ -466,28 +557,16 @@ func cmdShape(c *client, args []string) error {
 	if *clear {
 		d, u = boa.Shape{}, boa.Shape{}
 	}
-	if *down >= 0 {
-		d.RateMbps = *down
-	}
-	if *up >= 0 {
-		u.RateMbps = *up
-	}
+	down.apply(&d.RateMbps)
+	up.apply(&u.RateMbps)
 	// Delay is per direction and a round trip crosses both, so -dir both gives
 	// the client roughly TWICE the -delay value as RTT. Named rather than
 	// assumed, because that surprise is the reason the flag exists.
 	apply := func(s *boa.Shape) {
-		if *delay >= 0 {
-			s.DelayMs = *delay
-		}
-		if *jitter >= 0 {
-			s.JitterMs = *jitter
-		}
-		if *loss >= 0 {
-			s.LossPct = *loss
-		}
-		if *burst >= 0 {
-			s.LossBurst = *burst
-		}
+		delay.apply(&s.DelayMs)
+		jitter.apply(&s.JitterMs)
+		loss.apply(&s.LossPct)
+		burst.apply(&s.LossBurst)
 	}
 	switch *dir {
 	case "down":
