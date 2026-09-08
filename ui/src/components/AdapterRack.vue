@@ -947,7 +947,7 @@ Clients ARE told it has gone, unlike a power cut.`
             device a <em>reason</em> to move rather than ordering it to. Nobody
             is dropped, and nothing lifts on its own.
           </p>
-          <div class="action-row">
+          <div class="action-row beacon">
             <label class="chk"
               title="hostapd fills in a BSS Load element in every beacon from the driver&#39;s survey counter. On this hardware that counter is broken: measured over one 22.3s window at 494 Mbit/s it reported the channel 11.9% busy while the radio&#39;s own transmit and receive counters — from the same command — said 71.6%, and boa&#39;s per-station figures said 78.9%. So hostapd advertises a permanent 0%.&#10;&#10;Ticking this replaces it with the larger of what this radio measures at its own antenna and what the busiest neighbour on the channel reports. Still a lower bound: neither half can see a source that does not beacon, because this box has no spectral scan.&#10;&#10;Unticking is NOT silence. The element cannot be taken out of the beacon on this build — verified three ways — so unticked means advertising a 0% nobody chose, which is wrong in the direction that pulls clients towards us.">
               <input
@@ -958,7 +958,7 @@ Clients ARE told it has gone, unlike a power cut.`
               <!-- The comparison is dropped where there is nothing to compare:
                    "would advertise 0% · hostapd says 0%" prints one number
                    twice and calls it a correction. -->
-              <span class="fixv num">{{
+              <span class="fixv">{{
                 bssFixUtil(r) === null
                   ? '(nothing measured, and no neighbour to ask)'
                   : bssFixUtil(r)! < 0.5
@@ -967,7 +967,7 @@ Clients ARE told it has gone, unlike a power cut.`
               }}</span>
             </label>
           </div>
-          <div class="action-row">
+          <div class="action-row beacon">
             <label class="chk"
               title="hostapd fills in a BSS Load element in every beacon by itself, from the driver&#39;s survey counter. Ticking this replaces its two numbers with the ones below, from the next beacon onwards. No restart, and nobody is dropped.&#10;&#10;What is being overridden is worthless on this hardware: that survey counter reads near zero on the mt7921u while the radio is 80% busy, so hostapd&#39;s own figure is a permanent 0 stations and 0%. Unticking restores that default, which is not silence and not a measurement.&#10;&#10;Moving either handle ticks this on its own — the sliders are the claim, so setting one is asking for it. Untick to stop, which is the only way back: a claim stays on the air until it is switched off, across daemon restarts and deploys.">
               <input
@@ -980,7 +980,8 @@ Clients ARE told it has gone, unlike a power cut.`
               a deliberate claim wins over the correction
             </span>
           </div>
-          <div class="load-row" :class="{ off: !bssOn(r) }">
+          <div class="load-rows" :class="{ off: !bssOn(r) }">
+          <div class="load-row">
             <label>utilisation</label>
             <input
               type="range" :min="bssFloorUtil(r)" max="100" step="1"
@@ -989,12 +990,14 @@ Clients ARE told it has gone, unlike a power cut.`
               @input="stageBSS(r, { util: +($event.target as HTMLInputElement).value })"
               @change="commitBSS(r, true, { util: +($event.target as HTMLInputElement).value })"
             />
-            <span class="val num">{{ bssUtil(r).toFixed(0) }}%</span>
-            <span class="floor num" :title="bssFloorTitle(r, 'util')">
-              (really {{ bssFloorKnown(r) ? bssFloorUtil(r) + '%' : '\u2014' }})
+            <span class="vals" :title="bssFloorTitle(r, 'util')">
+              <span class="val num">{{ bssUtil(r).toFixed(0) }}%</span>
+              <span class="floor">really {{
+                bssFloorKnown(r) ? bssFloorUtil(r) + '%' : '\u2014'
+              }}</span>
             </span>
           </div>
-          <div class="load-row" :class="{ off: !bssOn(r) }">
+          <div class="load-row">
             <label>stations</label>
             <input
               type="range" :min="bssFloorStations(r)" max="100" step="1"
@@ -1003,10 +1006,11 @@ Clients ARE told it has gone, unlike a power cut.`
               @input="stageBSS(r, { stations: +($event.target as HTMLInputElement).value })"
               @change="commitBSS(r, true, { stations: +($event.target as HTMLInputElement).value })"
             />
-            <span class="val num">{{ bssStations(r) }}</span>
-            <span class="floor num" :title="bssFloorTitle(r, 'stations')">
-              (really {{ bssFloorStations(r) }})
+            <span class="vals" :title="bssFloorTitle(r, 'stations')">
+              <span class="val num">{{ bssStations(r) }}</span>
+              <span class="floor">really {{ bssFloorStations(r) }}</span>
             </span>
+          </div>
           </div>
 
         </template>
@@ -1230,14 +1234,6 @@ Clients ARE told it has gone, unlike a power cut.`
 .group-note { margin: 0 0 4px; }
 /* NOT `.row`, which in this file is the collapsed adapter row's six-track grid
    and would drop a slider into the middle of it. */
-.load-row {
-  display: grid;
-  grid-template-columns: 68px minmax(90px, 220px) 46px auto;
-  align-items: center;
-  gap: 8px;
-  margin: 3px 0;
-  font-size: 12px;
-}
 /* The switch reads as a sentence rather than a pair of verbs, because there is
    only one thing to decide: whether the radio is lying. A two-button segment
    said "stop / claim this", which implied two actions where dragging a handle
@@ -1252,17 +1248,41 @@ Clients ARE told it has gone, unlike a power cut.`
 }
 .action-row .chk input { cursor: pointer; }
 /* The estimate rides on the switch that would send it, so "what would this
-   actually advertise" is answered where it is decided rather than a row away. */
+   actually advertise" is answered where it is decided rather than a row away.
+   Not tabular figures: it is a sentence, and .num fights one. */
 .action-row .chk .fixv { color: var(--ink-faint); font-size: 11px; }
-.load-row > label { color: var(--ink-faint); }
-.load-row input[type='range'] { width: 100%; }
-.load-row .val { text-align: right; color: var(--ink-dim); }
-/* The truth, beside the claim, always. */
-.load-row .floor { font-size: 11px; color: var(--ink-faint); }
+/* The two switches are one group, so they take the group's rhythm rather than
+   the action row's, which is spaced for buttons. */
+.body .action-row.beacon { margin: 2px 0; }
+
+/* Indented to sit under the LABEL of the switch they belong to, rather than
+   under its checkbox. Flush left they read as a third peer of the two switches,
+   which is backwards -- these are that switch's values. 21px is the box plus
+   its gap. */
+.load-rows { margin: 2px 0 0 21px; }
 /* Dimmed, not disabled. The handles still set what the beacon will carry the
    moment it is switched on, and moving one switches it on -- so they have to
    stay draggable while nothing is being advertised. */
-.load-row.off { opacity: 0.6; }
+.load-rows.off { opacity: 0.6; }
+/* NOT `.row`, which in this file is the collapsed adapter row's six-track grid
+   and would drop a slider into the middle of it. */
+.load-row {
+  display: grid;
+  grid-template-columns: 72px minmax(80px, 190px) auto;
+  align-items: center;
+  gap: 10px;
+  margin: 3px 0;
+  font-size: 12px;
+}
+.load-row > label { color: var(--ink-faint); }
+.load-row input[type='range'] { width: 100%; margin: 0; }
+/* The value and the truth in ONE cell, because they are one fact read together.
+   As two grid tracks the number sat right-aligned in a fixed column with a gap
+   before the thing it was being compared against, and the pair read as two
+   unrelated figures that happened to land near each other. */
+.load-row .vals { display: inline-flex; align-items: baseline; gap: 8px; }
+.load-row .val { color: var(--ink-dim); min-width: 26px; text-align: right; }
+.load-row .floor { font-size: 11px; color: var(--ink-faint); }
 .notice.inline { margin: 8px 0 0; }
 /* An empty badge keeps its box so the controls after it never move. Invisible
    rather than absent: `visibility` reserves the space that `display:none` would
