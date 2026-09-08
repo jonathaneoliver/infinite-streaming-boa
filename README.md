@@ -1737,6 +1737,37 @@ transparent bridge, your existing router keeps every one of those jobs, and that
 is the whole point — devices under test keep their normal addresses and cannot
 tell the box is there.
 
+### Channel manipulation: what client-class silicon will not do
+
+Both chips here are **station parts with AP mode bolted on** — mt7921 is the
+client sibling of the mt7915/mt7916 access-point line, and the Pi's BCM43455 is
+an embedded client chip. Everything below is an AP-side responsibility their
+firmware never had to implement, and each one constrains how this box can move
+a radio.
+
+| Behaviour | Here | What an AP-class part does |
+|---|---|---|
+| **Channel Switch Announcement (802.11h)** | **refused by both drivers** ([#154](https://github.com/jonathaneoliver/infinite-streaming-boa/issues/154)) | Counts the move down in its beacons; associated clients **follow, staying associated**. boa must take the BSS down and bring it up elsewhere — every client is told nothing, and must notice, rescan and rejoin |
+| **DFS with radar detection** | **cannot serve there at all** | Operates on 52–144 after a channel-availability check. That is **16 of the 25** non-6 GHz 5 GHz channels, and the emptiest ones — excluded from `apChannels` because the Pi refuses to start an AP on them |
+| **Off-channel scan while beaconing** | **mt7921u refuses** (`-95`) | Evaluates other channels continuously without dropping the BSS. Only the onboard radio manages it here, and that is the weak one |
+| **Automatic channel selection** | **not possible on the onboard radio** | Picks a channel at startup from survey data. brcmfmac returns no survey at all, so there is nothing to choose from |
+| **20/40 coexistence** | **applied to us, not by us** | Chooses its primary and secondary deliberately. Here hostapd's coex scan swaps them out from under the request: 36 at 80 MHz comes back up on **40**, and the box records where it *landed* rather than where it was sent |
+
+**The first row is the one that shapes the product.** Because CSA is refused,
+**there is no such thing as a cheap channel change on this box** — moving a
+radio is an outage, and every control that moves one says so before it runs. A
+real access point re-homes its clients in a few beacon intervals; this one drops
+them and waits for them to come back. It is also, in fairness, what most
+consumer routers actually do.
+
+**The second row is why the band plan looks so sparse.** Non-DFS 5 GHz is two
+blocks with the whole DFS range between them — 36/40/44/48 and
+149/153/157/161/165 — so with two 5 GHz radios to place, and each 80 MHz block
+consuming four channels, there are exactly two 80 MHz homes on the whole band.
+That is the entire reason UNII-3 is in the channel table
+([#162](https://github.com/jonathaneoliver/infinite-streaming-boa/issues/162)).
+An AP-class part with DFS would have five more.
+
 ### The radio features, and why each is absent
 
 | | Status | Why |
@@ -1744,10 +1775,8 @@ tell the box is there.
 | **OFDMA / MU-MIMO scheduling** | not done | Driver. The hardware advertises HE and `Full Bandwidth UL MU-MIMO`, but mt76 exposes no MU counters and every frame is single-user — see [above](#this-box-does-not-do-ofdma-and-that-bounds-every-figure-above) |
 | **160 MHz channels** | not possible | Hardware. `iw phy` lists no 160 MHz capability on either adapter |
 | **6 GHz (Wi-Fi 6E)** | **not implemented** | **Ours.** The adapter is an AX**E**3000 and the PHY offers 59 usable 6 GHz channels with AP mode among its HE Iftypes. boa neither scans nor serves there because `scanFreqs()` and `apChannels` stop at 5 GHz |
-| **DFS channels (52–144)** | deliberate | Ours. The Pi cannot serve an access point on DFS, so offering one produces a radio that refuses to start. Excluded from `apChannels` on purpose |
 | **Mesh / 802.11s** | not used | Ours. Both adapters list `mesh point` among their interface modes; nothing here builds on it |
 | **WPA3 / SAE, and PMF** | not configured | Ours. hostapd supports `sae_password`; the generated config is `wpa=2`, `WPA-PSK`, `CCMP`, with no `ieee80211w`. Two neighbours here already run WPA3 transition mode |
-| **Automatic channel selection** | half | Hardware. ACS needs survey data, which the onboard brcmfmac radio does not provide at all. The USB adapters can be scanned and moved instead — see [the band plan](#the-controls-one-by-one) |
 | **Band steering** | manual | Ours. 802.11v BSS Transition is advertised and the controls exist, but nothing steers on its own — deliberately, since a destination that moves with transient state is one you cannot run the same test against twice |
 
 **The 6 GHz row is the one worth acting on.** Nothing about the hardware or the
@@ -1761,6 +1790,47 @@ MHz found nothing, and no neighbour's 5 GHz beacon carried a **Reduced Neighbor
 Report**, which is how 6 GHz access points are actually discovered. The
 6E-capable TP-Link nearby is heard at −19 dBm on 5 GHz with no RNR, so its
 6 GHz radio is simply switched off.
+
+### What AP-class silicon would add, in order of what it changes
+
+Not throughput — **instruments**. Each of these was checked on this hardware.
+
+**Fixed MCS, or rate pinning.** `iw dev wlan-usb set bitrates he-mcs-5` returns
+`Invalid argument (-22)` here. That one gap is why `Policy.Rssi` and the whole
+distance model exist: boa cannot *make* a weak link, so it **models** one with
+netem and says plainly that the mapping is "plausible rather than fitted" — see
+[DATA-CONTRACT](docs/DATA-CONTRACT.md) Source S. On silicon that honours rate
+pinning you would force a client to MCS 2 and get a genuinely degraded PHY: real
+retries, real aggregation collapse, real airtime inflation. That is the
+difference between *simulating* a distant client and *having* one, and it is the
+single biggest upgrade available to this box.
+
+**Spectral scan.** `ls /sys/kernel/debug/ieee80211/phy0/` offers nothing
+spectral. ath9k and ath10k expose raw FFT data; this box can only see things
+that **beacon**. A microwave, a baby monitor, a wireless camera or a failing
+power supply are all invisible to it, and would surface only as airtime nobody
+claims. It is the missing answer to "the channel is busy and no access point is
+there".
+
+**More than one BSS per radio.** No hostapd config here carries a `bss=` line —
+one SSID per radio, where AP-class parts run eight to sixteen. With several you
+could serve an 802.11n-only BSS and an ax BSS **on the same radio** and steer a
+client between them, testing capability negotiation without touching the
+channel. Today the `profile` control does it by restarting the access point,
+which drops every client on it, because it is changing the radio rather than
+offering a choice.
+
+**Airtime fairness enforcement.** boa now *measures* per-client airtime; it
+cannot shape it. ATF on the AP-class drivers caps a client's **airtime share**
+rather than its bitrate — a conditioning axis this box does not have, and
+arguably the more honest one for Wi-Fi, since airtime is what clients actually
+contend for and bitrate is only its consequence.
+
+Beyond those: **802.11r** fast transition is unconfigured, so roaming tests can
+exercise only the 11v steer and the client's own decision; **4×4** parts double
+the two-stream ceiling and enable real downlink MU-MIMO; and per-VAP transmit
+power is actually *applied*, where here it is
+[a control that validates and then ignores](docs/DATA-CONTRACT.md).
 
 ### The two radios are not equivalent, and the gaps are asymmetric
 
