@@ -854,19 +854,27 @@ Clients ARE told it has gone, unlike a power cut.`
                control exists to close. It also breaks the imperative voice of
                the headings under it on purpose: those are buttons that do
                something, this is a picture to be read first. -->
-          <h4 class="first">Channel and width</h4>
-          <slot name="plan" :radio="r" :others="otherRadios(r)" />
-          <div class="action-row">
-            <button class="accent" :disabled="busy"
-              :title="`Survey ${r.name}'s band and move it to the quietest channel found. Takes the radio down and back up.`"
-              @click="bridge.scanBand(r.name, true)"
-            >scan and move to the quietest</button>
-          </div>
+          <!-- EACH GROUP IN ITS OWN BOX, because the fold now holds four of
+               them and a heading alone stopped being enough to say where one
+               ends. The controls inside a group act on the same thing; a reader
+               scanning for the beacon switches should not have to work out
+               which "off" button belongs to which heading. -->
+          <section class="group">
+            <h4 class="first">Channel and width</h4>
+            <slot name="plan" :radio="r" :others="otherRadios(r)" />
+            <div class="action-row">
+              <button class="accent" :disabled="busy"
+                :title="`Survey ${r.name}'s band and move it to the quietest channel found. Takes the radio down and back up.`"
+                @click="bridge.scanBand(r.name, true)"
+              >scan and move to the quietest</button>
+            </div>
+          </section>
 
           <!-- The timed outage goes behind developer=1 with the power switch
                it belongs to: same mechanism, same cost, same tendency to wedge
                the USB adapter. -->
           <template v-if="DEVELOPER">
+          <section class="group">
           <h4>Take it away</h4>
           <p class="warn-line">
             <strong>Silent.</strong> Clients are told nothing and must time out —
@@ -893,8 +901,10 @@ Clients ARE told it has gone, unlike a power cut.`
             A client with a randomised MAC may return as a <strong>new device</strong>,
             leaving its policy behind on the old address (#45).
           </p>
+          </section>
           </template>
 
+          <section class="group">
           <h4>Conditioning the link</h4>
           <p class="meta group-note">
             A profile restarts the access point, dropping all
@@ -923,6 +933,7 @@ Clients ARE told it has gone, unlike a power cut.`
               @click="bridge.setThreshold(r.name, 'frag', 256)">at 256</button>
             <button :disabled="busy" @click="bridge.setThreshold(r.name, 'frag', 'off')">off</button>
           </div>
+          </section>
 
           <!-- ITS OWN SECTION, and it was under the conditioning heading
                first, which was wrong in a way worth recording. Conditioning
@@ -939,6 +950,7 @@ Clients ARE told it has gone, unlike a power cut.`
                The truth sits in the row beside the claim, always. A control
                that can lie is only safe while what it is lying about is on
                screen next to it. -->
+          <section class="group">
           <h4>What the beacon says</h4>
           <p class="meta group-note">
             Neither of these touches the link — they change what this radio
@@ -1012,6 +1024,7 @@ Clients ARE told it has gone, unlike a power cut.`
             </span>
           </div>
           </div>
+          </section>
 
         </template>
       </div>
@@ -1214,6 +1227,22 @@ Clients ARE told it has gone, unlike a power cut.`
 }
 /* The first heading follows the facts, which carry their own spacing below. */
 .body h4.first { margin-top: 6px; }
+/* One box per group of controls.
+   SOFTER than the fold's own border, and a hair lighter than its background --
+   these are divisions WITHIN a card, and a box as strong as the card's would
+   read as four cards. */
+.group {
+  border: 1px solid var(--line-soft);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--ink) 2%, transparent);
+  padding: 2px 12px 10px;
+  margin: 10px 0 0;
+}
+/* The heading is the box's label, so its top margin belongs to the box. */
+.group > h4:first-child, .group > h4.first { margin-top: 8px; }
+/* The band plan is a picture that runs to the box's edge better than it sits
+   inset from it. */
+.group > :deep(.plan) { margin-left: -2px; margin-right: -2px; }
 .action-row {
   display: flex;
   align-items: center;
