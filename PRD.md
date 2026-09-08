@@ -796,6 +796,22 @@ damages packets, never link state.
   the radio is really doing next to what it is advertising. A control that can
   state something untrue about the box is only safe while what it is lying about
   is visible next to it.
+- **Correcting the figure is the DEFAULT, and that is a decision rather than an
+  oversight.** There is no neutral setting to fall back to: the element cannot
+  be removed from the beacon, so a radio nobody has touched is already telling
+  every client the channel is 0% busy — a wrong number, and wrong in the
+  direction that *pulls* devices onto a radio which may be saturated. The choice
+  is therefore not whether to influence clients but whether to influence them
+  with a measurement or with a falsehood. It is also the less surprising
+  behaviour: an access point on competent silicon advertises its real load, so
+  the correction is closer to what a stock router does than the zero is. An
+  operator can switch it off per radio, and that opt-out is respected — nothing
+  turns it back on.
+- **The two switches live under a heading naming their subject, not their
+  effect.** They were filed under *make the link worse* first, which was wrong:
+  everything under that heading damages the link, neither of these touches it,
+  and one of them makes the radio's account of itself more accurate rather than
+  less. What they share is that both change what the beacon says.
 - **The box can also advertise its own corrected figure, which is a different
   act from claiming one.** A second switch per radio replaces hostapd's number
   with the larger of what the radio measures at its own antenna and what the

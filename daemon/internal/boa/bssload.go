@@ -215,25 +215,7 @@ func (e *Engine) assertBSSLoad() {
 		if e.radioReady(w) != nil {
 			continue
 		}
-		e.bssLoad.mu.RLock()
-		ov, ok := e.bssLoad.by[w]
-		e.bssLoad.mu.RUnlock()
-		if !ok {
-			// Nothing stored, so assert the absence: clear whatever a previous
-			// daemon may have left in this hostapd.
-			if _, err := hostapdSend(w, "SET bss_load_test 0:0:0"); err != nil {
-				e.logEvent(EventRadio, w, "",
-					"could not clear %s's advertised BSS Load at startup, so it may "+
-						"still be claiming something this box has no record of: %v", w, err)
-				continue
-			}
-			if _, err := hostapdSend(w, "UPDATE_BEACON"); err != nil {
-				e.logEvent(EventRadio, w, "",
-					"cleared %s's BSS Load but could not rebuild its beacon, so a "+
-						"stale claim may still be on the air: %v", w, err)
-			}
-			continue
-		}
+		ov := e.bssOverride(w)
 		if err := e.applyBSSLoad(w); err != nil {
 			e.logEvent(EventRadio, w, "",
 				"could not restore %s's advertised BSS Load at startup: %v", w, err)
@@ -244,10 +226,14 @@ func (e *Engine) assertBSSLoad() {
 				"%s is advertising %d station(s) and %.0f%% channel utilisation again "+
 					"— a claim from before this daemon started, restored so the "+
 					"interface and the air agree", w, ov.Stations, ov.UtilPct)
-		} else if ov.Fix {
+		} else if !ov.Fix {
+			// The one case that still needs an explicit clear, and the reason
+			// assertBSSLoad exists: hostapd may be holding a claim from a daemon
+			// this one knows nothing about. applyBSSLoad has just sent 0:0:0 for
+			// it, so the air and the record now agree.
 			e.logEvent(EventRadio, w, "",
-				"%s is advertising this box's own congestion estimate again, from "+
-					"before this daemon started", w)
+				"%s is not correcting its BSS Load, so its beacon carries the 0%% "+
+					"hostapd puts there — a default rather than a measurement", w)
 		}
 	}
 }
@@ -446,12 +432,7 @@ func bssLoadArg(ov bssLoadOverride) string {
 // power control that "validates and then ignores" in Source Q, except that here
 // there is a second verb that finishes the job.
 func (e *Engine) applyBSSLoad(iface string) error {
-	e.bssLoad.mu.RLock()
-	ov, ok := e.bssLoad.by[iface]
-	e.bssLoad.mu.RUnlock()
-	if !ok {
-		return nil
-	}
+	ov := e.bssOverride(iface)
 	// Raised to the floor HERE, on every send, so the beacon can never sit below
 	// what the radio is really doing. MEASURED 2026-09-08: our own airtime went
 	// 0% to 80% within four seconds of an iperf3 starting, so a claim checked
@@ -470,10 +451,17 @@ func (e *Engine) applyBSSLoad(iface string) error {
 		floor := e.bssLoadFloor(iface)
 		util, known := e.correctedUtil(iface, floor)
 		if !known {
-			// Nothing measured and nobody to ask. Advertising 0 here would be
-			// indistinguishable from hostapd's zero while claiming to be a
-			// correction, so the correction stands down and says so.
-			return nil
+			// Nothing measured and nobody on the channel to ask, so there is no
+			// correction to make and the beacon keeps hostapd's own zero.
+			//
+			// Sent as 0:0:0 rather than skipped, and the difference is the whole
+			// reason assertBSSLoad exists: returning early here leaves whatever a
+			// previous daemon put into this hostapd sitting on the air with
+			// nothing on the box aware of it -- the exact bug a deploy produced
+			// on 2026-09-08. Standing down has to be an instruction, not a
+			// silence. The value is identical to hostapd's own default, so this
+			// asserts the absence without asserting a measured 0.
+			break
 		}
 		ov.On = true // so bssLoadArg emits the values rather than 0:0:0
 		ov.Stations, ov.UtilPct = capToRange(floor.FloorStations, util)
@@ -496,17 +484,17 @@ func (e *Engine) applyBSSLoad(iface string) error {
 // hostapd, and each one silently drops the override -- the same class of
 // disappearance ChannelStore exists to fix for the channel.
 func (e *Engine) reapplyBSSLoad() {
-	e.bssLoad.mu.RLock()
-	ifaces := make([]string, 0, len(e.bssLoad.by))
-	for w, ov := range e.bssLoad.by {
-		// Fix as well as On, and for a second reason: a corrected figure is a
-		// MEASUREMENT, so re-sending it is how it stays current rather than
-		// merely how it survives a restart. This loop is the refresh.
-		if ov.On || ov.Fix {
+	// EVERY radio, because the correction is now the default -- a radio with no
+	// stored choice still has something to advertise. Fix as well as On, and for
+	// a second reason: a corrected figure is a MEASUREMENT, so re-sending it is
+	// how it stays current rather than merely how it survives a restart. This
+	// loop is the refresh.
+	ifaces := make([]string, 0, len(e.cfg.WlanPorts))
+	for _, w := range e.cfg.WlanPorts {
+		if ov := e.bssOverride(w); ov.On || ov.Fix {
 			ifaces = append(ifaces, w)
 		}
 	}
-	e.bssLoad.mu.RUnlock()
 	for _, w := range ifaces {
 		if e.radioReady(w) != nil {
 			continue
@@ -523,6 +511,33 @@ func (e *Engine) reapplyBSSLoad() {
 // claim without needing a radio and real traffic to move it. In production it
 // is the method immediately below.
 var bssFloorFor = (*Engine).measuredBSSLoadFloor
+
+// bssOverride is what a radio should be advertising, stored choice or default.
+//
+// THE DEFAULT IS THE CORRECTION, and that is a decision rather than an
+// oversight. There is no neutral setting to fall back to: the element cannot be
+// removed from the beacon on this build, verified three ways, so a radio that
+// has never been touched is already telling every client the channel is 0%
+// busy. That is not silence, it is a wrong number -- and wrong in the direction
+// that PULLS devices onto a radio which may be saturated, the one direction
+// this whole feature refuses to move in deliberately.
+//
+// So the choice is not "influence clients or not", it is "influence them with a
+// measurement or with a falsehood". It also happens to be the less surprising
+// behaviour: an access point on competent silicon advertises its real load, so
+// the correction is closer to what a stock router does than the zero is.
+//
+// Standing down where there is nothing to say keeps this safe. A radio with no
+// airtime figures and no neighbour advertising on its channel sends nothing,
+// so the default can never invent data -- see applyBSSLoad.
+func (e *Engine) bssOverride(iface string) bssLoadOverride {
+	e.bssLoad.mu.RLock()
+	defer e.bssLoad.mu.RUnlock()
+	if ov, ok := e.bssLoad.by[iface]; ok {
+		return ov
+	}
+	return bssLoadOverride{Fix: true}
+}
 
 // bssLoadFloor is what the radio is really doing, and therefore the lowest the
 // controls may claim.
@@ -557,13 +572,9 @@ func (e *Engine) BSSLoadStates(ifaces []string, air map[string]AirView) map[stri
 	out := map[string]BSSLoadState{}
 	for _, w := range ifaces {
 		st := e.bssLoadFloor(w)
-		e.bssLoad.mu.RLock()
-		ov, ok := e.bssLoad.by[w]
-		e.bssLoad.mu.RUnlock()
-		if ok {
-			st.On, st.Fix = ov.On, ov.Fix
-			st.Stations, st.UtilPct = ov.Stations, ov.UtilPct
-		}
+		ov := e.bssOverride(w)
+		st.On, st.Fix = ov.On, ov.Fix
+		st.Stations, st.UtilPct = ov.Stations, ov.UtilPct
 		st.FixUtilPct, st.FixKnown = st.FloorUtilPct, st.FloorKnown
 		if a, ok := air[w]; ok && a.UtilKnown && (!st.FixKnown || a.UtilPct > st.FixUtilPct) {
 			st.FixUtilPct, st.FixKnown = a.UtilPct, true

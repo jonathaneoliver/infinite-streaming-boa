@@ -925,22 +925,28 @@ Clients ARE told it has gone, unlike a power cut.`
             <button :disabled="busy" @click="bridge.setThreshold(r.name, 'frag', 'off')">off</button>
           </div>
 
-          <!-- BSS Load. Under this heading because it is where an operator will
-               look for it, but it is not the same KIND of thing as the two
-               controls above it, and the note says so rather than leaving it to
-               be discovered. Those make the LINK worse; this leaves the link
-               untouched and makes the radio LOOK worse.
+          <!-- ITS OWN SECTION, and it was under "make the link worse" first,
+               which was wrong in a way worth recording. Everything under that
+               heading damages the LINK. Neither control here touches the link
+               at all, and one of them makes the radio's account of itself more
+               accurate rather than less -- filing a correction under "make it
+               worse" is a heading contradicting its own contents.
+
+               What these two share is a SUBJECT, not an effect: both change
+               what the beacon says about this radio, one towards the truth and
+               one away from it. So they are named for the subject, the way
+               "channel and width" is, and the note carries the direction.
 
                The truth sits in the row beside the claim, always. A control
                that can lie is only safe while what it is lying about is on
                screen next to it. -->
+          <h4>What the beacon says</h4>
           <p class="meta group-note">
-            <strong>A claim, not an impairment.</strong> The beacon says the
-            channel is this busy; the link is exactly as it was. Some clients
-            weigh it when choosing between access points, which makes this the
-            one control here that offers a device a <em>reason</em> to move
-            rather than ordering it to. Nobody is dropped — and nothing here
-            lifts on its own, so an override left on is still on tomorrow.
+            Neither of these touches the link — they change what this radio
+            <em>tells</em> clients about itself, which some weigh when choosing
+            between access points. It is the only lever here that offers a
+            device a <em>reason</em> to move rather than ordering it to. Nobody
+            is dropped, and nothing lifts on its own.
           </p>
           <div class="action-row">
             <label class="chk"

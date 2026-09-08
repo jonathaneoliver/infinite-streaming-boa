@@ -131,12 +131,30 @@ func TestBSSLoadFailsLoudlyWhenTheBeaconIsNotRebuilt(t *testing.T) {
  * THE OVERRIDE LIVES IN THE RUNNING hostapd AND NOWHERE ELSE.
  *
  * A width change, a profile, a USB re-enumeration and a driver reload all
- * restart it, and each one silently drops the element. reapplyBSSLoad is the
- * one place that is put back, so what it does and does NOT touch is the whole
- * behaviour: re-asserting a radio the operator switched off would be this
- * control turning itself back on.
+ * restart it, and each one silently drops the element. reapplyBSSLoad is where
+ * it is put back, so what it does and does NOT touch is the whole behaviour.
+ *
+ * Three radios, three states, and the distinction that matters is between a
+ * radio nobody has touched and one an operator switched OFF:
+ *
+ *	wlan-usb   a standing claim          -> replayed
+ *	wlan-usb2  explicitly switched off   -> LEFT ALONE. Re-asserting here would
+ *	                                        be the control turning itself back
+ *	                                        on, which no amount of good
+ *	                                        intention makes acceptable.
+ *	wlan0      never touched             -> the default, asserted. With nothing
+ *	                                        to correct with that is a 0:0:0,
+ *	                                        which is how a stale claim from a
+ *	                                        previous daemon gets cleared.
  */
-func TestReapplyOnlyRestoresRadiosStillClaiming(t *testing.T) {
+func TestReapplyRespectsAnOptOutButAssertsTheDefault(t *testing.T) {
+	origFloor := bssFloorFor
+	t.Cleanup(func() { bssFloorFor = origFloor })
+	bssFloorFor = func(*Engine, string) BSSLoadState { return BSSLoadState{} }
+	origNb := neighbourUtilFor
+	t.Cleanup(func() { neighbourUtilFor = origNb })
+	neighbourUtilFor = func(*Engine, string) (float64, bool) { return 0, false }
+
 	sent := captureHostapd(t, nil)
 	e := &Engine{cfg: Config{Demo: true, WlanPorts: []string{"wlan-usb", "wlan-usb2", "wlan0"}}}
 
@@ -153,9 +171,12 @@ func TestReapplyOnlyRestoresRadiosStillClaiming(t *testing.T) {
 	want := [][2]string{
 		{"wlan-usb", "SET bss_load_test 12:153:0"},
 		{"wlan-usb", "UPDATE_BEACON"},
+		{"wlan0", "SET bss_load_test 0:0:0"},
+		{"wlan0", "UPDATE_BEACON"},
 	}
 	if got := sent(); !sameCalls(got, want) {
-		t.Fatalf("reapply sent %v, want only the radio still claiming: %v", got, want)
+		t.Fatalf("reapply sent %v, want the claim replayed and the untouched radio "+
+			"asserted, with the opted-out one left alone: %v", got, want)
 	}
 }
 
@@ -312,7 +333,19 @@ func TestAClaimSurvivesADaemonRestart(t *testing.T) {
 // The other half, and the one a stored claim cannot cover: hostapd is holding a
 // claim from a daemon whose state file is gone. Silence would leave the box
 // lying with nothing on the box aware of it, so every radio is told something.
+//
+// This is also what keeps the correction being the DEFAULT from re-opening that
+// bug. A radio with nothing to correct with must still be sent 0:0:0, because
+// "no correction to make" and "leave the previous daemon's claim alone" are the
+// same code path unless standing down is made an instruction.
 func TestStartupClearsAClaimItHasNoRecordOf(t *testing.T) {
+	origFloor := bssFloorFor
+	t.Cleanup(func() { bssFloorFor = origFloor })
+	bssFloorFor = func(*Engine, string) BSSLoadState { return BSSLoadState{} }
+	origNb := neighbourUtilFor
+	t.Cleanup(func() { neighbourUtilFor = origNb })
+	neighbourUtilFor = func(*Engine, string) (float64, bool) { return 0, false }
+
 	sent := captureHostapd(t, nil)
 
 	e := &Engine{
@@ -401,10 +434,15 @@ func TestTheCorrectionStandsDownWithNothingToCorrectWith(t *testing.T) {
 	if _, err := e.SetBSSLoad("wlan0", false, true, 0, 0); err != nil {
 		t.Fatalf("SetBSSLoad: %v", err)
 	}
-	for _, c := range sent() {
-		if c[1] != "UPDATE_BEACON" && c[1] != "SET bss_load_test 0:0:0" {
-			t.Fatalf("sent %q with nothing to correct with; expected no claim", c[1])
-		}
+	// 0:0:0, not nothing. Skipping the send would leave a previous daemon's
+	// claim on the air, which is the bug assertBSSLoad exists to close.
+	want := [][2]string{
+		{"wlan0", "SET bss_load_test 0:0:0"},
+		{"wlan0", "UPDATE_BEACON"},
+	}
+	if got := sent(); !sameCalls(got, want) {
+		t.Fatalf("with nothing to correct with the radio was sent %v, want an "+
+			"explicit stand-down: %v", got, want)
 	}
 }
 
