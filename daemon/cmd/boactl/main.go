@@ -499,7 +499,7 @@ func cmdConfig(c *client, args []string) error {
 			return err
 		}
 		fmt.Fprintf(os.Stderr, "wrote %s (%d bytes)\n", *out, len(pretty)+1)
-		return nil
+		return describeExport(raw)
 	case "apply":
 		if len(args) < 2 {
 			return errors.New("config apply needs a file")
@@ -729,6 +729,38 @@ func findClient(c *client, want string) (boa.Client, error) {
 		}
 		return boa.Client{}, fmt.Errorf("%q matches %d devices: %s", want, len(hits), strings.Join(names, ", "))
 	}
+}
+
+// describeExport says what a written configuration actually contains, and
+// fails when the answer is "nothing".
+//
+// This is the file an operator writes before reflashing, and a reflash destroys
+// /var/lib/infinite-streaming-boa entirely. An empty export is 51 bytes of
+// version and timestamp that reports success, looks like a backup, and restores
+// nothing -- and the box refuses it on the way back in ("config contains no
+// ladder, patterns or devices"), which is the worst possible moment to find
+// out, with the old filesystem already gone.
+//
+// The ladder especially: its own doc comment calls it the only genuinely
+// expensive thing in the document, an hour of a real device streaming real
+// content, and the reason the document exists.
+func describeExport(raw json.RawMessage) error {
+	var cfg boa.ConfigExport
+	if err := json.Unmarshal(raw, &cfg); err != nil {
+		return fmt.Errorf("the box returned a configuration this build cannot read: %w", err)
+	}
+	ladder := "no ladder"
+	if cfg.Ladder != nil {
+		ladder = fmt.Sprintf("%d-rung ladder", len(cfg.Ladder.Rungs))
+	}
+	fmt.Fprintf(os.Stderr, "  contains: %s, %d pattern(s), %d device policy(ies)\n",
+		ladder, len(cfg.Patterns), len(cfg.Devices))
+
+	if cfg.Ladder == nil && len(cfg.Patterns) == 0 && len(cfg.Devices) == 0 {
+		return errors.New("that export is EMPTY -- it restores nothing, and the box will " +
+			"refuse it on the way back in. Do not reflash on the strength of it")
+	}
+	return nil
 }
 
 // --- formatting -------------------------------------------------------------
