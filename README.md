@@ -917,13 +917,21 @@ The client transmits with less aggregation and a weaker radio than the access
 point does, so the same air buys far fewer bits going up. Worth knowing before
 reading an uplink number as though it were a downlink one.
 
-> **An `iperf3` run against the box does not appear on the device's own
+> **An `iperf3` UPLINK run against the box does not appear on the device's own
 > throughput chart.** It terminates *on* the box rather than being forwarded, so
-> it never crosses the shaper's classes: during a 145 Mbit/s uplink the client
+> it never reaches the uplink shaper: during a 145 Mbit/s uplink the client
 > card read `up` **0.0 Mbit/s** and `down` 3.4 Mbit/s — that being the TCP ACK
 > stream — while the airtime chart read **80–86%**. The device looks idle. Use
 > the airtime chart, or `iperf3` between two devices *through* the box, if you
 > need the traffic to show up in the readouts as well as on the air.
+>
+> **The downlink direction is different, and `iperf3 -R` IS conditioned.**
+> Downlink shaping lives on the egress of the client's own port, and a packet
+> the box originates leaves by that same port — so it meets the same qdisc a
+> forwarded one would. Measured 2026-09-08 over Wi-Fi on `wlan-usb`: the same
+> client read **4.72 Mbit/s** under a 5 Mbps cap and **504 Mbit/s** with the cap
+> cleared. So `-R` is a valid way to prove a downlink policy is real, and the
+> "terminates on the box" caveat above applies to uplink only.
 
 ### Channel width, and what it is worth
 
