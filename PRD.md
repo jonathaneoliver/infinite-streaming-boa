@@ -769,6 +769,40 @@ damages packets, never link state.
   transition request: it was never asked. The per-client **steer** on the
   Clients tab remains the control for that question, and the two are described
   in their own words rather than one borrowing the other's.
+- **A radio can be told to claim it is busier than it is, and that is an
+  impairment aimed at the client's decision rather than at its packets.** The
+  802.11 **BSS Load** element carries a station count and a channel utilisation,
+  and some clients weigh both when choosing between access points. Everything
+  else here either damages a link or *orders* a client to move; this is the only
+  control that offers a device a **reason** to prefer the other radio and then
+  watches what it does with one. It changes the beacon and nothing else — the
+  link is untouched, nobody is dropped, and the access point is not restarted.
+- **A claim may only ever be raised above what is really happening.** The
+  controls are floored at the radio's actual associated station count and at its
+  own measured airtime, and a value below either is snapped up to it rather than
+  refused. The rule is not a nicety: overstating load pushes devices away, which
+  is what a genuinely busy access point does anyway, while understating it
+  **pulls** them in — and that lands on neighbours' equipment this box does not
+  own, cannot observe, and was not asked to affect.
+- **The truth is on screen beside the claim, always.** Each control shows what
+  the radio is really doing next to what it is advertising. A control that can
+  state something untrue about the box is only safe while what it is lying about
+  is visible next to it.
+- **Switching the claim off is not the same as saying nothing, and the
+  interface does not pretend it is.** Measured on this hardware, hostapd puts a
+  BSS Load element in every beacon whether or not anything has been configured;
+  stopping the override returns it to **0 stations and 0%**, which is a default
+  rather than a measurement. The box cannot advertise its own honest figure
+  instead: hostapd derives BSS Load from the driver's survey counter, and on the
+  `mt7921u` that counter reads near zero while the radio is 80% busy. So the box
+  already understates its load to every client that asks, the one direction this
+  control is otherwise forbidden to move in, and the interface says so where an
+  operator switches the claim off rather than leaving it to be discovered.
+- **The claim survives the things that restart hostapd.** It lives in the
+  running process and nowhere else, so a profile, a width change, a power cycle
+  or a USB re-enumeration would each silently drop it. It is re-asserted on the
+  same timer that refreshes the contention figures, which covers the paths
+  nobody has thought of yet rather than the four that are known.
 - **An access point can be taken down and brought back, and both ends can be
   announced.** `disable` closes the BSS; `enable` reopens it. On its own, either
   is silent — a closed BSS tells nobody, and clients discover it by timing out,

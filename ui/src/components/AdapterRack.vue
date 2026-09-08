@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { computed } from 'vue';
-import type { IfaceInfo, Series } from '@/types';
+import { computed, ref } from 'vue';
+import type { BSSLoadState, IfaceInfo, Series } from '@/types';
 import { DEVELOPER } from '@/types';
 import { rackAdapters, isOpen, toggleAdapter } from '@/composables/useAdapters';
 import AdapterStack from '@/components/AdapterStack.vue';
@@ -326,6 +326,125 @@ function airTitle(r: IfaceInfo): string {
     (a.util_known
       ? `${a.util_reporters ?? 0} neighbouring access point(s) advertise ${a.util_min_pct !== undefined && Math.round(a.util_min_pct) !== Math.round(a.util_pct) ? `${a.util_min_pct.toFixed(0)}–${a.util_pct.toFixed(0)}%` : `${a.util_pct.toFixed(0)}%`} busy on this channel, each averaged over about 5 seconds. They sit in different rooms and hear different amounts, so a wide range is real disagreement rather than noise.`
       : 'no neighbour on this channel advertised it. Not an idle channel — on a quiet channel there is often nobody near enough to ask.')
+  );
+}
+
+/*
+ * BSS LOAD: what a radio CLAIMS about its congestion, as against what it
+ * measures.
+ *
+ * The odd one out in "make the link worse", and it is under that heading
+ * because that is where an operator looks for it, not because it belongs to the
+ * same family. A profile and a threshold change the LINK -- the rate, the
+ * retries, the packets a client actually meets. This changes only what the
+ * beacon SAYS and leaves the link exactly as it was. It is the one control here
+ * aimed at a client's decision rather than at its traffic.
+ */
+
+/**
+ * Staged handle positions, keyed by interface.
+ *
+ * A slider bound straight at the daemon's value fights the poll: the inventory
+ * reloads every few seconds and would snatch the handle back to the last
+ * committed number mid-drag. A drag lives here instead, and the entry is
+ * dropped once the daemon has answered -- at which point what is on screen is
+ * the daemon's number, already clamped to the floor.
+ */
+const bssDraft = ref<Record<string, { stations: number; util: number }>>({});
+
+function bssOf(r: IfaceInfo): BSSLoadState | undefined {
+  return props.bridge.bssLoad.value[r.name];
+}
+
+function bssOn(r: IfaceInfo): boolean {
+  return bssOf(r)?.on === true;
+}
+
+/**
+ * The floors: what the radio is REALLY doing, and the lowest either handle can
+ * go.
+ *
+ * Rounded UP, so a slider's minimum is a whole number and its steps land on
+ * whole numbers after it. The daemon clamps to the exact figure, which is never
+ * above this, so the rounding can only ever claim slightly more than the truth
+ * -- the safe direction, and the only direction this control may move in at
+ * all.
+ */
+function bssFloorUtil(r: IfaceInfo): number {
+  return Math.ceil(bssOf(r)?.floor_util_pct ?? 0);
+}
+function bssFloorStations(r: IfaceInfo): number {
+  return bssOf(r)?.floor_stations ?? 0;
+}
+/** False where the driver reports no per-station airtime, so a 0% floor is an
+ *  absence of measurement rather than an idle radio. */
+function bssFloorKnown(r: IfaceInfo): boolean {
+  return bssOf(r)?.floor_known === true;
+}
+
+/**
+ * Where each handle sits: the staged drag, else what the daemon holds, and
+ * never below the floor.
+ *
+ * The floor is re-applied on every read rather than trusted from the last
+ * commit, because it MOVES -- it is our own airtime, second by second. A claim
+ * that was honest when it was made stops being honest the moment the radio gets
+ * busier, so the handle climbs with it.
+ */
+function bssUtil(r: IfaceInfo): number {
+  return Math.max(bssDraft.value[r.name]?.util ?? bssOf(r)?.util_pct ?? 0, bssFloorUtil(r));
+}
+function bssStations(r: IfaceInfo): number {
+  return Math.max(
+    bssDraft.value[r.name]?.stations ?? bssOf(r)?.stations ?? 0,
+    bssFloorStations(r),
+  );
+}
+
+type BSSPatch = Partial<{ stations: number; util: number }>;
+
+/** Stage a drag without sending it: one request per commit, not per pixel. */
+function stageBSS(r: IfaceInfo, patch: BSSPatch) {
+  bssDraft.value = {
+    ...bssDraft.value,
+    [r.name]: { stations: bssStations(r), util: bssUtil(r), ...patch },
+  };
+}
+
+/**
+ * Commit, then let go.
+ *
+ * The draft is dropped rather than kept in step with the response, because the
+ * daemon's answer is the one that counts: it has clamped both numbers up to a
+ * floor this may well have been dragged below, and a handle left where it was
+ * released would be showing a claim the box is not making.
+ */
+async function commitBSS(r: IfaceInfo, on: boolean, patch: BSSPatch = {}) {
+  const next = { stations: bssStations(r), util: bssUtil(r), ...patch };
+  stageBSS(r, next);
+  await props.bridge.setBSSLoad(r.name, on, next.stations, next.util);
+  const rest = { ...bssDraft.value };
+  delete rest[r.name];
+  bssDraft.value = rest;
+}
+
+/** Why the handle will not go lower, said where somebody tries to drag it. */
+function bssFloorTitle(r: IfaceInfo, what: 'util' | 'stations'): string {
+  const why =
+    what === 'util'
+      ? bssFloorKnown(r)
+        ? `${bssFloorUtil(r)}% is what this radio's own clients are using right now, ` +
+          'measured from the station counters \u2014 so the channel is at least that busy.'
+        : 'This radio reports no per-station airtime, so there is no measured floor. ' +
+          'The 0% minimum is an absence of measurement, not an idle radio.'
+      : `${bssFloorStations(r)} station(s) are actually associated.`;
+  return (
+    `${why}\n\nThe handle only goes UP from there, and that is the safety rule ` +
+    'rather than a nicety: overstating load pushes devices away, which is what a ' +
+    'genuinely busy access point does anyway, while understating it would PULL them ' +
+    'in \u2014 onto neighbours\u2019 equipment nobody here owns or can observe.' +
+    '\n\nMoving a handle starts claiming; "stop" returns the beacon to the zeros ' +
+    'hostapd advertises by default.'
   );
 }
 
@@ -790,6 +909,66 @@ Clients ARE told it has gone, unlike a power cut.`
             <button :disabled="busy" @click="bridge.setThreshold(r.name, 'frag', 'off')">off</button>
           </div>
 
+          <!-- BSS Load. Under this heading because it is where an operator will
+               look for it, but it is not the same KIND of thing as the two
+               controls above it, and the note says so rather than leaving it to
+               be discovered. Those make the LINK worse; this leaves the link
+               untouched and makes the radio LOOK worse.
+
+               The truth sits in the row beside the claim, always. A control
+               that can lie is only safe while what it is lying about is on
+               screen next to it. -->
+          <p class="meta group-note">
+            <strong>A claim, not an impairment.</strong> The beacon says the
+            channel is this busy; the link is exactly as it was. Some clients
+            weigh it when choosing between access points, which makes this the
+            one control here that offers a device a <em>reason</em> to move
+            rather than ordering it to. Nobody is dropped.
+          </p>
+          <div class="action-row">
+            <label class="k">advertise</label>
+            <div class="seg" role="group" aria-label="advertised BSS Load">
+              <button
+                class="seg-btn" :class="{ on: !bssOn(r) }" :disabled="busy"
+                title="Stop claiming. Measured on this hardware, that is not silence: hostapd puts a BSS Load element in every beacon regardless, and with nothing set it reads 0 stations and 0% — which is itself an understatement rather than a measurement."
+                @click="commitBSS(r, false)"
+              >stop</button>
+              <button
+                class="seg-btn" :class="{ on: bssOn(r) }" :disabled="busy"
+                title="Put the station count and utilisation below into every beacon, from the next one onwards. No restart, and nobody is dropped."
+                @click="commitBSS(r, true)"
+              >claim this</button>
+            </div>
+          </div>
+          <div class="load-row" :class="{ off: !bssOn(r) }">
+            <label>utilisation</label>
+            <input
+              type="range" :min="bssFloorUtil(r)" max="100" step="1"
+              :value="bssUtil(r)" :disabled="busy"
+              :title="bssFloorTitle(r, 'util')"
+              @input="stageBSS(r, { util: +($event.target as HTMLInputElement).value })"
+              @change="commitBSS(r, true, { util: +($event.target as HTMLInputElement).value })"
+            />
+            <span class="val num">{{ bssUtil(r).toFixed(0) }}%</span>
+            <span class="floor num" :title="bssFloorTitle(r, 'util')">
+              (really {{ bssFloorKnown(r) ? bssFloorUtil(r) + '%' : '\u2014' }})
+            </span>
+          </div>
+          <div class="load-row" :class="{ off: !bssOn(r) }">
+            <label>stations</label>
+            <input
+              type="range" :min="bssFloorStations(r)" max="100" step="1"
+              :value="bssStations(r)" :disabled="busy"
+              :title="bssFloorTitle(r, 'stations')"
+              @input="stageBSS(r, { stations: +($event.target as HTMLInputElement).value })"
+              @change="commitBSS(r, true, { stations: +($event.target as HTMLInputElement).value })"
+            />
+            <span class="val num">{{ bssStations(r) }}</span>
+            <span class="floor num" :title="bssFloorTitle(r, 'stations')">
+              (really {{ bssFloorStations(r) }})
+            </span>
+          </div>
+
         </template>
       </div>
     </article>
@@ -1009,6 +1188,25 @@ Clients ARE told it has gone, unlike a power cut.`
 .meta { font-size: 11px; color: var(--ink-faint); }
 .warn-line { color: var(--warn); font-size: 11px; margin: 2px 0; }
 .group-note { margin: 0 0 4px; }
+/* NOT `.row`, which in this file is the collapsed adapter row's six-track grid
+   and would drop a slider into the middle of it. */
+.load-row {
+  display: grid;
+  grid-template-columns: 68px minmax(90px, 220px) 46px auto;
+  align-items: center;
+  gap: 8px;
+  margin: 3px 0;
+  font-size: 12px;
+}
+.load-row > label { color: var(--ink-faint); }
+.load-row input[type='range'] { width: 100%; }
+.load-row .val { text-align: right; color: var(--ink-dim); }
+/* The truth, beside the claim, always. */
+.load-row .floor { font-size: 11px; color: var(--ink-faint); }
+/* Dimmed, not disabled. The handles still set what the beacon will carry the
+   moment it is switched on, and moving one switches it on -- so they have to
+   stay draggable while nothing is being advertised. */
+.load-row.off { opacity: 0.6; }
 .notice.inline { margin: 8px 0 0; }
 /* An empty badge keeps its box so the controls after it never move. Invisible
    rather than absent: `visibility` reserves the space that `display:none` would

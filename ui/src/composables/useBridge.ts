@@ -204,6 +204,12 @@ export function useBridge(active: Ref<boolean>) {
    * 0%, and callers must render the two differently.
    */
   const air = computed(() => info.value?.air ?? {});
+  /**
+   * What each radio has been told to CLAIM about its congestion, and the floor
+   * of what it is really doing. Empty for a radio with no access point up:
+   * there is no beacon to put an element in.
+   */
+  const bssLoad = computed(() => info.value?.bss_load ?? {});
   /** Which radio was scanned most recently, for the panel's single readout. */
   const lastScanned = ref('');
   const scan = computed<ScanResult | null>(() =>
@@ -275,6 +281,39 @@ export function useBridge(active: Ref<boolean>) {
             (b.kind === 'rts' && b.value === 0
               ? ' — RTS/CTS before every frame.'
               : '.'),
+    );
+
+  /**
+   * What this radio ADVERTISES about its own congestion, which is not what it
+   * measures.
+   *
+   * The only control here aimed at the client's DECISION rather than at its
+   * packets: some clients weigh a BSS Load element when choosing between access
+   * points, so this can offer a device a reason to move where everything else
+   * can only make it slow. `on` false stops the claim; it does not remove the
+   * element, which this hostapd puts in every beacon whether or not anything
+   * has been set.
+   *
+   * The daemon clamps both values UP to what is really happening and answers
+   * with what it settled on, so a slider dragged below the floor comes back
+   * sitting on it. Overstating load pushes devices away, which is what a busy
+   * access point does anyway; understating it would pull them in, onto
+   * neighbours' equipment nobody here can see.
+   */
+  const setBSSLoad = (iface: string, on: boolean, stations: number, utilPct: number) =>
+    act(
+      `/api/bridge/radios/${encodeURIComponent(iface)}/bssload` +
+        `?on=${on ? 1 : 0}&stations=${Math.round(stations)}&util_pct=${utilPct.toFixed(1)}`,
+      (b) =>
+        b.bss_load?.on
+          ? `${b.iface}: beacon now claims ${b.bss_load.stations} station(s) and ` +
+            `${Math.round(b.bss_load.util_pct)}% channel utilisation` +
+            (b.bss_load.floor_known
+              ? ` — really ${b.bss_load.floor_stations} and ` +
+                `${Math.round(b.bss_load.floor_util_pct)}%.`
+              : ' — this radio reports no airtime of its own to compare it with.')
+          : `${b.iface}: no longer claiming — the beacon is back to the 0% ` +
+            'hostapd advertises by default.',
     );
 
   /*
@@ -422,9 +461,9 @@ export function useBridge(active: Ref<boolean>) {
 
   return {
     info, survey, scan, error, actionMsg, busy,
-    scans, scanSummaries, air,
+    scans, scanSummaries, air, bssLoad,
     load, loadSurvey, deauthAll, setPower, setAPEnabled, setService, powerOutage,
     scanBand,
-    applyProfile, setThreshold, evict, gather, linkAll, moveChannel,
+    applyProfile, setThreshold, setBSSLoad, evict, gather, linkAll, moveChannel,
   };
 }

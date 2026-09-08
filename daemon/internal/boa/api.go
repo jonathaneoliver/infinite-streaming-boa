@@ -50,6 +50,7 @@ func (a *API) Routes() *http.ServeMux {
 	mux.HandleFunc("POST /api/verbose", a.postVerbose)
 	mux.HandleFunc("POST /api/bridge/radios/{iface}/scan", a.postScan)
 	mux.HandleFunc("POST /api/bridge/radios/{iface}/profile", a.postRadioProfile)
+	mux.HandleFunc("POST /api/bridge/radios/{iface}/bssload", a.postBSSLoad)
 	mux.HandleFunc("POST /api/bridge/radios/{iface}/threshold", a.postThreshold)
 	mux.HandleFunc("POST /api/bridge/radios/{iface}/steer", a.postSteer)
 	mux.HandleFunc("POST /api/bridge/radios/{iface}/gather", a.postGather)
@@ -643,6 +644,38 @@ func (a *API) postScan(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, res)
+}
+
+// postBSSLoad sets what a radio ADVERTISES about its own congestion, which is
+// not what it measures.
+//
+// An impairment aimed at the client's DECISION rather than at its packets. The
+// BSS Load element carries a station count and a channel utilisation, and some
+// clients weigh both when choosing between access points -- so this is the one
+// control here that can offer a device a reason to move rather than ordering it
+// to. `on=0` withdraws the element entirely, which is not the same as
+// advertising zero.
+//
+// Values may only be raised ABOVE what is really happening, and this clamps
+// rather than refuses. Overstating load pushes devices away, which is what a
+// genuinely busy access point does anyway; understating it pulls them in, and
+// that lands on neighbours nobody here can see or ask.
+func (a *API) postBSSLoad(w http.ResponseWriter, r *http.Request) {
+	iface := r.PathValue("iface")
+	if err := a.e.radioReady(iface); err != nil {
+		writeErr(w, http.StatusServiceUnavailable, err.Error())
+		return
+	}
+	q := r.URL.Query()
+	on := q.Get("on") != "0" && !strings.EqualFold(q.Get("on"), "false")
+	st, err := a.e.SetBSSLoad(iface, on, atoiSafe(q.Get("stations")), atofSafe(q.Get("util_pct")))
+	if err != nil {
+		writeErr(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"iface": iface, "action": "bssload", "bss_load": st,
+	})
 }
 
 // postRadioProfile applies a named PHY or power-save profile, restarting the

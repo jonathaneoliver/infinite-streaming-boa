@@ -299,6 +299,10 @@ type Engine struct {
 	// moment, and a stale one restored from disk would be worse than none.
 	scanSeen map[string]ScanSummary
 
+	// bssLoad is what each radio has been told to ADVERTISE about its own
+	// congestion, as against what it is measuring. See bssload.go.
+	bssLoad bssLoadStore
+
 	// scanFree records, per radio, whether a scan of it kept the access point
 	// on the air. Written from what a scan actually did rather than from the
 	// driver's name, and consulted by the background poll -- which will not

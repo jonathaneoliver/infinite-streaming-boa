@@ -17,7 +17,7 @@ see `docs/DATA-CONTRACT.md` for where each number comes from.
 
 ## Endpoints
 
-54 routes.
+55 routes.
 
 | Method | Path |
 |---|---|
@@ -39,6 +39,7 @@ see `docs/DATA-CONTRACT.md` for where each number comes from.
 | POST | `/api/verbose` |
 | POST | `/api/bridge/radios/{iface}/scan` |
 | POST | `/api/bridge/radios/{iface}/profile` |
+| POST | `/api/bridge/radios/{iface}/bssload` |
 | POST | `/api/bridge/radios/{iface}/threshold` |
 | POST | `/api/bridge/radios/{iface}/steer` |
 | POST | `/api/bridge/radios/{iface}/gather` |
@@ -255,6 +256,23 @@ postRadioProfile applies a named PHY or power-save profile, restarting the
 BSS. Every client on the radio is dropped: these parameters are advertised in
 the beacon and negotiated at association, so an associated station cannot be
 told about them.
+
+### POST /api/bridge/radios/{iface}/bssload
+
+postBSSLoad sets what a radio ADVERTISES about its own congestion, which is
+not what it measures.
+
+An impairment aimed at the client's DECISION rather than at its packets. The
+BSS Load element carries a station count and a channel utilisation, and some
+clients weigh both when choosing between access points -- so this is the one
+control here that can offer a device a reason to move rather than ordering it
+to. `on=0` withdraws the element entirely, which is not the same as
+advertising zero.
+
+Values may only be raised ABOVE what is really happening, and this clamps
+rather than refuses. Overstating load pushes devices away, which is what a
+genuinely busy access point does anyway; understating it pulls them in, and
+that lands on neighbours nobody here can see or ask.
 
 ### POST /api/bridge/radios/{iface}/threshold
 
@@ -634,6 +652,15 @@ BridgeInfo is the whole answer for the bridge view.
 >
 > Entries are absent rather than zeroed for a channel nobody has scanned.
 
+**`bss_load`** `map[string]BSSLoadState` _(omitted when empty)_
+> BSSLoad is what each radio has been told to ADVERTISE about its own
+> congestion, and the floor of what it is really doing. See bssload.go.
+>
+> Every other impairment here acts on the link; this one acts on what a
+> client is told, so the honest figure travels beside the claim and the
+> interface shows both. A control that can lie is only safe while the truth
+> is next to it.
+
 **`read_age_ms`** `int` _(omitted when empty)_
 > ReadAgeMs is how long ago this view was actually built, in milliseconds.
 >
@@ -973,6 +1000,38 @@ different claim depending on who heard it and from where.
 > itself, and absent when no scan has covered it yet.
 
 **`ours_known`** `bool` _(omitted when empty)_
+
+### BSSLoadState
+
+BSSLoadState is one radio's override and the floor it may not go below.
+
+**`on`** `bool`
+
+**`stations`** `int`
+
+**`util_pct`** `float64`
+
+**`floor_stations`** `int`
+> FloorStations and FloorUtilPct are what is REALLY there, and the lowest
+> the controls may be set to.
+>
+> The constraint is the whole safety property. Overstating load pushes
+> devices away, which is what a genuinely busy access point does anyway;
+> understating it PULLS them in, and that lands on neighbours' equipment we
+> do not own and cannot observe. A box that can lie should only ever lie in
+> the direction that costs other people nothing.
+>
+> The utilisation floor is our own measured airtime -- the figure verified
+> against iperf3 in Source T -- because the channel is at least as busy as
+> we are making it. It is a lower bound rather than the true utilisation,
+> which would also include neighbours we can only see when we scan.
+
+**`floor_util_pct`** `float64`
+
+**`floor_known`** `bool`
+> FloorKnown is false where the driver cannot report per-client airtime, so
+> the utilisation floor is a guess rather than a measurement. The onboard
+> brcmfmac radio is the case: no per-station duration counters at all.
 
 ### BeaconReport
 
