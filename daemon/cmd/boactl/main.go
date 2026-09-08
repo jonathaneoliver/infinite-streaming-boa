@@ -17,6 +17,7 @@
 //	boactl bridge                   radios, channels and how contested they are
 //	boactl events -follow           the event stream, as it happens
 //	boactl survey wlan-usb          a radio's airtime counters
+//	boactl shape "Apple TV" -down 5 impose conditioning on one device
 //	boactl config get -o boa.json   export; config apply reads one back
 //	boactl probe                    assert the box is really doing its job
 //
@@ -175,13 +176,39 @@ func main() {
 	}
 }
 
+// noArgs rejects anything trailing a command that takes none.
+//
+// Silently ignoring it is the trap: global flags have to precede the command,
+// so `boactl devices -json` is a natural thing to type and used to print the
+// plain table and exit 0 -- the flag disregarded, with nothing said. A tool
+// whose whole purpose is to stop failures being quiet cannot do that.
+func noArgs(cmd string, rest []string) error {
+	if len(rest) == 0 {
+		return nil
+	}
+	if strings.HasPrefix(rest[0], "-") {
+		return fmt.Errorf("%s takes no flags; global flags go BEFORE the command: boactl %s %s",
+			cmd, rest[0], cmd)
+	}
+	return fmt.Errorf("%s takes no arguments, got %q", cmd, rest[0])
+}
+
 func run(c *client, args []string) error {
 	switch args[0] {
 	case "state":
+		if err := noArgs("state", args[1:]); err != nil {
+			return err
+		}
 		return cmdState(c)
 	case "devices":
+		if err := noArgs("devices", args[1:]); err != nil {
+			return err
+		}
 		return cmdDevices(c)
 	case "bridge":
+		if err := noArgs("bridge", args[1:]); err != nil {
+			return err
+		}
 		return cmdBridge(c)
 	case "events":
 		return cmdEvents(c, args[1:])
@@ -197,7 +224,7 @@ func run(c *client, args []string) error {
 	case "probe":
 		return cmdProbe(c, args[1:])
 	default:
-		return fmt.Errorf("unknown command %q (try: state, devices, bridge, events, survey, config, probe)", args[0])
+		return fmt.Errorf("unknown command %q (try: state, devices, bridge, events, survey, shape, config, probe)", args[0])
 	}
 }
 
@@ -213,6 +240,9 @@ Commands:
   events [-since N] [-follow]
                         what has happened, newest last
   survey <iface>        a radio's airtime counters
+  shape <mac|label> [-down M] [-up M] [-delay ms] [-jitter ms]
+        [-loss pct] [-burst pkts] [-dir down|up|both] [-clear]
+                        impose conditioning on one device
   config get [-o file]  export the box's configuration
   config apply <file>   send a configuration back
   probe [-ssh] [-settle 5s]
@@ -269,17 +299,20 @@ func cmdDevices(c *client) error {
 		fmt.Println("no clients known")
 		return nil
 	}
-	fmt.Printf("%-17s %-20s %-7s %-9s %-16s %-16s %s\n",
-		"MAC", "LABEL", "MEDIUM", "PRESENT", "DOWN", "UP", "ENFORCED")
+	fmt.Printf("%-17s %-18s %-7s %-8s %-8s %-16s %-16s %s\n",
+		"MAC", "LABEL", "MEDIUM", "PRESENT", "FROM", "DOWN", "UP", "ENFORCED")
 	for _, cl := range s.Clients {
 		label := cl.Label
 		if label == "" {
 			label = cl.Hostname
 		}
-		fmt.Printf("%-17s %-20s %-7s %-9s %-16s %-16s %s\n",
-			cl.MAC, truncate(orDash(label), 20), cl.Medium, yesNo(cl.Present),
-			shapeSummary(cl.Policy.Down), shapeSummary(cl.Policy.Up),
-			enforced(cl))
+		// The shapes actually in force, not the stored policy -- see
+		// effectiveShapes. FROM names what decided them, so a device held by a
+		// distance model or a running pattern cannot read as unconditioned.
+		down, up, source := effectiveShapes(cl)
+		fmt.Printf("%-17s %-18s %-7s %-8s %-8s %-16s %-16s %s\n",
+			cl.MAC, truncate(orDash(label), 18), cl.Medium, yesNo(cl.Present),
+			source, shapeSummary(down), shapeSummary(up), enforced(cl))
 	}
 	return nil
 }
@@ -592,4 +625,41 @@ func enforced(cl boa.Client) string {
 		return "-"
 	}
 	return fmt.Sprintf("down %.4gM up %.4gM", cl.DownCounters.CapMbps, cl.UpCounters.CapMbps)
+}
+
+// effectiveShapes is what is ACTUALLY being imposed on a device, and which of
+// the four possible sources decided it.
+//
+// Reading Policy.Down alone is wrong and quietly so. A distance model, a ladder
+// sweep and a pattern each drive the shapes per tick and are deliberately never
+// written back to the policy -- storing a model's output beside its input is how
+// the two come to disagree -- so a device conditioned by any of them has a
+// policy that reads perfectly clean while the kernel holds it at 171 Mbps.
+// Measured on the box 2026-09-08, where a phone under a -62 dBm distance model
+// showed `down -` in this tool and `cap_mbps 171.1` in the same payload.
+//
+// The precedence mirrors Engine.desired() in state.go, in the same order,
+// because any other order would be a second opinion about what the box is
+// doing: policy, then RSSI (both directions), then a sweep (downlink only),
+// then a pattern (both).
+func effectiveShapes(cl boa.Client) (down, up boa.Shape, source string) {
+	down, up, source = cl.Policy.Down, cl.Policy.Up, "policy"
+	if !cl.Policy.Enabled {
+		// Disabled means "do not condition", not "do not measure".
+		down, up, source = boa.Shape{}, boa.Shape{}, "off"
+	}
+	if cl.RssiRun != nil {
+		down, up, source = cl.RssiRun.Down, cl.RssiRun.Up, "rssi"
+	}
+	if cl.Sweep != nil && cl.Sweep.State == "running" {
+		down.RateMbps = cl.Sweep.CapMbps
+		source = "sweep"
+	}
+	if cl.PatternRun != nil && cl.PatternRun.State == "running" {
+		down, up, source = cl.PatternRun.Down, cl.PatternRun.Up, "pattern"
+	}
+	if down.IsClean() && up.IsClean() && source == "policy" {
+		source = "-"
+	}
+	return down, up, source
 }

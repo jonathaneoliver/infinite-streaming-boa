@@ -183,13 +183,19 @@ func checkEnforcement(rep *report, s boa.Snapshot) {
 		if !cl.Policy.Enabled || !cl.Present {
 			continue
 		}
+		// The shapes in force, which are NOT Policy.Down when a distance model,
+		// a sweep or a pattern is driving -- those are derived per tick and
+		// never written back, so reading policy here skipped every such client
+		// and reported "nothing to verify" on a box that was conditioning all
+		// of them.
+		wantDown, wantUp, source := effectiveShapes(cl)
 		for _, d := range []struct {
 			name string
 			want float64
 			got  float64
 		}{
-			{"down", cl.Policy.Down.RateMbps, cl.DownCounters.CapMbps},
-			{"up", cl.Policy.Up.RateMbps, cl.UpCounters.CapMbps},
+			{"down", wantDown.RateMbps, cl.DownCounters.CapMbps},
+			{"up", wantUp.RateMbps, cl.UpCounters.CapMbps},
 		} {
 			if d.want == 0 {
 				continue
@@ -199,14 +205,14 @@ func checkEnforcement(rep *report, s boa.Snapshot) {
 			if diff < 0 {
 				diff = -diff
 			}
-			label := fmt.Sprintf("%s %s", shortMAC(cl.MAC), d.name)
+			label := fmt.Sprintf("%s %s (%s)", shortMAC(cl.MAC), d.name, source)
 			switch {
 			case d.got == 0:
 				rep.add(fail, "cap enforced", fmt.Sprintf(
-					"%s: policy asks %.4g Mbps, the kernel is enforcing nothing", label, d.want))
+					"%s asks %.4g Mbps, the kernel is enforcing nothing", label, d.want))
 			case diff/d.want > tolerance:
 				rep.add(fail, "cap enforced", fmt.Sprintf(
-					"%s: policy asks %.4g Mbps, the kernel is enforcing %.4g", label, d.want, d.got))
+					"%s asks %.4g Mbps, the kernel is enforcing %.4g", label, d.want, d.got))
 			default:
 				rep.add(pass, "cap enforced", fmt.Sprintf(
 					"%s: %.4g Mbps, read back from tc", label, d.got))
@@ -214,7 +220,7 @@ func checkEnforcement(rep *report, s boa.Snapshot) {
 		}
 	}
 	if checked == 0 {
-		rep.add(warn, "cap enforced", "no present client has a rate cap; nothing to verify")
+		rep.add(warn, "cap enforced", "no present client has a rate cap from any source; nothing to verify")
 	}
 }
 
@@ -233,7 +239,8 @@ func checkCounters(rep *report, a, b boa.Snapshot, gap time.Duration) {
 			continue
 		}
 		bytes := now.DownCounters.Bytes - was.DownCounters.Bytes
-		capped := now.Policy.Down.RateMbps > 0
+		effDown, _, _ := effectiveShapes(now)
+		capped := effDown.RateMbps > 0
 		if bytes == 0 {
 			continue
 		}
@@ -253,15 +260,32 @@ func checkCounters(rep *report, a, b boa.Snapshot, gap time.Duration) {
 		drops := now.DownCounters.Drops - was.DownCounters.Drops
 		over := now.DownCounters.Overlimits - was.DownCounters.Overlimits
 		queued := now.DownCounters.Backlog > 0 || now.DownCounters.Qlen > 0
+		// A cap can only be shown to work while something is PUSHING against
+		// it. A client drawing 28 Mbps through a 171 Mbps cap tells you nothing
+		// about the cap, and saying PASS there is a check reporting success
+		// having tested nothing -- the same false confidence as a filter check
+		// that matched no clients. Demand real evidence: a queue, drops, or
+		// throughput actually up at the ceiling.
+		// The check name carries the claim, so the two are kept apart: a brief
+		// queue proves the qdisc is in the path and handling this client's
+		// traffic; only drops or throughput up at the ceiling prove the cap is
+		// actually holding anything back.
+		nearCeiling := effDown.RateMbps > 0 && mbps >= 0.9*effDown.RateMbps
 		switch {
-		case capped && drops == 0 && over == 0 && !queued:
-			rep.add(warn, "cap is capping", fmt.Sprintf(
-				"%s: %.3g Mbps through a %.4g Mbps cap, but nothing is queueing or dropping; not at the ceiling yet",
-				shortMAC(now.MAC), mbps, now.Policy.Down.RateMbps))
-		case capped:
+		case capped && (drops > 0 || nearCeiling):
 			rep.add(pass, "cap is capping", fmt.Sprintf(
-				"%s: %.3g Mbps down under a %.4g Mbps cap; +%d dropped, %d queued in %s",
-				shortMAC(now.MAC), mbps, now.Policy.Down.RateMbps, drops, now.DownCounters.Qlen, gap))
+				"%s: %.3g Mbps down at a %.4g Mbps cap; +%d dropped, +%d overlimits in %s",
+				shortMAC(now.MAC), mbps, effDown.RateMbps, drops, over, gap))
+		case capped && queued:
+			rep.add(pass, "shaper in path", fmt.Sprintf(
+				"%s: %.3g Mbps down, %d queued on a %.4g Mbps cap -- the qdisc is handling it, "+
+					"but nothing reached the ceiling, so the cap itself is untested",
+				shortMAC(now.MAC), mbps, now.DownCounters.Qlen, effDown.RateMbps))
+		case capped:
+			rep.add(warn, "cap is capping", fmt.Sprintf(
+				"%s: only %.3g Mbps through a %.4g Mbps cap, nothing queued or dropped -- "+
+					"the cap is installed but nothing tested it; run a transfer to be sure",
+				shortMAC(now.MAC), mbps, effDown.RateMbps))
 		default:
 			rep.add(pass, "counters moving", fmt.Sprintf(
 				"%s: %.3g Mbps down, unconditioned", shortMAC(now.MAC), mbps))
@@ -317,7 +341,8 @@ func checkAddressCoverage(rep *report, s boa.Snapshot, usingSSH bool) {
 		if !cl.Present || !cl.Policy.Enabled {
 			continue
 		}
-		if cl.Policy.Down.IsClean() && cl.Policy.Up.IsClean() {
+		effDown, effUp, _ := effectiveShapes(cl)
+		if effDown.IsClean() && effUp.IsClean() {
 			continue
 		}
 		n := len(cl.IPv6)
@@ -396,7 +421,8 @@ func checkKernelOverSSH(rep *report, host string, s boa.Snapshot) {
 		if !cl.Present || !cl.Policy.Enabled {
 			continue
 		}
-		if cl.Policy.Down.IsClean() && cl.Policy.Up.IsClean() {
+		effDown, effUp, _ := effectiveShapes(cl)
+		if effDown.IsClean() && effUp.IsClean() {
 			continue
 		}
 		conditioned++
