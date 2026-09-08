@@ -1974,6 +1974,7 @@ boactl shape "Apple TV" -down 5 -delay 40 -loss 0.5
 boactl sweep "Apple TV" -service netflix  # measure its rendition ladder
 boactl pattern play "Apple TV" -name ramp_down   # and: pattern stop, pattern list
 boactl radio wlan-usb -channel 149        # DROPS every client on that radio
+boactl link "Apple TV" deauth             # and: disassoc, deadzone, steer, measure
 boactl events -follow > run.ndjson        # what HAPPENED, as it happens
 boactl history -window 10m -o run.csv     # what the link was DOING, per second
 boactl config get -o boa-config.json      # and: boactl config apply <file>
