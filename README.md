@@ -827,6 +827,9 @@ that a cap is working.
 | PAU0F on **USB 3.0** | **462 Mbit/s** | **145 Mbit/s** | 80 MHz, 802.11ax, ch 40 | 26s each way, 2 clients, 2026-09-07 |
 | PAU0F on **USB 3.0** | **683 Mbit/s** | — | 80 MHz, 802.11ax, **ch 149** | 70s, sole client, 2026-09-07 |
 | PAU0F on **USB 3.0** | **536 Mbit/s** | — | 80 MHz, 802.11ax, ch 40 | 70s, sole client, 2026-09-07 |
+| PAU0F on **USB 3.0** | **691 Mbit/s** | — | **80 MHz**, 802.11ax, ch 149 | 60s, sole client, 2026-09-08 |
+| PAU0F on **USB 3.0** | **379 Mbit/s** | — | **40 MHz**, 802.11ax, ch 149 | 60s, sole client, 2026-09-08 |
+| PAU0F on **USB 3.0** | **198 Mbit/s** | — | **20 MHz**, 802.11ax, ch 149 | 60s, sole client, 2026-09-08 |
 
 > **Every figure above this pair was measured on a Pi that was browning out.**
 > The supply negotiated 900 mA rather than 5 A — no USB-PD objects were
@@ -848,6 +851,12 @@ that a cap is working.
 > whole purpose is measuring what an impairment does to a link, an unshaped
 > baseline that moves by a factor of two is the fault that matters, more than
 > any single number above it.
+
+The three 2026-09-08 rows are one width sweep on one channel with one client, and
+are the cleanest set here — see
+[Channel width, and what it is worth](#channel-width-and-what-it-is-worth) for
+what they say about width, about idle clients, and about where the ceiling is
+not.
 
 ### What a channel is worth
 
@@ -918,33 +927,79 @@ reading an uplink number as though it were a downlink one.
 
 ### Channel width, and what it is worth
 
-Measured 2026-09-04 on `wlan-usb` (mt7921u), one MacBook as the only client,
-`iperf3` downlink, moving the same radio between widths on the same channel.
-Run twice: once on **ch 40**, inside the UNII-1 block where six 80 MHz
-neighbours sit at 18% measured airtime, and once on **ch 149**, where the scan
-found 1.2%.
+Measured 2026-09-08 on `wlan-usb2` (mt7921u), ch 149, one MacBook as the **only**
+associated station, `iperf3` downlink for 60s at each width, on a box with its
+power fixed. Rate control settled on **HE-MCS 9 at every width**, which makes
+this a controlled comparison the earlier runs were not.
 
-| Width | ch 149 (quiet) | ch 40 (busy) | What the busy channel cost |
-|---|---|---|---|
-| 20 MHz | **194 Mbit/s** | **110 Mbit/s** | −43% |
-| 40 MHz | **378 Mbit/s** | 289 / 230 Mbit/s | −24 … −39% |
-| 80 MHz | **677 Mbit/s** | **399 Mbit/s** | −41% |
+| Width | Throughput | PHY | Airtime | As a fraction of PHY | Step |
+|---|---|---|---|---|---|
+| 20 MHz | **198 Mbit/s** | 229.4 | 94.3% | **86%** | — |
+| 40 MHz | **379 Mbit/s** | 458.8 | 92.7% | **83%** | 1.91× |
+| 80 MHz | **691 Mbit/s** | 960.7 | 90.9% | **72%** | 1.82× |
 
-**On quiet air, width scales almost exactly as the subcarrier counts predict.**
-20 → 40 measured 1.95× against a theoretical 2.00, and 40 → 80 measured 1.79×
-against 2.09. Doubling the channel really does roughly double the throughput.
+**20 → 80 is 3.49× against a theoretical 4.0.** Doubling the channel nearly
+doubles the throughput, and the entire shortfall is in the top step.
 
-**On busy air, the top step largely evaporates.** 40 → 80 bought only 1.38× on
-ch 40 against 1.79× on ch 149, because a wider channel spans more interferers:
-at 80 MHz on ch 40 the box overlaps all six of those neighbours, where at 40 MHz
-it overlaps fewer. Widening into a crowded block gives back most of what it
-gains, which is the argument for choosing the emptier block over the wider
-channel when both are on offer.
+**A wider channel converts less of its PHY rate into throughput.** 86% at
+20 MHz, 83% at 40, **72% at 80** — with the MCS held constant, so this is the
+width and nothing else. A 960 Mbit/s PHY drains an A-MPDU in roughly half the
+time a 458 Mbit/s one does, so the fixed per-frame overhead — preamble, IFS,
+block ACK — occupies a larger share of every transmission. That is the protocol
+behaving as designed, not a fault.
 
-The 289 / 230 pair at 40 MHz on ch 40 is not an error — it is two runs of the
-same configuration, and the spread is what run-to-run variance looks like on a
-contended channel. The quiet-channel figures repeated to within 2 Mbit/s
-(677 and 679 across two runs).
+**It is not the bus, the CPU or the driver**, and the airtime column is what
+rules them out. At every width the radio is busy **90–94%** of the time with
+zero retries and zero failures, while the Pi's busiest core sits at ~55% used
+(19% softirq) and the same USB subsystem carries 2.35 Gbit/s through an ethernet
+adapter. A radio starved from behind would show high throughput and *low*
+airtime — the PHY idle, waiting for data. The opposite is true here: at 20 MHz
+the box moves under a third of what it does at 80, and the air is *busier*.
+
+> **An earlier revision of this table reported 85% / 82% / 56%** from runs on
+> 2026-09-04. The shape was right and the 80 MHz figure was too harsh: those
+> runs drifted between HE-MCS 9 and 11 between widths, and were taken on a Pi
+> that was browning out. The 72% above is the same effect measured with the MCS
+> held constant. See [Power](#power).
+
+**An idle client is not free.** Measured twice today, at two widths: an iPhone
+associated and transferring *nothing* — 0.0 Mbit/s, 0.0% airtime by its own
+counters — cost the MacBook **37 Mbit/s** both times, 697 → 660 at 80 MHz and
+379 → 342 at 40 MHz. Around 10%, for a device doing nothing but existing on the
+radio. Beacons, block-ack sessions and the scheduler's per-station bookkeeping
+are not zero. A ceiling measured with a second station associated is a ceiling
+for that pair.
+
+### One 80 MHz channel, or two 40 MHz ones?
+
+For **two clients**, the ladder above answers it arithmetically:
+
+```
+2 x 40 MHz, one client on each radio   379 + 379 = 758 Mbit/s
+1 x 80 MHz, both clients sharing it                691
+                        ... and with the second client merely associated: ~654
+```
+
+**Two 40 MHz bands win by about 10%, or 16% once the idle-client cost is
+counted** — and the reason is exactly the poor top step. 40 → 80 buys 1.82×
+rather than 2.0, so splitting the spectrum hands back the 18% the wide channel
+wastes, and two radios transmit genuinely simultaneously where two clients on
+one radio time-share and pay CSMA backoff to each other.
+
+Three things qualify that:
+
+- **The two blocks must be far apart.** 36–40 and 44–48 are adjacent, and two
+  radios inches apart on adjacent blocks will desense each other. Use **36–40
+  and 149–153** — 565 MHz apart, which is why UNII-3 is in the channel table.
+- **Bursty traffic favours the shared 80 MHz.** Two 40s hard-partition the
+  spectrum: when one client is idle, half the air is wasted. One 80 lets either
+  client take the full width when the other is quiet. For ABR players — which
+  are bimodal by nature, and are what this box exists to test — that statistical
+  multiplexing may well be worth more than 10%.
+- **This has not been measured with both radios transmitting at once.** Every
+  figure above is one radio at a time. Whether two mt7921u adapters in the same
+  chassis reach 758 Mbit/s together, or desense each other, needs two
+  iperf-capable clients and has not been tried.
 
 ### Predicting the best case from one number
 
@@ -993,9 +1048,22 @@ Efficiency makes the same point. As a fraction of the negotiated PHY rate:
 | 80 MHz | 56% | 33% |
 
 Only the 80 MHz quiet-channel case shows any sign of a limit that is not the
-air — and it sits **above 677 Mbit/s**, not at 550. Where that ceiling actually
-is has not been established; it needs a client that can pull harder than one
-MacBook.
+air — and it sits **above 677 Mbit/s**, not at 550.
+
+> **Resolved 2026-09-08: that 80 MHz figure is the protocol, not a ceiling.**
+> Re-measured with rate control holding HE-MCS 9 at every width, 80 MHz converts
+> **72%** of its PHY rather than the 56% above — the effect is real but smaller,
+> and the earlier number was depressed both by the MCS drifting between runs and
+> by a Pi that was browning out. A wider channel simply amortises fixed per-frame
+> overhead worse, because a faster PHY drains an A-MPDU in less time.
+>
+> And the airtime figures rule the alternatives out directly: at every width the
+> radio is busy **90–94%** with zero retries, while the busiest core sits at ~55%.
+> A radio starved by the bus or the CPU would show *low* airtime, not high. See
+> [Channel width, and what it is worth](#channel-width-and-what-it-is-worth).
+>
+> What remains untested is a client that can pull harder than one MacBook, and
+> whether two adapters transmitting at once reach the sum of their parts.
 
 The first four rows are the same MacBook on the same afternoon; the dated rows
 are later runs on the same box. The adapter on a SuperSpeed port is **~10x the
