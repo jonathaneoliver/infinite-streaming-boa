@@ -1,0 +1,52 @@
+#!/bin/sh
+# Names a USB network adapter after the DEVICE, not the socket it is in.
+#
+# Called from udev as: <prefix> <mac>, and prints the name to use --
+# "wlan-usb 9c:ef:d5:f6:46:c7" gives wlan-usb-46c7, "lan-usb ..." gives
+# lan-usb-6518.
+#
+# THIS REVERSES AN EARLIER DECISION, and the reason is worth stating. Names used
+# to come from the USB port -- wlan-usb for socket 2-1, wlan-usb2 for 4-1 -- so
+# that a REPLACEMENT dongle in the same hole kept the name and hostapd's config
+# still found its interface. That mattered when configs were written per name at
+# image build.
+#
+# It stopped mattering at #227: radioplan now walks /sys/class/net/*/phy80211 at
+# every boot and every hotplug and writes boa-<iface>.conf for whatever it finds,
+# NetworkManager leaves every wlan* alone by glob, and the hostapd instance name
+# IS the interface name. Nothing downstream holds a list of names any more.
+#
+# What by-socket naming cost, and what this buys back: a dongle moved between
+# sockets, or put behind a hub, changed its name -- so the interface an operator
+# had learned in the UI became a different one, and two adapters behind one hub
+# collided on a single name because udev's KERNELS== matches any ANCESTOR, the
+# hub included. One of them then fell back to the kernel's wlanN. Naming by the
+# device makes a name a property of the dongle: plug it anywhere, through any
+# hub, and it is the same radio in the interface.
+#
+# The trade, stated plainly: replace a dongle and it is a NEW name. The radio
+# still comes up, because radioplan generates its config, but anything keyed to
+# the old name -- a remembered channel, a saved policy -- refers to a device that
+# is gone. That is the honest cost of identifying the thing rather than the hole.
+#
+# The last four hex digits, not the whole address: an interface name may be 15
+# characters and "wlan-usb-" spends nine of them. Four leaves 16^4 of space
+# between two adapters on one box, and a collision is visible immediately as an
+# adapter that did not come up rather than as a silent swap.
+set -eu
+
+prefix=${1:-}
+mac=${2:-}
+case "$prefix" in
+  wlan-usb|lan-usb) ;;
+  *) echo "unknown-prefix"; exit 0 ;;
+esac
+case "$mac" in
+  ?*:?*) ;;                      # looks like a MAC
+  *) printf '%s-unknown\n' "$prefix"; exit 0 ;;
+esac
+
+# Lower case, colons stripped, last four digits.
+short=$(printf '%s' "$mac" | tr -d ':' | tr 'A-Z' 'a-z')
+short=$(printf '%s' "$short" | tail -c 4)
+printf '%s-%s\n' "$prefix" "$short"

@@ -558,8 +558,11 @@ func ifaceRole(name string, in IfaceInfo, cfg Config) string {
 		return RoleBridge
 	case cfg.WANPort:
 		return RoleWAN
-	case cfg.LanPort:
-		return RoleLAN
+	}
+	for _, l := range cfg.LanPorts {
+		if name == l {
+			return RoleLAN
+		}
 	}
 	if in.Wireless {
 		return RoleRadio

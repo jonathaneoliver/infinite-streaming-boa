@@ -45,7 +45,13 @@ func main() {
 	var wlan string
 	flag.StringVar(&wlan, "wlan", "wlan0",
 		"wireless AP interface(s), comma- or space-separated")
-	flag.StringVar(&cfg.LanPort, "lan", "lan0", "downstream wired port (USB adapter)")
+	// Plural, and split the same way -wlan is. A box can carry more than one USB
+	// ethernet adapter, and before this the daemon knew about exactly one: the
+	// others were bridged and forwarding, and every device behind them was
+	// absent from the client list and unshapeable, with nothing saying so.
+	var lan string
+	flag.StringVar(&lan, "lan", "lan0",
+		"downstream wired port(s) (USB adapters), comma- or space-separated")
 	flag.StringVar(&cfg.StatePath, "state", "/var/lib/infinite-streaming-boa/policies.json",
 		"where operator policy is persisted")
 	flag.IntVar(&tickMs, "tick", 1000, "telemetry poll interval in milliseconds")
@@ -64,6 +70,7 @@ func main() {
 
 	cfg.Tick = time.Duration(tickMs) * time.Millisecond
 	cfg.WlanPorts = boa.SplitPorts(wlan)
+	cfg.LanPorts = boa.SplitPorts(lan)
 
 	// Shaping and packet capture both require privilege. Failing loudly here is
 	// far kinder than starting up and conditioning nothing.

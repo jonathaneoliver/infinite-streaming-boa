@@ -32,16 +32,17 @@ function rackRank(i: IfaceInfo): number {
 }
 
 /**
- * The names whose colours are already spoken for, in the order they were
- * assigned.
+ * Adapters whose colour is fixed by name, because these names are the same on
+ * every box.
  *
- * NOT the rack's order -- see rackRank for that. This exists only so an
- * adapter keeps the colour it has always had. Position in the RACK cannot be
- * the colour key: unplugging wlan-usb would promote wlan-usb2 into its slot and
- * recolour it, silently invalidating every screenshot and every log line
- * already read. A name never moves.
+ * The USB radios are deliberately absent. They used to be listed here as
+ * `wlan-usb` and `wlan-usb2`, which was true while a name came from the socket
+ * an adapter was plugged into; they are now named after the adapter itself --
+ * `wlan-usb-46c7` -- so the name cannot be known when this file is written.
+ * Everything not listed here is assigned a colour at runtime, uniquely, by
+ * `adapterColours` below.
  */
-const ADAPTER_COLOUR_ORDER = ['wlan-usb', 'wlan-usb2', 'wlan0', 'lan0'];
+const ADAPTER_COLOUR_FIXED = ['wlan0', 'lan0'];
 
 /**
  * Adapter identity colours.
@@ -100,8 +101,79 @@ export const rackAdapters = computed(() =>
   }),
 );
 
+/** A small stable hash of a name, so a colour preference does not depend on
+ *  the order adapters were discovered in. */
+function nameHash(name: string): number {
+  let h = 0;
+  for (const ch of name) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
+  return h;
+}
+
 /**
- * An adapter's colour, stable for the life of the box.
+ * Every adapter's colour, allocated so that no two on screen share one.
+ *
+ * A colour that identifies an adapter is useless if two adapters can have the
+ * same one, and a plain hash of the name allows exactly that -- with a
+ * five-colour palette two radios collided about a fifth of the time, and the
+ * previous fallback narrowed that to two colours, so a box with two USB radios
+ * showed them in the same colour half the time. That is the case this exists
+ * for: telling two identical dongles apart is the whole job.
+ *
+ * So each name states a PREFERENCE by hash and the first taker keeps it;
+ * anything already spoken for walks to the next free slot. Names are visited in
+ * sorted order rather than discovery order, so the result depends only on WHICH
+ * adapters are present, never on when they appeared or how the kernel listed
+ * them.
+ *
+ * A name still does not move on its own: unplugging an adapter cannot recolour
+ * the others unless it was the one holding a contested slot, which is the
+ * narrowest version of that behaviour available while keeping uniqueness. The
+ * alternative -- position in the rack -- recolours on every change, which is
+ * what the old fixed list was written to avoid.
+ *
+ * Beyond ADAPTER_COLOURS.length adapters the palette necessarily repeats. Five
+ * covers two USB radios, the onboard radio, the wired port and one spare.
+ */
+const adapterColours = computed<Record<string, string>>(() => {
+  // Only the adapters the rack actually shows. The bridge and the WAN port are
+  // fabric, not adapters, and giving them a colour would spend palette slots on
+  // things that never wear one -- which is enough, with five colours and four
+  // adapters, to force two real radios onto the same swatch.
+  const names = ifaces.value
+    .filter((i) => RACK_ROLES.includes(i.role))
+    .map((i) => i.name)
+    .sort();
+  const taken = new Set<number>();
+  const out: Record<string, string> = {};
+
+  // The fixed names first, so a runtime adapter can never take a colour that
+  // belongs to one of them on every box.
+  for (const name of ADAPTER_COLOUR_FIXED) {
+    const idx = ADAPTER_COLOUR_FIXED.indexOf(name);
+    taken.add(idx);
+    out[name] = ADAPTER_COLOURS[idx % ADAPTER_COLOURS.length];
+  }
+
+  for (const name of names) {
+    if (out[name]) continue;
+    const want = nameHash(name) % ADAPTER_COLOURS.length;
+    let idx = want;
+    for (let k = 0; k < ADAPTER_COLOURS.length; k++) {
+      const cand = (want + k) % ADAPTER_COLOURS.length;
+      if (!taken.has(cand)) {
+        idx = cand;
+        break;
+      }
+    }
+    taken.add(idx);
+    out[name] = ADAPTER_COLOURS[idx];
+  }
+  return out;
+});
+
+/**
+ * An adapter's colour, stable for the life of the box and unique among the
+ * adapters on screen.
  *
  * Keyed off the NAME rather than the order the kernel happened to list them in,
  * and deliberately not off the rack position either, so unplugging one adapter
@@ -109,15 +181,7 @@ export const rackAdapters = computed(() =>
  * screenshot and every log line already read.
  */
 export function adapterColour(name: string): string {
-  const i = ADAPTER_COLOUR_ORDER.indexOf(name);
-  if (i >= 0) return ADAPTER_COLOURS[i % ADAPTER_COLOURS.length];
-  // Not a known adapter: derive something stable from the name rather than
-  // reusing a colour that belongs to one of the four above.
-  let h = 0;
-  for (const ch of name) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
-  return ADAPTER_COLOURS[
-    (ADAPTER_COLOUR_ORDER.length + (h % 2)) % ADAPTER_COLOURS.length
-  ];
+  return adapterColours.value[name] ?? ADAPTER_COLOURS[0];
 }
 
 /** What the token prints beside the name: the channel, where there is one. */

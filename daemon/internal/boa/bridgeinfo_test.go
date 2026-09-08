@@ -6,14 +6,14 @@ import (
 )
 
 var testCfg = Config{
-	Bridge: "br-lan", WANPort: "eth0", LanPort: "lan0",
+	Bridge: "br-lan", WANPort: "eth0", LanPorts: []string{"lan0"},
 	WlanPorts: []string{"wlan-usb"},
 }
 
 // dualCfg is the two-radio box: onboard on 2.4GHz, USB adapter on 5GHz, both
 // serving and both watched.
 var dualCfg = Config{
-	Bridge: "br-lan", WANPort: "eth0", LanPort: "lan0",
+	Bridge: "br-lan", WANPort: "eth0", LanPorts: []string{"lan0"},
 	WlanPorts: []string{"wlan-usb", "wlan0"},
 }
 
