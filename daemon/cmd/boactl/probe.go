@@ -18,9 +18,11 @@ package main
 // answer: which filters exist, and whether hostapd's BSS is actually ENABLED.
 
 import (
+	"encoding/hex"
 	"errors"
 	"flag"
 	"fmt"
+	"net"
 	"os/exec"
 	"strings"
 	"time"
@@ -217,9 +219,8 @@ func checkEnforcement(rep *report, s boa.Snapshot) {
 }
 
 // checkCounters proves traffic is reaching the shaper, and that a cap under
-// load is actually capping. overlimits climbing is not an error -- it counts
-// how often a class hit its ceiling, and a healthy throttled client shows it
-// rising constantly. A cap with traffic and zero overlimits is not capping.
+// load is actually capping. Bytes climbing on a class is what says the filter
+// is matching at all: zero bytes means it is not, whatever the interface shows.
 func checkCounters(rep *report, a, b boa.Snapshot, gap time.Duration) {
 	before := map[string]boa.Client{}
 	for _, cl := range a.Clients {
@@ -232,21 +233,35 @@ func checkCounters(rep *report, a, b boa.Snapshot, gap time.Duration) {
 			continue
 		}
 		bytes := now.DownCounters.Bytes - was.DownCounters.Bytes
-		over := now.DownCounters.Overlimits - was.DownCounters.Overlimits
 		capped := now.Policy.Down.RateMbps > 0
 		if bytes == 0 {
 			continue
 		}
 		moving++
 		mbps := float64(bytes) * 8 / gap.Seconds() / 1e6
+
+		// What proves a cap is biting is NOT HTB's overlimits. netem enforces
+		// the rate here and HTB is kept only as a classifier and byte counter,
+		// with its ceiling left at 10Gbit -- so a perfectly healthy capped
+		// class reads `overlimits 0` forever. Measured on the box on
+		// 2026-09-08: a client held at 4.72 Mbit/s under a 5 Mbps cap showed
+		// overlimits 0 alongside `dropped 548, backlog 1091140b 730p`.
+		//
+		// The queue is the evidence. Packets waiting or being dropped is what
+		// a rate limiter does; overlimits is what the layer NOT doing the
+		// limiting reports.
+		drops := now.DownCounters.Drops - was.DownCounters.Drops
+		over := now.DownCounters.Overlimits - was.DownCounters.Overlimits
+		queued := now.DownCounters.Backlog > 0 || now.DownCounters.Qlen > 0
 		switch {
-		case capped && over == 0:
+		case capped && drops == 0 && over == 0 && !queued:
 			rep.add(warn, "cap is capping", fmt.Sprintf(
-				"%s: %.3g Mbps through a %.4g Mbps cap but overlimits did not move; not at the ceiling yet",
+				"%s: %.3g Mbps through a %.4g Mbps cap, but nothing is queueing or dropping; not at the ceiling yet",
 				shortMAC(now.MAC), mbps, now.Policy.Down.RateMbps))
 		case capped:
 			rep.add(pass, "cap is capping", fmt.Sprintf(
-				"%s: %.3g Mbps down, overlimits +%d in %s", shortMAC(now.MAC), mbps, over, gap))
+				"%s: %.3g Mbps down under a %.4g Mbps cap; +%d dropped, %d queued in %s",
+				shortMAC(now.MAC), mbps, now.Policy.Down.RateMbps, drops, now.DownCounters.Qlen, gap))
 		default:
 			rep.add(pass, "counters moving", fmt.Sprintf(
 				"%s: %.3g Mbps down, unconditioned", shortMAC(now.MAC), mbps))
@@ -391,7 +406,7 @@ func checkKernelOverSSH(rep *report, host string, s boa.Snapshot) {
 		}
 		var absent []string
 		for _, a := range addrs {
-			if !strings.Contains(all, a) {
+			if !filterMatches(all, a) {
 				absent = append(absent, a)
 			}
 		}
@@ -430,6 +445,37 @@ func checkKernelOverSSH(rep *report, host string, s boa.Snapshot) {
 				iface, orDash(state)))
 		}
 	}
+}
+
+// filterMatches reports whether a u32 filter for this address exists in tc's
+// output.
+//
+// tc does NOT print the address. It prints the 32-bit words the filter compares
+// against, in HEX: a filter for 192.168.0.52 reads `match c0a80034/ffffffff at
+// 12`. Searching the output for the dotted-quad finds nothing and reports a
+// working filter as missing -- measured on the box on 2026-09-08, where this
+// failed a client whose 5 Mbps cap was demonstrably holding at 4.72 Mbit/s.
+//
+// The same hexadecimal trap as tc's class ids, one layer down.
+func filterMatches(out, addr string) bool {
+	ip := net.ParseIP(addr)
+	if ip == nil {
+		return false
+	}
+	if v4 := ip.To4(); v4 != nil {
+		return strings.Contains(out, hex.EncodeToString(v4))
+	}
+	// A v6 address is compared as four 32-bit words, on four separate match
+	// lines. All four must be present: finding only the prefix would accept a
+	// filter for a different address in the same /64, which for privacy
+	// extensions is precisely the address next door.
+	full := hex.EncodeToString(ip.To16())
+	for i := 0; i < 4; i++ {
+		if !strings.Contains(out, full[i*8:(i+1)*8]) {
+			return false
+		}
+	}
+	return true
 }
 
 func fieldFrom(out, prefix string) string {
