@@ -23,6 +23,7 @@ import (
 	"flag"
 	"fmt"
 	"net"
+	"net/url"
 	"os/exec"
 	"strings"
 	"time"
@@ -398,14 +399,35 @@ func checkAddressCoverage(rep *report, s boa.Snapshot, usingSSH bool) {
 // --- the kernel read-back ---------------------------------------------------
 
 // sshHost turns the API base into an SSH destination.
+//
+// Parsed rather than chopped. Splitting on ":" to drop a port destroys an IPv6
+// literal -- "http://[fe80::1]" became "[fe80", and ssh would then fail with a
+// name it was never given. This box is reached over IPv6 mDNS, so a literal is
+// not a hypothetical.
 func sshHost(base, user string) string {
-	h := strings.TrimPrefix(strings.TrimPrefix(base, "http://"), "https://")
-	h = strings.SplitN(h, "/", 2)[0]
-	h = strings.SplitN(h, ":", 2)[0]
-	if strings.Contains(h, "@") {
+	h := base
+	if u, err := url.Parse(base); err == nil && u.Host != "" {
+		h = u.Host
+		if u.User != nil {
+			// A user in the URL is the one the operator meant.
+			return u.User.Username() + "@" + stripPort(u.Host)
+		}
+	}
+	if name, _, found := strings.Cut(h, "@"); found {
+		_ = name
 		return h
 	}
-	return user + "@" + h
+	return user + "@" + stripPort(h)
+}
+
+// stripPort removes a trailing :port and the brackets an IPv6 literal wears in
+// a URL, leaving the bare host ssh expects.
+func stripPort(host string) string {
+	if h, _, err := net.SplitHostPort(host); err == nil {
+		return h
+	}
+	// No port: still unwrap "[fe80::1]".
+	return strings.TrimSuffix(strings.TrimPrefix(host, "["), "]")
 }
 
 // ssh runs one command on the box. Absolute paths are the caller's job; stderr
@@ -425,9 +447,29 @@ func checkKernelOverSSH(rep *report, host string, s boa.Snapshot) {
 	if len(ifaces) == 0 && s.Caps.WlanIface != "" {
 		ifaces = []string{s.Caps.WlanIface}
 	}
-	ports := append([]string{}, ifaces...)
-	if s.Caps.UplinkIf != "" {
-		ports = append(ports, s.Caps.UplinkIf)
+	// Every port a filter could be on, and the client's OWN port is the one
+	// that matters. Downlink shaping lives on the egress of the port the client
+	// was learned on -- wlan-usb for a wireless client, lan0 for a wired one --
+	// and lan0 is neither a radio nor the uplink, so a list built from
+	// WlanIfaces plus UplinkIf misses it entirely. A conditioned wired client
+	// would have been reported as having no filter, which is a FAIL saying its
+	// traffic escapes conditioning, about a client being conditioned correctly.
+	seen := map[string]bool{}
+	var ports []string
+	add := func(p string) {
+		if p != "" && !seen[p] {
+			seen[p] = true
+			ports = append(ports, p)
+		}
+	}
+	for _, i := range ifaces {
+		add(i)
+	}
+	add(s.Caps.UplinkIf) // uplink filters, matching on source
+	for _, cl := range s.Clients {
+		if cl.Present {
+			add(cl.Port)
+		}
 	}
 
 	// Filters, per port. Downlink lives on the client's own port and uplink on
