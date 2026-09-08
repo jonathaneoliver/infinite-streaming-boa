@@ -28,6 +28,33 @@ real traffic mix are all absent. State what was measured, and where.
 - Before writing a measurement into `README.md`, `PRD.md` or
   `docs/DATA-CONTRACT.md`
 
+## Start here: `boactl probe`
+
+Every check below is encoded in it, and it asserts rather than prints — it exits
+non-zero when the box is not doing what it claims, so it belongs in a script as
+well as in a terminal.
+
+```sh
+cd daemon && go build -o ~/.local/bin/boactl ./cmd/boactl   # once
+boactl probe          # over HTTP alone
+boactl probe -ssh     # plus the filter and hostapd read-backs below
+```
+
+Prefer it over assembling these commands by hand. Not because typing is slow,
+but because prose can only ASK a reader to remember that `/usr/sbin` is off a
+non-login shell's PATH, that `2>/dev/null` turns "command not found" into a
+plausible empty answer, that a filter is matched in hex, and that
+`systemctl is-active` says nothing about whether a radio is serving. Each of
+those is a wrong answer that looks right, each has been made here, and a binary
+cannot forget any of them.
+
+Read the rest of this file when `probe` reports something and you need to know
+what it looked at, or when you need to go past what it checks.
+
+**What it does not cover:** anything it has no assertion for. `probe` is not a
+licence to stop looking — if the claim you are about to make is not one of the
+checks it prints, it has not been verified.
+
 ## Where conditioning actually lives
 
 Read this before looking for it in the wrong place:
@@ -68,7 +95,8 @@ Keeping these unprivileged matters: it means a read-back still works on a box
 whose sudo rule is missing, which is the state a freshly flashed box is in.
 
 Healthy output on a throttled client looks like this — an HTB class with a
-netem child carrying the rate, and `overlimits` well above zero:
+netem child carrying the rate. Read the netem line for the rate and the queue
+for the evidence; `overlimits` on the HTB class is not the signal (see 3 below):
 
 ```
 qdisc htb 1: root refcnt 2 r2q 10 default 0x1
@@ -83,12 +111,30 @@ What to check, in this order:
    filter shapes nothing and reports no error. A device under privacy
    extensions holds several routable IPv6 addresses at once and needs a filter
    for each — one filter is a partial shape, which looks like a working shape.
+
+   **`tc` prints the address in HEX**, never as a dotted quad: a filter for
+   192.168.0.52 reads `match c0a80034/ffffffff at 16`. Grepping for the address
+   as written finds nothing and reports a working filter as missing. A v6
+   address is compared as four separate 32-bit words. The same hexadecimal trap
+   as class ids, one layer down.
 2. **The class counters are moving.** `Sent … bytes` climbing on the client's
    class proves traffic is reaching the shaper. Zero means the filter is not
    matching, whatever the UI says.
-3. **`overlimits` is climbing.** That is not an error — it counts how often the
-   class hit its ceiling, and a healthy throttled client shows it rising
-   constantly. A cap with zero overlimits under load is not capping.
+3. **The QUEUE is the evidence, not `overlimits`.** This file previously said a
+   healthy throttled client shows `overlimits` climbing constantly. That is
+   wrong here, and it cost a real bug: netem enforces the rate and HTB is kept
+   only as a classifier with its ceiling at 10Gbit, so a perfectly healthy
+   capped class reads `overlimits 0` forever. Measured 2026-09-08, a client held
+   at 4.72 Mbit/s under a 5 Mbps cap:
+
+   ```
+   Sent 24378265 bytes 18411 pkt (dropped 548, overlimits 0 requeues 0)
+    backlog 1091140b 730p
+   ```
+
+   Look for `dropped` climbing, or a non-zero `backlog`, or throughput sitting
+   at the ceiling. Note that traffic well BELOW the cap proves nothing either
+   way — a cap nothing pushed against has not been tested.
 4. **Class ids are hexadecimal.** `1:10` is class 16. Comparing a decimal id
    from code against `tc` output is a false mismatch.
 

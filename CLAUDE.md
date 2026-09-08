@@ -81,20 +81,26 @@ rather than drifting:
 cd daemon && go test ./internal/boa/ -run TestAPIDocs -update
 ```
 
-`boactl` drives a box from a terminal, and `boactl probe` asserts the box is
-really doing its job instead of printing numbers to be eyeballed. Prefer it over
-hand-assembled `curl`:
-
-```sh
-cd daemon && go build -o ~/.local/bin/boactl ./cmd/boactl
-boactl devices && boactl probe -ssh
-```
-
 The daemon compiles on macOS (Linux-only paths are behind build tags) so it can
 be developed without the hardware.
 
 ## Working on this appliance
 
+- **Reach for `boactl` before `curl` or `ssh`.** It drives the box from a
+  terminal and `boactl probe` ASSERTS rather than printing numbers to be
+  eyeballed, exiting non-zero when the box is not doing what it claims. It
+  imports the daemon's own types, so it cannot drift from what the box sends.
+  Every trap below that a hand-assembled command has to remember -- the absolute
+  paths, the hex filters, the templated unit names -- is already in it.
+
+  ```sh
+  cd daemon && go build -o ~/.local/bin/boactl ./cmd/boactl   # once
+  boactl devices && boactl probe -ssh
+  ```
+
+  It does not cover the whole API. `boactl -h` lists what exists, `boactl
+  <command> -h` the flags, and #263 tracks the gap and what is deliberately not
+  planned. For anything it does not cover, the rules below still apply.
 - **Verify against the kernel, don't reason about it.** Nearly every bug found
   while building this was a wrong assumption that looked correct: `tc` class ids
   are hexadecimal; a bridge rewrites the arrival interface before local
