@@ -1971,12 +1971,27 @@ boactl state                     # what the box is doing right now
 boactl devices                   # a line per client, with what the KERNEL enforces
 boactl bridge                    # radios, channels, how contested each one is
 boactl shape "Apple TV" -down 5 -delay 40 -loss 0.5
-boactl events -follow > run.ndjson        # the ground-truth capture above
+boactl sweep "Apple TV" -service netflix  # measure its rendition ladder
+boactl pattern play "Apple TV" -name ramp_down   # and: pattern stop, pattern list
+boactl radio wlan-usb -channel 149        # DROPS every client on that radio
+boactl events -follow > run.ndjson        # what HAPPENED, as it happens
+boactl history -window 10m -o run.csv     # what the link was DOING, per second
 boactl config get -o boa-config.json      # and: boactl config apply <file>
 boactl probe                     # assert the box is really doing its job
 ```
 
-The box defaults to `$BOA_BOX`, then `infinite-streaming-boa.local`.
+The box defaults to `$BOA_BOX`, then `infinite-streaming-boa.local`. The help
+groups commands by whether they only look, change a live network, or assert —
+`boactl -h`, and `boactl <command> -h` for one command's flags.
+
+**The two halves of a captured run.** `events` says what happened — a roam, a
+deauth, a pattern step. `history` says what the link was doing while it
+happened, with the cap that was in force at each point, as CSV one row per
+client per bucket. Neither is much use alone: lining a player's behaviour up
+against the cap that caused it is the whole point of the box. `bucket_ms` is a
+column rather than a header so a redirected file still says what resolution it
+carries — on a long window the box means several ticks together, and a row is
+then not one second.
 
 It lives inside the daemon's own module and imports `internal/boa` directly, so
 the response types are the daemon's own — there is no second copy of the wire
