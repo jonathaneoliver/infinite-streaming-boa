@@ -917,6 +917,12 @@ The client transmits with less aggregation and a weaker radio than the access
 point does, so the same air buys far fewer bits going up. Worth knowing before
 reading an uplink number as though it were a downlink one.
 
+A second measurement on `mt7921u`, 2026-09-08, one MacBook on ch 149 at 80 MHz,
+−24 dBm, PHY negotiated at 1200.9 Mbit/s, no conditioning in force: **578 Mbit/s
+down, 182 up**, zero retransmits either way. The same 3:1 shape as above, at a
+signal level where the radio is not the limit -- so the asymmetry is the client's
+transmitter rather than the link.
+
 > **An `iperf3` UPLINK run against the box does not appear on the device's own
 > throughput chart.** It terminates *on* the box rather than being forwarded, so
 > it never reaches the uplink shaper: during a 145 Mbit/s uplink the client
@@ -1248,6 +1254,34 @@ the box's own transmit path becomes it.
 
 Realtek RTL8156 (`0bda:8156`) at both ends, direct cable, SuperSpeed both ends,
 30s runs, 2026-09-03. Repeatable to within 1% across four runs.
+
+**A powered hub costs about a fifth of that, in both directions.** Same adapter,
+same cable, same laptop; the only change is that the adapter sits on a powered
+USB 3 hub shared with two Wi-Fi radios rather than in the Pi's own SuperSpeed
+socket:
+
+| Direction | Direct to the Pi | Behind a shared hub | Change |
+|---|---|---|---|
+| Uplink, device → box | 2.35 Gbit/s | **1.91 Gbit/s** | −19% |
+| Downlink, box → device | 1.91 Gbit/s | **1.58 Gbit/s** | −17% |
+
+Measured 2026-09-08, 15s and 60s runs agreeing to within 1%, two radios serving
+five clients throughout. The hub itself is not the ceiling -- every device on it
+enumerated at 5 Gb/s -- so what is being paid for is contention with the radios
+sharing it.
+
+Worth reading alongside the CPU note below: the direct downlink figure is
+CPU-bound, and a CPU limit would not move because a hub was added. Both
+directions falling by a similar proportion is what says the constraint is now
+shared bandwidth rather than the transmit path alone.
+
+**And the socket matters far more than the hub.** The same adapter in one of the
+Pi 5's 480 Mb/s sockets managed 943 Mbit/s up and 469 down -- it negotiates
+`1000baseT` there rather than 2500, and the USB bus caps it well below even
+that. Measured the same day. `usb2` and `usb4` are the SuperSpeed sockets;
+`usb1` and `usb3` are not, and nothing in the interface says which one an
+adapter is in -- `boactl state` reports the negotiated `link_mbps` and
+`usb_version`, which is how this was found.
 
 **The box sends more slowly than it receives, and the asymmetry is structural.**
 Per-core sampling during the downlink run shows CPU0 saturated — idle bottoming
