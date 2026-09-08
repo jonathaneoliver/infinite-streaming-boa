@@ -917,13 +917,21 @@ The client transmits with less aggregation and a weaker radio than the access
 point does, so the same air buys far fewer bits going up. Worth knowing before
 reading an uplink number as though it were a downlink one.
 
-> **An `iperf3` run against the box does not appear on the device's own
+> **An `iperf3` UPLINK run against the box does not appear on the device's own
 > throughput chart.** It terminates *on* the box rather than being forwarded, so
-> it never crosses the shaper's classes: during a 145 Mbit/s uplink the client
+> it never reaches the uplink shaper: during a 145 Mbit/s uplink the client
 > card read `up` **0.0 Mbit/s** and `down` 3.4 Mbit/s — that being the TCP ACK
 > stream — while the airtime chart read **80–86%**. The device looks idle. Use
 > the airtime chart, or `iperf3` between two devices *through* the box, if you
 > need the traffic to show up in the readouts as well as on the air.
+>
+> **The downlink direction is different, and `iperf3 -R` IS conditioned.**
+> Downlink shaping lives on the egress of the client's own port, and a packet
+> the box originates leaves by that same port — so it meets the same qdisc a
+> forwarded one would. Measured 2026-09-08 over Wi-Fi on `wlan-usb`: the same
+> client read **4.72 Mbit/s** under a 5 Mbps cap and **504 Mbit/s** with the cap
+> cleared. So `-R` is a valid way to prove a downlink policy is real, and the
+> "terminates on the box" caveat above applies to uplink only.
 
 ### Channel width, and what it is worth
 
@@ -1882,8 +1890,10 @@ build.sh              orchestrates the build; validates .env
 scripts/customize.sh  all image surgery; runs in a privileged arm64 container
 scripts/build-payload.sh  builds the UI and cross-compiles the daemon
 daemon/               Go daemon; embeds the compiled UI, ships as one binary
+daemon/cmd/boactl/    terminal client for the API, and the `probe` assertions
 ui/                   Vue 3 + TypeScript interface
 PRD.md                product behaviour source of truth
+docs/API.md           generated HTTP reference; regenerate with -update, never by hand
 docs/DATA-CONTRACT.md where every displayed number comes from and what it means
 docs/LICENSING.md     what may be redistributed, and what may not
 docs/BACKLOG.md       accepted limitations; candidate work lives in issues
@@ -1892,7 +1902,7 @@ overlay/              staged files grafted into the image root
 
 ## Development
 
-Three loops, fastest first. Pick the slowest one you actually need.
+Four loops, fastest first. Pick the slowest one you actually need.
 
 ### 1. Interface only, no hardware — sub-second
 
@@ -1944,13 +1954,84 @@ Set up a key first, since this runs often:
 ssh-copy-id boa@infinite-streaming-boa.local
 ```
 
+### 4. Driving a box from the terminal — `boactl`
+
+```sh
+cd daemon && go build -ldflags "-X main.version=$(../scripts/version.sh)" \
+    -o ~/.local/bin/boactl ./cmd/boactl
+```
+
+The API has 54 endpoints and they were previously reached with hand-assembled
+`curl`, which is fine until it isn't: a typo in a path returns an HTML error
+page that decodes into a zero-valued struct and reads exactly like a healthy
+empty answer. `boactl` reports the status line instead.
+
+```sh
+boactl state                     # what the box is doing right now
+boactl devices                   # a line per client, with what the KERNEL enforces
+boactl bridge                    # radios, channels, how contested each one is
+boactl shape "Apple TV" -down 5 -delay 40 -loss 0.5
+boactl sweep "Apple TV" -service netflix  # measure its rendition ladder
+boactl pattern play "Apple TV" -name ramp_down   # and: pattern stop, pattern list
+boactl radio wlan-usb -channel 149        # DROPS every client on that radio
+boactl link "Apple TV" deauth             # and: disassoc, deadzone, steer, measure
+boactl events -follow > run.ndjson        # what HAPPENED, as it happens
+boactl history -window 10m -o run.csv     # what the link was DOING, per second
+boactl config get -o boa-config.json      # and: boactl config apply <file>
+boactl probe                     # assert the box is really doing its job
+```
+
+The box defaults to `$BOA_BOX`, then `infinite-streaming-boa.local`. The help
+groups commands by whether they only look, change a live network, or assert —
+`boactl -h`, and `boactl <command> -h` for one command's flags.
+
+**The two halves of a captured run.** `events` says what happened — a roam, a
+deauth, a pattern step. `history` says what the link was doing while it
+happened, with the cap that was in force at each point, as CSV one row per
+client per bucket. Neither is much use alone: lining a player's behaviour up
+against the cap that caused it is the whole point of the box. `bucket_ms` is a
+column rather than a header so a redirected file still says what resolution it
+carries — on a long window the box means several ticks together, and a row is
+then not one second.
+
+It lives inside the daemon's own module and imports `internal/boa` directly, so
+the response types are the daemon's own — there is no second copy of the wire
+contract to keep in step. `shape` reads the device's current revision and sends
+it as `base_revision`, so a stale terminal loses the race rather than silently
+clobbering somebody editing the same device in the interface.
+
+**`boactl probe`** is the part worth having. It asserts rather than prints, and
+exits non-zero when the box is not doing what it claims:
+
+```
+PASS  cap enforced            6b:80:11 down: 5 Mbps, read back from tc
+PASS  cap is capping          6b:80:11: 4.9 Mbps down, overlimits +271775 in 5s
+WARN  filter coverage         1 conditioned client(s) hold several addresses
+```
+
+Most of it needs no SSH, because `Counters.CapMbps` is read back from `tc`
+rather than echoed from the request — so comparing it against the policy is a
+real enforcement check over plain HTTP, and catches a shape applied to nothing.
+`-ssh` adds what the API cannot answer: whether every routable address of a
+conditioned client has its own filter (privacy extensions mean a device usually
+holds several, and one filter is a *partial* shape that looks like a working
+one), and whether hostapd's BSS is genuinely `ENABLED` rather than merely
+`active`.
+
+`docs/API.md` is the generated reference for every endpoint. It is a golden
+file — `TestAPIDocsUpToDate` fails if it and the source disagree — so unlike a
+spec that has to be regenerated by hand, it cannot quietly go stale.
+
 ### Useful
 
 ```sh
 cd ui && npm run typecheck              # vue-tsc, no build
 cd daemon && go vet ./...               # daemon also compiles on macOS
+cd daemon && go test ./internal/boa/    # includes the wire-contract and API-doc checks
 ssh boa@infinite-streaming-boa.local 'journalctl -u infinite-streaming-boa -f'
-ssh boa@infinite-streaming-boa.local 'tc -s class show dev wlan0'   # what the kernel really has
+# Absolute path: /usr/sbin is NOT on the PATH of a non-login SSH shell, and a
+# bare `tc` fails with "command not found", which reads as a missing package.
+ssh boa@infinite-streaming-boa.local '/usr/sbin/tc -s class show dev wlan0'
 ```
 
 ## How this was built
