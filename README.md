@@ -1667,6 +1667,15 @@ See the warning under [Hardware](#hardware).
 - **It is not a firewall.** A transparent bridge forwards everything and gives the
   devices it conditions no protection they did not already have (see
   [Non-Goals](PRD.md#3-non-goals)).
+- **The box announces itself to the devices it is testing.** avahi publishes
+  `<hostname>.local` on every interface it finds, and `br-lan` is one interface
+  spanning the uplink *and* every client port — that is what makes the bridge
+  transparent. So a device under test can resolve the box by name and reach the
+  unauthenticated interface above. There is no interface list that separates the
+  two sides, because by design they are the same side. The `_workstation._tcp`
+  advertisement, which carried the bridge MAC and is not needed for name
+  resolution, is switched off
+  ([#272](https://github.com/jonathaneoliver/infinite-streaming-boa/issues/272)).
 
 The Wi-Fi passphrase is what enforces all of this — see [The Wi-Fi passphrase is
 the whole perimeter](#the-wi-fi-passphrase-is-the-whole-perimeter) above.

@@ -1146,6 +1146,57 @@ done
 
 mv -f "$ROOT/etc/resolv.conf.boa-bak" "$ROOT/etc/resolv.conf" 2>/dev/null || true
 
+## 8a2. mDNS: publish the name, and nothing else -----------------------------
+# avahi makes the box reachable as ${BOA_HOSTNAME}.local, which is how the
+# README, the .claude skills and every operator find it. That part is wanted.
+#
+# What was NOT wanted, and arrived only as the package default, is
+# publish-workstation: a _workstation._tcp advertisement whose instance name
+# carries the bridge MAC verbatim. Measured 2026-09-08 with dns-sd:
+#
+#   _workstation._tcp.  infinite-streaming-boa [d8:3a:dd:ad:00:86]
+#
+# It is not what makes .local resolution work -- the A and AAAA records do that
+# -- so switching it off costs nothing and stops handing out a MAC. Debian
+# ships it as "no"; this image inherited "yes". See issue #272.
+#
+# Written HERE, after the package install above, rather than in overlay/: the
+# overlay is grafted before apt runs, so a conffile shipped by a freshly
+# installed avahi-daemon could land on top of it. Editing afterwards cannot
+# lose the race.
+AVAHI_CONF="$ROOT/etc/avahi/avahi-daemon.conf"
+if [ -f "$AVAHI_CONF" ]; then
+  if grep -qE '^\s*publish-workstation' "$AVAHI_CONF"; then
+    sed -i 's/^\s*publish-workstation\s*=.*/publish-workstation=no/' "$AVAHI_CONF"
+  else
+    # No [publish] section is possible on a stripped conf; append one rather
+    # than assume the section exists.
+    grep -q '^\[publish\]' "$AVAHI_CONF" \
+      && sed -i '/^\[publish\]/a publish-workstation=no' "$AVAHI_CONF" \
+      || printf '\n[publish]\npublish-workstation=no\n' >> "$AVAHI_CONF"
+  fi
+  # Assert it, rather than trust the sed. A silent no-op here would ship the
+  # advertisement while the build claimed to have removed it.
+  if chroot "$ROOT" sh -c "grep -qE '^publish-workstation=no' /etc/avahi/avahi-daemon.conf"; then
+    log "mDNS: publish-workstation=no (the box still answers to its name)"
+  else
+    die "failed to set publish-workstation=no in /etc/avahi/avahi-daemon.conf"
+  fi
+else
+  warn "no /etc/avahi/avahi-daemon.conf in the image; mDNS settings not applied"
+fi
+
+# NOT restricted by interface, and the reason is worth writing down so nobody
+# tries it again: avahi's allow-interfaces/deny-interfaces work on interfaces,
+# and this box bridges the uplink and every client port into ONE -- br-lan,
+# which is the only interface carrying an address. A client's mDNS query also
+# arrives on the bridge rather than on the port it came in on, because the
+# bridge rewrites the arrival interface before local delivery. So there is no
+# interface list that separates "the network the operator is on" from "the
+# devices under test"; they are the same interface by design, and that design is
+# what makes the box transparent. Restricting publication would mean firewalling
+# UDP 5353 per port, which is a different change with its own cost. See #272.
+
 ## 8b. Kernel module check --------------------------------------------------
 # The conditioner needs sch_htb + sch_netem (queueing disciplines) and ifb, the
 # Intermediate Functional Block device — a virtual interface used to shape the
