@@ -311,12 +311,14 @@ func run(c *client, args []string) error {
 		return cmdPattern(c, args[1:])
 	case "radio":
 		return cmdRadio(c, args[1:])
+	case "link":
+		return cmdLink(c, args[1:])
 	case "config":
 		return cmdConfig(c, args[1:])
 	case "probe":
 		return cmdProbe(c, args[1:])
 	default:
-		return fmt.Errorf("unknown command %q (try: state, devices, bridge, events, history, survey, shape, sweep, pattern, radio, config, probe)", args[0])
+		return fmt.Errorf("unknown command %q (try: state, devices, bridge, events, history, survey, shape, sweep, pattern, radio, link, config, probe)", args[0])
 	}
 }
 
@@ -342,6 +344,7 @@ Change -- these act on a live network:
   sweep <mac|label> -service S measure a rendition ladder (owns the cap)
   pattern play|stop|list       play a timeline, per device or box-wide
   radio <iface> -channel N     move a radio; DROPS every client on it
+  link <mac|label> <action>    deauth, disassoc, deadzone, steer or measure
   config apply <file>          replace every policy on the box
   config get [-o file]         export them first
 
