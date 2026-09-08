@@ -121,6 +121,48 @@ func (c *client) post(path string, body []byte) error {
 	return nil
 }
 
+// postJSON posts and decodes the reply, for the handlers that answer with
+// something worth reading -- move-channel reports how many stations it actually
+// dropped, which is the only honest measure of what the command cost.
+func (c *client) postJSON(path string, body []byte, v any) error {
+	var r io.Reader
+	if body != nil {
+		r = strings.NewReader(string(body))
+	}
+	resp, err := c.http.Post(c.base+path, "application/json", r)
+	if err != nil {
+		return fmt.Errorf("POST %s: %w", path, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		b, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+		return fmt.Errorf("POST %s: %s: %s", path, resp.Status, strings.TrimSpace(string(b)))
+	}
+	if v == nil {
+		return nil
+	}
+	return json.NewDecoder(resp.Body).Decode(v)
+}
+
+// delete is how playback and sweeps are stopped: the run is a resource, and
+// removing it is what returns a device to its stored policy.
+func (c *client) delete(path string) error {
+	req, err := http.NewRequest(http.MethodDelete, c.base+path, nil)
+	if err != nil {
+		return err
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return fmt.Errorf("DELETE %s: %w", path, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		b, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+		return fmt.Errorf("DELETE %s: %s: %s", path, resp.Status, strings.TrimSpace(string(b)))
+	}
+	return nil
+}
+
 // stream calls fn for each line of an SSE-ish newline-delimited body until the
 // connection ends or fn returns false.
 func (c *client) stream(path string, fn func(line string) bool) error {
@@ -223,7 +265,8 @@ func noArgs(cmd string, rest []string) error {
 // jsonCapable is the set of commands -json actually changes. survey is absent
 // because it is always JSON, and the three that write or assert have no
 // payload to reformat.
-var jsonCapable = map[string]bool{"state": true, "devices": true, "bridge": true, "events": true}
+var jsonCapable = map[string]bool{"state": true, "devices": true, "bridge": true, "events": true,
+	"history": true, "pattern": true}
 
 func run(c *client, args []string) error {
 	// -json on a command that cannot honour it was accepted and ignored, which
@@ -233,7 +276,7 @@ func run(c *client, args []string) error {
 		if args[0] == "survey" {
 			return errors.New("survey always emits JSON; drop -json")
 		}
-		return fmt.Errorf("-json does not apply to %s (only state, devices, bridge, events)", args[0])
+		return fmt.Errorf("-json does not apply to %s (only state, devices, bridge, events, history)", args[0])
 	}
 	switch args[0] {
 	case "state":
@@ -253,6 +296,8 @@ func run(c *client, args []string) error {
 		return cmdBridge(c)
 	case "events":
 		return cmdEvents(c, args[1:])
+	case "history":
+		return cmdHistory(c, args[1:])
 	case "survey":
 		if len(args) < 2 {
 			return errors.New("survey needs a radio interface, e.g. boactl survey wlan-usb")
@@ -260,12 +305,18 @@ func run(c *client, args []string) error {
 		return cmdSurvey(c, args[1])
 	case "shape":
 		return cmdShape(c, args[1:])
+	case "sweep":
+		return cmdSweep(c, args[1:])
+	case "pattern":
+		return cmdPattern(c, args[1:])
+	case "radio":
+		return cmdRadio(c, args[1:])
 	case "config":
 		return cmdConfig(c, args[1:])
 	case "probe":
 		return cmdProbe(c, args[1:])
 	default:
-		return fmt.Errorf("unknown command %q (try: state, devices, bridge, events, survey, shape, config, probe)", args[0])
+		return fmt.Errorf("unknown command %q (try: state, devices, bridge, events, history, survey, shape, sweep, pattern, radio, config, probe)", args[0])
 	}
 }
 
@@ -284,9 +335,13 @@ Look:
   bridge                       radios, channels, how contested each one is
   survey <iface>               one radio's airtime counters (always JSON)
   events [-since N] [-follow]  what has happened, newest last
+  history [-window D] [-o f]   the throughput and cap trace, as CSV
 
 Change -- these act on a live network:
   shape <mac|label> [flags]    condition one device's traffic
+  sweep <mac|label> -service S measure a rendition ladder (owns the cap)
+  pattern play|stop|list       play a timeline, per device or box-wide
+  radio <iface> -channel N     move a radio; DROPS every client on it
   config apply <file>          replace every policy on the box
   config get [-o file]         export them first
 

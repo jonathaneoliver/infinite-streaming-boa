@@ -823,6 +823,38 @@ SurveyResult is one radio's airtime reading.
 > channel the phy knows and this is emphatically NOT a band scan; saying so
 > in the payload keeps the caller from ranking a table of zeroes.
 
+### patternEntry — GET /api/patterns (patterns[])
+
+patternEntry is one row of the pattern list.
+
+**`name`** `string`
+
+**`builtin`** `bool`
+
+**`dur_sec`** `float64`
+
+**`keys`** `int`
+
+**`loop`** `bool`
+
+**`selected`** `bool` _(omitted when empty)_
+> Selected marks the pattern currently loaded on the device the list was
+> asked for. The list is single-select: a device runs one pattern, so the
+> UI needs to know which row is the live one.
+
+**`ladder_service`** `string` _(omitted when empty)_
+> LadderService names the ladder a built-in was generated from, and Ladder
+> says whether that ladder was real. A pattern built from the stand-in
+> ladder is a plausibly-shaped test rather than a test of this content, and
+> the difference must be visible rather than inferred from the rates.
+
+**`ladder`** `string` _(omitted when empty)_
+
+**`unavailable`** `string` _(omitted when empty)_
+> Unavailable explains why a built-in could not be generated, instead of
+> omitting the row. A pattern that silently vanishes from a list reads as a
+> missing feature; one that says why reads as a thing to fix.
+
 ### APStatus
 
 APStatus is what a hostapd-served radio is doing right now.

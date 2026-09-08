@@ -57,6 +57,12 @@ var wireRoots = []wireRoot{
 	{"GET /api/history (clients[mac][])", Sample{}},
 	{"GET /api/config", ConfigExport{}},
 	{"GET /api/bridge/radios/{iface}/survey", SurveyResult{}},
+	// Found missing on 2026-09-08 while writing `boactl pattern list`: the
+	// pattern library is a response the interface reads and no root covered it,
+	// so its fields were exempt from this test by omission rather than by
+	// decision. That is the failure mode the exemption lists are careful about,
+	// arriving through the back door.
+	{"GET /api/patterns (patterns[])", patternEntry{}},
 }
 
 // handWrittenKeys are response keys built by map literal rather than a struct,
@@ -65,6 +71,7 @@ var handWrittenKeys = []string{
 	"ok", "caps", "revision", // GET /api/health
 	"interval_ms", "bucket_ms", "window_sec", "now", "clients", // GET /api/history
 	"events", "latest", // GET /api/events
+	"patterns", // GET /api/patterns
 }
 
 // serverOnly are wire fields the UI is not expected to name, each with the
