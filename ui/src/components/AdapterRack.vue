@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { computed } from 'vue';
-import type { IfaceInfo, Series } from '@/types';
+import { computed, ref } from 'vue';
+import type { BSSLoadState, IfaceInfo, Series } from '@/types';
 import { DEVELOPER } from '@/types';
 import { rackAdapters, isOpen, toggleAdapter } from '@/composables/useAdapters';
 import AdapterStack from '@/components/AdapterStack.vue';
@@ -326,6 +326,140 @@ function airTitle(r: IfaceInfo): string {
     (a.util_known
       ? `${a.util_reporters ?? 0} neighbouring access point(s) advertise ${a.util_min_pct !== undefined && Math.round(a.util_min_pct) !== Math.round(a.util_pct) ? `${a.util_min_pct.toFixed(0)}–${a.util_pct.toFixed(0)}%` : `${a.util_pct.toFixed(0)}%`} busy on this channel, each averaged over about 5 seconds. They sit in different rooms and hear different amounts, so a wide range is real disagreement rather than noise.`
       : 'no neighbour on this channel advertised it. Not an idle channel — on a quiet channel there is often nobody near enough to ask.')
+  );
+}
+
+/*
+ * BSS LOAD: what a radio CLAIMS about its congestion, as against what it
+ * measures.
+ *
+ * Its own section, "what the beacon says", and NOT under "conditioning the
+ * link" where it started. Conditioning changes the LINK -- the rate, the
+ * retries, the packets a client actually meets. These two change only what the
+ * beacon SAYS and leave the link exactly as it was, which makes them the one
+ * pair here aimed at a client's decision rather than at its traffic.
+ */
+
+/**
+ * Staged handle positions, keyed by interface.
+ *
+ * A slider bound straight at the daemon's value fights the poll: the inventory
+ * reloads every few seconds and would snatch the handle back to the last
+ * committed number mid-drag. A drag lives here instead, and the entry is
+ * dropped once the daemon has answered -- at which point what is on screen is
+ * the daemon's number, already clamped to the floor.
+ */
+const bssDraft = ref<Record<string, { stations: number; util: number }>>({});
+
+function bssOf(r: IfaceInfo): BSSLoadState | undefined {
+  return props.bridge.bssLoad.value[r.name];
+}
+
+function bssOn(r: IfaceInfo): boolean {
+  return bssOf(r)?.on === true;
+}
+
+/** Advertising the box's own estimate rather than hostapd's zero. */
+function bssFix(r: IfaceInfo): boolean {
+  return bssOf(r)?.fix === true;
+}
+
+/** The estimate `fix` would advertise, or null where there is nothing to
+ *  correct with — no measured airtime and no neighbour on the channel saying
+ *  anything. */
+function bssFixUtil(r: IfaceInfo): number | null {
+  const s = bssOf(r);
+  return s?.fix_known ? s.fix_util_pct : null;
+}
+
+/**
+ * The floors: what the radio is REALLY doing, and the lowest either handle can
+ * go.
+ *
+ * Rounded UP, so a slider's minimum is a whole number and its steps land on
+ * whole numbers after it. The daemon clamps to the exact figure, which is never
+ * above this, so the rounding can only ever claim slightly more than the truth
+ * -- the safe direction, and the only direction this control may move in at
+ * all.
+ */
+function bssFloorUtil(r: IfaceInfo): number {
+  return Math.ceil(bssOf(r)?.floor_util_pct ?? 0);
+}
+function bssFloorStations(r: IfaceInfo): number {
+  return bssOf(r)?.floor_stations ?? 0;
+}
+/** False where the driver reports no per-station airtime, so a 0% floor is an
+ *  absence of measurement rather than an idle radio. */
+function bssFloorKnown(r: IfaceInfo): boolean {
+  return bssOf(r)?.floor_known === true;
+}
+
+/**
+ * Where each handle sits: the staged drag, else what the daemon holds, and
+ * never below the floor.
+ *
+ * The floor is re-applied on every read rather than trusted from the last
+ * commit, because it MOVES -- it is our own airtime, second by second. A claim
+ * that was honest when it was made stops being honest the moment the radio gets
+ * busier, so the handle climbs with it.
+ */
+function bssUtil(r: IfaceInfo): number {
+  return Math.max(bssDraft.value[r.name]?.util ?? bssOf(r)?.util_pct ?? 0, bssFloorUtil(r));
+}
+function bssStations(r: IfaceInfo): number {
+  return Math.max(
+    bssDraft.value[r.name]?.stations ?? bssOf(r)?.stations ?? 0,
+    bssFloorStations(r),
+  );
+}
+
+type BSSPatch = Partial<{ stations: number; util: number }>;
+
+/** Stage a drag without sending it: one request per commit, not per pixel. */
+function stageBSS(r: IfaceInfo, patch: BSSPatch) {
+  bssDraft.value = {
+    ...bssDraft.value,
+    [r.name]: { stations: bssStations(r), util: bssUtil(r), ...patch },
+  };
+}
+
+/**
+ * Commit, then let go.
+ *
+ * The draft is dropped rather than kept in step with the response, because the
+ * daemon's answer is the one that counts: it has clamped both numbers up to a
+ * floor this may well have been dragged below, and a handle left where it was
+ * released would be showing a claim the box is not making.
+ */
+async function commitBSS(r: IfaceInfo, on: boolean, patch: BSSPatch = {}, fix?: boolean) {
+  const next = { stations: bssStations(r), util: bssUtil(r), ...patch };
+  stageBSS(r, next);
+  await props.bridge.setBSSLoad(r.name, on, fix ?? bssFix(r), next.stations, next.util);
+  const rest = { ...bssDraft.value };
+  delete rest[r.name];
+  bssDraft.value = rest;
+}
+
+/** Why the handle will not go lower, said where somebody tries to drag it. */
+function bssFloorTitle(r: IfaceInfo, what: 'util' | 'stations'): string {
+  const why =
+    what === 'util'
+      ? bssFloorKnown(r)
+        ? `${bssFloorUtil(r)}% is what this radio's own clients are using right now, ` +
+          'measured from the station counters \u2014 so the channel is at least that busy.'
+        : 'This radio reports no per-station airtime, so there is no measured floor. ' +
+          'The 0% minimum is an absence of measurement, not an idle radio.'
+      : `${bssFloorStations(r)} station(s) are actually associated.`;
+  return (
+    `${why}\n\nThe handle only goes UP from there, and that is the safety rule ` +
+    'rather than a nicety: overstating load pushes devices away, which is what a ' +
+    'genuinely busy access point does anyway, while understating it would PULL them ' +
+    'in \u2014 onto neighbours\u2019 equipment nobody here owns or can observe.' +
+    '\n\nThe floor is live, so the claim follows it up and comes back down: start ' +
+    'traffic and the beacon carries the real figure even if it is above what was ' +
+    'set here, and when the traffic stops the setting is still the setting.' +
+    '\n\nMoving a handle ticks the override on. Unticking it is the only way ' +
+    'back: the beacon then returns to the zeros hostapd advertises by default.'
   );
 }
 
@@ -720,19 +854,27 @@ Clients ARE told it has gone, unlike a power cut.`
                control exists to close. It also breaks the imperative voice of
                the headings under it on purpose: those are buttons that do
                something, this is a picture to be read first. -->
-          <h4 class="first">Channel and width</h4>
-          <slot name="plan" :radio="r" :others="otherRadios(r)" />
-          <div class="action-row">
-            <button class="accent" :disabled="busy"
-              :title="`Survey ${r.name}'s band and move it to the quietest channel found. Takes the radio down and back up.`"
-              @click="bridge.scanBand(r.name, true)"
-            >scan and move to the quietest</button>
-          </div>
+          <!-- EACH GROUP IN ITS OWN BOX, because the fold now holds four of
+               them and a heading alone stopped being enough to say where one
+               ends. The controls inside a group act on the same thing; a reader
+               scanning for the beacon switches should not have to work out
+               which "off" button belongs to which heading. -->
+          <section class="group">
+            <h4 class="first">Channel and width</h4>
+            <slot name="plan" :radio="r" :others="otherRadios(r)" />
+            <div class="action-row">
+              <button class="accent" :disabled="busy"
+                :title="`Survey ${r.name}'s band and move it to the quietest channel found. Takes the radio down and back up.`"
+                @click="bridge.scanBand(r.name, true)"
+              >scan and move to the quietest</button>
+            </div>
+          </section>
 
           <!-- The timed outage goes behind developer=1 with the power switch
                it belongs to: same mechanism, same cost, same tendency to wedge
                the USB adapter. -->
           <template v-if="DEVELOPER">
+          <section class="group">
           <h4>Take it away</h4>
           <p class="warn-line">
             <strong>Silent.</strong> Clients are told nothing and must time out —
@@ -759,9 +901,11 @@ Clients ARE told it has gone, unlike a power cut.`
             A client with a randomised MAC may return as a <strong>new device</strong>,
             leaving its policy behind on the old address (#45).
           </p>
+          </section>
           </template>
 
-          <h4>Make the link worse</h4>
+          <section class="group">
+          <h4>Conditioning the link</h4>
           <p class="meta group-note">
             A profile restarts the access point, dropping all
             {{ r.ap.stations }} client(s). The thresholds below do not — they are
@@ -789,6 +933,98 @@ Clients ARE told it has gone, unlike a power cut.`
               @click="bridge.setThreshold(r.name, 'frag', 256)">at 256</button>
             <button :disabled="busy" @click="bridge.setThreshold(r.name, 'frag', 'off')">off</button>
           </div>
+          </section>
+
+          <!-- ITS OWN SECTION, and it was under the conditioning heading
+               first, which was wrong in a way worth recording. Conditioning
+               damages the LINK. Neither control here touches the link at all,
+               and one of them makes the radio's account of itself more accurate
+               rather than less -- filing a correction under a heading about
+               making things worse is a heading contradicting its contents.
+
+               What these two share is a SUBJECT, not an effect: both change
+               what the beacon says about this radio, one towards the truth and
+               one away from it. So they are named for the subject, the way
+               "channel and width" is, and the note carries the direction.
+
+               The truth sits in the row beside the claim, always. A control
+               that can lie is only safe while what it is lying about is on
+               screen next to it. -->
+          <section class="group">
+          <h4>What the beacon says</h4>
+          <p class="meta group-note">
+            Neither of these touches the link — they change what this radio
+            <em>tells</em> clients about itself, which some weigh when choosing
+            between access points. It is the only lever here that offers a
+            device a <em>reason</em> to move rather than ordering it to. Nobody
+            is dropped, and nothing lifts on its own.
+          </p>
+          <div class="action-row beacon">
+            <label class="chk"
+              title="hostapd fills in a BSS Load element in every beacon from the driver&#39;s survey counter. On this hardware that counter is broken: measured over one 22.3s window at 494 Mbit/s it reported the channel 11.9% busy while the radio&#39;s own transmit and receive counters — from the same command — said 71.6%, and boa&#39;s per-station figures said 78.9%. So hostapd advertises a permanent 0%.&#10;&#10;Ticking this replaces it with the larger of what this radio measures at its own antenna and what the busiest neighbour on the channel reports. Still a lower bound: neither half can see a source that does not beacon, because this box has no spectral scan.&#10;&#10;Unticking is NOT silence. The element cannot be taken out of the beacon on this build — verified three ways — so unticked means advertising a 0% nobody chose, which is wrong in the direction that pulls clients towards us.">
+              <input
+                type="checkbox" :checked="bssFix(r)" :disabled="busy"
+                @change="commitBSS(r, bssOn(r), {}, ($event.target as HTMLInputElement).checked)"
+              />
+              fix the BSS Load value
+              <!-- The comparison is dropped where there is nothing to compare:
+                   "would advertise 0% · hostapd says 0%" prints one number
+                   twice and calls it a correction. -->
+              <span class="fixv">{{
+                bssFixUtil(r) === null
+                  ? '(nothing measured, and no neighbour to ask)'
+                  : bssFixUtil(r)! < 0.5
+                    ? '(nothing to correct — this channel reads idle)'
+                    : `(would advertise ${bssFixUtil(r)!.toFixed(0)}% · hostapd says 0%)`
+              }}</span>
+            </label>
+          </div>
+          <div class="action-row beacon">
+            <label class="chk"
+              title="hostapd fills in a BSS Load element in every beacon by itself, from the driver&#39;s survey counter. Ticking this replaces its two numbers with the ones below, from the next beacon onwards. No restart, and nobody is dropped.&#10;&#10;What is being overridden is worthless on this hardware: that survey counter reads near zero on the mt7921u while the radio is 80% busy, so hostapd&#39;s own figure is a permanent 0 stations and 0%. Unticking restores that default, which is not silence and not a measurement.&#10;&#10;Moving either handle ticks this on its own — the sliders are the claim, so setting one is asking for it. Untick to stop, which is the only way back: a claim stays on the air until it is switched off, across daemon restarts and deploys.">
+              <input
+                type="checkbox" :checked="bssOn(r)" :disabled="busy"
+                @change="commitBSS(r, ($event.target as HTMLInputElement).checked)"
+              />
+              override it with the values below
+            </label>
+            <span v-if="bssOn(r) && bssFix(r)" class="meta">
+              a deliberate claim wins over the correction
+            </span>
+          </div>
+          <div class="load-rows" :class="{ off: !bssOn(r) }">
+          <div class="load-row">
+            <label>utilisation</label>
+            <input
+              type="range" :min="bssFloorUtil(r)" max="100" step="1"
+              :value="bssUtil(r)" :disabled="busy"
+              :title="bssFloorTitle(r, 'util')"
+              @input="stageBSS(r, { util: +($event.target as HTMLInputElement).value })"
+              @change="commitBSS(r, true, { util: +($event.target as HTMLInputElement).value })"
+            />
+            <span class="vals" :title="bssFloorTitle(r, 'util')">
+              <span class="val num">{{ bssUtil(r).toFixed(0) }}%</span>
+              <span class="floor">really {{
+                bssFloorKnown(r) ? bssFloorUtil(r) + '%' : '\u2014'
+              }}</span>
+            </span>
+          </div>
+          <div class="load-row">
+            <label>stations</label>
+            <input
+              type="range" :min="bssFloorStations(r)" max="100" step="1"
+              :value="bssStations(r)" :disabled="busy"
+              :title="bssFloorTitle(r, 'stations')"
+              @input="stageBSS(r, { stations: +($event.target as HTMLInputElement).value })"
+              @change="commitBSS(r, true, { stations: +($event.target as HTMLInputElement).value })"
+            />
+            <span class="vals" :title="bssFloorTitle(r, 'stations')">
+              <span class="val num">{{ bssStations(r) }}</span>
+              <span class="floor">really {{ bssFloorStations(r) }}</span>
+            </span>
+          </div>
+          </div>
+          </section>
 
         </template>
       </div>
@@ -991,6 +1227,22 @@ Clients ARE told it has gone, unlike a power cut.`
 }
 /* The first heading follows the facts, which carry their own spacing below. */
 .body h4.first { margin-top: 6px; }
+/* One box per group of controls.
+   SOFTER than the fold's own border, and a hair lighter than its background --
+   these are divisions WITHIN a card, and a box as strong as the card's would
+   read as four cards. */
+.group {
+  border: 1px solid var(--line-soft);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--ink) 2%, transparent);
+  padding: 2px 12px 10px;
+  margin: 10px 0 0;
+}
+/* The heading is the box's label, so its top margin belongs to the box. */
+.group > h4:first-child, .group > h4.first { margin-top: 8px; }
+/* The band plan is a picture that runs to the box's edge better than it sits
+   inset from it. */
+.group > :deep(.plan) { margin-left: -2px; margin-right: -2px; }
 .action-row {
   display: flex;
   align-items: center;
@@ -1009,6 +1261,57 @@ Clients ARE told it has gone, unlike a power cut.`
 .meta { font-size: 11px; color: var(--ink-faint); }
 .warn-line { color: var(--warn); font-size: 11px; margin: 2px 0; }
 .group-note { margin: 0 0 4px; }
+/* NOT `.row`, which in this file is the collapsed adapter row's six-track grid
+   and would drop a slider into the middle of it. */
+/* The switch reads as a sentence rather than a pair of verbs, because there is
+   only one thing to decide: whether the radio is lying. A two-button segment
+   said "stop / claim this", which implied two actions where dragging a handle
+   was already the second one. */
+.action-row .chk {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--ink-dim);
+  cursor: pointer;
+}
+.action-row .chk input { cursor: pointer; }
+/* The estimate rides on the switch that would send it, so "what would this
+   actually advertise" is answered where it is decided rather than a row away.
+   Not tabular figures: it is a sentence, and .num fights one. */
+.action-row .chk .fixv { color: var(--ink-faint); font-size: 11px; }
+/* The two switches are one group, so they take the group's rhythm rather than
+   the action row's, which is spaced for buttons. */
+.body .action-row.beacon { margin: 2px 0; }
+
+/* Indented to sit under the LABEL of the switch they belong to, rather than
+   under its checkbox. Flush left they read as a third peer of the two switches,
+   which is backwards -- these are that switch's values. 21px is the box plus
+   its gap. */
+.load-rows { margin: 2px 0 0 21px; }
+/* Dimmed, not disabled. The handles still set what the beacon will carry the
+   moment it is switched on, and moving one switches it on -- so they have to
+   stay draggable while nothing is being advertised. */
+.load-rows.off { opacity: 0.6; }
+/* NOT `.row`, which in this file is the collapsed adapter row's six-track grid
+   and would drop a slider into the middle of it. */
+.load-row {
+  display: grid;
+  grid-template-columns: 72px minmax(80px, 190px) auto;
+  align-items: center;
+  gap: 10px;
+  margin: 3px 0;
+  font-size: 12px;
+}
+.load-row > label { color: var(--ink-faint); }
+.load-row input[type='range'] { width: 100%; margin: 0; }
+/* The value and the truth in ONE cell, because they are one fact read together.
+   As two grid tracks the number sat right-aligned in a fixed column with a gap
+   before the thing it was being compared against, and the pair read as two
+   unrelated figures that happened to land near each other. */
+.load-row .vals { display: inline-flex; align-items: baseline; gap: 8px; }
+.load-row .val { color: var(--ink-dim); min-width: 26px; text-align: right; }
+.load-row .floor { font-size: 11px; color: var(--ink-faint); }
 .notice.inline { margin: 8px 0 0; }
 /* An empty badge keeps its box so the controls after it never move. Invisible
    rather than absent: `visibility` reserves the space that `display:none` would

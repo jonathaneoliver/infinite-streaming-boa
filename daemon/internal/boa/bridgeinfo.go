@@ -172,6 +172,14 @@ type BridgeInfo struct {
 	//
 	// Entries are absent rather than zeroed for a channel nobody has scanned.
 	Air map[string]AirView `json:"air,omitempty"`
+	// BSSLoad is what each radio has been told to ADVERTISE about its own
+	// congestion, and the floor of what it is really doing. See bssload.go.
+	//
+	// Every other impairment here acts on the link; this one acts on what a
+	// client is told, so the honest figure travels beside the claim and the
+	// interface shows both. A control that can lie is only safe while the truth
+	// is next to it.
+	BSSLoad map[string]BSSLoadState `json:"bss_load,omitempty"`
 	// ReadAgeMs is how long ago this view was actually built, in milliseconds.
 	//
 	// It is built on a timer rather than per request, so it can be a couple of
@@ -476,6 +484,16 @@ func (e *Engine) buildBridgeState() BridgeInfo {
 		}
 	}
 	bi.Air = airViews(bi.Scans, chanOf)
+	// What each radio has been told to CLAIM about its congestion, beside the
+	// floor of what it is really doing. Both, always: a control that can lie is
+	// only safe while the truth is on screen next to it.
+	wl := make([]string, 0, len(bi.Ifaces))
+	for _, in := range bi.Ifaces {
+		if in.Wireless && in.AP != nil {
+			wl = append(wl, in.Name)
+		}
+	}
+	bi.BSSLoad = e.BSSLoadStates(wl, bi.Air)
 	// And what OUR OWN clients are costing each radio, which is the half of the
 	// picture the neighbours cannot tell us. Set after the ifaces are built, so
 	// it can be gated on the radio that actually reports per-station airtime.

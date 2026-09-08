@@ -769,6 +769,100 @@ damages packets, never link state.
   transition request: it was never asked. The per-client **steer** on the
   Clients tab remains the control for that question, and the two are described
   in their own words rather than one borrowing the other's.
+- **A radio can be told to claim it is busier than it is, and that is an
+  impairment aimed at the client's decision rather than at its packets.** The
+  802.11 **BSS Load** element carries a station count and a channel utilisation,
+  and some clients weigh both when choosing between access points. Everything
+  else here either damages a link or *orders* a client to move; this is the only
+  control that offers a device a **reason** to prefer the other radio and then
+  watches what it does with one. It changes the beacon and nothing else — the
+  link is untouched, nobody is dropped, and the access point is not restarted.
+- **A claim may only ever be raised above what is really happening.** The
+  controls are floored at the radio's actual associated station count and at its
+  own measured airtime, and a value below either is snapped up to it rather than
+  refused. The rule is not a nicety: overstating load pushes devices away, which
+  is what a genuinely busy access point does anyway, while understating it
+  **pulls** them in — and that lands on neighbours' equipment this box does not
+  own, cannot observe, and was not asked to affect.
+- **The floor is live, and the claim follows it up without becoming it.**
+  Measured: our own airtime goes from 0% to 80% within four seconds of a
+  throughput test starting, so a claim checked only when it was made is stale
+  almost at once. Every beacon therefore carries the larger of the claim and the
+  floor at that moment. The raised value is **not** kept, because keeping it
+  would ratchet — one burst would lift a 20% claim to 80% and nothing would ever
+  bring it back, until each radio permanently advertised its own worst moment.
+  What an operator set survives the traffic they set it to watch.
+- **The truth is on screen beside the claim, always.** Each control shows what
+  the radio is really doing next to what it is advertising. A control that can
+  state something untrue about the box is only safe while what it is lying about
+  is visible next to it.
+- **Correcting the figure is the DEFAULT, and that is a decision rather than an
+  oversight.** There is no neutral setting to fall back to: the element cannot
+  be removed from the beacon, so a radio nobody has touched is already telling
+  every client the channel is 0% busy — a wrong number, and wrong in the
+  direction that *pulls* devices onto a radio which may be saturated. The choice
+  is therefore not whether to influence clients but whether to influence them
+  with a measurement or with a falsehood. It is also the less surprising
+  behaviour: an access point on competent silicon advertises its real load, so
+  the correction is closer to what a stock router does than the zero is. An
+  operator can switch it off per radio, and that opt-out is respected — nothing
+  turns it back on.
+- **The two switches live under a heading naming their subject, not their
+  effect.** They were filed under *conditioning the link* first, which was
+  wrong: conditioning damages the link, neither of these touches it, and one of
+  them makes the radio's account of itself more accurate rather than less. What
+  they share is that both change what the beacon says.
+- **The box can also advertise its own corrected figure, which is a different
+  act from claiming one.** A second switch per radio replaces hostapd's number
+  with the larger of what the radio measures at its own antenna and what the
+  busiest neighbour on the channel reports. Both are lower bounds on the same
+  quantity, so the larger is taken rather than the sum — measured, with our
+  radio at 78.9% the nearest neighbours reported 74.5%, which is mostly the same
+  traffic counted twice. A deliberate claim outranks the correction, and since a
+  claim is floored at the truth there is no state in which having both on
+  advertises less than the correction would.
+- **The correction is still a lower bound, and is refused rather than faked.**
+  Neither half can see a source that does not beacon — a microwave, a baby
+  monitor, a cordless phone — because this box has no spectral scan. Where
+  nothing is measured and no neighbour on the channel advertises anything, the
+  correction stands down rather than sending a zero that would be
+  indistinguishable from hostapd's while claiming to be a measurement.
+- **What is being corrected is a number the driver contradicts itself about.**
+  Measured over one 22.3s window at 494 Mbit/s, a single `survey dump` reported
+  the channel **11.9% busy** while its own receive and transmit counters, from
+  the same command, totalled **71.6%**, against **78.9%** from boa's per-station
+  figures. The medium cannot be less occupied than the radio's own
+  transmissions make it, so this is not a conservative reading but a broken one.
+- **Switching the claim off is not the same as saying nothing, and the
+  interface does not pretend it is.** Measured on this hardware, hostapd puts a
+  BSS Load element in every beacon whether or not anything has been configured;
+  stopping both switches returns it to **0 stations and 0%**, which is a default
+  rather than a measurement. Verified three ways — `bss_load_test 0:0:0`, an
+  empty value, and `bss_load_update_period 0` — the element stays, and so does
+  it on a radio never configured with either. The box cannot advertise its own honest figure
+  instead: hostapd derives BSS Load from the driver's survey counter, and on the
+  `mt7921u` that counter reads near zero while the radio is 80% busy. So the box
+  already understates its load to every client that asks, the one direction this
+  control is otherwise forbidden to move in, and the interface says so where an
+  operator switches the claim off rather than leaving it to be discovered.
+- **The claim survives the things that restart hostapd.** It lives in the
+  running process, so a profile, a width change, a power cycle or a USB
+  re-enumeration would each silently drop it. It is re-asserted on the same
+  timer that refreshes the contention figures, which covers the paths nobody has
+  thought of yet rather than the four that are known.
+- **It survives a daemon restart too, and the box asserts that rather than
+  assuming it.** The override belongs to hostapd, not to the daemon, so the two
+  can disagree — and measured, they did: a deploy restarted the daemon and the
+  box carried on beaconing 39 stations at 85% while the interface reported it
+  was claiming nothing. hostapd cannot be asked what it is advertising, so at
+  startup **every** radio is told something: the stored claim where there is
+  one, an explicit clear where there is not. A radio holding a claim this box
+  has no record of is the one state that must not persist.
+- **That failure is the worst one this control can have, which is why it gets
+  its own rule.** Everything else here is safe because the truth is drawn beside
+  the claim — and that promise is void the moment the interface does not know
+  what the claim *is*. A box that lies to clients is the instrument; a box that
+  lies to its operator about lying to clients is a broken one.
 - **An access point can be taken down and brought back, and both ends can be
   announced.** `disable` closes the BSS; `enable` reopens it. On its own, either
   is silent — a closed BSS tells nobody, and clients discover it by timing out,

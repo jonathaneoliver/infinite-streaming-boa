@@ -53,6 +53,13 @@ func (e *Engine) watchAir() {
 	for {
 		time.Sleep(airScanEvery)
 		e.airScanOnce()
+		// An advertised BSS Load lives in the running hostapd and nowhere else,
+		// so every restart silently drops it -- and hostapd is restarted by a
+		// profile, a channel move, a power cycle and a USB re-enumeration, which
+		// is too many paths to hook one at a time. Re-asserting it here is two
+		// control-socket commands per overridden radio, idempotent, and covers
+		// the paths nobody has thought of yet.
+		e.reapplyBSSLoad()
 	}
 }
 

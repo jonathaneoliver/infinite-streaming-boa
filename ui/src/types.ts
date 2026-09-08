@@ -724,6 +724,90 @@ export interface AirView {
   ours_known?: boolean;
 }
 
+/**
+ * What one radio has been told to ADVERTISE about its own congestion, and the
+ * floor of what it is really doing.
+ *
+ * The odd one out among the impairments, and worth saying why. Everything else
+ * on this box acts on the LINK — the rate, the delay, the loss a client's
+ * packets actually meet. This acts on the client's INFORMATION: the 802.11 BSS
+ * Load element in our beacon, which carries a station count and a channel
+ * utilisation, and which some clients weigh when choosing between access
+ * points. It is the difference between making a client slow and giving it a
+ * reason to leave.
+ *
+ * The claim and the truth travel together deliberately. A control that can lie
+ * is only safe while what it is lying about is on screen beside it.
+ */
+export interface BSSLoadState {
+  /**
+   * False means the radio has stopped overriding — which on this hardware is
+   * not silence.
+   *
+   * Measured 2026-09-08: the beacon still carries a BSS Load element reading
+   * 0 stations and 0/255 afterwards, exactly as a radio that was never given
+   * one does. The element is always present on this hostapd build, so "off"
+   * returns the beacon to zeros rather than removing anything.
+   */
+  on: boolean;
+  /**
+   * Advertise the box's own estimate of the channel's congestion instead of
+   * hostapd's, which on this hardware is a permanent 0%.
+   *
+   * A separate switch from `on` because it is a different act: `on` is a claim,
+   * this is a correction. `on` wins where both are set.
+   *
+   * Neither being set is NOT silence. Verified three ways — `bss_load_test
+   * 0:0:0`, an empty value, and `bss_load_update_period 0` — the element stays
+   * in the beacon reading zero, and so does a radio that has never been
+   * configured with either. The element cannot be removed on this build, so the
+   * default state is a wrong number rather than no number.
+   */
+  fix: boolean;
+  /** The estimate `fix` would advertise: the larger of our own measured airtime
+   *  and the busiest neighbour's report on this channel. Both are lower bounds
+   *  on the same quantity, so the larger is used rather than the sum. */
+  fix_util_pct: number;
+  /** False where nothing is measured and no neighbour advertises, in which case
+   *  `fix` has nothing to say and stands down rather than sending a 0 that would
+   *  be indistinguishable from hostapd's. */
+  fix_known: boolean;
+  /**
+   * What was ASKED for — where the handle sits, not necessarily what is on the
+   * air.
+   *
+   * The daemon raises these to the floor below at the moment it sends, on every
+   * send, because the floor is a live measurement: our own airtime went 0% to
+   * 80% within four seconds of an iperf3 starting. So the advertised figure is
+   * the larger of the two, which is exactly what this interface draws.
+   *
+   * The raised value is deliberately NOT stored, or it would ratchet — one
+   * burst would lift a 20% claim to 80% and nothing would bring it back down.
+   */
+  stations: number;
+  /** Channel utilisation as a percentage. The wire to hostapd carries 0–255;
+   *  the conversion happens once, in the daemon. */
+  util_pct: number;
+  /**
+   * What is REALLY there, and the lowest the controls may be set to.
+   *
+   * The constraint is the safety property, not a nicety. Overstating load
+   * pushes devices away, which is what a genuinely busy access point does
+   * anyway; understating it PULLS them in, and that lands on neighbours'
+   * equipment nobody here owns or can observe. A box that can lie should only
+   * ever lie in the direction that costs other people nothing.
+   */
+  floor_stations: number;
+  /** Our own measured airtime on this radio — a LOWER bound on the channel's
+   *  utilisation, since whatever the neighbours add, the channel is at least as
+   *  busy as we are making it. */
+  floor_util_pct: number;
+  /** False where the driver reports no per-station airtime, so the utilisation
+   *  floor is zero for want of a measurement rather than because the radio is
+   *  idle. The onboard brcmfmac radio is that case. */
+  floor_known: boolean;
+}
+
 export interface ScanAP {
   bssid: string;
   ssid?: string;
@@ -827,6 +911,11 @@ export interface BridgeInfo {
    * it is "no measurement", and the two must render differently.
    */
   air?: Record<string, AirView>;
+  /** What each radio has been told to CLAIM about its congestion, keyed by
+   *  interface, beside the floor of what it is really doing. Present only for
+   *  radios running an access point — there is no beacon to put it in
+   *  otherwise. */
+  bss_load?: Record<string, BSSLoadState>;
 }
 
 export interface SurveyChannel {

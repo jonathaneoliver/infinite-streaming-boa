@@ -299,6 +299,10 @@ type Engine struct {
 	// moment, and a stale one restored from disk would be worse than none.
 	scanSeen map[string]ScanSummary
 
+	// bssLoad is what each radio has been told to ADVERTISE about its own
+	// congestion, as against what it is measuring. See bssload.go.
+	bssLoad bssLoadStore
+
 	// scanFree records, per radio, whether a scan of it kept the access point
 	// on the air. Written from what a scan actually did rather than from the
 	// driver's name, and consulted by the background poll -- which will not
@@ -368,6 +372,10 @@ func NewEngine(cfg Config) *Engine {
 	e := newEngine(cfg)
 	// -verbose is the STARTING state only; the interface owns it from here.
 	e.verboseOn.Store(cfg.Verbose)
+	// What each radio was last told to CLAIM about its congestion. Read here
+	// rather than in newEngine so a test engine built directly stays empty; the
+	// claims are pushed at the radios by assertBSSLoad in Start.
+	e.bssLoad.load()
 	return e
 }
 
@@ -379,6 +387,7 @@ func newEngine(cfg Config) *Engine {
 		pat:          NewPatternStore(patternsPathFor(cfg.StatePath)),
 		lad:          NewLadderStore(ladderPathFor(cfg.StatePath)),
 		chp:          NewChannelStore(channelsPathFor(cfg.StatePath)),
+		bssLoad:      bssLoadStore{path: bssLoadPathFor(cfg.StatePath)},
 		learn:        NewLearner(cfg.Bridge, append(append([]string{}, cfg.WlanPorts...), cfg.LanPort)...),
 		prev:         map[string]counterSample{},
 		airPrev:      map[string]airSample{},
@@ -404,6 +413,10 @@ func ladderPathFor(statePath string) string {
 
 func channelsPathFor(statePath string) string {
 	return filepath.Join(filepath.Dir(statePath), "channels.json")
+}
+
+func bssLoadPathFor(statePath string) string {
+	return filepath.Join(filepath.Dir(statePath), "bssload.json")
 }
 
 func (e *Engine) Store() *Store { return e.st }
@@ -471,6 +484,11 @@ func (e *Engine) Start() {
 	// them, so every later line in this run can be attributed to hardware.
 	e.logRadioIdentity()
 	e.restoreRadioPower()
+	// What each radio is CLAIMING about its own congestion, which lives in
+	// hostapd and so survives this daemon dying. Asserted rather than assumed:
+	// a deploy mid-experiment leaves a claim on the air that a fresh store knows
+	// nothing about. See assertBSSLoad.
+	e.assertBSSLoad()
 	// And check the opposite fault: a radio that is ON but serving nobody,
 	// which restoreRadioPower cannot see and which a restart mid-recovery
 	// leaves behind. See checkRadiosAtStart.
