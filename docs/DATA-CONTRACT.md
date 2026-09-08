@@ -412,6 +412,16 @@ page.
 | `sweep.levels[].drift` | fraction | \|mean(first half) − mean(second half)\| **over** the window mean. Not a percentage |
 | `sweep.levels[].saturated` | bool | The mean was ≥ 85% of the cap: the client had not dropped below it |
 
+**`unstable` is not attributable to the network.** Measured against a real
+programme's encoded bitrate, on a perfect link with no cap at all, **more than
+half** of all 300 s windows disagree between their halves by more than 20% —
+median drift 22–24%, peak 85%. Content varies on scene and section timescales
+measured in minutes, so a longer window does not average it out. The flag is
+true when it fires; it just does not mean an impairment. See
+[one real YouTube programme](#measured--one-real-youtube-programme-as-ground-truth-for-a-ladder),
+which also shows that adjacent rungs' instantaneous rates overlap, so no cap
+value separates two renditions by rate alone.
+
 **When a level is measured.** Not after a fixed wait. A player still on a
 rendition it can no longer afford fetches back-to-back and stays pinned to the
 cap; when it drops, idle gaps appear and throughput falls away. The sweep waits
@@ -618,6 +628,101 @@ observe.
 
 Measuring the shaper's own pacing requires a packet capture at the egress
 interface, before the radio.
+
+## Measured — one real YouTube programme, as ground truth for a ladder
+
+Everything above describes what the box measures. This describes what it is
+measuring *against*: a real encoded ladder, taken from the source rather than
+inferred from a sweep, so a swept ladder has something to be wrong about.
+
+**The programme.** YouTube video `JtVljGMKOHU`, 2677 s, AV1 1080p30, bt709,
+Opus audio. Captured 2026-09-08 from a TV playing it through this box, with
+`Stats for nerds` open.
+
+**Method.** Each rendition is a DASH stream whose `sidx` box (ISO/IEC 14496-12
+segment index) lists every subsegment's byte size and duration. Reading it costs
+two HTTP range requests against the head of the stream -- about 2 MB, not the
+390 MB of media. 518 segments of 3.570 s, timescale 30000.
+
+**Why the parse can be trusted:** the mean recomputed from those 518 segments is
+1223.8 kbps against the 1223.849 that `yt-dlp` reports independently. Four
+significant figures of agreement between two different derivations is what makes
+this a measurement rather than a plausible number.
+
+### The ladder, with the peaks the mean hides
+
+| Rung | itag | Mean | p90 | Max | Peak/mean |
+|---|---|---|---|---|---|
+| 480p | 397 | 387 kbps | 633 (1.63x) | 901 | **2.33x** |
+| 720p | 398 | 697 kbps | 1139 (1.63x) | 1793 | **2.57x** |
+| 1080p | 399 | 1224 kbps | 2085 (1.70x) | 3199 | **2.61x** |
+
+Units are kbps decimal (1000 bit/s), from bytes x 8 / seconds.
+
+**EVERY ADJACENT PAIR OF RUNGS OVERLAPS.** 720p's peak segment (1793) is 1.46x
+1080p's *mean* (1224); 480p's peak (901) exceeds 720p's mean (697):
+
+```
+480p    387 ──────── 901
+720p         697 ──────────── 1793
+1080p              1224 ──────────────── 3199
+```
+
+So no cap value separates two rungs by instantaneous rate. What separates them
+is the *sustained* rate over the player's estimation window, which is why a
+player with a deep buffer plays a rung whose peaks exceed the cap. The TV
+observed here held **84.62 s** of buffer, about 24 segments.
+
+### The finding that bears on `sweep.levels[].unstable`
+
+A level is called unstable when the window's two halves disagree by more than
+20% of its mean. The obvious assumption is that a 150 s half-window averages
+~42 segments and smooths per-segment variation away. **It does not.**
+
+Applying the sweep's own arithmetic to this content's real per-second bitrate,
+on a *perfect* network with no cap and no impairment at all:
+
+| Rung | Median drift | p90 | Max | Windows over 20% |
+|---|---|---|---|---|
+| 480p | 21.8% | 44.5% | 74.5% | **53.1%** |
+| 720p | 22.9% | 45.5% | 79.3% | **51.9%** |
+| 1080p | 24.1% | 49.8% | 84.8% | **53.1%** |
+
+**More than half of all observation windows on this programme would be flagged
+unstable with nothing wrong.** Content bitrate varies on scene and section
+timescales measured in minutes, not on segment timescales, so lengthening the
+window does not average it out -- it just moves which minutes are being compared.
+
+This does not make the flag wrong: two halves really did disagree, and that is
+all it claims. It makes it **not attributable** -- `unstable` on this content
+says nothing about the network, and reading it as evidence of an impairment
+would be reading the programme's edit.
+
+### What this does NOT establish
+
+- **One programme, one content type.** Peak-to-mean and drift are properties of
+  the material. A talking-head clip and a sports clip will differ, possibly by a
+  lot. Nothing here should be generalised to a rate-control rule until at least
+  two or three more titles have been measured the same way.
+- **The p90 sits at 1.63-1.70x the mean on all three rungs**, which is stable
+  enough to look like an encoder-ladder property rather than a coincidence of
+  this content. It is currently neither -- it is one observation repeated across
+  three renditions of the same source, which is not independent evidence.
+- **The bottom three rungs (144p/240p/360p, itags 394-396) were not measured.**
+  They return HTTP 403 for the index range request while 399 succeeds from the
+  same freshly-extracted metadata, so it is format-specific gating rather than
+  URL expiry.
+
+### A trap worth naming, since it is one field away
+
+`Stats for nerds` shows **`Connection Speed`**, which is the player's estimate of
+available network throughput and is *not* the media bitrate. On the capture
+above it read **28614 kbps** while the stream it was playing was 1224 + 103 =
+**~1327 kbps** -- the reported number is **21x** the thing it looks like it is.
+`Network Activity 0 KB` and `Buffer Health 84.62 s` are consistent with that: at
+21x headroom the player filled its buffer and stopped fetching. Neither field is
+a bitrate, and the `b:` value in `Mystery Text` is a buffered time *range* in
+seconds, not bits.
 
 ## Source H — DHCP requests · MAC→name
 
