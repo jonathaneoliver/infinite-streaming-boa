@@ -44,9 +44,9 @@ func TestBSSLoadOnlyEverClaimsMoreThanIsThere(t *testing.T) {
 		{"station count cannot exceed the byte", 9000, 50, 255, 50},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			gotS, gotU := clampToFloor(tc.stations, tc.util, floor)
+			gotS, gotU := raiseToFloor(tc.stations, tc.util, floor)
 			if gotS != tc.wantStations || gotU != tc.wantUtil {
-				t.Fatalf("clampToFloor(%d, %v) = %d, %v; want %d, %v",
+				t.Fatalf("raiseToFloor(%d, %v) = %d, %v; want %d, %v",
 					tc.stations, tc.util, gotS, gotU, tc.wantStations, tc.wantUtil)
 			}
 		})
@@ -179,6 +179,87 @@ func TestBSSLoadKeepsItsNumbersWhileSwitchedOff(t *testing.T) {
 	if st.Stations != 12 || st.UtilPct != 60 {
 		t.Fatalf("switching off lost the settings: %d station(s), %v%%", st.Stations, st.UtilPct)
 	}
+}
+
+/*
+ * THE FLOOR IS A MOVING MEASUREMENT, SO IT IS APPLIED AT SEND TIME.
+ *
+ * Measured 2026-09-08: our own airtime went 0% to 80% within four seconds of an
+ * iperf3 starting. A claim checked only when the operator made it is therefore
+ * stale almost immediately -- and the interface was already drawing the raised
+ * figure, so the screen and the air disagreed exactly when traffic outran the
+ * claim.
+ *
+ * The other half of that, and the reason the raised value is NOT stored: the
+ * floor is re-asserted every 15s, so storing it would ratchet. One burst would
+ * lift a 20% claim to 80% and nothing would bring it back, until every radio
+ * permanently advertised its own worst moment.
+ */
+func TestTheFloorIsAppliedAtSendTimeAndNeverRatchets(t *testing.T) {
+	sent := captureHostapd(t, nil)
+
+	var floor float64
+	origFloor := bssFloorFor
+	t.Cleanup(func() { bssFloorFor = origFloor })
+	bssFloorFor = func(*Engine, string) BSSLoadState {
+		return BSSLoadState{FloorUtilPct: floor, FloorKnown: true}
+	}
+
+	e := &Engine{cfg: Config{Demo: true, WlanPorts: []string{"wlan-usb"}}}
+
+	// Claimed while the radio is quiet: the ask reaches the air unchanged.
+	if _, err := e.SetBSSLoad("wlan-usb", true, 4, 20); err != nil {
+		t.Fatalf("SetBSSLoad: %v", err)
+	}
+	if got := onlyLoadArg(t, sent()); got != "4:51:0" {
+		t.Fatalf("quiet radio advertised %q, want the ask 4:51:0", got)
+	}
+
+	// Traffic starts. The next send must carry the FLOOR, not the stale ask.
+	floor = 80
+	e.reapplyBSSLoad()
+	if got := onlyLoadArg(t, sent()); got != "4:204:0" {
+		t.Fatalf("busy radio advertised %q, want the 80%% floor 4:204:0", got)
+	}
+
+	// Traffic stops. The claim must come back to what the operator chose, or the
+	// floor has quietly become the setting.
+	floor = 0
+	e.reapplyBSSLoad()
+	if got := onlyLoadArg(t, sent()); got != "4:51:0" {
+		t.Fatalf("after the traffic stopped the radio advertised %q, want the "+
+			"operator's 4:51:0 back — the floor has ratcheted", got)
+	}
+
+	// And the stored ask is still the ask, so the interface draws the handle
+	// where it was put rather than where the traffic left it.
+	if st := e.BSSLoadStates([]string{"wlan-usb"})["wlan-usb"]; st.UtilPct != 20 {
+		t.Fatalf("stored claim is %v%%, want the operator's 20%%", st.UtilPct)
+	}
+}
+
+// onlyLoadArg picks the bss_load_test parameter out of one send, asserting the
+// UPDATE_BEACON went with it -- a SET on its own reaches no beacon at all.
+func onlyLoadArg(t *testing.T, calls [][2]string) string {
+	t.Helper()
+	var arg string
+	var beaconed bool
+	for _, c := range calls {
+		if a, ok := strings.CutPrefix(c[1], "SET bss_load_test "); ok {
+			arg = a
+		}
+		if c[1] == "UPDATE_BEACON" {
+			beaconed = true
+		}
+	}
+	if arg == "" {
+		t.Fatalf("no bss_load_test in %v", calls)
+	}
+	if !beaconed {
+		t.Fatalf("bss_load_test %q was set but no UPDATE_BEACON followed, so it "+
+			"never reached the air", arg)
+	}
+	return arg
 }
 
 // --- helpers -------------------------------------------------------------

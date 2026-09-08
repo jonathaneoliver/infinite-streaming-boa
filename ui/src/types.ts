@@ -750,6 +750,18 @@ export interface BSSLoadState {
    * returns the beacon to zeros rather than removing anything.
    */
   on: boolean;
+  /**
+   * What was ASKED for — where the handle sits, not necessarily what is on the
+   * air.
+   *
+   * The daemon raises these to the floor below at the moment it sends, on every
+   * send, because the floor is a live measurement: our own airtime went 0% to
+   * 80% within four seconds of an iperf3 starting. So the advertised figure is
+   * the larger of the two, which is exactly what this interface draws.
+   *
+   * The raised value is deliberately NOT stored, or it would ratchet — one
+   * burst would lift a 20% claim to 80% and nothing would bring it back down.
+   */
   stations: number;
   /** Channel utilisation as a percentage. The wire to hostapd carries 0–255;
    *  the conversion happens once, in the daemon. */

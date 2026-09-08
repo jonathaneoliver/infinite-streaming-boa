@@ -1008,6 +1008,11 @@ BSSLoadState is one radio's override and the floor it may not go below.
 **`on`** `bool`
 
 **`stations`** `int`
+> Stations and UtilPct are what was ASKED for, which is where the handle
+> sits. What actually goes into the beacon is this raised to the floor
+> below, because the floor moves after the ask is made -- so a reader wanting
+> the advertised figure takes the larger of the two, exactly as the interface
+> draws it.
 
 **`util_pct`** `float64`
 

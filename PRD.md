@@ -784,6 +784,14 @@ damages packets, never link state.
   is what a genuinely busy access point does anyway, while understating it
   **pulls** them in — and that lands on neighbours' equipment this box does not
   own, cannot observe, and was not asked to affect.
+- **The floor is live, and the claim follows it up without becoming it.**
+  Measured: our own airtime goes from 0% to 80% within four seconds of a
+  throughput test starting, so a claim checked only when it was made is stale
+  almost at once. Every beacon therefore carries the larger of the claim and the
+  floor at that moment. The raised value is **not** kept, because keeping it
+  would ratchet — one burst would lift a 20% claim to 80% and nothing would ever
+  bring it back, until each radio permanently advertised its own worst moment.
+  What an operator set survives the traffic they set it to watch.
 - **The truth is on screen beside the claim, always.** Each control shows what
   the radio is really doing next to what it is advertising. A control that can
   state something untrue about the box is only safe while what it is lying about

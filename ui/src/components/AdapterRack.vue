@@ -443,6 +443,9 @@ function bssFloorTitle(r: IfaceInfo, what: 'util' | 'stations'): string {
     'rather than a nicety: overstating load pushes devices away, which is what a ' +
     'genuinely busy access point does anyway, while understating it would PULL them ' +
     'in \u2014 onto neighbours\u2019 equipment nobody here owns or can observe.' +
+    '\n\nThe floor is live, so the claim follows it up and comes back down: start ' +
+    'traffic and the beacon carries the real figure even if it is above what was ' +
+    'set here, and when the traffic stops the setting is still the setting.' +
     '\n\nMoving a handle starts claiming; "stop" returns the beacon to the zeros ' +
     'hostapd advertises by default.'
   );

@@ -35,14 +35,24 @@ import (
  * change rather than a patched daemon.
  */
 
-// bssLoadOverride is what one radio has been told to advertise.
+// bssLoadOverride is what one radio has been ASKED to advertise.
 //
-// Absolute values rather than an increment, because the floor moves: our own
-// airtime changes second to second, and an override expressed as "+20%" would
-// wander with it. The operator picks a number; applyBSSLoad refuses to go below
-// what is really happening.
+// The ask, deliberately, and not the number that reaches the air. The floor
+// moves -- it is our own airtime, second by second -- so the two have to be
+// stored apart: applyBSSLoad raises the ask to the floor at the moment it
+// sends, and this keeps what the operator actually chose.
+//
+// Storing the raised value instead was tried and is a RATCHET. The floor is
+// re-asserted every 15s, so one iperf burst would lift a 20% claim to 80% and
+// nothing would ever bring it back down; by the end of an afternoon every radio
+// would be permanently claiming its own worst moment. What an operator set has
+// to survive the traffic they set it to watch.
+//
+// Absolute values rather than an increment, for the same reason: an override
+// expressed as "+20%" would wander with the floor it is measured against.
 type bssLoadOverride struct {
-	// Stations to claim, and UtilPct as a percentage of the channel.
+	// Stations to claim, and UtilPct as a percentage of the channel. What was
+	// ASKED for -- see effectiveBSSLoad for what is actually advertised.
 	Stations int     `json:"stations"`
 	UtilPct  float64 `json:"util_pct"`
 	// On is false when the radio should stop overriding, which on this build is
@@ -68,7 +78,12 @@ type bssLoadOverride struct {
 
 // BSSLoadState is one radio's override and the floor it may not go below.
 type BSSLoadState struct {
-	On       bool    `json:"on"`
+	On bool `json:"on"`
+	// Stations and UtilPct are what was ASKED for, which is where the handle
+	// sits. What actually goes into the beacon is this raised to the floor
+	// below, because the floor moves after the ask is made -- so a reader wanting
+	// the advertised figure takes the larger of the two, exactly as the interface
+	// draws it.
 	Stations int     `json:"stations"`
 	UtilPct  float64 `json:"util_pct"`
 
@@ -98,12 +113,13 @@ type bssLoadStore struct {
 	by map[string]bssLoadOverride
 }
 
-// SetBSSLoad records what a radio should advertise and applies it now.
+// SetBSSLoad records what a radio has been asked to advertise and applies it
+// now.
 //
-// The values it settles on are RETURNED rather than assumed, because they are
-// not necessarily the ones asked for: clampToFloor raises both to what is
-// really happening, and the caller's slider has to end up showing the claim the
-// box is actually making.
+// The ASK is what gets stored, capped to each field's range and nothing more.
+// Raising it to the floor happens at send time, in applyBSSLoad, because the
+// floor is a moving measurement and this is a decision made once -- see
+// bssLoadOverride on why storing the raised value ratchets.
 //
 // The override is stored even when `on` is false, so switching the element back
 // on does not lose the numbers the operator had already dialled in.
@@ -111,8 +127,7 @@ func (e *Engine) SetBSSLoad(iface string, on bool, stations int, utilPct float64
 	if err := e.radioReady(iface); err != nil {
 		return BSSLoadState{}, err
 	}
-	st := e.bssLoadFloor(iface)
-	stations, utilPct = clampToFloor(stations, utilPct, st)
+	stations, utilPct = capToRange(stations, utilPct)
 	e.bssLoad.mu.Lock()
 	if e.bssLoad.by == nil {
 		e.bssLoad.by = map[string]bssLoadOverride{}
@@ -123,13 +138,18 @@ func (e *Engine) SetBSSLoad(iface string, on bool, stations int, utilPct float64
 	if err := e.applyBSSLoad(iface); err != nil {
 		return BSSLoadState{}, err
 	}
+	st := e.bssLoadFloor(iface)
 	st.On, st.Stations, st.UtilPct = on, stations, utilPct
 	if on {
+		// The EFFECTIVE figures, because that is what went on the air. Logging
+		// the ask would leave the record disagreeing with the beacon whenever the
+		// radio was busier than the operator claimed.
+		gotSt, gotUtil := raiseToFloor(stations, utilPct, st)
 		e.logEvent(EventRadio, iface, "",
 			"%s now advertises %d station(s) and %.0f%% channel utilisation in its "+
 				"beacon — a claim, not a measurement, and at or above the %.0f%% it "+
 				"is really using",
-			iface, stations, utilPct, st.FloorUtilPct)
+			iface, gotSt, gotUtil, st.FloorUtilPct)
 	} else {
 		e.logEvent(EventRadio, iface, "",
 			"%s stopped overriding its BSS Load, so its beacon is back to the "+
@@ -139,8 +159,29 @@ func (e *Engine) SetBSSLoad(iface string, on bool, stations int, utilPct float64
 	return st, nil
 }
 
-// clampToFloor raises a requested claim to what is really happening, and caps
-// it at the top of each field's range.
+// capToRange holds a claim inside what each field can carry.
+//
+// Not a policy, the FIELD. Utilisation is a percentage, and hostapd's
+// bss_load_test takes the station count as a byte -- a larger number would be
+// silently truncated into a SMALLER claim than was asked for, which is a lie in
+// the one direction this control must never tell.
+func capToRange(stations int, utilPct float64) (int, float64) {
+	if utilPct > 100 {
+		utilPct = 100
+	}
+	if utilPct < 0 {
+		utilPct = 0
+	}
+	if stations > 255 {
+		stations = 255
+	}
+	if stations < 0 {
+		stations = 0
+	}
+	return stations, utilPct
+}
+
+// raiseToFloor lifts a claim to what is really happening, and never lowers it.
 //
 // UP only, and that is the safety property rather than a nicety. Overstating
 // load pushes devices away, which is what a genuinely busy access point does
@@ -148,26 +189,18 @@ func (e *Engine) SetBSSLoad(iface string, on bool, stations int, utilPct float64
 // equipment nobody here owns or can observe. A box that can lie should only
 // ever lie in the direction that costs other people nothing.
 //
-// It clamps rather than refuses: a slider dragged below what is really
-// happening is an operator asking for the lowest honest value, not an error,
-// and snapping to it says so more clearly than a rejection would.
-func clampToFloor(stations int, utilPct float64, floor BSSLoadState) (int, float64) {
+// Applied at SEND time rather than when the operator chooses, because the floor
+// is a live measurement: a claim that was honest when it was made stops being
+// honest the moment the radio gets busier. The result is not stored -- see
+// bssLoadOverride.
+func raiseToFloor(stations int, utilPct float64, floor BSSLoadState) (int, float64) {
 	if stations < floor.FloorStations {
 		stations = floor.FloorStations
 	}
 	if utilPct < floor.FloorUtilPct {
 		utilPct = floor.FloorUtilPct
 	}
-	if utilPct > 100 {
-		utilPct = 100
-	}
-	// 255 is the field, not a policy: hostapd's bss_load_test takes the station
-	// count as a byte, and a larger number would be silently truncated into a
-	// smaller claim than the operator asked for.
-	if stations > 255 {
-		stations = 255
-	}
-	return stations, utilPct
+	return capToRange(stations, utilPct)
 }
 
 // bssLoadArg is the bss_load_test parameter for one override.
@@ -203,9 +236,15 @@ func (e *Engine) applyBSSLoad(iface string) error {
 	if !ok {
 		return nil
 	}
-	// 0:0:0 is how the element is withdrawn: hostapd treats an all-zero test
-	// value as "stop overriding", and with no bss_load_update_period configured
-	// that means no element at all.
+	// Raised to the floor HERE, on every send, so the beacon can never sit below
+	// what the radio is really doing. MEASURED 2026-09-08: our own airtime went
+	// 0% to 80% within four seconds of an iperf3 starting, so a claim checked
+	// only when it was made is stale almost immediately -- and the interface was
+	// already drawing the raised figure, which left the screen and the air
+	// disagreeing whenever traffic outran the claim.
+	if ov.On {
+		ov.Stations, ov.UtilPct = raiseToFloor(ov.Stations, ov.UtilPct, e.bssLoadFloor(iface))
+	}
 	if _, err := hostapdSend(iface, "SET bss_load_test "+bssLoadArg(ov)); err != nil {
 		return fmt.Errorf("setting bss_load_test on %s: %w", iface, err)
 	}
@@ -244,9 +283,19 @@ func (e *Engine) reapplyBSSLoad() {
 	}
 }
 
+// bssFloorFor is the seam a test replaces, so the floor can be moved under a
+// claim without needing a radio and real traffic to move it. In production it
+// is the method immediately below.
+var bssFloorFor = (*Engine).measuredBSSLoadFloor
+
 // bssLoadFloor is what the radio is really doing, and therefore the lowest the
 // controls may claim.
 func (e *Engine) bssLoadFloor(iface string) BSSLoadState {
+	return bssFloorFor(e, iface)
+}
+
+// measuredBSSLoadFloor reads the floor off the radio itself.
+func (e *Engine) measuredBSSLoadFloor(iface string) BSSLoadState {
 	out := BSSLoadState{FloorStations: len(StationDump(iface))}
 	// Our own airtime over the last few seconds, which is a LOWER BOUND on the
 	// channel's utilisation: whatever the neighbours are adding, the channel is
