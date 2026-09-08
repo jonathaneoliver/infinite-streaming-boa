@@ -413,14 +413,15 @@ page.
 | `sweep.levels[].saturated` | bool | The mean was ≥ 85% of the cap: the client had not dropped below it |
 
 **`unstable` is not attributable to the network.** Measured against a real
-programme's encoded bitrate, on a perfect link with no cap at all, **more than
-half** of all 300 s windows disagree between their halves by more than 20% —
-median drift 22–24%, peak 85%. Content varies on scene and section timescales
-measured in minutes, so a longer window does not average it out. The flag is
-true when it fires; it just does not mean an impairment. See
+programme's encoded bitrate, on a perfect link with no cap at all, **34% to 53%**
+of all 300 s windows disagree between their halves by more than 20% — median
+drift 15–24%, peak 85%, across six renditions. Content varies on scene and
+section timescales measured in minutes, so a longer window does not average it
+out. The flag is true when it fires; it just does not mean an impairment. See
 [one real YouTube programme](#measured--one-real-youtube-programme-as-ground-truth-for-a-ladder),
-which also shows that adjacent rungs' instantaneous rates overlap, so no cap
-value separates two renditions by rate alone.
+which also shows that five of six adjacent rung boundaries overlap in
+instantaneous rate — so for those, no cap value separates two renditions by rate
+alone, and whether any given pair is separable is a property of the encode.
 
 **When a level is measured.** Not after a fixed wait. A player still on a
 rendition it can no longer afford fetches back-to-back and stays pinned to the
@@ -651,27 +652,48 @@ this a measurement rather than a plausible number.
 
 ### The ladder, with the peaks the mean hides
 
-| Rung | itag | Mean | p90 | Max | Peak/mean |
-|---|---|---|---|---|---|
-| 480p | 397 | 387 kbps | 633 (1.63x) | 901 | **2.33x** |
-| 720p | 398 | 697 kbps | 1139 (1.63x) | 1793 | **2.57x** |
-| 1080p | 399 | 1224 kbps | 2085 (1.70x) | 3199 | **2.61x** |
+Two codec ladders were measurable. **A player moves within ONE codec's ladder**,
+so every cross-rung comparison below is made inside a family; comparing an AV1
+rung against an AVC one compares renditions no client chooses between.
+
+| Codec | Rung | itag | Mean | p90 | Max | Peak/mean |
+|---|---|---|---|---|---|---|
+| AV1 | 480p | 397 | 387 kbps | 633 (1.63x) | 901 | **2.33x** |
+| AV1 | 720p | 398 | 697 kbps | 1139 (1.63x) | 1793 | **2.57x** |
+| AV1 | 1080p | 399 | 1224 kbps | 2085 (1.70x) | 3199 | **2.61x** |
+| AVC | 480p | 135 | 368 kbps | 533 (1.45x) | 1159 | **3.15x** |
+| AVC | 720p | 136 | 655 kbps | 1039 (1.59x) | 1953 | **2.98x** |
+| AVC | 1080p | 137 | 2156 kbps | 3150 (1.46x) | 4344 | **2.02x** |
 
 Units are kbps decimal (1000 bit/s), from bytes x 8 / seconds.
 
-**EVERY ADJACENT PAIR OF RUNGS OVERLAPS.** 720p's peak segment (1793) is 1.46x
-1080p's *mean* (1224); 480p's peak (901) exceeds 720p's mean (697):
+**ADJACENT RUNGS USUALLY OVERLAP, BUT NOT ALWAYS**, and the exception is the
+useful part:
+
+| Pair | Lower rung's peak | Upper rung's mean | |
+|---|---|---|---|
+| AV1 480p → 720p | 901 | 697 | 1.29x **overlaps** |
+| AV1 720p → 1080p | 1793 | 1224 | 1.46x **overlaps** |
+| AVC 480p → 720p | 1159 | 655 | 1.77x **overlaps** |
+| AVC 720p → 1080p | 1953 | 2156 | 0.91x *clear* |
 
 ```
-480p    387 ──────── 901
-720p         697 ──────────── 1793
-1080p              1224 ──────────────── 3199
+AV1  480p    387 ──────── 901
+     720p         697 ──────────── 1793
+     1080p              1224 ──────────────── 3199
 ```
 
-So no cap value separates two rungs by instantaneous rate. What separates them
-is the *sustained* rate over the player's estimation window, which is why a
-player with a deep buffer plays a rung whose peaks exceed the cap. The TV
-observed here held **84.62 s** of buffer, about 24 segments.
+So for five of the six measured boundaries there is **no cap value that
+separates two rungs by instantaneous rate**. What separates them is the
+*sustained* rate over the player's estimation window, which is why a player with
+a deep buffer plays a rung whose peaks exceed the cap. The TV observed here held
+**84.62 s** of buffer, about 24 segments.
+
+The one clear boundary is where the encoder left the largest bitrate step: AVC
+jumps 655 → 2156 kbps between 720p and 1080p, a 3.3x step, where AV1 steps 697 →
+1224 (1.8x). A ladder with wide steps is separable by rate and a tightly-spaced
+one is not, which is a property of the *encode*, not of the network — so whether
+a cap sweep can resolve two adjacent rungs at all depends on the title.
 
 ### The finding that bears on `sweep.levels[].unstable`
 
@@ -682,16 +704,25 @@ A level is called unstable when the window's two halves disagree by more than
 Applying the sweep's own arithmetic to this content's real per-second bitrate,
 on a *perfect* network with no cap and no impairment at all:
 
-| Rung | Median drift | p90 | Max | Windows over 20% |
-|---|---|---|---|---|
-| 480p | 21.8% | 44.5% | 74.5% | **53.1%** |
-| 720p | 22.9% | 45.5% | 79.3% | **51.9%** |
-| 1080p | 24.1% | 49.8% | 84.8% | **53.1%** |
+| Codec | Rung | itag | Median drift | p90 | Max | Windows over 20% |
+|---|---|---|---|---|---|---|
+| AV1 | 480p | 397 | 21.8% | 44.5% | 74.5% | **53.1%** |
+| AV1 | 720p | 398 | 22.9% | 45.5% | 79.3% | **51.9%** |
+| AV1 | 1080p | 399 | 24.1% | 49.8% | 84.8% | **53.1%** |
+| AVC | 480p | 135 | 18.4% | 37.9% | 57.3% | 41.4% |
+| AVC | 720p | 136 | 21.1% | 45.0% | 66.0% | **53.1%** |
+| AVC | 1080p | 137 | 15.0% | 31.5% | 47.7% | 33.9% |
 
-**More than half of all observation windows on this programme would be flagged
-unstable with nothing wrong.** Content bitrate varies on scene and section
+**Between a third and a half of all observation windows on this programme would
+be flagged unstable with nothing wrong** -- 34% to 53% across six renditions, and
+above half on four of them. Content bitrate varies on scene and section
 timescales measured in minutes, not on segment timescales, so lengthening the
 window does not average it out -- it just moves which minutes are being compared.
+
+The two lowest figures are the two renditions with the most bits to spend per
+frame relative to their content (AVC 1080p at 2156 kbps, and AVC 480p): a
+generous encode varies less, proportionally, because it is not being forced to
+ration. That is a hint rather than a result -- six renditions of one title.
 
 This does not make the flag wrong: two halves really did disagree, and that is
 all it claims. It makes it **not attributable** -- `unstable` on this content
@@ -703,15 +734,28 @@ would be reading the programme's edit.
 - **One programme, one content type.** Peak-to-mean and drift are properties of
   the material. A talking-head clip and a sports clip will differ, possibly by a
   lot. Nothing here should be generalised to a rate-control rule until at least
-  two or three more titles have been measured the same way.
-- **The p90 sits at 1.63-1.70x the mean on all three rungs**, which is stable
-  enough to look like an encoder-ladder property rather than a coincidence of
-  this content. It is currently neither -- it is one observation repeated across
-  three renditions of the same source, which is not independent evidence.
-- **The bottom three rungs (144p/240p/360p, itags 394-396) were not measured.**
-  They return HTTP 403 for the index range request while 399 succeeds from the
-  same freshly-extracted metadata, so it is format-specific gating rather than
-  URL expiry.
+  two or three more titles have been measured the same way. Six renditions of
+  one title are six views of the same content, not six samples.
+- **The p90 sits at 1.45-1.70x the mean on all six**, a narrow enough band to
+  look like an encoder property. It is not evidence of one: the same source
+  encoded six ways will share whatever the source does, so this needs other
+  titles before it means anything.
+- **The bottom rungs were not measured on either codec.** 144p/240p/360p
+  (itags 394-396 and 133/134/160) return HTTP 403 for the index range request
+  while 399 succeeds from the same freshly-extracted metadata, so it is
+  format-specific gating rather than URL expiry. The VP9 ladder (242/243/244/
+  247/248/278) is WebM, whose index is EBML cues rather than an ISO-BMFF `sidx`,
+  and is not parsed at all.
+
+Re-run it with:
+
+```sh
+./scripts/measure-ladder.py JtVljGMKOHU --drift
+```
+
+It fails loudly rather than quietly dropping a rung: anything it could not read
+is listed on stderr with the reason, and the exit status is non-zero. A ladder
+silently missing its bottom half still looks like a ladder.
 
 ### A trap worth naming, since it is one field away
 
