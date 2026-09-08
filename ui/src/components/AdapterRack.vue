@@ -333,12 +333,11 @@ function airTitle(r: IfaceInfo): string {
  * BSS LOAD: what a radio CLAIMS about its congestion, as against what it
  * measures.
  *
- * The odd one out in "make the link worse", and it is under that heading
- * because that is where an operator looks for it, not because it belongs to the
- * same family. A profile and a threshold change the LINK -- the rate, the
- * retries, the packets a client actually meets. This changes only what the
- * beacon SAYS and leaves the link exactly as it was. It is the one control here
- * aimed at a client's decision rather than at its traffic.
+ * Its own section, "what the beacon says", and NOT under "conditioning the
+ * link" where it started. Conditioning changes the LINK -- the rate, the
+ * retries, the packets a client actually meets. These two change only what the
+ * beacon SAYS and leave the link exactly as it was, which makes them the one
+ * pair here aimed at a client's decision rather than at its traffic.
  */
 
 /**
@@ -896,7 +895,7 @@ Clients ARE told it has gone, unlike a power cut.`
           </p>
           </template>
 
-          <h4>Make the link worse</h4>
+          <h4>Conditioning the link</h4>
           <p class="meta group-note">
             A profile restarts the access point, dropping all
             {{ r.ap.stations }} client(s). The thresholds below do not — they are
@@ -925,12 +924,12 @@ Clients ARE told it has gone, unlike a power cut.`
             <button :disabled="busy" @click="bridge.setThreshold(r.name, 'frag', 'off')">off</button>
           </div>
 
-          <!-- ITS OWN SECTION, and it was under "make the link worse" first,
-               which was wrong in a way worth recording. Everything under that
-               heading damages the LINK. Neither control here touches the link
-               at all, and one of them makes the radio's account of itself more
-               accurate rather than less -- filing a correction under "make it
-               worse" is a heading contradicting its own contents.
+          <!-- ITS OWN SECTION, and it was under the conditioning heading
+               first, which was wrong in a way worth recording. Conditioning
+               damages the LINK. Neither control here touches the link at all,
+               and one of them makes the radio's account of itself more accurate
+               rather than less -- filing a correction under a heading about
+               making things worse is a heading contradicting its contents.
 
                What these two share is a SUBJECT, not an effect: both change
                what the beacon says about this radio, one towards the truth and
@@ -956,10 +955,15 @@ Clients ARE told it has gone, unlike a power cut.`
                 @change="commitBSS(r, bssOn(r), {}, ($event.target as HTMLInputElement).checked)"
               />
               fix the BSS Load value
+              <!-- The comparison is dropped where there is nothing to compare:
+                   "would advertise 0% · hostapd says 0%" prints one number
+                   twice and calls it a correction. -->
               <span class="fixv num">{{
                 bssFixUtil(r) === null
                   ? '(nothing measured, and no neighbour to ask)'
-                  : `(would advertise ${bssFixUtil(r)!.toFixed(0)}% · hostapd says 0%)`
+                  : bssFixUtil(r)! < 0.5
+                    ? '(nothing to correct — this channel reads idle)'
+                    : `(would advertise ${bssFixUtil(r)!.toFixed(0)}% · hostapd says 0%)`
               }}</span>
             </label>
           </div>

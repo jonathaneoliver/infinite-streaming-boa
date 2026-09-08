@@ -808,10 +808,10 @@ damages packets, never link state.
   operator can switch it off per radio, and that opt-out is respected — nothing
   turns it back on.
 - **The two switches live under a heading naming their subject, not their
-  effect.** They were filed under *make the link worse* first, which was wrong:
-  everything under that heading damages the link, neither of these touches it,
-  and one of them makes the radio's account of itself more accurate rather than
-  less. What they share is that both change what the beacon says.
+  effect.** They were filed under *conditioning the link* first, which was
+  wrong: conditioning damages the link, neither of these touches it, and one of
+  them makes the radio's account of itself more accurate rather than less. What
+  they share is that both change what the beacon says.
 - **The box can also advertise its own corrected figure, which is a different
   act from claiming one.** A second switch per radio replaces hostapd's number
   with the larger of what the radio measures at its own antenna and what the
