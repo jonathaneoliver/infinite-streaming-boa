@@ -31,9 +31,26 @@ If the change is only to the daemon or the UI, this skill is the wrong tool.
 Ask the box what it holds, rather than trusting the newest file in `profiles/`:
 
 ```sh
-ssh boa@infinite-streaming-boa.local 'curl -s --max-time 5 localhost/api/config' \
-  > profiles/pre-reflash-$(date +%Y%m%d-%H%M).json
+boactl config get -o profiles/pre-reflash-$(date +%Y%m%d-%H%M).json
 ```
+
+Use `boactl`, not a hand-rolled `curl`, for one reason that matters here more
+than anywhere else: **an empty export looks exactly like a good one.** A box
+with nothing stored answers with 51 bytes of version and timestamp, which
+redirects into a file, reports success and restores nothing — and the box
+refuses it on the way back in, with the old filesystem already gone. `boactl`
+says what the document contains and fails outright when the answer is nothing:
+
+```
+wrote profiles/pre-reflash-20260908-1430.json (1744 bytes)
+  contains: 12-rung ladder, 3 pattern(s), 2 device policy(ies)
+```
+
+Read that line before going any further. The ladder especially: it is the only
+genuinely expensive thing in the document — an hour of a real device streaming
+real content — and it is the reason the file exists at all.
+
+If `boactl` is not built yet: `cd daemon && go build -o ~/.local/bin/boactl ./cmd/boactl`.
 
 Then compare against what the box reports live:
 
@@ -111,7 +128,9 @@ After it boots:
 
 1. Rejoin the AP — SSID and password come from `.env`, and both may have changed
 2. Confirm the daemon: `curl -s http://infinite-streaming-boa.local/api/health`
-3. Import the export from step 1 through the UI's **import config** button
+3. Import the export from step 1:
+   `boactl config apply profiles/pre-reflash-*.json`, or the UI's
+   **import config** button
 
 Import is merge-mode: pattern libraries merge by name, so nothing already on
 the box is destroyed.
@@ -119,16 +138,14 @@ the box is destroyed.
 ## 5. Verify the restore before calling it done
 
 ```sh
-ssh boa@infinite-streaming-boa.local 'curl -s localhost/api/config' | python3 -c "
-import json,sys; d=json.load(sys.stdin); l=d.get('ladder')
-print('patterns:', [p.get('name') for p in d.get('patterns') or []])
-print('ladder  :', 'NONE' if not l else f\"{l.get('service')} {len(l.get('rungs',[]))} rungs\")
-"
+boactl config get -o /tmp/post-reflash.json     # prints what it contains
+boactl probe -ssh                               # and that the box is really working
 ```
 
-The pattern names and rung count must match step 1. Report the comparison
-explicitly rather than saying "restored" — a silent partial restore looks
-identical to a working box until someone runs a sweep.
+Compare the `contains:` line against the one recorded in step 1: same ladder,
+same pattern count, same device count. Report that comparison explicitly rather
+than saying "restored" — a silent partial restore looks identical to a working
+box until someone runs a sweep.
 
 ## 6. Check what the new kernel changed underneath you
 
