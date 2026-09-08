@@ -436,9 +436,20 @@ func (e *Engine) buildBridgeState() BridgeInfo {
 			in.SpeedMbps = 0
 		}
 		in.IPv4, in.IPv6 = addrs[name].v4, addrs[name].v6
-		if in.Wireless {
-			r := Radio(name)
+		// The adapter behind the name, for a WIRED USB port as well as a radio.
+		// Everything Radio reads -- driver, vendor, negotiated link speed, MAC
+		// and the physical USB port -- is a property of the USB device and not
+		// of it being a radio, and the USB ethernet adapters hang off the same
+		// hub as the dongles and fail the same way. Withholding the port from
+		// them would mean a USB fault reported against "4-1.1" had nothing on
+		// screen to connect it to.
+		//
+		// Onboard interfaces are skipped: eth0 and the bridge have no USB
+		// device, so there is nothing here to say about them.
+		if r := Radio(name); in.Wireless || r.Bus == "usb" {
 			in.Radio = &r
+		}
+		if in.Wireless {
 			in.Powered, in.PowerKnown = radioPowered(name)
 			in.Serving = e.cfg.IsWlan(name)
 			in.AirtimePerClient, in.AirtimeCapKnown = airSeen[name]

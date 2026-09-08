@@ -1809,3 +1809,71 @@ returns **OK** and nothing arrives; measured over 25s on a 2.4GHz radio with the
 option set that way, zero frames. It must be in the config file before the
 interface comes up, which makes it an image change and a reflash — `deploy.sh`
 cannot deliver it.
+
+## Source V — `/dev/kmsg` · USB faults, attributed to an adapter
+
+**What it is.** The kernel's own message ring, read directly. Each read returns
+exactly one record:
+
+```
+3,1163,83278214199,-;mt7921u 4-1.3:1.0: tx urb failed: -71
+ SUBSYSTEM=usb
+ DEVICE=+usb:4-1.3:1.0
+```
+
+**Units and meaning of each field.**
+
+| Field | Meaning |
+|---|---|
+| `3` | Priority: `facility * 8 + level`. Kernel messages have facility 0, so 0–7 **is** the level; 3 is `KERN_ERR`. Anything written by userspace gets facility 1 and so lands at 8 or above. |
+| `1163` | Sequence number, monotonic across the boot. Not a timestamp. |
+| `83278214199` | **Microseconds** since boot. Not milliseconds, not nanoseconds — a factor of 1000 either way and the burst timing is nonsense. |
+| `-` | Flags. Unused here. |
+| `SUBSYSTEM` | Which kernel subsystem filed the message. This is the kernel's attribution, not a guess from the text. |
+| `DEVICE` | `+usb:<bus path>:<interface>` for a USB device; `c<major>:<minor>` for a char device. |
+
+**Why the structured fields and not the message text.** The message names the
+driver (`mt7921u`), which would make every check specific to one dongle. The
+`SUBSYSTEM` and `DEVICE` lines are added by the kernel's own device-printk path,
+so an ethernet adapter, a hub or a dongle this box has never seen is covered
+without a code change.
+
+**Confidence: high, with one exclusion.** A `DEVICE=c189:385` tag names a
+*devnum*, which is reused as soon as anything else enumerates. Those are
+deliberately not resolved — by the time a fault is read the number may point at
+different hardware. Only `+usb:` bus paths are accepted.
+
+**The bus path is the port, and the port is not the adapter.** `2-1` is a port
+directly on the Pi; `4-1.3` is the third port of a hub on bus 4. Moving a dongle
+between them changes this string while the interface name deliberately stays
+put — that is the whole point of the naming rule, and it means the two identify
+different things and must both be recorded. Attribution matches whole path
+*components*: `4-1` is a prefix of `4-1.3`, so a substring match would blame
+every dongle for a fault on the hub above it.
+
+**A fault on a shared device is not attributed to one adapter.** The hub at
+`4-1` backs three adapters. Naming any one of them would point at hardware that
+is fine, so an ambiguous fault is reported against the bus path instead.
+
+**Volume, and why a burst is folded.** MEASURED 2026-09-08: **180** identical
+`tx urb failed: -71` records inside **24 milliseconds**, followed by
+`timed out waiting for pending tx`. Reported per record this would evict the
+whole activity ring. Identical faults on one device inside 30s are reported once.
+
+**It cannot be forged.** Verified by writing a byte-exact copy of the real
+message into `/dev/kmsg`: it comes back as priority **11** (facility 1) with no
+`SUBSYSTEM` or `DEVICE` lines at all. Both halves of the filter reject it
+independently, which matters because acting on a fault unbinds a driver.
+
+**Read from the end.** The watch seeks to the end of the ring at startup. Without
+that, a daemon restart replays every historical fault — reporting them as if
+they had just happened, and potentially resetting a device over an error from
+hours ago.
+
+**What it does NOT tell you.** That a radio is off the air. It tells you the USB
+link under it failed, which on the measured occasion was the same thing but is
+not the same claim. The direct evidence for "off the air" was a scan from the
+box's *other* dongle finding eleven networks and not this one; there is no
+cheap continuous equivalent, which is why the kernel's error is used instead.
+`iw survey dump` is **not** a substitute — it reports no `[in use]` channel on
+this driver even for a healthy radio (see Source L).

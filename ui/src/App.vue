@@ -128,6 +128,10 @@ const radioTitle = computed(() => {
   const bits = [
     [a.vendor, a.product].filter(Boolean).join(' ') || 'USB adapter',
     a.driver && `driver ${a.driver}`,
+    // The port, not just the adapter. A USB fault is reported by the kernel
+    // against this path and no other identifier, so showing it is what lets
+    // somebody walk from a line in the activity log to the socket to unplug.
+    a.socket && `port ${a.socket}`,
     a.usb_version && `declares USB ${a.usb_version}`,
     a.link_mbps && `negotiated ${a.link_mbps} Mb/s`,
   ].filter(Boolean);
