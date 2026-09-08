@@ -29,7 +29,7 @@ type Config struct {
 	//
 	// Empty is not a valid state; NewEngine falls back to one default name.
 	WlanPorts []string
-	LanPort   string // lan0, the USB adapter (may be absent)
+	LanPorts  []string // the USB ethernet adapters, downstream (may be empty)
 	StatePath string
 	// Addr is where the interface is served, e.g. ":80". The shaper needs it:
 	// the port the interface answers on is the one port whose traffic must
@@ -388,7 +388,7 @@ func newEngine(cfg Config) *Engine {
 		lad:          NewLadderStore(ladderPathFor(cfg.StatePath)),
 		chp:          NewChannelStore(channelsPathFor(cfg.StatePath)),
 		bssLoad:      bssLoadStore{path: bssLoadPathFor(cfg.StatePath)},
-		learn:        NewLearner(cfg.Bridge, append(append([]string{}, cfg.WlanPorts...), cfg.LanPort)...),
+		learn:        NewLearner(cfg.Bridge, append(append([]string{}, cfg.WlanPorts...), cfg.LanPorts...)...),
 		prev:         map[string]counterSample{},
 		airPrev:      map[string]airSample{},
 		lastActive:   map[string]int64{},
@@ -909,7 +909,10 @@ func (e *Engine) tick() {
 	// DOWNSTREAM port. Anything seen on the WAN port lives upstream, and a
 	// device whose port is unknown cannot be shaped anyway (a tc filter has to
 	// attach to an interface), so listing it would be noise.
-	downstream := map[string]bool{e.cfg.LanPort: true}
+	downstream := map[string]bool{}
+	for _, l := range e.cfg.LanPorts {
+		downstream[l] = true
+	}
 	for _, w := range e.cfg.WlanPorts {
 		downstream[w] = true
 	}
@@ -1314,9 +1317,19 @@ func (e *Engine) notices(ready bool, reason string) []Notice {
 		"Wi-Fi airtime is shared. Conditioning is additive on top of a variable " +
 			"radio baseline, so one client's traffic still affects another's " +
 			"achievable rate no matter what these limits say."})
-	if !LinkExists(e.cfg.LanPort) {
-		n = append(n, Notice{"info", "No USB ethernet adapter detected (" + e.cfg.LanPort +
-			"): wired clients will not appear until one is plugged in."})
+	// One notice for the wired side, whatever the count. Naming the ports that
+	// ARE present matters more than naming the one that is not: with several
+	// adapters the useful question is which of them the box is watching.
+	var haveLan []string
+	for _, l := range e.cfg.LanPorts {
+		if LinkExists(l) {
+			haveLan = append(haveLan, l)
+		}
+	}
+	if len(haveLan) == 0 {
+		n = append(n, Notice{"info",
+			"No USB ethernet adapter detected: wired clients will not appear " +
+				"until one is plugged in."})
 	}
 	return n
 }

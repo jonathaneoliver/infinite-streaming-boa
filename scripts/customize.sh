@@ -406,18 +406,31 @@ autoconnect=true
 autoconnect-priority=100
 EOF
 
-# Downstream wired port (the USB adapter), renamed to lan0 by the udev rule
+# Downstream wired ports (the USB adapters), named lan-usb-XXXX by the udev rule
 # below. Absent hardware simply means this profile never activates.
+#
+# MATCHED BY GLOB, not by connection.interface-name, because the name is not
+# knowable when this image is built -- it comes from the adapter's own MAC. The
+# old profile named lan0 exactly, which is why an adapter that failed to win
+# that name was left unbridged and invisible.
+#
+# multi-connect=3 is MULTIPLE: one profile, activated on every interface it
+# matches, so a second wired adapter is bridged rather than ignored. The daemon
+# still conditions only ONE of them -- -lan takes a single port -- and
+# select-radio names which, loudly, when there is a choice.
 write_conn infinite-streaming-boa-lan <<EOF
 [connection]
 id=infinite-streaming-boa-lan
 uuid=$(uuidgen)
 type=ethernet
-interface-name=lan0
 master=br-lan
 slave-type=bridge
 autoconnect=true
 autoconnect-priority=90
+multi-connect=3
+
+[match]
+interface-name=lan-usb-*
 EOF
 
 # The access point is driven by hostapd on BOTH radios (see 5b) -- the onboard
@@ -442,47 +455,62 @@ log "Bridge br-lan: ${BOA_WAN_PORT} (wan) + wlan0/wlan-usb (ap '${AP_SSID}', hos
 # Wireless devices set DEVTYPE=wlan; wired ones set no DEVTYPE at all, and an
 # unset key compares unequal, so the first rule still matches USB ethernet.
 cat > "$ROOT/etc/udev/rules.d/76-infinite-streaming-boa-usb-lan.rules" <<'UDEV'
-# USB ethernet becomes lan0, the downstream wired port.
-SUBSYSTEM=="net", ACTION=="add", ENV{ID_BUS}=="usb", ENV{DEVTYPE}!="wlan", ATTR{address}!="", NAME="lan0"
+# USB ethernet is named BY DEVICE too -- lan-usb-6518 -- for the same reason the
+# radios are, and one sharper: this rule used to name ANY USB ethernet lan0, so
+# the first to enumerate took the name and every later one silently kept a
+# kernel name. Measured 2026-09-08 with two adapters present:
+#
+#   eth1: Failed to rename network interface 43 from 'eth1' to 'lan0': File exists
+#   eth1: Failed to process device, ignoring: File exists
+#
+# udev then abandoned the rest of the rules for that device. The adapter looked
+# perfectly healthy -- link up, carrier on, 2.5Gb/s negotiated -- and the box
+# could not see a packet on it, because bridge membership follows the name. An
+# idle radio is obvious; an ethernet port that is up and invisible is not.
+SUBSYSTEM=="net", ACTION=="add", ENV{ID_BUS}=="usb", ENV{DEVTYPE}!="wlan", ATTR{address}!="", \
+  PROGRAM="/usr/local/sbin/infinite-streaming-boa-net-name lan-usb $attr{address}", NAME="%c"
 
-# USB Wi-Fi adapters are named BY SOCKET: whatever is plugged into a given
-# physical port gets that port's name, every boot and every hotplug.
+# USB Wi-Fi adapters are named BY DEVICE: an adapter keeps its name wherever it
+# is plugged, through any hub, across reboots. The name is derived from the last
+# four hex digits of its MAC -- wlan-usb-46c7 -- so every external radio is
+# visibly external, and the operator learns a name that belongs to a dongle
+# rather than to a hole in the back of the Pi.
 #
-# This rule used to match any USB wlan device and call it wlan-usb. That works
-# with one adapter and breaks silently with two: the name went to whichever
-# enumerated first, so it changed hands between replugs with nothing saying so.
-# Everything downstream keys off the name -- the hostapd config that says
-# interface=wlan-usb, the daemon's watched ports, the tc filters, the channel a
-# radio is put back on -- so a measurement could be attributed to the wrong
-# adapter and nothing would look wrong. Observed 2026-09-06: wlan-usb was one
-# dongle all evening and the other by morning.
+# THIS REPLACES NAMING BY SOCKET, and the history is worth keeping because both
+# earlier schemes failed in ways that were invisible:
 #
-# BY SOCKET RATHER THAN BY MAC, deliberately, and the reasons are what make this
-# fit in an image at all:
+#   1. One rule matching any USB wlan device, called wlan-usb. Fine with one
+#      adapter; with two the name went to whichever enumerated first and changed
+#      hands between replugs with nothing saying so. Observed 2026-09-06:
+#      wlan-usb was one dongle all evening and the other by morning.
+#   2. One rule per physical socket -- KERNELS=="2-1" and friends. That fixed
+#      the swap and introduced two problems of its own. Moving a dongle renamed
+#      it, so the interface an operator had learned in the UI became a different
+#      one. And KERNELS== matches any ANCESTOR, not just the device's own port,
+#      so two adapters behind ONE hub both matched the hub's rule, both asked
+#      for the same name, and the loser silently kept the kernel's wlanN. The
+#      comment here used to claim a hubbed adapter "matches none of these" --
+#      measured wrong on 2026-09-08, with 4-1.2 named and 4-1.3 left as wlan1.
 #
-#   - No MAC in the build. The same image works on every box; a MAC rule would
-#     have to be written per box, after the fact, by hand.
-#   - A REPLACEMENT dongle in the same port keeps the name, so hostapd's config
-#     still finds its interface. Under MAC naming a replacement is a new name
-#     and the radio silently fails to come up -- which is exactly why Linux
-#     abandoned 75-persistent-net-generator.rules years ago.
-#   - The physical port is what an operator reasons about here. Two of the four
-#     sockets are SuperSpeed and two are not, and a radio in the wrong one runs
-#     at 480Mb/s while reporting its full channel width -- so which hole a
-#     dongle is in already matters more than which dongle it is.
+# Naming by the device is what the operator actually means by "that radio", and
+# nothing downstream objects any more. Since #227 radioplan walks
+# /sys/class/net/*/phy80211 and writes boa-<iface>.conf for whatever it finds,
+# NetworkManager leaves every wlan* alone by glob, and a hostapd instance name
+# IS its interface name -- so an unfamiliar name costs nothing and needs no edit
+# anywhere.
 #
-# The trade, stated plainly: move a dongle to another socket and its name
-# follows the socket, not the dongle. And behind an external hub the kernel path
-# gains a level -- 2-1 becomes 2-1.1 -- so a hubbed adapter matches none of
-# these and keeps the kernel's wlanN, visible as unconfigured rather than
-# quietly taking a name something else expects to own.
+# The trade: replace a dongle and it is a NEW name. The radio still comes up,
+# but anything keyed to the old one -- a remembered channel, a saved policy --
+# refers to a device that is gone. That is the cost of identifying the thing
+# instead of the socket, and it is the right way round for a box whose radios
+# move between sockets far more often than they are replaced.
 #
-# Pi 5 paths: usb2 and usb4 are the SuperSpeed sockets, usb1 and usb3 the
-# 480Mb/s ones. Measured by moving one adapter through all four, 2026-09-06.
-SUBSYSTEM=="net", ACTION=="add", ENV{ID_BUS}=="usb", ENV{DEVTYPE}=="wlan", KERNELS=="2-1", NAME="wlan-usb"
-SUBSYSTEM=="net", ACTION=="add", ENV{ID_BUS}=="usb", ENV{DEVTYPE}=="wlan", KERNELS=="4-1", NAME="wlan-usb2"
-SUBSYSTEM=="net", ACTION=="add", ENV{ID_BUS}=="usb", ENV{DEVTYPE}=="wlan", KERNELS=="1-1", NAME="wlan-usb3"
-SUBSYSTEM=="net", ACTION=="add", ENV{ID_BUS}=="usb", ENV{DEVTYPE}=="wlan", KERNELS=="3-1", NAME="wlan-usb4"
+# Which socket a radio is in still matters -- two of the four are SuperSpeed and
+# a radio in the wrong one runs at 480Mb/s while reporting its full channel
+# width -- but the name is the wrong place to carry that. The daemon reports it
+# properly, as socket, link_mbps and usb_version on the adapter.
+SUBSYSTEM=="net", ACTION=="add", ENV{ID_BUS}=="usb", ENV{DEVTYPE}=="wlan", \
+  PROGRAM="/usr/local/sbin/infinite-streaming-boa-net-name wlan-usb $attr{address}", NAME="%c"
 UDEV
 
 # Rescue address. A transparent bridge has no address of its own by design, so
@@ -1037,11 +1065,38 @@ done
 # argument, and -wlan splits it. Restart only when it actually changed -- a
 # restart drops a running sweep.
 CUR=$(sed -n 's/^BOA_WLAN_PORT=//p' "$DEFAULTS" 2>/dev/null)
+NEED_RESTART=0
 if [ "$CUR" != "$PLANNED" ]; then
   sed -i "s/^BOA_WLAN_PORT=.*/BOA_WLAN_PORT=$PLANNED/" "$DEFAULTS"
   log "BOA_WLAN_PORT '$CUR' -> '$PLANNED'; restarting daemon"
-  systemctl restart infinite-streaming-boa.service
+  NEED_RESTART=1
 fi
+
+# The downstream wired ports, discovered the same way the radios are and for the
+# same reason: the names are no longer fixed at build time, so something has to
+# tell the daemon which adapters exist.
+#
+# ALL of them, space-separated in one shell word -- the unit passes it as
+# ${BOA_LAN_PORT} and -lan splits it, exactly as -wlan does. A box may carry
+# several USB ethernet adapters and every one of them is a downstream port: a
+# device behind any of them is a client of this box and shapeable on that port's
+# egress. Passing only one was the old behaviour, and the others were bridged
+# and forwarding with every device behind them absent from the client list.
+#
+# Sorted, so the value is stable and a restart happens only on a real change
+# rather than on whatever order the glob returned.
+LAN_PLANNED=$(for d in /sys/class/net/lan-usb-*; do
+    [ -e "$d" ] && basename "$d"
+  done | sort | tr '\n' ' ' | sed 's/ *$//')
+CURLAN=$(sed -n 's/^BOA_LAN_PORT=//p' "$DEFAULTS" 2>/dev/null)
+if [ -n "$LAN_PLANNED" ] && [ "$CURLAN" != "$LAN_PLANNED" ]; then
+  sed -i "s/^BOA_LAN_PORT=.*/BOA_LAN_PORT=$LAN_PLANNED/" "$DEFAULTS"
+  log "BOA_LAN_PORT '$CURLAN' -> '$LAN_PLANNED'; restarting daemon"
+  NEED_RESTART=1
+fi
+
+# One restart for both, not two -- a restart drops a running sweep.
+[ "$NEED_RESTART" = 1 ] && systemctl restart infinite-streaming-boa.service
 SEL
 
 install -D -m 0644 /dev/stdin "$ROOT/etc/systemd/system/infinite-streaming-boa-select-radio.service" <<'UNIT'
@@ -1082,6 +1137,15 @@ cat > "$ROOT/etc/udev/rules.d/77-infinite-streaming-boa-radio.rules" <<'UDEV'
 SUBSYSTEM=="net", ENV{DEVTYPE}=="wlan", ENV{ID_BUS}=="usb", ACTION=="add", \
   RUN+="/usr/bin/systemctl restart --no-block infinite-streaming-boa-select-radio.service"
 SUBSYSTEM=="net", ENV{DEVTYPE}=="wlan", ACTION=="remove", \
+  RUN+="/usr/bin/systemctl restart --no-block infinite-streaming-boa-select-radio.service"
+
+# Wired adapters too: the selector now chooses BOA_LAN_PORT as well, and a name
+# that is no longer fixed at build time has to be re-read when one arrives or
+# leaves. Without this a wired adapter plugged in after boot is named and
+# bridged but never conditioned, which is the failure this whole change is for.
+SUBSYSTEM=="net", ENV{DEVTYPE}!="wlan", ENV{ID_BUS}=="usb", ACTION=="add", \
+  RUN+="/usr/bin/systemctl restart --no-block infinite-streaming-boa-select-radio.service"
+SUBSYSTEM=="net", ENV{DEVTYPE}!="wlan", ENV{ID_BUS}=="usb", ACTION=="remove", \
   RUN+="/usr/bin/systemctl restart --no-block infinite-streaming-boa-select-radio.service"
 UDEV
 
@@ -1239,7 +1303,11 @@ BOA_ADDR=:80
 BOA_BRIDGE=br-lan
 BOA_WAN_PORT=${BOA_WAN_PORT}
 BOA_WLAN_PORT=wlan0
-BOA_LAN_PORT=lan0
+# A placeholder, not a real interface: no adapter is called this, and the
+# daemon simply finds no such port until select-radio writes a real one. NOT
+# left empty -- systemd drops an empty ${VAR} entirely, so "-lan ${BOA_LAN_PORT}"
+# would hand -lan the NEXT argument as its value.
+BOA_LAN_PORT=lan-usb-none
 BOA_STATE=/var/lib/infinite-streaming-boa/policies.json
 # Extra daemon arguments. Empty by default; systemd expands an empty variable to
 # no argument at all, so leaving it blank changes nothing.

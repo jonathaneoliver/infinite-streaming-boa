@@ -337,7 +337,7 @@ func (e *Engine) demoTick() {
 			switch sIface {
 			case "wlan1":
 				sChan = 6
-			case e.cfg.LanPort:
+			case firstOr(e.cfg.LanPorts, "lan0"):
 				sChan = 0 // wired: an adapter, but no channel
 			default:
 				sChan = 36
@@ -545,7 +545,7 @@ func demoBridgeState(cfg Config) BridgeInfo {
 			},
 		},
 		{
-			Name: cfg.LanPort, Role: RoleLAN, MAC: "00:e0:4c:68:03:1b",
+			Name: firstOr(cfg.LanPorts, "lan0"), Role: RoleLAN, MAC: "00:e0:4c:68:03:1b",
 			Up: true, Carrier: true, CarrierKnown: true, SpeedMbps: 1000,
 			Master: cfg.Bridge,
 		},
@@ -572,4 +572,14 @@ func demoBridgeState(cfg Config) BridgeInfo {
 	}
 	bi.Notes = bridgeNotes(bi, cfg)
 	return bi
+}
+
+// firstOr names the wired port the synthetic fleet uses. Demo mode shows one
+// wired adapter, so it takes the first configured port rather than inventing a
+// second that no real box would necessarily have.
+func firstOr(v []string, def string) string {
+	if len(v) > 0 && v[0] != "" {
+		return v[0]
+	}
+	return def
 }

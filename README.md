@@ -830,6 +830,10 @@ that a cap is working.
 | PAU0F on **USB 3.0** | **691 Mbit/s** | — | **80 MHz**, 802.11ax, ch 149 | 60s, sole client, 2026-09-08 |
 | PAU0F on **USB 3.0** | **379 Mbit/s** | — | **40 MHz**, 802.11ax, ch 149 | 60s, sole client, 2026-09-08 |
 | PAU0F on **USB 3.0** | **198 Mbit/s** | — | **20 MHz**, 802.11ax, ch 149 | 60s, sole client, 2026-09-08 |
+| PAU0F, **root port** `2-1` | **672 Mbit/s** | — | 80 MHz, ch 149 | 60s, sole client, 2026-09-08 |
+| PAU0F, **behind a hub** `4-1.3` | **575 Mbit/s** | — | 80 MHz, ch 149 | 60s, sole client, 2026-09-08 |
+| PAU0F, **root port** `2-1` | **546 Mbit/s** | — | 80 MHz, ch 40 | 60s, sole client, 2026-09-08 |
+| PAU0F, **behind a hub** `4-1.3` | **472 Mbit/s** | — | 80 MHz, ch 40 | 60s, sole client, 2026-09-08 |
 
 > **Every figure above this pair was measured on a Pi that was browning out.**
 > The supply negotiated 900 mA rather than 5 A — no USB-PD objects were
@@ -852,11 +856,19 @@ that a cap is working.
 > baseline that moves by a factor of two is the fault that matters, more than
 > any single number above it.
 
-The three 2026-09-08 rows are one width sweep on one channel with one client, and
-are the cleanest set here — see
+The three 20/40/80 MHz rows are one width sweep on one channel with one client,
+and are the cleanest set here — see
 [Channel width, and what it is worth](#channel-width-and-what-it-is-worth) for
 what they say about width, about idle clients, and about where the ceiling is
 not.
+
+**The last four rows are a grid, not four separate runs**, and reading any one of
+them alone will mislead: they are the same measurement repeated across two
+channels and two USB topologies precisely because those two effects had been
+cancelling each other out. See
+[What a hub costs a radio](#what-a-hub-costs-a-radio-separated-from-what-the-channel-is-worth).
+They also say which rows above them were taken on a root port — the ones that
+match the historical ceilings.
 
 ### What a channel is worth
 
@@ -917,6 +929,12 @@ The client transmits with less aggregation and a weaker radio than the access
 point does, so the same air buys far fewer bits going up. Worth knowing before
 reading an uplink number as though it were a downlink one.
 
+A second measurement on `mt7921u`, 2026-09-08, one MacBook on ch 149 at 80 MHz,
+−24 dBm, PHY negotiated at 1200.9 Mbit/s, no conditioning in force: **578 Mbit/s
+down, 182 up**, zero retransmits either way. The same 3:1 shape as above, at a
+signal level where the radio is not the limit -- so the asymmetry is the client's
+transmitter rather than the link.
+
 > **An `iperf3` UPLINK run against the box does not appear on the device's own
 > throughput chart.** It terminates *on* the box rather than being forwarded, so
 > it never reaches the uplink shaper: during a 145 Mbit/s uplink the client
@@ -969,6 +987,57 @@ the box moves under a third of what it does at 80, and the air is *busier*.
 > runs drifted between HE-MCS 9 and 11 between widths, and were taken on a Pi
 > that was browning out. The 72% above is the same effect measured with the MCS
 > held constant. See [Power](#power).
+
+### What a hub costs a radio, separated from what the channel is worth
+
+A radio behind a powered USB hub is **14% slower than the same model of adapter
+in a port directly on the Pi**, and that is separable from the channel it is on.
+
+The two effects had to be untangled because they were pointing in opposite
+directions: the hub-connected radio was on the *clear* channel and the
+root-port radio on the *congested* one, so a first pass showed the hub-connected
+radio winning and concluded the hub was free. Swapping the channel allocation
+between the two radios and repeating every run gives the full grid.
+
+Measured 2026-09-08, 60s `iperf3` downlink at each cell, 80 MHz, one MacBook as
+the only associated station, box power fixed:
+
+| | ch 40 (congested) | ch 149 (clear) | **channel is worth** |
+|---|---|---|---|
+| **Root port** `2-1` | 546 Mbit/s | **672 Mbit/s** | **+23%** |
+| **Behind a hub** `4-1.3` | 472 Mbit/s | 575 Mbit/s | **+22%** |
+| **hub costs** | **−14%** | **−14%** | |
+
+**The consistency is the result.** The hub costs about a seventh on *both*
+channels and the clear channel is worth about a fifth on *both* topologies, so
+neither figure is an artefact of the other. Either one measured alone would have
+been wrong by the size of the other.
+
+**It reproduces the historical ceilings.** The root-port figures land within 1–3%
+of the 677 / 683 / 691 Mbit/s recorded for ch 149 and within 2% of the 536 for
+ch 40 — so those were measured with the adapter in a root port, and nothing has
+regressed since. The lower numbers are the hub, not drift.
+
+**And it corrects the wired note further down.** That one attributed the hub's
+cost to contention with the radios sharing it, which was a guess. This says
+otherwise: 0.6 Gbit/s of Wi-Fi has an order of magnitude of headroom on a 5 Gb/s
+bus, nothing else on the hub was transferring, and the cost is *the same
+proportion* as it was at 2.35 Gbit/s on the wire. A proportional cost that
+survives an idle bus is not contention for bandwidth.
+
+**Two things this does NOT establish.** The two topologies are two different
+physical dongles — same model, same `mt7921u` firmware build, not the same unit
+— so "hub" is confounded with "which adapter", and separating them needs the two
+swapped between ports by hand. And the `hub`/ch 149 cell ran at a better link
+than the other three (PHY 1200.9, MCS 11, −20 dBm against 960.7, MCS 9, −26 to
+−29 dBm), which flatters it: the true cost there is likely worse than 14%.
+
+> **Both "ch 36" runs are really ch 40.** hostapd's 20/40 MHz coexistence scan
+> found neighbours on the secondary channel and swapped its primary and
+> secondary to avoid them, so a radio asked for 36 at 80 MHz came back on 40.
+> Same 80 MHz block, same centre (5210), so the comparison holds — but the box
+> reported the substitution rather than silently serving a different channel,
+> which is the only reason the label above is right.
 
 **An idle client is not free.** Measured twice today, at two widths: an iPhone
 associated and transferring *nothing* — 0.0 Mbit/s, 0.0% airtime by its own
@@ -1248,6 +1317,42 @@ the box's own transmit path becomes it.
 
 Realtek RTL8156 (`0bda:8156`) at both ends, direct cable, SuperSpeed both ends,
 30s runs, 2026-09-03. Repeatable to within 1% across four runs.
+
+**A powered hub costs about a fifth of that, in both directions.** Same adapter,
+same cable, same laptop; the only change is that the adapter sits on a powered
+USB 3 hub shared with two Wi-Fi radios rather than in the Pi's own SuperSpeed
+socket:
+
+| Direction | Direct to the Pi | Behind a shared hub | Change |
+|---|---|---|---|
+| Uplink, device → box | 2.35 Gbit/s | **1.91 Gbit/s** | −19% |
+| Downlink, box → device | 1.91 Gbit/s | **1.58 Gbit/s** | −17% |
+
+Measured 2026-09-08, 15s and 60s runs agreeing to within 1%, two radios serving
+five clients throughout. The hub itself is not the ceiling -- every device on it
+enumerated at 5 Gb/s.
+
+Worth reading alongside the CPU note below: the direct downlink figure is
+CPU-bound, and a CPU limit would not move because a hub was added. Both
+directions falling by a similar proportion is what says the constraint is not
+the transmit path alone.
+
+**The same cost applies to a radio, which rules out the obvious explanation.**
+This note first put the loss down to contention with the radios sharing the hub.
+[What a hub costs a radio](#what-a-hub-costs-a-radio-separated-from-what-the-channel-is-worth)
+measures the same **14%** on a Wi-Fi adapter moving 0.6 Gbit/s with nothing else
+on the hub transferring -- an order of magnitude of headroom on a 5 Gb/s bus.
+A cost that stays the same proportion whether the bus is nearly full or nearly
+idle is not competition for bandwidth. Plan for roughly a seventh off anything
+behind a hub, wired or wireless, rather than only where the bus is busy.
+
+**And the socket matters far more than the hub.** The same adapter in one of the
+Pi 5's 480 Mb/s sockets managed 943 Mbit/s up and 469 down -- it negotiates
+`1000baseT` there rather than 2500, and the USB bus caps it well below even
+that. Measured the same day. `usb2` and `usb4` are the SuperSpeed sockets;
+`usb1` and `usb3` are not, and nothing in the interface says which one an
+adapter is in -- `boactl state` reports the negotiated `link_mbps` and
+`usb_version`, which is how this was found.
 
 **The box sends more slowly than it receives, and the asymmetry is structural.**
 Per-core sampling during the downlink run shows CPU0 saturated — idle bottoming
