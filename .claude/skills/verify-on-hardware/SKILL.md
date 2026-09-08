@@ -99,11 +99,19 @@ an answer rather than an error.
 
 ```sh
 BOX=boa@infinite-streaming-boa.local
-# hostapd runs as TEMPLATED units, one per radio. The bare
-# infinite-streaming-boa-hostapd.service is a legacy leftover, permanently
-# inactive -- checking it reports "no AP" while both APs serve clients.
-ssh $BOX 'systemctl is-active infinite-streaming-boa-hostapd@usb \
-                              infinite-streaming-boa-hostapd@onboard24'
+# hostapd runs as TEMPLATED units, one per radio. The instance name is the
+# INTERFACE -- @wlan-usb, @wlan-usb2, @wlan0 -- since the rename from the old
+# @usb / @usb2 / @onboard / @onboard24 scheme. A box upgraded rather than
+# reflashed can still be running instances under BOTH names against the same
+# interface, which customize.sh stops by enumerating what is active; two
+# hostapds on one interface is broken, not merely untidy.
+#
+# So never type an instance name from memory, in either scheme. `systemctl
+# is-active` on a unit that does not exist prints "inactive" and exits 3 --
+# verified on the box 2026-09-08 -- which is indistinguishable from a radio that
+# really is down. This file asked after @usb and @onboard24 long after the
+# rename and would have reported a healthy box as having no APs. Enumerate:
+ssh $BOX 'systemctl list-units "infinite-streaming-boa-hostapd@*" --no-legend'
 
 # hostapd_cli needs -p; its built-in default path misses and it reports
 # "Failed to connect to hostapd" as though nothing were running.

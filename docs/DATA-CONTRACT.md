@@ -865,17 +865,49 @@ differently from how they read.
 
 **Semantics that bite**
 
-- **`CHAN_SWITCH` fails on this driver, and everything short of running it says
-  otherwise.** `iw phy phy1 info` lists `channel_switch` among its supported
-  commands, and hostapd parses the request and logs it
-  (`wlan-usb: IEEE 802.11 CHAN_SWITCH HE config 0x1 VHT config 0x1`) before
-  returning `FAIL`. Tried at 20/40/80 MHz, with and without `ht`/`vht`/`he`, and
-  as a bare `CHAN_SWITCH 5 5180` — all refused, AP unmoved.
+- **`CHAN_SWITCH` fails on both drivers here, and they fail DIFFERENTLY.**
+  Re-measured 2026-09-08 with the radios idle, at 20 MHz as well as 80, because
+  the first pass recorded one blanket refusal and an unstable identifier.
+
+  | Radio | Advertises `channel_switch`? | What happens |
+  |---|---|---|
+  | `wlan0`, brcmfmac | **No** — only `set_channel` | hostapd refuses up front: `CSA is not supported` |
+  | `wlan-usb` / `wlan-usb2`, mt7921u | **Yes** | hostapd tries; the kernel returns `nl80211: switch_channel failed err=-95 (Operation not supported)` |
+
+  So on the onboard radio CSA is simply not implemented, and on the adapters it
+  is advertised and then refused with `EOPNOTSUPP` by mt76/mac80211. Neither is
+  a width problem: a 20 MHz→20 MHz switch on the already-20 MHz brcmfmac
+  (`chan_switch 5 2412 bandwidth=20 sec_channel_offset=0 ht`) and a
+  width-reducing one on the mt7921u both return `FAIL`, as does the bare
+  `CHAN_SWITCH 5 5180`. The AP does not move in any case.
 
   **Advertised capability is not evidence of support.** The only test that
   answers this question is issuing the command and reading the reply, which is
   why the refusal is surfaced as a `502` carrying hostapd's own text rather than
   being reported as success.
+
+  **Do not identify a radio by its phy index.** An earlier version of this note
+  said `iw phy phy1 info` lists `channel_switch`; on 2026-09-08 `phy1` was the
+  brcmfmac, which does not. Phy numbers follow USB enumeration order and move
+  when an adapter is replugged or the box reboots — the same instability as
+  interface numbering. Resolve the phy from the interface at the time of use:
+
+  ```sh
+  basename $(readlink /sys/class/net/wlan-usb/phy80211)   # -> phy2, today
+  ```
+
+  **The reason is only visible at DEBUG.** At the default log level hostapd
+  logs the parsed request and nothing else, so the `FAIL` looks unexplained.
+  `hostapd_cli -p /var/run/hostapd -i <iface> log_level DEBUG` turns on the
+  `err=-95` line above and needs no restart, so it costs no clients; set it back
+  to `INFO` afterwards.
+
+  OpenWrt reached the same place from the other direction: its hostapd ubus
+  `switch_chan` method carries a `csa_force` flag documented as "restart the
+  interface in case the CSA fails". That is what `POST /api/bridge/radios/
+  {iface}/move-channel` does here — down, `SET`, up — so the fallback is the
+  conventional answer to a driver that refuses CSA, not a workaround peculiar
+  to this box.
 
 - **The two radios have OPPOSITE scanning capabilities**, so neither order of
   operations suits both. Measured 2026-09-03 with both serving:
