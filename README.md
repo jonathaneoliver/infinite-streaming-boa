@@ -1001,6 +1001,59 @@ Three things qualify that:
   chassis reach 758 Mbit/s together, or desense each other, needs two
   iperf-capable clients and has not been tried.
 
+### This box does not do OFDMA, and that bounds every figure above
+
+802.11ax subdivides a channel in **frequency** as well as time: an 80 MHz
+channel is carved into Resource Units, and an access point can serve several
+clients **simultaneously in one transmission**, each on its own slice. That is
+how a modern router gives a device a narrow effective channel without narrowing
+the radio, and it is why every 5 GHz neighbour here sits at the full 80 MHz
+rather than splitting the band.
+
+**boa does not do it**, and this is verifiable on the box rather than assumed:
+
+```sh
+# hostapd sets width and centre only -- no MU options are configured
+grep -hE 'he_|mu_|ofdma' /etc/hostapd/*.conf
+
+# mt76 exposes no MU or OFDMA counters at all
+ls /sys/kernel/debug/ieee80211/phy0/mt76/
+
+# and every transmission is single-user aggregation
+cat /sys/kernel/debug/ieee80211/phy0/mt76/tx_stats
+```
+
+Measured 2026-09-08 on `wlan-usb2`:
+
+```
+AMSDU pack count of 2 MSDU in TXD:  12,449,086  (96%)
+AMSDU pack count of 1 MSDU in TXD:     389,591   (3%)
+AMSDU pack count of 3+ MSDU:                 0   (0%)
+```
+
+Every frame is A-MSDU aggregation to **one** station, and never more than two
+MSDUs — a hard ceiling rather than a distribution. Deeper aggregation is exactly
+what amortises the per-frame overhead a fast PHY drains through so quickly, so
+this is a plausible contributor to the 72% figure at 80 MHz.
+
+**Two consequences, and they pull in opposite directions.**
+
+Every number in this section describes a **purely time-shared radio**, because
+that is the only kind this box has. Nothing here was ever going to show OFDMA,
+so the ladder and the two-radio arithmetic are sound for what they measured —
+and their scope is now a measured fact rather than an assumption.
+
+But OFDMA attacks precisely the weakness the ladder found. The 72% conversion at
+80 MHz is fixed overhead — preamble, IFS, block ACK — amortised over one
+client's data. Serve four clients in that same transmission and it is shared
+four ways, so **a wide channel's disadvantage shrinks as clients are added**,
+which is the opposite of what the two-client arithmetic above assumes. An access
+point that can do it has no reason to narrow anything.
+
+So "two 40 MHz radios beat one shared 80" is a conclusion about **this
+hardware**. Do not carry it across to a router that can schedule OFDMA; the
+neighbours' choice of 80 MHz everywhere is the clue that they need not.
+
 ### Predicting the best case from one number
 
 The negotiated **PHY rate** — the `tx bitrate` a client reports, shown on its
