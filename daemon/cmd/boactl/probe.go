@@ -90,6 +90,12 @@ func cmdProbe(c *client, args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
+	// Two samples zero apart measure nothing, and the rate they imply is a
+	// division by zero. Accepting it printed "no client passed traffic in 0s",
+	// which reads as a finding about the box rather than about the request.
+	if *settle <= 0 {
+		return fmt.Errorf("-settle must be positive; %s leaves no interval to measure over", *settle)
+	}
 
 	rep := &report{}
 
@@ -158,6 +164,17 @@ func cmdProbe(c *client, args []string) error {
 		return errors.New("the box is not doing what it claims")
 	}
 	return nil
+}
+
+// delta subtracts two readings of the same monotonic counter, reporting false
+// when the counter went BACKWARDS -- which means the class was destroyed and
+// recreated, not that traffic was negative. Unsigned subtraction across that
+// boundary wraps to an enormous positive number rather than failing.
+func delta(now, was uint64) (uint64, bool) {
+	if now < was {
+		return 0, false
+	}
+	return now - was, true
 }
 
 func snapshot(c *client) (boa.Snapshot, error) {
@@ -238,7 +255,20 @@ func checkCounters(rep *report, a, b boa.Snapshot, gap time.Duration) {
 		if !ok || !now.Present || !now.Policy.Enabled {
 			continue
 		}
-		bytes := now.DownCounters.Bytes - was.DownCounters.Bytes
+		// A class that was recreated between the two samples restarts its
+		// counters at zero, so the raw subtraction underflows uint64 into
+		// something around 1.8e19 and renders as a throughput of billions of
+		// Mbps -- stated with total confidence by a tool whose whole job is to
+		// be trusted. The daemon guards the identical hazard in Engine.rate();
+		// a shaper reinstall or a policy write during -settle is enough to
+		// trigger it.
+		bytes, ok := delta(now.DownCounters.Bytes, was.DownCounters.Bytes)
+		if !ok {
+			rep.add(warn, "counters moving", fmt.Sprintf(
+				"%s: the class was recreated mid-sample, so no rate can be derived; probe again",
+				shortMAC(now.MAC)))
+			continue
+		}
 		effDown, _, _ := effectiveShapes(now)
 		capped := effDown.RateMbps > 0
 		if bytes == 0 {
@@ -257,8 +287,8 @@ func checkCounters(rep *report, a, b boa.Snapshot, gap time.Duration) {
 		// The queue is the evidence. Packets waiting or being dropped is what
 		// a rate limiter does; overlimits is what the layer NOT doing the
 		// limiting reports.
-		drops := now.DownCounters.Drops - was.DownCounters.Drops
-		over := now.DownCounters.Overlimits - was.DownCounters.Overlimits
+		drops, _ := delta(now.DownCounters.Drops, was.DownCounters.Drops)
+		over, _ := delta(now.DownCounters.Overlimits, was.DownCounters.Overlimits)
 		queued := now.DownCounters.Backlog > 0 || now.DownCounters.Qlen > 0
 		// A cap can only be shown to work while something is PUSHING against
 		// it. A client drawing 28 Mbps through a 171 Mbps cap tells you nothing

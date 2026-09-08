@@ -148,13 +148,39 @@ func (c *client) stream(path string, fn func(line string) bool) error {
 }
 
 var (
-	boxFlag  = flag.String("box", "", "box hostname or URL (default $BOA_BOX, then "+defaultBox+")")
-	jsonFlag = flag.Bool("json", false, "emit the raw JSON payload instead of a summary")
+	boxFlag     = flag.String("box", "", "box hostname or URL (default $BOA_BOX, then "+defaultBox+")")
+	jsonFlag    = flag.Bool("json", false, "emit the raw JSON payload instead of a summary")
+	versionFlag = flag.Bool("version", false, "print which build of boactl this is, and exit")
 )
+
+// version is stamped at link time, exactly as the daemon's is:
+//
+//	go build -ldflags "-X main.version=$(scripts/version.sh)" ./cmd/boactl
+//
+// Deliberately NOT taken from debug.ReadBuildInfo's vcs.revision, which is the
+// obvious approach and is wrong here. Measured 2026-09-08 in a worktree under
+// .claude/worktrees: with HEAD at bb6f5b4948af and the tree modified, a build
+// with a cleared cache stamped 1a6a91d68b6b from four days earlier and set
+// vcs.modified to false. A version that reports the wrong build with confidence
+// is worse than one that admits it does not know, and this repository has
+// already lost a testing session to not knowing which build was running.
+var version = "dev"
+
+func buildStamp() string {
+	if version == "dev" {
+		return "dev (no version stamped at build time; see the comment on version)"
+	}
+	return version
+}
 
 func main() {
 	flag.Usage = usage
 	flag.Parse()
+
+	if *versionFlag {
+		fmt.Printf("boactl %s\n", buildStamp())
+		return
+	}
 
 	args := flag.Args()
 	if len(args) == 0 {
@@ -194,7 +220,21 @@ func noArgs(cmd string, rest []string) error {
 	return fmt.Errorf("%s takes no arguments, got %q", cmd, rest[0])
 }
 
+// jsonCapable is the set of commands -json actually changes. survey is absent
+// because it is always JSON, and the three that write or assert have no
+// payload to reformat.
+var jsonCapable = map[string]bool{"state": true, "devices": true, "bridge": true, "events": true}
+
 func run(c *client, args []string) error {
+	// -json on a command that cannot honour it was accepted and ignored, which
+	// is the same silent no-op as a misplaced flag: the caller believes they
+	// asked for JSON and gets prose, with nothing said. Refuse instead.
+	if *jsonFlag && !jsonCapable[args[0]] {
+		if args[0] == "survey" {
+			return errors.New("survey always emits JSON; drop -json")
+		}
+		return fmt.Errorf("-json does not apply to %s (only state, devices, bridge, events)", args[0])
+	}
 	switch args[0] {
 	case "state":
 		if err := noArgs("state", args[1:]); err != nil {
@@ -402,9 +442,20 @@ func cmdEvents(c *client, args []string) error {
 	if *jsonFlag {
 		return emitJSON(envelope)
 	}
+	// An empty result printed nothing at all and exited 0, which is
+	// indistinguishable from a command that did not run. Say so, and give the
+	// sequence to poll from next -- `latest` is in the envelope precisely
+	// because it cannot be derived from an empty list.
+	if len(envelope.Events) == 0 {
+		fmt.Fprintf(os.Stderr, "no events after %d; the newest the box holds is %d\n",
+			*since, envelope.Latest)
+		return nil
+	}
 	for _, e := range envelope.Events {
 		fmt.Printf("%d\t%s\t%s\n", e.Seq, time.UnixMilli(e.At).Format("15:04:05"), e.Text)
 	}
+	fmt.Fprintf(os.Stderr, "%d event(s); next poll: boactl events -since %d\n",
+		len(envelope.Events), envelope.Latest)
 	return nil
 }
 
@@ -529,7 +580,7 @@ func cmdShape(c *client, args []string) error {
 	fs.Var(&loss, "loss", "packet loss, 0-100")
 	fs.Var(&burst, "burst", "mean loss burst length in packets; 1 is uniform loss")
 	dir := fs.String("dir", "down", "which direction -delay/-jitter/-loss/-burst apply to: down, up or both")
-	clear := fs.Bool("clear", false, "remove all conditioning from this device")
+	clear := fs.Bool("clear", false, "remove all conditioning, including any distance model")
 	if helpWanted(args) {
 		fmt.Fprint(os.Stderr, "boactl shape <mac|label> [flags] -- condition one device's traffic\n\n")
 		fs.SetOutput(os.Stderr)
@@ -544,6 +595,17 @@ func cmdShape(c *client, args []string) error {
 	}
 	if err := fs.Parse(args[1:]); err != nil {
 		return err
+	}
+
+	// A shape call always sends enabled=true, because asking to condition a
+	// device implies turning it on. That makes a bare `boactl shape <dev>` a
+	// trap: with no flags it would quietly enable a DISABLED device and put its
+	// stored policy back into force, having been asked to change nothing.
+	changed := *clear
+	fs.Visit(func(*flag.Flag) { changed = true })
+	if !changed {
+		return fmt.Errorf("shape %s: nothing to change; pass a flag, or -clear to remove conditioning "+
+			"(boactl shape -h)", args[0])
 	}
 
 	cl, err := findClient(c, args[0])
@@ -582,7 +644,7 @@ func cmdShape(c *client, args []string) error {
 
 	enabled := true
 	rev := cl.Policy.Rev
-	body, err := json.Marshal(map[string]any{
+	patch := map[string]any{
 		// The revision this change is based on. The daemon refuses the write if
 		// someone else has edited this device since, rather than clobbering
 		// them -- so a stale terminal loses the race instead of the operator.
@@ -590,7 +652,20 @@ func cmdShape(c *client, args []string) error {
 		"enabled":       &enabled,
 		"down":          &d,
 		"up":            &u,
-	})
+	}
+	if *clear {
+		// A distance model IS conditioning, and zeroing Down/Up does not touch
+		// it -- the model is the stored input and the shapes it implies are
+		// derived per tick. Without this, -clear reported "down - up -" on a
+		// device the kernel was still holding at 171 Mbps, which is precisely
+		// the lie the FROM column was added to stop.
+		//
+		// An explicit null, not an omission: the field is RawMessage server-side
+		// so that absent means "leave the model alone" and null means "remove
+		// it". Omitting it here would have been the former.
+		patch["rssi"] = json.RawMessage("null")
+	}
+	body, err := json.Marshal(patch)
 	if err != nil {
 		return err
 	}
@@ -598,6 +673,21 @@ func cmdShape(c *client, args []string) error {
 		return err
 	}
 	fmt.Printf("%s  down %s  up %s\n", cl.MAC, shapeSummary(d), shapeSummary(u))
+	if *clear && cl.RssiRun != nil {
+		fmt.Fprintf(os.Stderr, "also removed the distance model that was driving it (%.0f dBm)\n",
+			cl.RssiRun.Dbm)
+	}
+	// A run is not policy, and clearing policy does not stop one. Saying so
+	// matters because the device will still be conditioned a second later and
+	// the obvious conclusion would be that this command failed.
+	if cl.PatternRun != nil && cl.PatternRun.State == "running" {
+		fmt.Fprintf(os.Stderr, "NOTE: pattern %q is still playing and keeps driving this device; "+
+			"stop it before this takes effect\n", cl.PatternRun.Name)
+	}
+	if cl.Sweep != nil && cl.Sweep.State == "running" {
+		fmt.Fprintln(os.Stderr, "NOTE: a ladder sweep is running and owns the downlink cap "+
+			"until it finishes")
+	}
 	fmt.Fprintln(os.Stderr, "verify it reached the kernel with: boactl probe")
 	return nil
 }
@@ -616,7 +706,13 @@ func findClient(c *client, want string) (boa.Client, error) {
 		if strings.EqualFold(cl.MAC, want) {
 			return cl, nil
 		}
-		if strings.Contains(strings.ToLower(cl.Label), needle) ||
+		// A PARTIAL mac counts too. probe identifies devices by their last four
+		// octets to keep its lines readable, so refusing "19:1f:d1" here meant
+		// the tool would not accept an identifier it had just printed itself.
+		// Copying one command's output into the next is the obvious thing to
+		// try, and it failed.
+		if strings.Contains(strings.ToLower(cl.MAC), needle) ||
+			strings.Contains(strings.ToLower(cl.Label), needle) ||
 			strings.Contains(strings.ToLower(cl.Hostname), needle) {
 			hits = append(hits, cl)
 		}
@@ -657,11 +753,15 @@ func orDash(s string) string {
 	return s
 }
 
+// truncate shortens by RUNES, not bytes. Device labels are operator-set and
+// routinely non-ASCII, and slicing a byte at a time cuts a multi-byte rune in
+// half, emitting invalid UTF-8 that a terminal draws as a replacement box.
 func truncate(s string, n int) string {
-	if len(s) <= n {
+	r := []rune(s)
+	if len(r) <= n {
 		return s
 	}
-	return s[:n-1] + "…"
+	return string(r[:n-1]) + "…"
 }
 
 // shapeSummary renders one direction the way an operator says it out loud.
