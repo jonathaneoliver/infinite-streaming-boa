@@ -1290,6 +1290,20 @@ func (e *Engine) MoveChannel(iface string, channel, widthMHz int) (int, error) {
 		e.enableAPNow(iface)
 	}
 	e.forgetRadioOn()
+	// AND THE BRIDGE VIEW, which is what the interface actually reads.
+	//
+	// forgetRadioOn drops the per-client cache; it does nothing to the bridge
+	// snapshot the adapter rows are drawn from. Every other radio action marks
+	// that stale -- power, AP enable and disable, a finished rebuild -- and a
+	// channel move was the one that did not. So the new channel reached the
+	// interface only when the ordinary cycle caught up: the next poll finds the
+	// snapshot past its one-second TTL, starts a rebuild in the background, and
+	// still returns the OLD value, so it takes the poll after that to show.
+	//
+	// MEASURED 2026-09-09: the kernel was on the new channel immediately, and
+	// the API still reported the old one at t+0 and t+2, changing at t+4. The
+	// operator sees a control they pressed appear not to have worked.
+	e.freshenBridge()
 
 	now := 0
 	if st, err := hostapdCmd(iface, "STATUS"); err == nil {
