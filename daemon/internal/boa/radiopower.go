@@ -253,10 +253,34 @@ func (e *Engine) notePower(iface string, on bool) {
 // Returns whether a REBUILD was performed, so the caller can leave the
 // reporting to it rather than announcing the same recovery twice.
 func (e *Engine) reenableAP(iface string) bool {
+	return e.enableAP(iface, true)
+}
+
+// enableAPNow is the same recovery WITHOUT the wait, for a caller that took the
+// access point down itself and knows it is not coming back on its own.
+//
+// A deliberate DISABLE leaves hostapd waiting for an ENABLE nobody has sent, so
+// the wait below cannot succeed and spends its whole budget before the command
+// that does the work. MEASURED 2026-09-09 on a 5GHz block-to-block move: 6.5s
+// of outage, of which about four seconds were that wait. Six and a half seconds
+// is long enough to drain a player's buffer, which on a box whose subject is
+// what a player does through a transition is measurement noise the box is
+// adding itself (#281).
+//
+// Everything after the wait is shared and stays shared: the FAIL-plus-failed-
+// wait wedge detection from #182, the confirmation, and the rebuild.
+func (e *Engine) enableAPNow(iface string) bool {
+	return e.enableAP(iface, false)
+}
+
+// enableAP is the body of both. waitFirst distinguishes a radio that is
+// recovering by itself from one that is waiting to be told.
+func (e *Engine) enableAP(iface string, waitFirst bool) bool {
 	if !hostapdReachable(iface) {
 		return false
 	}
-	// WAIT FIRST. Do not command what is already happening.
+	// WAIT FIRST, when the access point may already be coming back.
+	// Do not command what is already happening.
 	//
 	// hostapd watches rfkill itself. Measured on both radios 2026-09-03, its
 	// own log shows the unblock and the recovery in the same second:
@@ -273,7 +297,7 @@ func (e *Engine) reenableAP(iface string) bool {
 	// 500ms and fired ENABLE blind, the other retried ENABLE six times and
 	// turned 4.5s into 27.8s. Both were commanding a recovery that was already
 	// under way. Watch for it instead, and only intervene if it does not come.
-	if waitAPEnabled(iface, 4*time.Second) {
+	if waitFirst && waitAPEnabled(iface, 4*time.Second) {
 		return false
 	}
 	// It did not come back by itself, which is the case ENABLE is actually for.
@@ -1211,7 +1235,9 @@ func (e *Engine) MoveChannel(iface string, channel, widthMHz int) (int, error) {
 		}
 	}
 	if wasEnabled {
-		e.reenableAP(iface)
+		// enableAPNow, not reenableAP: this function did the DISABLE, so there
+		// is no self-recovery to wait for. See #281.
+		e.enableAPNow(iface)
 	}
 	e.forgetRadioOn()
 
