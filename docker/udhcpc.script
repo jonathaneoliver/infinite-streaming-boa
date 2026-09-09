@@ -1,0 +1,55 @@
+#!/bin/sh
+# Applies a DHCP lease to the bridge. udhcpc has no built-in behaviour: it
+# execs this on every state change and does nothing else, so without it the
+# client runs, gets an offer, and configures nothing -- which looks like a
+# working DHCP client and a router that will not answer.
+#
+# Debian's busybox package does NOT ship /usr/share/udhcpc/default.script, which
+# nearly every guide assumes it does. Verified absent in the built image rather
+# than assumed present.
+#
+# Deliberately minimal. This box takes a lease so it is pingable, so iperf3 can
+# answer, and so the neighbour table the daemon reads gets populated. It is not
+# a router and must never advertise itself as one, so nothing here touches
+# forwarding or hands an address to anybody.
+set -u
+
+log() { echo "udhcpc: $*" >&2; }
+
+case "${1:-}" in
+
+deconfig)
+  ip addr flush dev "$interface" 2>/dev/null || true
+  ip link set dev "$interface" up
+  ;;
+
+bound|renew)
+  # A lease that changes the address must not leave the old one behind: two
+  # addresses on the bridge means replies can leave with the wrong source, which
+  # shows up as intermittent loss rather than as a configuration error.
+  ip addr flush dev "$interface" 2>/dev/null || true
+  ip addr add "$ip/${mask:-24}" broadcast "${broadcast:-+}" dev "$interface"
+  log "$interface is $ip/${mask:-24}"
+
+  if [ -n "${router:-}" ]; then
+    # One default route, replaced rather than appended, for the same reason the
+    # address is flushed above.
+    for r in $router; do
+      ip route replace default via "$r" dev "$interface"
+      log "default via $r"
+      break
+    done
+  fi
+
+  if [ -n "${dns:-}" ]; then
+    : >/etc/resolv.conf
+    for d in $dns; do echo "nameserver $d" >>/etc/resolv.conf; done
+  fi
+  ;;
+
+leasefail | nak)
+  log "no lease on $interface (${1:-})"
+  ;;
+
+esac
+exit 0

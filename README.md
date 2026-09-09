@@ -3,7 +3,8 @@
 [![Release](https://img.shields.io/github/v/release/jonathaneoliver/infinite-streaming-boa?sort=semver)](https://github.com/jonathaneoliver/infinite-streaming-boa/releases/latest)
 [![License: MIT](https://img.shields.io/github/license/jonathaneoliver/infinite-streaming-boa)](LICENSE)
 [![Go](https://img.shields.io/github/go-mod/go-version/jonathaneoliver/infinite-streaming-boa?filename=daemon%2Fgo.mod)](daemon/go.mod)
-[![Platform: Raspberry Pi 5](https://img.shields.io/badge/platform-Raspberry%20Pi%205-c51a4a)](#build-an-image)
+[![Platform: Raspberry Pi 5](https://img.shields.io/badge/platform-Raspberry%20Pi%205-c51a4a)](#1-a-raspberry-pi-5-from-an-image)
+[![Platform: Linux container](https://img.shields.io/badge/platform-Linux%20container-2496ed)](#2-a-linux-host-from-a-container)
 [![Sponsor](https://img.shields.io/badge/support%20this%20project-ea4aaa?logo=githubsponsors&logoColor=white)](https://github.com/sponsors/jonathaneoliver)
 
 Part of the infinite-streaming family. The repository is
@@ -14,13 +15,18 @@ visibly in the `valley` pattern below.
 
 [`PRD.md`](PRD.md) is the product behaviour source of truth.
 
-A Raspberry Pi that sits invisibly in your network and conditions each client's
+An appliance that sits invisibly in your network and conditions each client's
 internet connection independently — rate, latency, jitter and packet loss, per
 device, in each direction, adjustable live from a web interface.
 
+It runs on **either of two targets, on equal terms**: a Raspberry Pi 5 flashed
+from an image, or a container on an ordinary x86_64 Linux host. The same daemon
+binary and the same interface serve both, and no code under `daemon/` differs
+between them — see [Two ways to run it](#two-ways-to-run-it).
+
 It is a **transparent bridge**, not a router. Devices under test keep their
 normal addresses on your normal network, discovery protocols keep working, and
-the Pi never appears as a hop in `traceroute`. Nothing being tested can tell it
+the box never appears as a hop in `traceroute`. Nothing being tested can tell it
 is there.
 
 What that buys, and it is the whole point: **neither end has to cooperate.**
@@ -61,6 +67,11 @@ manipulate what travels over it there.
                          ╲            ╱
                     conditioned identically
 ```
+
+The port names above are the Pi's. On a container host the shape is identical
+and the names differ: the uplink is `wan0`, a veth whose other end sits in a
+bridge on the host, and the downstream ports are named after the device rather
+than the socket — `wlan-usb-<last four of the MAC>` and `lan-usb-<…>`.
 
 ![The 0.2.0 interface: three adapters with their own timeline, an iPhone being
 walked away from the router by the walkabout pattern, and the activity log
@@ -690,6 +701,97 @@ on `:8474` lets a test set up and tear down its own faults, and its toxics —
 netem cannot produce. For proving a service survives a flaky dependency in CI,
 it is the right tool and this one is not.
 
+## Two ways to run it
+
+boa runs on a Raspberry Pi 5 flashed from an image, or as a container on an
+ordinary x86_64 Linux host. **Neither is the reference and neither is a port.**
+The same `boad` binary and the same embedded interface serve both, and nothing
+under `daemon/` is conditional on the target — the container reuses even
+`radioplan`, copied out of the Pi overlay unchanged, so a channel plan made on
+one cannot drift from a plan made on the other.
+
+What differs is only where the box gets four things a bridge needs: the bridge
+itself, the hostapd configs, hotplug handling, and process supervision. The Pi
+takes them from the distribution. The container brings its own.
+
+| | Raspberry Pi 5 | Linux container |
+|---|---|---|
+| Install | Flash an image, once | `scripts/docker-deploy.sh <host>` |
+| Update the daemon | `scripts/deploy.sh`, ~10 s | `scripts/docker-deploy.sh`, rebuild and restart |
+| Reflash needed for | Units, packages, kernel settings, network profiles | Nothing — the image is rebuilt every deploy |
+| Bridge built by | NetworkManager | The container entrypoint |
+| AP configs written by | `radioplan`, at boot | `radioplan`, identical, at start and on hotplug |
+| Hotplug handled by | A udev rule | A udev rule on the host, plus a poll in the entrypoint |
+| Supervision by | systemd units | The entrypoint, plus a `systemctl` shim for the two calls the daemon makes |
+| ntopng and glances | Included | Absent by decision; the interface offers to start them and says why it cannot |
+| Host is left | Dedicated to boa | Still itself, with its NIC bridged and the USB adapters given away |
+
+Throughput is comparable so far, which is the point of listing both. These are
+separate machines with separate radios, so read the table as "neither target is
+obviously the bottleneck" rather than as a benchmark of one against the other.
+
+Each `not measured` below is a run nobody has done yet, not a figure too dull to
+record.
+
+| Unshaped, `iperf3` **to** the box | Raspberry Pi 5 | Linux container |
+|---|---|---|
+| Wired downlink, 2.5 GbE | 1.91 Gbit/s | 1.95 Gbit/s |
+| Wired uplink, 2.5 GbE | 2.35 Gbit/s | 2.35 Gbit/s |
+| One radio, 80 MHz 802.11ax | 495–683 Mbit/s | 454 Mbit/s |
+| Two radios carrying clients at once | *not measured* | *not measured* |
+
+The wired figures agree to within 2%, on two machines with different CPUs, which
+says the 2.5 GbE adapter rather than the target is the limit in both.
+
+| Through the box, or under a cap | Raspberry Pi 5 | Linux container |
+|---|---|---|
+| Wired through to an external host, down / up | *not measured* | 1.95 / 2.35 Gbit/s |
+| Wireless through to an external host | *not measured* | 423 Mbit/s |
+| Wired and wireless concurrently | *not measured* | 1819 + 586, and 1778 + 449 Mbit/s |
+| Enforcement, against a 90/40 Mbit/s cap | *not measured* | 86.0 / 38.1 Mbit/s |
+| Enforcement over the radio, 60/20 cap | *not measured* | 57 down / 13.6 up Mbit/s |
+
+**The second table is the container's, and the gap there runs the other way.**
+Conditioning has only ever been measured end to end on the container host: the
+Pi's published figures are all ceilings taken against the box itself, which is
+the measurement that cannot show a cap working. Running that set on the Pi is
+the more valuable missing work of the two.
+
+### 1. A Raspberry Pi 5, from an image
+
+The self-contained option. One card, one power supply, nothing installed on any
+other machine, and the box is disposable — a bad state is a reflash away. It
+boots to a working appliance on an air-gapped bench, because the image carries
+every package it will ever need.
+
+Choose it when the box should be a fixed piece of bench equipment, when you want
+ntopng and glances alongside the conditioner, or when the machine that runs it
+should not also be doing anything else.
+
+See [Hardware](#hardware) for the parts and [Build an image](#build-an-image)
+for the build.
+
+### 2. A Linux host, from a container
+
+The option that uses hardware you already have. An x86_64 machine with two USB
+adapters becomes the same appliance, with more CPU behind the transmit path and
+no card to flash. The daemon and the interface are built on your workstation and
+only the finished artefacts are shipped, so the host needs neither Go nor node.
+
+Choose it when you have a spare Linux box, when you want faster deploy cycles
+than a card allows, or when the conditioning has to sit next to something else
+already running on that machine.
+
+It is **not** a zero-footprint option, and the trade should be made with open
+eyes. Docker cannot hand a physical network device to a container, so a set of
+root-owned helpers on the host does the work instead — see
+[What this puts on your host](#what-this-puts-on-your-host).
+Issue [#286](https://github.com/jonathaneoliver/infinite-streaming-boa/issues/286)
+tracks two simpler arrangements that would remove most of them.
+
+See [Run it as a container on a Linux host](#run-it-as-a-container-on-a-linux-host)
+for the walkthrough.
+
 ## Hardware
 
 > ### ⚠️ Put `eth0` on your own network, never a corporate LAN
@@ -754,9 +856,15 @@ it is the right tool and this one is not.
 > - **Capture the box's own event log alongside every run**, so a drop you did
 >   not cause is at least visible as one you did not cause.
 
+The warning above applies to **both targets**. A transparent bridge is a
+transparent bridge whether the daemon is running on a Pi or in a container, and
+a corporate switch port objects to it identically.
+
+### Parts for the Pi build
+
 What this box was built and measured on. Nothing here is required — it is a
 Raspberry Pi 5 and a USB Wi-Fi adapter — but these are the exact parts behind
-every number in this document.
+every Pi number in this document.
 
 | Part | What was used | Why it matters |
 |---|---|---|
@@ -808,12 +916,52 @@ is worth having deliberately on an appliance that boots from SD.
 There is **no 3 GB Pi 5**; that variant is a Pi 4. The Pi 5 ships in 2, 4, 8
 and 16 GB.
 
+### Requirements for the container host
+
+The container was built and measured on an x86_64 Ubuntu desktop. The adapters
+are the same ones the Pi uses — they are moved off the host and into the
+container's network namespace, so any USB adapter that works on the Pi works
+here.
+
+| Requirement | Why |
+|---|---|
+| x86_64 Linux with Docker and the compose plugin | The image is `debian:trixie-slim` and is built on the host |
+| **NetworkManager managing the uplink NIC** | `scripts/docker-host-net.sh` moves the NIC into a bridge with `nmcli`, and refuses to guess if no NM connection is active. Ubuntu Desktop qualifies; **Ubuntu Server does not** — it defaults to netplan with systemd-networkd |
+| An ethernet NIC facing your router | It gets bridged, so the container's uplink is a real layer-2 port |
+| One or more USB Wi-Fi adapters | Given to the container outright. Optional, as on the Pi |
+| A USB ethernet adapter | Becomes a wired downstream port. Optional |
+| `root` on the host | Only root can move a netdev or an 802.11 phy between namespaces |
+| A workstation with `go`, `npm` and `ssh` | Builds the daemon and interface; the host needs neither toolchain |
+
+The uplink interface is discovered rather than named: the setup script takes the
+interface carrying the host's default route, ignoring the USB adapters and any
+radio, and on a re-run recovers it from the bridge it already built. It refuses
+rather than guesses when that is ambiguous, and tells you to pass `--wan-if`.
+
+One real gap remains: ntopng and glances are not in the container image, so it
+has the conditioner and the interface but neither of the two optional analysis
+tools. The interface reports them inactive and says why, rather than failing
+quietly. That and the host footprint are tracked in
+[#286](https://github.com/jonathaneoliver/infinite-streaming-boa/issues/286).
+
+**Give the USB adapters their own powered hub, or their own root ports.** The
+hub ceiling measured here was 5 Gbit/s shared across three adapters, which is
+the same constraint the Pi has and the same one the
+[powered hub figures](#what-a-hub-costs-a-radio-separated-from-what-the-channel-is-worth)
+below quantify.
+
 ## Access point performance
 
 The AP's ceiling bounds the top of a measured ladder, so it decides which
 renditions can be tested at all. Measured with `iperf3` **to the box**, which
 means the link **unshaped** — the ceiling a cap must sit under, never evidence
 that a cap is working.
+
+**Every figure in this section was measured on the Pi**, on the parts listed
+above. The radio is the limit in almost all of them, so they carry over to the
+container host running the same adapter — see
+[Measured on the container host](#measured-on-the-container-host) for what was
+confirmed there.
 
 | Radio | Downlink | Uplink | Channel | Run |
 |---|---|---|---|---|
@@ -1428,7 +1576,82 @@ USB 2.0 mode it printed `Supported link modes: 10baseT/Half 10baseT/Full` while
 simultaneously reporting `Speed: 1000Mb/s`. Trust the speed line and the USB
 descriptor, not the mode table.
 
+### Measured on the container host
+
+Taken on the x86_64 Ubuntu host on 2026-09-09. A different machine with
+different radios from the Pi above, so treat these as evidence that the
+container arrangement is not itself a bottleneck rather than as a head-to-head.
+
+**Ceilings, taken against the box itself.** What a cap must sit under, and never
+evidence that a cap is working.
+
+| | Downlink | Uplink |
+|---|---|---|
+| Wired, 2.5 GbE | **1945 Mbit/s** | **2353 Mbit/s** |
+| Wireless, 80 MHz 802.11ax | **454 Mbit/s** | 144 Mbit/s |
+
+**Through the box to a host beyond it.** The only arrangement that shows both
+directions conditioned, and the one the Pi has never been run in.
+
+| | Downlink | Uplink |
+|---|---|---|
+| Wired, 2.5 GbE, unshaped | **1945 Mbit/s** | **2353 Mbit/s** |
+| Wireless, unshaped | **423 Mbit/s** | — |
+| Wireless, under a 60/20 Mbit/s cap | **57 Mbit/s** | **13.6 Mbit/s** |
+| Wired, under a 90/40 Mbit/s cap | **86.0 Mbit/s** | **38.1 Mbit/s** |
+
+The wired path forwards through the bridge at the same rate it terminates at the
+box, in both directions. That is the useful thing this pair of tables says: the
+bridge and the shaper are not costing anything the adapter was not already
+costing.
+
+**Both media at once**, run twice with the radio on different channels:
+
+| Wired, 2.5 GbE | Wireless | Radio |
+|---|---|---|
+| 1819 Mbit/s | 586 Mbit/s | Channel 149 |
+| 1778 Mbit/s | 449 Mbit/s | The lower 5 GHz block |
+
+Neither starves the other, which is the question worth asking of a box that
+conditions both at once.
+
+The USB hub ceiling shared by three adapters is 5 Gbit/s. That is a bus limit
+rather than a boa limit, and it bounds every figure above.
+
+**What has not been measured here**, listed so an absent run reads as absent
+rather than as a result:
+
+- **Two radios carrying clients simultaneously.** Every wireless figure above is
+  a single radio. The Pi has never been measured this way either, so it is the
+  most interesting missing number on both targets.
+- **A per-radio breakdown by channel and width.** The Pi has a table of these;
+  the container has two channels and does not name either precisely.
+
+The wired ceiling is close enough to the Pi's that the same caution applies:
+anything measured above roughly 1.9 Gbit/s with `-R` is measuring a saturated
+CPU core rather than the shaper.
+
+**The direction caveat, which is the easiest way to publish a wrong number, and
+the reason the two tables above are kept apart.** Traffic terminating **at** the
+box is exempt from conditioning on the uplink only, so the forward direction
+reports an unconditioned ceiling while `-R` reports the downlink cap actually
+being enforced. Over the radio against a 60/20 cap, a test against the box gave
+143 Mbit/s forward and 56.9 Mbit/s reversed. **Only the second is real.**
+
+Repeating that same run **through** the box to a host beyond it gave 13.6 Mbit/s
+uplink, against a 20 Mbit/s cap — the number the 143 was hiding. If you take one
+thing from this section, take that: a target on the far side of the box is the
+only place both directions are true at once.
+
+The method is the one in [Measuring it yourself](#measuring-it-yourself). It is
+not Pi-specific; `<pi>` is just the box's address either way.
+
 ## Power
+
+**Pi-specific.** A desktop host has a real power supply and none of this
+applies to it — but the underlying lesson does, in the form of the hub ceiling
+noted above: starve a USB radio and the symptoms point everywhere except the
+power.
 
 **A Pi 5 that is not offered USB-PD falls back to 900 mA, and two Wi-Fi
 adapters will brown it out.** This cost most of a day on 2026-09-07, and every
@@ -1493,6 +1716,9 @@ the next reboot — which is far cheaper than a reflash.
 > the cap.
 
 ## Build an image
+
+**For the Pi.** The container path needs no image and no card; skip to
+[Run it as a container on a Linux host](#run-it-as-a-container-on-a-linux-host).
 
 Needs `curl`, `docker`, `go` and `npm`. On macOS the Docker engine can come from
 Rancher Desktop, Docker Desktop, colima or OrbStack — it exists only to supply a
@@ -1593,13 +1819,172 @@ succeeds and still cannot serve is exactly how the `.deb` fails. Going through
 a venv also keeps the Debian package's dependencies — matplotlib, tk, PIL,
 fonttools, about 90 packages of desktop plotting stack — off a headless box.
 
+## Run it as a container on a Linux host
+
+The other way to get a boa. No card, no image, and the daemon and interface are
+built on your workstation so the host needs neither Go nor node. Check
+[Requirements for the container host](#requirements-for-the-container-host)
+first — the NetworkManager requirement rules out a default Ubuntu Server
+install.
+
+Throughout, `<host>` is the Ubuntu machine and every command runs on your
+workstation unless it says otherwise.
+
+### 1. Configure, once
+
+The same `.env` serves both targets, so a checkout that already builds Pi images
+needs one addition.
+
+```sh
+cp .env.example .env      # if you have not already
+```
+
+Set `AP_SSID_DOCKER` to something distinct from `AP_SSID`. **Do this if both
+boxes can ever be powered on at once**, which is the normal case while you are
+working on a container deployment. Two appliances broadcasting one name is not a
+cosmetic clash: a client cannot tell them apart, roams to whichever is louder,
+and your measurement then belongs to whichever box happened to win, with nothing
+in either interface saying so.
+
+```sh
+AP_SSID="infinite-streaming-boa"
+AP_SSID_DOCKER="boa-container"
+AP_PASSWORD="a-strong-passphrase"
+AP_COUNTRY="US"
+```
+
+The passphrase is deliberately shared between the two. One credential is what
+keeps them from drifting apart, and a device that already knows one box then
+associates with the other without being re-taught.
+
+### 2. Deploy, once, with the network step
+
+```sh
+scripts/docker-deploy.sh <host> --setup-network
+```
+
+This builds the interface and an amd64 `boad`, copies the build context to
+`/opt/infinite-streaming-boa` on the host, installs the attach helpers, prepares
+the host's network, then builds and starts the container and hands it the
+adapters.
+
+`--setup-network` belongs on the **first** run only. Every run after it is the
+bare command, and the network is already prepared.
+
+The network step **briefly disconnects the machine**. The script is launched detached through `systemd-run`, so an SSH
+session dropping mid-switch cannot leave the host half-bridged, and it rolls
+itself back if the gateway does not answer afterwards. You do not need a
+keyboard on the box to recover from a failure here.
+
+The host disappears for a few seconds and comes back on the same address: the
+bridge is pinned to the NIC's own MAC, so the router hands back the same lease.
+
+The uplink interface is worked out from the host's default route. If two
+candidates are equally plausible the script refuses rather than bridging the
+wrong port, and says so — name it yourself in that case:
+
+```sh
+scripts/docker-deploy.sh <host> --setup-network --wan-if enp1s0
+```
+
+Check what it did:
+
+```sh
+ssh <host> "sudo /opt/infinite-streaming-boa/scripts/docker-host-net.sh status"
+ssh <host> "sudo journalctl -u boa-netswitch --no-pager -o cat | tail -20"
+```
+
+The deploy prints the container's log tail when it finishes. That should show
+the bridge coming up and an access point starting on each radio.
+
+### 3. Use it
+
+```
+http://<host>:8080/
+```
+
+The container publishes no Docker ports, because it owns an otherwise empty
+network namespace and there is no interface for Docker to bind. The attach step
+installs a DNAT from port 8080 on the host to the container's management
+address instead. That management path is a private veth pair, deliberately
+independent of the bridge having taken a DHCP lease, so the interface is still
+reachable when the uplink is unplugged.
+
+`iperf3` answers on port 5201 as it does on the Pi, with
+[the same caveat](#measured-on-the-container-host) about which direction is
+conditioned.
+
+### Day to day
+
+One command, and it is the container equivalent of `scripts/deploy.sh`:
+
+```sh
+scripts/docker-deploy.sh <host>
+```
+
+Rebuilds, recreates the container and re-attaches. There is no equivalent of
+reflashing, because the image is rebuilt every time — the reason the Pi needs a
+reflash for units, packages and kernel settings does not arise here.
+
+Step 1 and the `--setup-network` flag are the only parts you do once.
+
+### What this puts on your host
+
+Worth knowing before you start, and all of it is removable.
+
+| Installed | Purpose |
+|---|---|
+| `/opt/infinite-streaming-boa/` | The build context: `docker/`, `overlay/`, the two scripts |
+| `/usr/local/sbin/boa-attach` | Moves the adapters and the uplink into the container |
+| `/usr/local/sbin/boa-attach-watch` | Watches `docker events`, re-attaches on every container start |
+| `/etc/systemd/system/boa-attach.service` | Keeps the watcher running |
+| `/etc/NetworkManager/conf.d/99-boa-unmanaged.conf` | Stops NetworkManager touching the adapters |
+| A udev rule | Re-attaches an adapter that is unplugged and replugged |
+| `br-wan`, and two `nmcli` connections | The bridge the container's uplink hangs off |
+| Docker volume `boa-state` | Operator policy. Chart history stays on the container's writable layer |
+
+The attach helpers exist because Docker cannot hand a physical network device to
+a container: netdevs do not live in `/dev`, so there is no `--device` for them,
+and only something holding `CAP_NET_ADMIN` in the host namespace can move one. A
+namespace also dies with its container, so the move has to be redone on every
+restart — hence a watcher rather than a one-shot.
+
+### Undoing it
+
+```sh
+ssh <host> "cd /opt/infinite-streaming-boa/docker && docker compose down"
+ssh <host> "sudo systemctl disable --now boa-attach.service"
+ssh <host> "sudo /opt/infinite-streaming-boa/scripts/docker-host-net.sh revert"
+```
+
+`revert` restores the NetworkManager connection that was active on the NIC
+before `apply` ran, which the script recorded at the time rather than guessing
+at afterwards.
+
+### When it does not work
+
+| Symptom | Cause |
+|---|---|
+| `br-wan does not exist` | The deploy ran without `--setup-network`, or that step failed. Check `journalctl -u boa-netswitch` |
+| `could not identify the uplink interface` | Detection found no candidate or more than one. The message lists what it saw; pass `--wan-if <name>` |
+| `nmcli not found`, or NetworkManager not running | The host uses netplan with systemd-networkd, the Ubuntu Server default. Not supported by this script; nothing was changed |
+| `no NetworkManager connection is active on <if>` | The named interface is real but unmanaged. Usually the wrong NIC |
+| `wan0 never appeared after 120s` | The attach never ran. Check `journalctl -u boa-attach` |
+| Container up, but no client ports | Look for `no lan-usb-* port was handed over` in `docker logs boa`. The adapters are discovered on the USB bus, so a device on a PCIe slot is not picked up |
+| No access point | `no radio this box can serve`, or a country code the radio will not accept. `AP_COUNTRY` must match where the machine physically is |
+| The box's IP changed after a redeploy | Should not happen — the uplink MAC is derived from the host NIC precisely so the lease survives. Report it |
+
 ## Configuration
 
-Everything lives in `.env`; see `.env.example` for the full annotated list.
+Everything lives in `.env`; see `.env.example` for the full annotated list. **One
+file serves both targets.** The container deployment reads the same access-point
+settings from it, and ignores the rest — the login account, the SSH key, the
+rescue address and the Pi's USB current setting are all properties of an image
+that the container does not build.
 
 | Variable | Meaning |
 |---|---|
-| `AP_SSID`, `AP_PASSWORD` | The wireless network the Pi publishes |
+| `AP_SSID`, `AP_PASSWORD` | The wireless network the box publishes |
 | `AP_COUNTRY` | Regulatory domain. **The radio stays blocked until this is right** |
 | `AP_BAND`, `AP_CHANNEL` | `bg` (2.4GHz) or `a` (5GHz); 5GHz AP mode is limited to the non-DFS channels 36/40/44/48 and 149/153/157/161/165 |
 | `BOA_WAN_PORT` | The port cabled to your existing network. Conditioning is applied here |
@@ -1608,6 +1993,7 @@ Everything lives in `.env`; see `.env.example` for the full annotated list.
 | `BOA_USER`, `BOA_PASSWORD`, `BOA_SSH_PUBKEY` | Headless login — see below |
 | `BOA_NTOPNG_PASSWORD` | ntopng's admin password. **Keep it different from `BOA_PASSWORD`** — leaving it empty falls back to that, which stores your login password on the box a second time as an unsalted MD5 |
 | `AP_SSID_USB` | A different SSID for the USB radio while testing it. Empty means both publish `AP_SSID` |
+| `AP_SSID_DOCKER` | The SSID used by the **container** deployment. Empty falls back to `AP_SSID`. Set it whenever both a Pi and a container host can be powered on at once |
 
 ### Which radio serves the access point
 
@@ -1999,10 +2385,9 @@ chart is blank on the onboard one — see
 
 ## Layout
 
+Shared by both targets:
+
 ```
-build.sh              orchestrates the build; validates .env
-scripts/customize.sh  all image surgery; runs in a privileged arm64 container
-scripts/build-payload.sh  builds the UI and cross-compiles the daemon
 daemon/               Go daemon; embeds the compiled UI, ships as one binary
 daemon/cmd/boactl/    terminal client for the API, and the `probe` assertions
 ui/                   Vue 3 + TypeScript interface
@@ -2011,12 +2396,36 @@ docs/API.md           generated HTTP reference; regenerate with -update, never b
 docs/DATA-CONTRACT.md where every displayed number comes from and what it means
 docs/LICENSING.md     what may be redistributed, and what may not
 docs/BACKLOG.md       accepted limitations; candidate work lives in issues
+```
+
+The Pi image:
+
+```
+build.sh              orchestrates the build; validates .env
+scripts/customize.sh  all image surgery; runs in a privileged arm64 container
+scripts/build-payload.sh  builds the UI and cross-compiles the daemon
+scripts/deploy.sh     pushes a new binary to a running Pi
 overlay/              staged files grafted into the image root
+```
+
+The container:
+
+```
+docker/Dockerfile     debian:trixie-slim, plus radioplan copied from overlay/
+docker/compose.yml    one service, network_mode: none, three capabilities
+docker/entrypoint.sh  the bridge, the radios, iperf3, boad, and the hotplug loop
+docker/systemctl      shim answering the two calls the daemon makes of systemd
+docker/boa-hostapd-supervise  keeps one hostapd per radio alive
+docker/udhcpc.script  the lease script Debian's busybox does not ship
+scripts/docker-deploy.sh    builds here, ships and restarts there
+scripts/docker-host-net.sh  prepares the host's network; reversible
+scripts/docker-attach.sh    moves the adapters into the container's namespace
 ```
 
 ## Development
 
-Four loops, fastest first. Pick the slowest one you actually need.
+Five loops, fastest first. Pick the slowest one you actually need. Loops 1 and 2
+are target-agnostic; loop 3 is the Pi and loop 4 the container.
 
 ### 1. Interface only, no hardware — sub-second
 
@@ -2068,7 +2477,25 @@ Set up a key first, since this runs often:
 ssh-copy-id boa@infinite-streaming-boa.local
 ```
 
-### 4. Driving a box from the terminal — `boactl`
+### 4. Full deploy to a container host — about a minute
+
+```sh
+scripts/docker-deploy.sh <host>
+```
+
+The container equivalent of loop 3, and the same split: the interface and the
+daemon are built here, and only the finished artefacts are shipped. It is slower
+than `deploy.sh` because the image is rebuilt and the container recreated rather
+than one binary being replaced, and correspondingly there is nothing that needs
+a reflash.
+
+`scripts/dev.sh <host>` from loop 2 works against a container host as well, so
+interface work does not need this loop either way.
+
+First-run setup is separate and documented in
+[Run it as a container on a Linux host](#run-it-as-a-container-on-a-linux-host).
+
+### 5. Driving a box from the terminal — `boactl`
 
 ```sh
 cd daemon && go build -ldflags "-X main.version=$(../scripts/version.sh)" \

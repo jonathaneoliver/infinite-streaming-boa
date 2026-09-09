@@ -166,8 +166,9 @@ tenancy, and all policy, pattern and radio state is global to the box — a seco
 person changing something changes it for whatever run is in progress. The
 short-lived claim `scripts/deploy.sh` takes on the hardware prevents colliding
 deploys and is a courtesy between colleagues, not access control.
-Scaling to several testers means several boxes, which is why the target is a
-cheap board and a reproducible image rather than a rack appliance.
+Scaling to several testers means several boxes, which is why both targets are
+cheap and reproducible — a small board with an image, or a container on a
+machine someone already has — rather than a rack appliance.
 
 ### Conditioning the link
 
@@ -218,24 +219,56 @@ test.
 
 ## 5) System Overview
 
+**Two deployment targets, on equal terms.** boa runs either on a Raspberry Pi
+flashed from a purpose-built image, or as a container on an x86_64 Linux host
+that owns its adapters outright. Neither is the reference implementation and
+neither is a port. **The same `boad` binary and the same embedded interface
+serve both, and no behaviour in this document is conditional on the target.**
+
+What differs is only where the box obtains four things a bridge needs — the
+bridge itself, the hostapd configurations, hotplug handling, and process
+supervision. The Pi takes them from the distribution: NetworkManager, udev and
+systemd units. The container brings its own: an entrypoint that builds the
+bridge and supervises the processes, a `systemctl` shim answering the two calls
+the daemon makes of systemd, and a set of root-owned helpers on the host that
+move the physical adapters into its network namespace. The channel planner is
+shared verbatim between them, so a plan made on one target cannot drift from a
+plan made on the other.
+
+Where a requirement below genuinely differs, it says so. Two do: ntopng and
+glances are absent from the container image, and the container's management
+address is a private point-to-point link rather than a rescue address on the
+bridge.
+
 **Topology.** A transparent layer-2 bridge (`br-lan`) spans the WAN port, the
-wireless AP (`wlan0`) and a USB ethernet port (`lan0`). Clients get addresses
-from the **existing upstream router**. The bridge holds a management address by
-DHCP plus a fixed rescue address, so the box is reachable without being a hop.
+wireless AP and any USB ethernet ports. Clients get addresses from the
+**existing upstream router**. The bridge holds a management address by DHCP, so
+the box is reachable without being a hop.
+
+On the Pi the WAN port is the onboard NIC and the bridge additionally holds a
+fixed rescue address. On a container host the WAN port is one end of a veth pair
+whose other end sits in a bridge on the host, which is what keeps the uplink a
+real layer-2 port carrying arbitrary client MACs; the rescue address is replaced
+by a private management veth on its own /30, reachable through a DNAT on the
+host. In both cases downstream ports are named after the device rather than the
+socket it occupies.
 
 **Daemon** (`boad`) — a single Go binary with the Vue
 interface embedded. Serves :80. Requires root: it configures queueing
-disciplines and opens a packet socket.
+disciplines and opens a packet socket. Identical on both targets.
 
 **ntopng** — traffic analysis on :3000, watching `br-lan`. Deep links from each
-device card. Optional: the image builds without it.
+device card. Optional: the image builds without it, and **it is absent from the
+container image**, where the interface reports it inactive and says why it
+cannot be started rather than silently failing.
 
 **glances** — the box's own health on :61208: CPU, memory, SoC temperature,
 disk and per-process load, linked from the header. It answers a different
 question from ntopng's, and the one that matters when a throughput figure looks
 wrong for a reason that is not the policy — a thermally throttled Pi, a full
 card, the daemon itself eating a core. It says nothing about clients. Optional
-on the same terms: the image builds without it and the UI hides the link.
+on the same terms: the image builds without it, the UI hides the link, and it is
+likewise absent from the container image.
 
 None of :80, :3000 or :61208 authenticates. The box is a bench appliance for a
 network you already control, and anyone who can reach it can re-shape any
@@ -692,7 +725,10 @@ damages packets, never link state.
   cable, a port or a hub, and that is a person's job. This is deliberately not
   specific to any adapter, driver or socket — the kernel attributes the fault
   and the box believes it — so a dongle moved between a hub and a port directly
-  on the Pi is covered without changing anything.
+  on the box is covered without changing anything, on either target. The
+  container is granted a writable bind onto the USB driver tree specifically so
+  the remedy is available to it, since diagnosing a wedged radio and then being
+  refused the reset would be the worst of both.
 - **Each adapter shows the physical USB port it is plugged into.** The interface
   name is deliberately stable across replugging, which is what makes it useful
   and also means it cannot tell you where the hardware is. The port does: it is
@@ -707,7 +743,10 @@ damages packets, never link state.
 - The log is **in memory and lossy by design**: a few hundred events, cleared by
   a restart or a deploy. An association event per client per roam, persisted, is
   exactly the steady write that wears an SD card out, and every event still
-  worth having rebuilds itself within seconds.
+  worth having rebuilds itself within seconds. Chart history is held the same
+  way and for the same reason on both targets — on tmpfs on the Pi, on the
+  container's own writable layer otherwise — so it survives a daemon restart and
+  does not survive a reboot. Only operator policy is durable.
 
 ### 6.6 The bridge
 
@@ -1056,8 +1095,10 @@ damages packets, never link state.
 - **A chosen channel is remembered, and a radio is put back on it.** The move
   itself is applied to the running access point and lasts only as long as that
   process, so a restart, a reboot, a USB re-enumeration or a driver reload
-  would otherwise return the radio to whatever the image was built with,
-  silently. The choice is kept as box state rather than written into the access
+  would otherwise return the radio to whatever the channel planner last decided,
+  silently. This is why the planner runs at start and on hotplug and **never
+  continuously** on either target: rediscovering the hardware must not be
+  allowed to re-decide policy, or a deliberate move reads as drift and is undone. The choice is kept as box state rather than written into the access
   point's own configuration, which has no single file it belongs in: those
   configurations are per ROLE, two of them describe the same onboard radio in
   different bands, and which one is live depends on whether the USB adapter is
@@ -1127,8 +1168,33 @@ damages packets, never link state.
   addresses; with no live WAN port, clients associate and get nothing.
 - **Wi-Fi airtime is shared.** Conditioning is additive on top of a variable
   radio baseline, not absolute.
-- **No per-station signal level.** The Pi 5's radio reports none in AP mode;
-  transmit failures stand in.
+- **No per-station signal level.** The Pi 5's onboard radio reports none in AP
+  mode; transmit failures stand in. A property of that chip rather than of the
+  target, so a USB adapter on either target may do better.
+- **The container cannot be handed its adapters by Docker.** Netdevs do not
+  live in `/dev`, so there is no `--device` for them, and only a process holding
+  `CAP_NET_ADMIN` in the host's namespace can move one between namespaces. A
+  network namespace also dies with its container, so the move must be repeated
+  on every start. Root-owned helpers on the host therefore do this work, and the
+  container deployment is not a zero-footprint one. Simpler arrangements are
+  being evaluated.
+- **The container host must run NetworkManager.** The uplink NIC is put into a
+  bridge with `nmcli`, and the script refuses to guess rather than acting on a
+  host it cannot put back. A host using netplan with systemd-networkd — the
+  Ubuntu Server default — is not supported by it today.
+- **The container host's uplink is discovered, and refuses to guess.** It is
+  taken from the interface carrying the default route, excluding the USB
+  adapters and any radio, and recovered from the bridge on a re-run. Where that
+  is ambiguous the setup step stops and asks to be told, rather than bridging
+  the wrong port and taking the host off the network.
+- **Neither target has been measured with two radios carrying clients at once.**
+  Every published wireless figure is a single radio. It is the largest gap in
+  the evidence for a box whose whole point is several radios in a rack.
+- **Only the container has been measured end to end.** Conditioning verified
+  through the box to a host beyond it — the only arrangement in which both
+  directions are simultaneously true — exists for the container and not for the
+  Pi, whose published figures are all ceilings taken against the box itself. An
+  unmeasured case is recorded as unmeasured rather than assumed equivalent.
 - **Client-to-client traffic is not conditioned** on the uplink path, as it
   never crosses the WAN port.
 - **A shared budget across media is not expressible** while downlink is shaped
