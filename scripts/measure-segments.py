@@ -27,12 +27,26 @@ MEASURED 2026-09-08 against Netflix on a Google TV, 1080p24 AV1:
     sustained            ~1.5 Mbps combined
     rate WITHIN a burst  40-150 Mbps
 
-The last two lines are the point. A 650 KB segment is pulled at up to 150 Mbps
+The last two lines are the point. A 650 KB burst is pulled at up to 150 Mbps
 and the link then idles for five seconds. That is why a rendition's delivered
-rate must be a MEAN over whole segments and never a median over samples -- the
+rate must be a MEAN over whole bursts and never a median over samples -- the
 1 Hz series is bimodal, and the median lands on a rate the traffic never
 carried. See "Derived -- rendition ladders from a cap sweep" in
 docs/DATA-CONTRACT.md.
+
+A BURST IS NOT NECESSARILY A SEGMENT, and on Netflix it is not one. Measured
+later the same day at lower rates, where the gaps between requests widen enough
+to separate them: 53 of 147 fetches came in at 196,534-196,536 bytes, which is
+a fixed ~192 KiB BYTE RANGE. The 649,337 above is three or four of those
+arriving close enough together to fall inside one gap threshold, so it is a
+property of the fetch rate and the threshold rather than of the rendition.
+
+So for Netflix this tool measures the SHAPE of delivery -- burst sizes, spacing,
+in-burst rate, sustained mean -- and NOT the segment ladder. Its numbers are
+real; they just do not identify a rung. YouTube, whose index measure-ladder.py
+can read directly, remains the only one of the two where a rung can be named.
+See Source W in docs/DATA-CONTRACT.md for the three routes that fail and the
+one that works.
 
 # Things this gets right, each because getting it wrong gave a wrong answer
 
