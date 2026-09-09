@@ -258,8 +258,8 @@ LAST_RADIO_SET=""
 
 sync_radios() {
   local now plan planned iface out=""
-  now=$(usable_channels)
-  if [ -z "$(radio_ifaces)" ]; then
+  now=$(radio_ifaces)
+  if [ -z "$now" ]; then
     LAST_RADIO_SET=""
     SYNC_WLAN="wlan-none"
     return
@@ -436,9 +436,14 @@ while :; do
     n=$((n + 1))
     eval "strikes_${iface//-/_}=$n"
     if [ "$n" -ge 3 ]; then
-      log "$iface has not reached AP mode in ${n} checks; re-planning its channel"
+      # RESTARTED on its existing config, not re-planned onto a new channel.
+      # Re-running radioplan here rewrites the config, which throws away
+      # whatever channel the operator chose -- so a radio that was briefly
+      # unhealthy came back somewhere else, and a deliberate move looked like it
+      # had been ignored. Restarting is the remedy for a wedged radio; choosing
+      # a different channel is a decision, and not this loop's to make.
+      log "$iface has not reached AP mode in ${n} checks; restarting its access point"
       eval "strikes_${iface//-/_}=0"
-      infinite-streaming-boa-radioplan >/dev/null 2>&1 || true
       if [ -s "/run/boa/hostapd/$iface.pid" ]; then
         kill "$(cat "/run/boa/hostapd/$iface.pid")" 2>/dev/null || true
       fi
@@ -447,12 +452,19 @@ while :; do
 
   sync_lan_ports
   new_lan="$SYNC_LAN"
-  # USABLE CHANNELS, not just which radios exist. A LAR radio comes up on
-  # 2.4GHz because that is all it could see when the plan was made, and only
-  # once its hostapd has run does it hold a country and expose 5GHz. Watching
-  # only for radios appearing and disappearing would never notice, and the radio
-  # would stay on 2.4GHz forever with the 5GHz it just earned unused.
-  if [ "$(usable_channels)" != "$LAST_RADIO_SET" ]; then
+  # WHICH RADIOS EXIST, and nothing finer.
+  #
+  # This watched the usable CHANNEL set for a while and that was wrong: a
+  # channel set changes when a radio moves band, including when the operator
+  # moves it, so the loop re-planned, saw the radio was not where the plan said,
+  # and dragged it back. Measured 2026-09-09: a move to channel 149 was undone
+  # within five seconds, twice, and the radio ended up down.
+  #
+  # radioplan is a BOOT-TIME and HOTPLUG-TIME decision on the Pi, never a
+  # continuous one, and the daemon remembers an operator's deliberate channel
+  # (#189) precisely so it survives. A container has no udev, so this loop is
+  # the hotplug event -- and it must fire on the same thing udev would.
+  if [ "$(radio_ifaces)" != "$LAST_RADIO_SET" ]; then
     sync_radios
     new_wlan="$SYNC_WLAN"
   else
