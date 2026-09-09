@@ -121,3 +121,69 @@ func TestRadioOffMarkerCreatesItsDirectory(t *testing.T) {
 		t.Fatalf("got %q, want %q", why, offByOperator)
 	}
 }
+
+// An access point down on purpose must still say so after a daemon restart.
+//
+// The radio's power already survived one, because radioOffMarker records it.
+// The ACCESS POINT did not, and checkRadiosAtStart cannot tell a deliberately
+// disabled BSS from a radio that failed to come back: both are a powered radio
+// with nothing on the air. Measured 2026-09-09, an operator's `disable AP` was
+// undone about fifty seconds after a restart, with the log announcing the
+// rescue (#282).
+//
+// The two reasons are asserted separately because they are meant to end
+// differently: an operator's decision is indefinite, a timed outage is one the
+// daemon intends to undo itself and must not strand if it dies mid-cut.
+func TestAPOffIntentSurvivesAndSaysWhy(t *testing.T) {
+	apOffDir = t.TempDir()
+
+	if got := apOffMarker("wlan-test"); got != "" {
+		t.Fatalf("nothing has been recorded, so the marker must be empty, got %q", got)
+	}
+
+	for _, why := range []radioOffReason{offByOperator, offByOutage} {
+		if err := setAPOffMarker("wlan-test", why); err != nil {
+			t.Fatalf("recording %q: %v", why, err)
+		}
+		if got := apOffMarker("wlan-test"); got != why {
+			t.Errorf("recorded %q, read back %q -- the startup check reads this "+
+				"to decide whether to rebuild", why, got)
+		}
+	}
+
+	if err := setAPOffMarker("wlan-test", ""); err != nil {
+		t.Fatalf("clearing: %v", err)
+	}
+	if got := apOffMarker("wlan-test"); got != "" {
+		t.Errorf("cleared, but still reads %q", got)
+	}
+}
+
+// An unreadable or unknown marker must answer "", so the access point comes
+// back. Failing the other way stands an AP down on a guess, with nothing short
+// of a reboot to undo it -- the same reasoning radioOffMarker records.
+func TestAPOffIntentFailsTowardsServing(t *testing.T) {
+	apOffDir = t.TempDir()
+	p, err := apOffMarkerPath("wlan-test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(p, []byte("gremlins 2026-09-09T00:00:00Z\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := apOffMarker("wlan-test"); got != "" {
+		t.Errorf("an unrecognised reason must read as %q so the AP returns, got %q", "", got)
+	}
+}
+
+// A path that is not a bare interface name is refused, for the reason
+// radioOffMarkerPath is: the name arrives from a URL path segment, which is the
+// one place a "/" or a ".." can come from.
+func TestAPOffMarkerPathRefusesTraversal(t *testing.T) {
+	apOffDir = t.TempDir()
+	for _, bad := range []string{"", ".", "..", "../escape", "wlan/0"} {
+		if _, err := apOffMarkerPath(bad); err == nil {
+			t.Errorf("%q was accepted as an interface name", bad)
+		}
+	}
+}

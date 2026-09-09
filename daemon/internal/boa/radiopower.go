@@ -422,6 +422,17 @@ func (e *Engine) endRecovery(iface string) {
 // against how it reacts to working it out wants to vary it between one press
 // and the next, not configure it once.
 func (e *Engine) SetAPEnabled(iface string, on bool, deauth bool) error {
+	return e.setAPEnabled(iface, on, deauth, offByOperator)
+}
+
+// setAPEnabled is the body, plus WHY the access point is going down.
+//
+// The reason is what the startup check reads back. offByOperator is indefinite
+// and only the operator undoes it; offByOutage is a cut the daemon means to end
+// itself, so a daemon that died mid-outage must not leave the BSS down forever
+// -- checkRadiosAtStart clears that one and lets the access point return. The
+// same split radiointent.go already makes for the radio's power.
+func (e *Engine) setAPEnabled(iface string, on bool, deauth bool, why radioOffReason) error {
 	if err := e.radioExists(iface); err != nil {
 		return err
 	}
@@ -436,6 +447,27 @@ func (e *Engine) SetAPEnabled(iface string, on bool, deauth bool) error {
 	cmd := "DISABLE"
 	if on {
 		cmd = "ENABLE"
+	}
+
+	// RECORDED BEFORE THE COMMAND, and cleared on the way up.
+	//
+	// Before, because the failure that matters is a daemon that restarts having
+	// taken the BSS down and not written down that it meant to. Writing after a
+	// successful DISABLE leaves exactly that window. A marker for an access
+	// point that then failed to go down is harmless: the startup check only
+	// declines to REBUILD, and an access point that is already serving is not
+	// rebuilt anyway.
+	mark := why
+	if on {
+		mark = ""
+	}
+	if err := setAPOffMarker(iface, mark); err != nil {
+		// Loud, not fatal. The action still happens; what is lost is only that
+		// it survives a restart, and silence here is how that would be
+		// discovered much later as an access point that came back by itself.
+		e.logEvent(EventWarning, iface, "",
+			"could not record that the access point on %s is down: %v — it may "+
+				"come back on its own if the daemon restarts", iface, err)
 	}
 
 	// BEFORE the teardown, and only on the way down. Reported with a count
@@ -1058,6 +1090,24 @@ func (e *Engine) checkRadiosAtStart() {
 
 			if on, known := radioPowered(iface); known && !on {
 				return // deliberately off; restoreRadioPower owns that case
+			}
+			// The ACCESS POINT may be down on purpose too, which is a different
+			// intent from the radio's power and reads the same from here: a
+			// powered radio with no BSS. Without this the rebuild below undoes
+			// a deliberate `disable AP` about fifty seconds after any daemon
+			// restart, and says it is rescuing the radio while it does (#282).
+			switch apOffMarker(iface) {
+			case offByOperator:
+				return // indefinite; only the operator ends it
+			case offByOutage:
+				// A timed cut the daemon meant to undo itself, and did not,
+				// because it died mid-outage. Clear it and let the check below
+				// bring the access point back -- the same reasoning
+				// restoreRadioPower applies to a half-finished power cut.
+				if err := setAPOffMarker(iface, ""); err != nil {
+					e.logEvent(EventWarning, iface, "",
+						"could not clear the AP-off marker for %s: %v", iface, err)
+				}
 			}
 			if !hostapdReachable(iface) {
 				return // no control socket: nothing to ask and nothing to fix

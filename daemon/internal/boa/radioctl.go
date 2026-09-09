@@ -626,7 +626,7 @@ func (e *Engine) fireRadio(f RadioFire) {
 		// of a matched pair. Both halves were silent, so the pair measured the
 		// difference between 15 and 30 seconds rather than the difference
 		// between being told and having to notice.
-		if err := e.SetAPEnabled(f.Iface, false, f.Kind == RadioAPDownTell); err != nil {
+		if err := e.setAPEnabled(f.Iface, false, f.Kind == RadioAPDownTell, offByOutage); err != nil {
 			e.logEvent(EventRadio, f.Iface, "",
 				"pattern could not take the access point down on %s: %v", f.Iface, err)
 			return
@@ -636,7 +636,7 @@ func (e *Engine) fireRadio(f RadioFire) {
 			// Silent on the way back: the clients were told at the start and
 			// have already gone elsewhere, so a broadcast here would land on
 			// devices that are not on this radio and are not waiting for it.
-			if err := e.SetAPEnabled(iface, true, false); err != nil {
+			if err := e.setAPEnabled(iface, true, false, offByOutage); err != nil {
 				e.logEvent(EventWarning, iface, "",
 					"pattern could not bring the access point back on %s: %v", iface, err)
 			}
