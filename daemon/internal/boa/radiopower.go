@@ -335,7 +335,26 @@ func (e *Engine) enableAP(iface string, waitFirst bool) bool {
 	// verified directly -- and writes "Enabling of interface failed" to the log
 	// when it does, which is what makes that line worthless as evidence by
 	// itself. It is the PAIRING with a failed wait that carries the meaning.
-	if err == nil && strings.HasPrefix(strings.TrimSpace(reply), "FAIL") {
+	//
+	// AND ONLY WHEN THE WAIT ACTUALLY RAN. The paragraph above is the whole
+	// argument, and it depends on a fact the no-wait path does not have: that
+	// the access point did NOT look enabled a moment ago. Without the wait
+	// there is no such observation, so FAIL means nothing more than what the
+	// paragraph already concedes it can mean on a healthy interface.
+	//
+	// MEASURED 2026-09-09, and this was a regression I introduced with the
+	// no-wait path. Ten channel moves produced thirteen AP-DISABLED against
+	// nine AP-ENABLED: an ordinary FAIL was read as the wedge, rebuildBSS tore
+	// a healthy radio down, and repeated moves compounded it until the driver
+	// itself wedged -- ENABLE answering FAIL while STATUS said DISABLED, the
+	// netdev refusing to come up, and hostapd cycling through HT_SCAN to
+	// "Interface is disabled" every five seconds. Restarting hostapd did not
+	// clear it; a USB unbind and rebind did.
+	//
+	// So the no-wait path falls through to the confirmation below and rebuilds
+	// only if the BSS genuinely never appears, which is the same remedy reached
+	// by evidence rather than by inference.
+	if waitFirst && err == nil && strings.HasPrefix(strings.TrimSpace(reply), "FAIL") {
 		e.rebuildBSS(iface)
 		return true
 	}
