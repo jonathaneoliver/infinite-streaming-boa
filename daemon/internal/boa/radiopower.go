@@ -2401,7 +2401,34 @@ func pickBestChannel(chans []ScanChannel, band string) int {
 // they contradict each other, with an error about the kernel driver that says
 // nothing about the cause.
 func setChannelCommands(ch apChannel, widthMHz int) []string {
-	cmds := []string{"SET channel " + strconv.Itoa(ch.Channel)}
+	// THE BAND, FIRST, because a move may cross one and everything below
+	// depends on which band the interface is in.
+	//
+	// hw_mode is what makes a cross-band move possible at all, and leaving it
+	// out is what made one impossible before. Asking a radio configured
+	// hw_mode=a for channel 6 set the channel, was acknowledged, and then
+	// failed the ENABLE with "Unable to setup interface" -- the AP down, the
+	// operator told only that the move had not worked.
+	//
+	// MEASURED 2026-09-09 that hostapd accepts this at runtime. That was not a
+	// safe assumption: `SET secondary_channel` is refused as derived state, so
+	// hw_mode could plausibly have been refused the same way. It is not. The
+	// whole round trip -- 5GHz 80MHz -> 2.4GHz 20MHz -> 5GHz 80MHz -- was
+	// driven over the control socket with no restart and no client left behind
+	// on a dead BSS.
+	//
+	// ieee80211ac rides with it: VHT does not exist on 2.4GHz, and a config
+	// carrying ieee80211ac=1 into hw_mode=g is a contradiction hostapd is
+	// entitled to refuse.
+	mode, vht := "a", "1"
+	if ch.is24() {
+		mode, vht = "g", "0"
+	}
+	cmds := []string{
+		"SET hw_mode " + mode,
+		"SET ieee80211ac " + vht,
+		"SET channel " + strconv.Itoa(ch.Channel),
+	}
 	if ch.is24() || widthMHz < 40 {
 		// 20MHz: no secondary, no 80MHz centre -- but both have to be cleared
 		// EXPLICITLY, because every one of these parameters is sticky and the
@@ -2431,15 +2458,34 @@ func setChannelCommands(ch apChannel, widthMHz int) []string {
 			"SET vht_oper_chwidth 0",
 			"SET he_oper_chwidth 0",
 		)
+		// THE CENTRE INDEX IS CLEARED ON 2.4GHz, NOT SKIPPED.
+		//
+		// This branch used to write the index only for 5GHz, reasoning that
+		// only 5GHz ever carries one so only 5GHz can have a stale one. True of
+		// a move within a band, and exactly false across one: a radio arriving
+		// from 5GHz brings its block centre with it, and the parameter is
+		// sticky like every other one here.
+		//
+		// MEASURED 2026-09-09, moving 80MHz channel 36 to channel 6 with
+		// hw_mode already corrected. Every SET returned OK and the ENABLE
+		// failed on the one value nobody had touched:
+		//
+		//	20/40 MHz: center segment 0 (=42) and center freq 1 (=2437) not in sync
+		//
+		// 42 is the centre of the 36-48 block, 2437 is channel 6. Clearing both
+		// indices to 0 made the same move succeed.
+		//
+		// 0 rather than the primary channel, because on 2.4GHz there is no
+		// centre segment to name -- 0 is how hostapd spells "none", where on
+		// 5GHz at 20MHz the centre genuinely IS the primary.
+		centre := "0"
 		if !ch.is24() {
-			// Only 5GHz ever carries a centre index, so only 5GHz can have a
-			// stale one. At 20MHz it must name the primary channel itself.
-			centre := strconv.Itoa(ch.Channel)
-			cmds = append(cmds,
-				"SET vht_oper_centr_freq_seg0_idx "+centre,
-				"SET he_oper_centr_freq_seg0_idx "+centre,
-			)
+			centre = strconv.Itoa(ch.Channel)
 		}
+		cmds = append(cmds,
+			"SET vht_oper_centr_freq_seg0_idx "+centre,
+			"SET he_oper_centr_freq_seg0_idx "+centre,
+		)
 		return cmds
 	}
 	// The secondary offset is set through ht_capab, NOT through

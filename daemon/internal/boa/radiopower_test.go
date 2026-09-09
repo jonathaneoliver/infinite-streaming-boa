@@ -240,8 +240,29 @@ func TestMovingDownTo20MHzClearsTheWideSettings(t *testing.T) {
 			t.Errorf("missing %q in: %s", want, got)
 		}
 	}
-	if strings.Contains(got, "centr_freq") {
-		t.Errorf("20MHz must not carry a centre frequency: %s", got)
+	// CLEARED TO 0, not omitted, and this assertion used to say the opposite.
+	//
+	// "20MHz must not carry a centre frequency" was right about the intent and
+	// wrong about how to express it. Omitting the parameter does not clear it:
+	// every value here is sticky, so a radio arriving from 5GHz keeps its old
+	// block centre, and hostapd then refuses the ENABLE.
+	//
+	// MEASURED 2026-09-09, moving 80MHz channel 36 to channel 6 with hw_mode
+	// already corrected. Every SET returned OK and the ENABLE failed on the one
+	// value nothing had touched:
+	//
+	//	20/40 MHz: center segment 0 (=42) and center freq 1 (=2437) not in sync
+	//
+	// 42 is the centre of the 36-48 block; 2437 is channel 6. Sending 0 for
+	// both indices made the same move succeed.
+	for _, want := range []string{
+		"SET vht_oper_centr_freq_seg0_idx 0",
+		"SET he_oper_centr_freq_seg0_idx 0",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("2.4GHz must CLEAR the centre index, not stay silent about "+
+				"it -- missing %q in: %s", want, got)
+		}
 	}
 }
 
