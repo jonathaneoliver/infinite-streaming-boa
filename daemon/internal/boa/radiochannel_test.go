@@ -105,3 +105,61 @@ func TestThe40MHzCentreIsTheMiddleOfThePair(t *testing.T) {
 		}
 	}
 }
+
+// A move must always say which BAND it is going to, and 2.4GHz must clear the
+// 80MHz centre index rather than stay silent about it.
+//
+// This is the cross-band case, and it is not covered by the coupled-parameter
+// invariant above: that test asks whether every width speaks about every
+// parameter, and both of these were absent from EVERY width, so the group they
+// were compared against never contained them.
+//
+// MEASURED on the box 2026-09-09, driving hostapd's control socket by hand.
+// Without hw_mode, a radio configured hw_mode=a took `SET channel 6`, answered
+// OK, and failed the ENABLE outright -- the access point down and the operator
+// told only that the move had not worked. With hw_mode corrected but the centre
+// index left alone, every SET again returned OK and the ENABLE failed on the
+// one value nothing had touched:
+//
+//	20/40 MHz: center segment 0 (=42) and center freq 1 (=2437) not in sync
+//
+// 42 is the centre of the 36-48 block; 2437 is channel 6. The radio had carried
+// its old block centre across the band with it. Clearing both indices to 0 made
+// the same move succeed, and the full round trip -- 5GHz 80MHz to 2.4GHz 20MHz
+// and back -- then worked over the socket with no restart.
+func TestMoveSetsBandAndClearsTheOtherBandsLeftovers(t *testing.T) {
+	for ch, entry := range apChannels {
+		for _, w := range []int{20, 40, 80} {
+			if w > entry.maxWidth() {
+				continue
+			}
+			said := keysOf(setChannelCommands(entry, w))
+
+			wantMode, wantVHT, wantCentre := "a", "1", ""
+			if entry.is24() {
+				wantMode, wantVHT, wantCentre = "g", "0", "0"
+			}
+			if got := said["hw_mode"]; got != wantMode {
+				t.Errorf("channel %d at %dMHz: hw_mode=%q, want %q -- a move that "+
+					"does not name the band cannot cross one", ch, w, got, wantMode)
+			}
+			if got := said["ieee80211ac"]; got != wantVHT {
+				t.Errorf("channel %d at %dMHz: ieee80211ac=%q, want %q -- VHT does "+
+					"not exist on 2.4GHz", ch, w, got, wantVHT)
+			}
+			if wantCentre == "" {
+				continue
+			}
+			for _, k := range []string{
+				"vht_oper_centr_freq_seg0_idx",
+				"he_oper_centr_freq_seg0_idx",
+			} {
+				if got, ok := said[k]; !ok || got != wantCentre {
+					t.Errorf("channel %d at %dMHz: %s=%q (present=%v), want %q -- a "+
+						"2.4GHz target inherits the 5GHz block centre and fails the "+
+						"ENABLE on it", ch, w, k, got, ok, wantCentre)
+				}
+			}
+		}
+	}
+}
