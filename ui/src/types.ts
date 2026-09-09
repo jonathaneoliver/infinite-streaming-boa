@@ -634,6 +634,11 @@ export interface APStatus {
    *  different action from a plain disabled AP, hence a different state. */
   link_down?: boolean;
   stations: number;
+  /** Which bands this radio can BEACON on — "2.4GHz", "5GHz", or both — read
+   *  from the phy, with bands whose channels are all no-IR or disabled left
+   *  out. A capability, not the band it is currently on: a channel move may
+   *  cross bands, so the plan offers every band the radio actually has. */
+  bands?: string[];
   beacon_int_ms?: number;
   dtim_period?: number;
 }

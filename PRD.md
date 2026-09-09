@@ -1051,6 +1051,16 @@ damages packets, never link state.
   2.4GHz 1/6/11, and the non-DFS 5GHz channels 36/40/44/48 and
   149/153/157/161/165. DFS is excluded because neither radio can serve an
   access point on one.
+  **A dual-band radio is offered both bands, and a move may cross between
+  them.** The plan draws the 2.4GHz ruler and the 5GHz ruler together for a
+  radio that can beacon on both, so moving a radio from 5GHz to 2.4GHz is a cell
+  click like any other rather than something only the channel planner can do at
+  boot. Which bands a radio has is read from the phy and not from the channel it
+  happens to be on, and a band whose channels are **all** no-IR or disabled is
+  not offered — that is not hypothetical, since a self-managed regulatory radio
+  sits in the world domain until it learns a country, and there its whole 5GHz
+  range is no-IR. A cross-band move costs the same client reconnect a
+  within-band move already costs.
   **Where the radio is now is filled in the accent colour**, the same treatment
   a chosen profile gets, so "you are here" reads the same way everywhere in the
   interface rather than being inferred from a slightly different shade.

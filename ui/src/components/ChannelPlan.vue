@@ -69,13 +69,22 @@ const radio = computed(() => props.radio);
 
 
 /**
- * The channels this radio can be moved to: its own band's, and only those.
+ * The channels this radio can be moved to: every band the radio itself has.
  *
  * The daemon's allowlist, mirrored -- 2.4GHz 1/6/11 and 5GHz 36/40/44/48 plus
  * 149/153/157/161/165, with DFS excluded because the Pi cannot serve an access
- * point on one. Filtered to the band the radio is already on: a move is a
- * down-and-up on the same phy, not a band change, and offering 5GHz channels
- * on a 2.4GHz radio would be offering something the daemon then refuses.
+ * point on one.
+ *
+ * THIS USED TO BE FILTERED to the band the radio was already on, and the reason
+ * was honest: a move is a down-and-up on the same phy, and the daemon could not
+ * change hw_mode, so offering 5GHz on a 2.4GHz radio offered something that
+ * would then be refused. MoveChannel now sets hw_mode, ieee80211ac and the
+ * centre index across a band change, measured working in both directions on
+ * 2026-09-09, so the filter would hide a move that works.
+ *
+ * Filtered by the radio's CAPABILITY instead, which is the honest limit and a
+ * different one: a single-band radio must not be offered the band it does not
+ * have. A dual-band radio gets both rulers.
  *
  * The 5GHz set is kept as the BLOCKS it physically is, not as one flat list.
  * 36-48 and 149-161 are each a single 80MHz block, and the entire DFS range
@@ -94,6 +103,18 @@ const CHANNELS_5 = [...BLOCKS_5.flat(), ...SOLO_5];
 function channelsFor(radio: IfaceInfo): number[] {
   const ch = radio.ap?.channel ?? 0;
   if (!ch) return [];
+  // `bands` is what the phy can actually beacon on, so a dual-band radio gets
+  // both rulers and a single-band one is never offered a move it would be
+  // refused. Absent on a box running an older daemon, and there the old
+  // behaviour is the right fallback: show the band the radio is on, because
+  // that daemon cannot cross bands anyway.
+  const bands = radio.ap?.bands;
+  if (bands?.length) {
+    const out: number[] = [];
+    if (bands.includes("2.4GHz")) out.push(...CHANNELS_24);
+    if (bands.includes("5GHz")) out.push(...CHANNELS_5);
+    if (out.length) return out;
+  }
   return ch > 14 ? CHANNELS_5 : CHANNELS_24;
 }
 
@@ -172,47 +193,111 @@ function planRow(groups: number[][], width: number,
  *  cells it is supposed to sit beneath. */
 const filler = (g: number[]): PlanCell[] => [{ channels: [], label: '', span: g.length }];
 
-/** The blocks a radio's band is drawn in, in order. 2.4GHz is a single block:
- *  1/6/11 are one contiguous set of choices with no break in them. */
+/** True for a group of 2.4GHz channels. Read from the first channel, since a
+ *  group is never mixed: the groups are built per band below. */
+const groupIs24 = (g: number[]): boolean => g[0] <= 14;
+
+/** The blocks a radio's bands are drawn in, in order. 2.4GHz is a single block:
+ *  1/6/11 are one contiguous set of choices with no break in them. 5GHz is its
+ *  two 80MHz blocks and then 165 alone.
+ *
+ *  A dual-band radio gets 2.4GHz first and then both 5GHz blocks, four groups
+ *  with a break between each -- so the ruler reads left to right in frequency
+ *  order, and the break between 11 and 36 is the same visual device as the one
+ *  between 48 and 149. It stands for a much larger gap, but the plan has never
+ *  claimed its breaks are to scale.
+ *
+ *  DERIVED FROM THE CHANNEL LIST, not from the radio's band field, so the two
+ *  cannot disagree about what is on offer. */
 function planGroups(radio: IfaceInfo): number[][] {
   const chans = channelsFor(radio);
   if (!chans.length) return [];
-  return chans[0] <= 14 ? [chans] : [...BLOCKS_5, SOLO_5];
+  const groups: number[][] = [];
+  const has24 = chans.some((c) => c <= 14);
+  const has5 = chans.some((c) => c > 14);
+  if (has24) groups.push(CHANNELS_24);
+  if (has5) groups.push(...BLOCKS_5, SOLO_5);
+  return groups;
+}
+
+/**
+ * The band header: which stretch of the ruler is 2.4GHz and which is 5GHz.
+ *
+ * Needed the moment a radio can be offered both. Before that the band was
+ * implicit -- a plan showed one band and the row you were looking at was the
+ * band you were on -- and a ruler that runs 1, 6, 11, 36, 40 ... with nothing
+ * marking the join asks the reader to know that 11 and 36 are 2.6GHz apart.
+ *
+ * SPANS RUNS OF GROUPS, not single groups. The 5GHz side is three groups --
+ * 36-48, 149-161, and 165 alone -- and labelling each of them "5GHz" would say
+ * the same thing three times and imply three bands. One label covers the run,
+ * including the break tracks inside it, so it lines up with exactly the
+ * channels it names.
+ */
+function planBandRow(groups: number[][]): PlanCell[] {
+  const cells: PlanCell[] = [];
+  let n = 0;
+  while (n < groups.length) {
+    const is24 = groupIs24(groups[n]);
+    // How many groups this band runs for, and how many tracks that covers: the
+    // channels themselves plus the break track sitting between each pair.
+    let span = 0;
+    const from = n;
+    while (n < groups.length && groupIs24(groups[n]) === is24) {
+      if (n > from) span += 1;
+      span += groups[n].length;
+      n += 1;
+    }
+    if (from) cells.push(BREAK);
+    cells.push({ channels: [], label: is24 ? '2.4GHz' : '5GHz', span });
+  }
+  return cells;
 }
 
 /** The rows and the track set together, so the template cannot pair a row with
  *  a grid definition built from different groups. */
-function plan(radio: IfaceInfo): { cols: string; rows: PlanRow[] } | null {
+function plan(radio: IfaceInfo): {
+  cols: string; rows: PlanRow[]; bands: PlanCell[];
+} | null {
   const groups = planGroups(radio);
   if (!groups.length) return null;
   const cols = planCols(groups);
+  const bands = planBandRow(groups);
   // 2.4GHz is offered at 20MHz only: 1/6/11 are the only non-overlapping
-  // choices, 40MHz eats two of the three, and 80MHz does not exist there.
-  if (groups[0][0] <= 14) {
-    return {
-      cols,
-      rows: [planRow(groups, 20, (g) =>
-        g.map((c) => ({ channels: [c], label: String(c), span: 1 })))],
-    };
-  }
+  // choices, 40MHz eats two of the three, and 80MHz does not exist there. So a
+  // 2.4GHz-only radio gets a single row, and on a dual-band radio the 2.4GHz
+  // GROUP contributes a filler to the wider rows rather than cells.
+  //
+  // A filler and not nothing, for the reason filler() gives: dropping the cell
+  // slides every cell after it left, out from under the 20MHz cells it is meant
+  // to sit beneath. Before this, a dual-band radio pushed all its channels into
+  // one group, the plan read that group as 2.4GHz, and the 40 and 80MHz rows
+  // vanished entirely -- the 5GHz widths gone from a radio that has them.
+  const wide = (g: number[], build: (g: number[]) => PlanCell[]): PlanCell[] =>
+    groupIs24(g) ? filler(g) : build(g);
+
+  const twenty = planRow(groups, 20, (g) =>
+    g.map((c) => ({ channels: [c], label: String(c), span: 1 })));
+  if (groups.every(groupIs24)) return { cols, rows: [twenty], bands };
+
   return {
     cols,
+    bands,
     rows: [
-      planRow(groups, 20, (g) =>
-        g.map((c) => ({ channels: [c], label: String(c), span: 1 }))),
-      planRow(groups, 40, (g) => {
-        if (g.length < 2) return filler(g);
+      twenty,
+      planRow(groups, 40, (g) => wide(g, (g5) => {
+        if (g5.length < 2) return filler(g5);
         const pairs: PlanCell[] = [];
-        for (let n = 0; n < g.length; n += 2) {
-          const p = g.slice(n, n + 2);
+        for (let n = 0; n < g5.length; n += 2) {
+          const p = g5.slice(n, n + 2);
           pairs.push({ channels: p, label: `${p[0]}–${p[p.length - 1]}`, span: p.length });
         }
         return pairs;
-      }),
-      planRow(groups, 80, (g) =>
-        g.length < 4
-          ? filler(g)
-          : [{ channels: g, label: `${g[0]}–${g[g.length - 1]}`, span: g.length }]),
+      })),
+      planRow(groups, 80, (g) => wide(g, (g5) =>
+        g5.length < 4
+          ? filler(g5)
+          : [{ channels: g5, label: `${g5[0]}–${g5[g5.length - 1]}`, span: g5.length }])),
     ],
   };
 }
@@ -313,6 +398,21 @@ function cellNote(radio: IfaceInfo, row: PlanRow, cell: PlanCell): string {
   <div
     v-if="plan(radio)" class="plan" :class="{ working: busy }"
   >
+    <!-- Which stretch is which band. On the same track set as the rows below,
+         so a label covers exactly the channels it names rather than being
+         positioned to look as though it does. -->
+    <div
+      class="plan-row plan-bands"
+      :style="{ gridTemplateColumns: plan(radio)!.cols }"
+    >
+      <span class="lbl" aria-hidden="true" />
+      <template v-for="(cell, n) in plan(radio)!.bands" :key="`band-${n}`">
+        <span v-if="cell.gap" class="plan-gap" aria-hidden="true" />
+        <span
+          v-else class="band-lbl" :style="{ gridColumn: `span ${cell.span}` }"
+        >{{ cell.label }}</span>
+      </template>
+    </div>
     <div
       v-for="row in plan(radio)!.rows" :key="row.width"
       class="plan-row" :style="{ gridTemplateColumns: plan(radio)!.cols }"
@@ -366,6 +466,24 @@ function cellNote(radio: IfaceInfo, row: PlanRow, cell: PlanCell): string {
 /* Holds a column open where a block has no cell at this width -- 165 has no
    40MHz partner. Invisible, but it occupies the track. */
 .plan-filler { min-width: 0; }
+/* The band header. Quieter than the width labels down the left, because it
+   names the spectrum rather than offering a choice: nothing here is clickable,
+   and it must not read as a row of cells that has stopped working. */
+.plan-bands { margin-bottom: 3px; }
+.band-lbl {
+  min-width: 0;
+  font-size: 9px;
+  letter-spacing: 0.04em;
+  color: var(--ink-faint);
+  text-align: center;
+  line-height: 11px;
+  /* A hairline under the label, so the eye reads it as a bracket over the
+     channels beneath rather than as a caption floating above the whole plan. */
+  border-bottom: 1px solid var(--rule, rgba(255, 255, 255, 0.12));
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .plan .lbl {
   font-size: 9px;
   color: var(--ink-faint);

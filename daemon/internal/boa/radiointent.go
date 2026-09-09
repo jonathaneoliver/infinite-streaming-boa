@@ -131,3 +131,82 @@ func radioOffMarker(iface string) radioOffReason {
 		return ""
 	}
 }
+
+/*
+ * The same idea for the ACCESS POINT, which is a different intent from the
+ * radio's power and needs its own record.
+ *
+ * `power off` is rfkill: the transmitter stops and clients are told nothing.
+ * `disable AP` leaves the radio transmitting and tears the BSS down, so the
+ * departure is announced. The box offers both because the difference is exactly
+ * what an operator testing client behaviour wants to vary -- and having only
+ * one marker meant only one of them survived a daemon restart.
+ *
+ * What that cost, measured 2026-09-09: checkRadiosAtStart honours a deliberate
+ * power-off because radioOffMarker tells it to, sees a deliberately disabled
+ * access point as a radio that failed to come back, and rebuilds it. An
+ * operator who disabled an access point and then deployed found it serving
+ * again about fifty seconds later, with the log announcing the rescue (#282).
+ */
+
+// apOffDir holds one marker per access point that is down on purpose. Beside
+// radioOffDir and under the same RuntimeDirectory, so it survives a daemon
+// restart and does not survive a reboot -- which is the right lifetime for
+// both: a restart is the daemon's business, a reboot is the operator's.
+var apOffDir = "/run/infinite-streaming-boa/ap-off"
+
+func apOffMarkerPath(iface string) (string, error) {
+	if iface == "" || iface == "." || iface == ".." || iface != filepath.Base(iface) {
+		return "", fmt.Errorf("not an interface name: %q", iface)
+	}
+	return filepath.Join(apOffDir, iface), nil
+}
+
+// setAPOffMarker records why an access point is down, or clears the record when
+// why is "". Failures are returned rather than swallowed: a marker that was not
+// written is an intent that will not survive, and the caller logs it.
+func setAPOffMarker(iface string, why radioOffReason) error {
+	p, err := apOffMarkerPath(iface)
+	if err != nil {
+		return err
+	}
+	if why == "" {
+		if err := os.Remove(p); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("clearing the AP-off marker for %s: %w", iface, err)
+		}
+		return nil
+	}
+	if err := os.MkdirAll(apOffDir, 0o755); err != nil {
+		return fmt.Errorf("creating %s: %w", apOffDir, err)
+	}
+	body := fmt.Sprintf("%s %s\n", why, time.Now().Format(time.RFC3339))
+	if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+		return fmt.Errorf("recording that the AP on %s is down: %w", iface, err)
+	}
+	return nil
+}
+
+// apOffMarker reports why an access point is down on purpose, or "" if nothing
+// says it is. Unreadable or unrecognised answers "", for the reason
+// radioOffMarker gives: the safe direction to fail is the one where the access
+// point comes back.
+func apOffMarker(iface string) radioOffReason {
+	p, err := apOffMarkerPath(iface)
+	if err != nil {
+		return ""
+	}
+	raw, err := os.ReadFile(p)
+	if err != nil {
+		return ""
+	}
+	f := strings.Fields(string(raw))
+	if len(f) == 0 {
+		return ""
+	}
+	switch why := radioOffReason(f[0]); why {
+	case offByOperator, offByOutage:
+		return why
+	default:
+		return ""
+	}
+}

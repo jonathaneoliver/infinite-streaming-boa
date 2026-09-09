@@ -919,6 +919,23 @@ way to learn them on a running box is to ask hostapd. See Source K.
 
 **`stations`** `int`
 
+**`bands`** `[]string` _(omitted when empty)_
+> Bands is which bands this radio can actually BEACON on, as "2.4GHz" and
+> "5GHz", read from the phy rather than inferred from the channel it
+> happens to be on.
+>
+> Needed because a channel move may now cross bands, so the interface has
+> to know which bands to offer. It used to offer only the band the radio
+> was already on, which was right while the daemon could not change
+> hw_mode and became a hidden capability once it could.
+>
+> CAPABILITY, not preference, and narrower than the channel list: a band
+> whose channels are all "no IR" or disabled is not one an access point may
+> start on, and is omitted. That distinction is not academic here -- the
+> AX200 is a self-managed regulatory device that sits in world domain until
+> it learns a country, and in world domain every one of its 5GHz channels
+> is no-IR. Offering 5GHz there would offer a move that cannot work.
+
 **`beacon_int_ms`** `int` _(omitted when empty)_
 > BeaconIntMs and DTIMPeriod are the power-save timing knobs. Shown
 > because a phone's downlink behaviour between segment fetches is governed

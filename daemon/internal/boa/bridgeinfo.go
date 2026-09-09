@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"sort"
@@ -74,6 +75,22 @@ type APStatus struct {
 	// them apart will press the wrong control and conclude the box is broken.
 	LinkDown bool `json:"link_down,omitempty"`
 	Stations int  `json:"stations"`
+	// Bands is which bands this radio can actually BEACON on, as "2.4GHz" and
+	// "5GHz", read from the phy rather than inferred from the channel it
+	// happens to be on.
+	//
+	// Needed because a channel move may now cross bands, so the interface has
+	// to know which bands to offer. It used to offer only the band the radio
+	// was already on, which was right while the daemon could not change
+	// hw_mode and became a hidden capability once it could.
+	//
+	// CAPABILITY, not preference, and narrower than the channel list: a band
+	// whose channels are all "no IR" or disabled is not one an access point may
+	// start on, and is omitted. That distinction is not academic here -- the
+	// AX200 is a self-managed regulatory device that sits in world domain until
+	// it learns a country, and in world domain every one of its 5GHz channels
+	// is no-IR. Offering 5GHz there would offer a move that cannot work.
+	Bands []string `json:"bands,omitempty"`
 	// BeaconIntMs and DTIMPeriod are the power-save timing knobs. Shown
 	// because a phone's downlink behaviour between segment fetches is governed
 	// by them and by nothing else visible in this interface.
@@ -825,7 +842,64 @@ func apStatus(iface, country string) *APStatus {
 		}
 	}
 	ap.Stations = len(StationDump(iface))
+	ap.Bands = phyBands(iface)
 	return ap
+}
+
+// phyBands reports the bands this interface's radio may start an access point
+// on: "2.4GHz", "5GHz", or both.
+//
+// The two exclusions are the same ones radioplan applies, and they are the
+// whole point of asking the phy instead of reading the current channel. A
+// channel marked "disabled" is not available at all. One marked "no IR" may not
+// be transmitted on until the radio has first heard someone else, which an
+// access point cannot rely on -- so a band with nothing but no-IR channels is a
+// band this radio cannot serve, however well the hardware supports it.
+//
+// An empty result is returned as nil rather than an error. This is decoration
+// on a view rebuilt every second; a radio whose phy cannot be read should show
+// no band buttons, not fail the whole bridge view.
+func phyBands(iface string) []string {
+	phy, err := os.Readlink(filepath.Join("/sys/class/net", iface, "phy80211"))
+	if err != nil {
+		return nil
+	}
+	out, err := exec.Command("iw", "phy", filepath.Base(phy), "info").Output()
+	if err != nil {
+		return nil
+	}
+	var has24, has5 bool
+	for _, line := range strings.Split(string(out), "\n") {
+		// The channel lines look like "* 5180.0 MHz [36] (22.0 dBm)", nested
+		// several tabs deep under their band. The frequency is read from the
+		// line itself rather than tracked from the enclosing "Band N:" header,
+		// because the band NUMBER is not the band: which numbered band is
+		// 2.4GHz differs between drivers, and a tri-band phy has three.
+		if !strings.Contains(line, " MHz [") {
+			continue
+		}
+		if strings.Contains(line, "disabled") || strings.Contains(line, "no IR") {
+			continue
+		}
+		var mhz float64
+		if _, err := fmt.Sscanf(strings.TrimSpace(line), "* %f MHz", &mhz); err != nil {
+			continue
+		}
+		switch {
+		case mhz >= 2400 && mhz < 2500:
+			has24 = true
+		case mhz >= 5000 && mhz < 5900:
+			has5 = true
+		}
+	}
+	var bands []string
+	if has24 {
+		bands = append(bands, "2.4GHz")
+	}
+	if has5 {
+		bands = append(bands, "5GHz")
+	}
+	return bands
 }
 
 // apWidth derives the channel width, which hostapd does not report.
