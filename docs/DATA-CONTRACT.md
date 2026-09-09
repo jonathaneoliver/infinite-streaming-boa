@@ -412,6 +412,17 @@ page.
 | `sweep.levels[].drift` | fraction | \|mean(first half) − mean(second half)\| **over** the window mean. Not a percentage |
 | `sweep.levels[].saturated` | bool | The mean was ≥ 85% of the cap: the client had not dropped below it |
 
+**`unstable` is not attributable to the network.** Measured against a real
+programme's encoded bitrate, on a perfect link with no cap at all, **34% to 53%**
+of all 300 s windows disagree between their halves by more than 20% — median
+drift 15–24%, peak 85%, across six renditions. Content varies on scene and
+section timescales measured in minutes, so a longer window does not average it
+out. The flag is true when it fires; it just does not mean an impairment. See
+[one real YouTube programme](#measured--one-real-youtube-programme-as-ground-truth-for-a-ladder),
+which also shows that five of six adjacent rung boundaries overlap in
+instantaneous rate — so for those, no cap value separates two renditions by rate
+alone, and whether any given pair is separable is a property of the encode.
+
 **When a level is measured.** Not after a fixed wait. A player still on a
 rendition it can no longer afford fetches back-to-back and stays pinned to the
 cap; when it drops, idle gaps appear and throughput falls away. The sweep waits
@@ -618,6 +629,144 @@ observe.
 
 Measuring the shaper's own pacing requires a packet capture at the egress
 interface, before the radio.
+
+## Measured — one real YouTube programme, as ground truth for a ladder
+
+Everything above describes what the box measures. This describes what it is
+measuring *against*: a real encoded ladder, taken from the source rather than
+inferred from a sweep, so a swept ladder has something to be wrong about.
+
+**The programme.** YouTube video `JtVljGMKOHU`, 2677 s, AV1 1080p30, bt709,
+Opus audio. Captured 2026-09-08 from a TV playing it through this box, with
+`Stats for nerds` open.
+
+**Method.** Each rendition is a DASH stream whose `sidx` box (ISO/IEC 14496-12
+segment index) lists every subsegment's byte size and duration. Reading it costs
+two HTTP range requests against the head of the stream -- about 2 MB, not the
+390 MB of media. 518 segments of 3.570 s, timescale 30000.
+
+**Why the parse can be trusted:** the mean recomputed from those 518 segments is
+1223.8 kbps against the 1223.849 that `yt-dlp` reports independently. Four
+significant figures of agreement between two different derivations is what makes
+this a measurement rather than a plausible number.
+
+### The ladder, with the peaks the mean hides
+
+Two codec ladders were measurable. **A player moves within ONE codec's ladder**,
+so every cross-rung comparison below is made inside a family; comparing an AV1
+rung against an AVC one compares renditions no client chooses between.
+
+| Codec | Rung | itag | Mean | p90 | Max | Peak/mean |
+|---|---|---|---|---|---|---|
+| AV1 | 480p | 397 | 387 kbps | 633 (1.63x) | 901 | **2.33x** |
+| AV1 | 720p | 398 | 697 kbps | 1139 (1.63x) | 1793 | **2.57x** |
+| AV1 | 1080p | 399 | 1224 kbps | 2085 (1.70x) | 3199 | **2.61x** |
+| AVC | 480p | 135 | 368 kbps | 533 (1.45x) | 1159 | **3.15x** |
+| AVC | 720p | 136 | 655 kbps | 1039 (1.59x) | 1953 | **2.98x** |
+| AVC | 1080p | 137 | 2156 kbps | 3150 (1.46x) | 4344 | **2.02x** |
+
+Units are kbps decimal (1000 bit/s), from bytes x 8 / seconds.
+
+**ADJACENT RUNGS USUALLY OVERLAP, BUT NOT ALWAYS**, and the exception is the
+useful part:
+
+| Pair | Lower rung's peak | Upper rung's mean | |
+|---|---|---|---|
+| AV1 480p → 720p | 901 | 697 | 1.29x **overlaps** |
+| AV1 720p → 1080p | 1793 | 1224 | 1.46x **overlaps** |
+| AVC 480p → 720p | 1159 | 655 | 1.77x **overlaps** |
+| AVC 720p → 1080p | 1953 | 2156 | 0.91x *clear* |
+
+```
+AV1  480p    387 ──────── 901
+     720p         697 ──────────── 1793
+     1080p              1224 ──────────────── 3199
+```
+
+So for five of the six measured boundaries there is **no cap value that
+separates two rungs by instantaneous rate**. What separates them is the
+*sustained* rate over the player's estimation window, which is why a player with
+a deep buffer plays a rung whose peaks exceed the cap. The TV observed here held
+**84.62 s** of buffer, about 24 segments.
+
+The one clear boundary is where the encoder left the largest bitrate step: AVC
+jumps 655 → 2156 kbps between 720p and 1080p, a 3.3x step, where AV1 steps 697 →
+1224 (1.8x). A ladder with wide steps is separable by rate and a tightly-spaced
+one is not, which is a property of the *encode*, not of the network — so whether
+a cap sweep can resolve two adjacent rungs at all depends on the title.
+
+### The finding that bears on `sweep.levels[].unstable`
+
+A level is called unstable when the window's two halves disagree by more than
+20% of its mean. The obvious assumption is that a 150 s half-window averages
+~42 segments and smooths per-segment variation away. **It does not.**
+
+Applying the sweep's own arithmetic to this content's real per-second bitrate,
+on a *perfect* network with no cap and no impairment at all:
+
+| Codec | Rung | itag | Median drift | p90 | Max | Windows over 20% |
+|---|---|---|---|---|---|---|
+| AV1 | 480p | 397 | 21.8% | 44.5% | 74.5% | **53.1%** |
+| AV1 | 720p | 398 | 22.9% | 45.5% | 79.3% | **51.9%** |
+| AV1 | 1080p | 399 | 24.1% | 49.8% | 84.8% | **53.1%** |
+| AVC | 480p | 135 | 18.4% | 37.9% | 57.3% | 41.4% |
+| AVC | 720p | 136 | 21.1% | 45.0% | 66.0% | **53.1%** |
+| AVC | 1080p | 137 | 15.0% | 31.5% | 47.7% | 33.9% |
+
+**Between a third and a half of all observation windows on this programme would
+be flagged unstable with nothing wrong** -- 34% to 53% across six renditions, and
+above half on four of them. Content bitrate varies on scene and section
+timescales measured in minutes, not on segment timescales, so lengthening the
+window does not average it out -- it just moves which minutes are being compared.
+
+The two lowest figures are the two renditions with the most bits to spend per
+frame relative to their content (AVC 1080p at 2156 kbps, and AVC 480p): a
+generous encode varies less, proportionally, because it is not being forced to
+ration. That is a hint rather than a result -- six renditions of one title.
+
+This does not make the flag wrong: two halves really did disagree, and that is
+all it claims. It makes it **not attributable** -- `unstable` on this content
+says nothing about the network, and reading it as evidence of an impairment
+would be reading the programme's edit.
+
+### What this does NOT establish
+
+- **One programme, one content type.** Peak-to-mean and drift are properties of
+  the material. A talking-head clip and a sports clip will differ, possibly by a
+  lot. Nothing here should be generalised to a rate-control rule until at least
+  two or three more titles have been measured the same way. Six renditions of
+  one title are six views of the same content, not six samples.
+- **The p90 sits at 1.45-1.70x the mean on all six**, a narrow enough band to
+  look like an encoder property. It is not evidence of one: the same source
+  encoded six ways will share whatever the source does, so this needs other
+  titles before it means anything.
+- **The bottom rungs were not measured on either codec.** 144p/240p/360p
+  (itags 394-396 and 133/134/160) return HTTP 403 for the index range request
+  while 399 succeeds from the same freshly-extracted metadata, so it is
+  format-specific gating rather than URL expiry. The VP9 ladder (242/243/244/
+  247/248/278) is WebM, whose index is EBML cues rather than an ISO-BMFF `sidx`,
+  and is not parsed at all.
+
+Re-run it with:
+
+```sh
+./scripts/measure-ladder.py JtVljGMKOHU --drift
+```
+
+It fails loudly rather than quietly dropping a rung: anything it could not read
+is listed on stderr with the reason, and the exit status is non-zero. A ladder
+silently missing its bottom half still looks like a ladder.
+
+### A trap worth naming, since it is one field away
+
+`Stats for nerds` shows **`Connection Speed`**, which is the player's estimate of
+available network throughput and is *not* the media bitrate. On the capture
+above it read **28614 kbps** while the stream it was playing was 1224 + 103 =
+**~1327 kbps** -- the reported number is **21x** the thing it looks like it is.
+`Network Activity 0 KB` and `Buffer Health 84.62 s` are consistent with that: at
+21x headroom the player filled its buffer and stopped fetching. Neither field is
+a bitrate, and the `b:` value in `Mystery Text` is a buffered time *range* in
+seconds, not bits.
 
 ## Source H — DHCP requests · MAC→name
 
@@ -1877,3 +2026,97 @@ box's *other* dongle finding eleven networks and not this one; there is no
 cheap continuous equivalent, which is why the kernel's error is used instead.
 `iw survey dump` is **not** a substitute — it reports no `[in use]` channel on
 this driver even for a healthy radio (see Source L).
+
+## Source W — Netflix on a Google TV · what cannot be measured, and why
+
+Source V's neighbour, and mostly a record of NEGATIVE results. Written down
+because each one cost an hour to establish and would cost the next person the
+same, and because the headline conclusion is that the thing we set out to
+measure does not exist in the form we assumed.
+
+Measured 2026-09-08, Netflix on a Google TV Streamer (Android 14), conditioned
+through this box, over about two hours and three separate cap sweeps.
+
+### The one solid positive result
+
+**A 34-minute episode played entirely at 1920x1080 with zero resolution
+changes** -- through caps from 0.1 Mbps up to 2.4 and back down to 1.1 --
+while its picture went from unwatchable to fine by eye. The decoder's own record:
+
+```
+16:55:39   1920x1080   resolution-change-count=0   played=2056s
+```
+
+So every adaptation was a **same-resolution bitrate switch**, and nothing
+reachable over adb recorded any of it. That is not a theoretical gap: half an
+hour of dramatic, user-visible quality variation, invisible to every field the
+device exposes.
+
+### Why "what bitrate is this rung" is the wrong question for Netflix
+
+Netflix does not ship a fixed bitrate ladder. Encoding is **per-title**, and
+per-SHOT via the Dynamic Optimizer, which chooses parameters shot by shot under
+VMAF control to hold perceptual quality roughly constant. The bitrate is
+therefore designed to float; a rung is a quality target, not a rate.
+
+This explains the measurement failure directly. Repeated windows on one rung
+disagreed by **±30%**, which is the same size as the gap between adjacent rungs,
+so no amount of averaging separates them -- the variation is the encoder working
+as intended, not noise to be beaten down. Compare Source V, where the same
+effect on a YouTube title put 34-53% of observation windows over the sweep's
+`unstable` threshold on a perfect link.
+
+Published typical figures for 1080p AV1 are roughly 2-3.5 Mbps. This title
+settled at **~0.9 Mbps** capped and **~1.5-1.9 Mbps** unconstrained -- well
+below, which is what per-shot optimisation on low-complexity material looks like
+rather than a measurement error.
+
+### Three routes to a rung, and how each fails
+
+| Route | Why it fails |
+|---|---|
+| Delivered rate | Equals the cap whenever the buffer is not at equilibrium. A player refilling after a starve saturates any cap for many minutes |
+| Segment size | Netflix fetches **fixed ~192 KiB byte ranges**, not whole segments. 53 of 147 fetches were 196,534-196,536 bytes. The size is a transport constant and carries no rendition information |
+| Buffer level | Not exposed. `media_session` reports `buffered position=0`; `media.metrics` carries only AUDIO hardware buffers (`bufferCapacityFrames`) |
+
+### The method that does work, and its bound
+
+With the buffer FULL -- not merely non-empty -- fetching must equal consumption,
+so the sustained mean IS the bitrate. Idle time then measures the headroom:
+
+```
+mean = busy_rate * (1 - idle_fraction)
+```
+
+Verified on the box: 1.97 Mbps busy at 18% idle predicts 1.62, measured 1.620.
+
+Lowering the cap until the idle gaps close therefore pins the rate the content
+actually needs. The bound is the per-shot variation above: each 75s window is
+one shot's worth of bitrate, so the reading needs holds of minutes, not seconds.
+
+**A full buffer is the precondition, not an inconvenience.** Every reading taken
+while the buffer was filling reported the cap back to us.
+
+### What is still unmeasured
+
+The gap-closure point. Playback ended four steps before the cap began to bind,
+so the run never reached it. A 1080p title typically ships 6-9 rungs and we
+identified one.
+
+### Smaller things worth not rediscovering
+
+- **`used-max-input-size` carries real signal at session granularity.** The
+  largest compressed frame read 477,956 on a mostly-unconstrained session and
+  203,681 on a fully-capped one. It is a running maximum, so it cannot track
+  switches WITHIN a session, but it separates a constrained run from a free one.
+- **`media.metrics` publishes a session only when that session ENDS.** The
+  rendition playing right now is never visible; changes are reported strictly in
+  arrears.
+- **A 34-minute episode at 100 kbps never stalled** -- `underrunFrames=0`
+  throughout, including three minutes at a fifteenth of its rate. The buffer is
+  deep enough to absorb far more than any 60s test will reveal.
+- **Watchability, by eye: terrible at 0.4 Mbps, acceptable at 0.7.** No
+  instrument here can produce that number.
+- **`dumpsys media.metrics` is 335 KB and adb serialises per device.** Polling it
+  every 4s while another script also queried it made both time out -- an
+  instrument failing under its own measurement load.
