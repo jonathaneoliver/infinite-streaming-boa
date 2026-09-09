@@ -2026,3 +2026,97 @@ box's *other* dongle finding eleven networks and not this one; there is no
 cheap continuous equivalent, which is why the kernel's error is used instead.
 `iw survey dump` is **not** a substitute — it reports no `[in use]` channel on
 this driver even for a healthy radio (see Source L).
+
+## Source W — Netflix on a Google TV · what cannot be measured, and why
+
+Source V's neighbour, and mostly a record of NEGATIVE results. Written down
+because each one cost an hour to establish and would cost the next person the
+same, and because the headline conclusion is that the thing we set out to
+measure does not exist in the form we assumed.
+
+Measured 2026-09-08, Netflix on a Google TV Streamer (Android 14), conditioned
+through this box, over about two hours and three separate cap sweeps.
+
+### The one solid positive result
+
+**A 34-minute episode played entirely at 1920x1080 with zero resolution
+changes** -- through caps from 0.1 Mbps up to 2.4 and back down to 1.1 --
+while its picture went from unwatchable to fine by eye. The decoder's own record:
+
+```
+16:55:39   1920x1080   resolution-change-count=0   played=2056s
+```
+
+So every adaptation was a **same-resolution bitrate switch**, and nothing
+reachable over adb recorded any of it. That is not a theoretical gap: half an
+hour of dramatic, user-visible quality variation, invisible to every field the
+device exposes.
+
+### Why "what bitrate is this rung" is the wrong question for Netflix
+
+Netflix does not ship a fixed bitrate ladder. Encoding is **per-title**, and
+per-SHOT via the Dynamic Optimizer, which chooses parameters shot by shot under
+VMAF control to hold perceptual quality roughly constant. The bitrate is
+therefore designed to float; a rung is a quality target, not a rate.
+
+This explains the measurement failure directly. Repeated windows on one rung
+disagreed by **±30%**, which is the same size as the gap between adjacent rungs,
+so no amount of averaging separates them -- the variation is the encoder working
+as intended, not noise to be beaten down. Compare Source V, where the same
+effect on a YouTube title put 34-53% of observation windows over the sweep's
+`unstable` threshold on a perfect link.
+
+Published typical figures for 1080p AV1 are roughly 2-3.5 Mbps. This title
+settled at **~0.9 Mbps** capped and **~1.5-1.9 Mbps** unconstrained -- well
+below, which is what per-shot optimisation on low-complexity material looks like
+rather than a measurement error.
+
+### Three routes to a rung, and how each fails
+
+| Route | Why it fails |
+|---|---|
+| Delivered rate | Equals the cap whenever the buffer is not at equilibrium. A player refilling after a starve saturates any cap for many minutes |
+| Segment size | Netflix fetches **fixed ~192 KiB byte ranges**, not whole segments. 53 of 147 fetches were 196,534-196,536 bytes. The size is a transport constant and carries no rendition information |
+| Buffer level | Not exposed. `media_session` reports `buffered position=0`; `media.metrics` carries only AUDIO hardware buffers (`bufferCapacityFrames`) |
+
+### The method that does work, and its bound
+
+With the buffer FULL -- not merely non-empty -- fetching must equal consumption,
+so the sustained mean IS the bitrate. Idle time then measures the headroom:
+
+```
+mean = busy_rate * (1 - idle_fraction)
+```
+
+Verified on the box: 1.97 Mbps busy at 18% idle predicts 1.62, measured 1.620.
+
+Lowering the cap until the idle gaps close therefore pins the rate the content
+actually needs. The bound is the per-shot variation above: each 75s window is
+one shot's worth of bitrate, so the reading needs holds of minutes, not seconds.
+
+**A full buffer is the precondition, not an inconvenience.** Every reading taken
+while the buffer was filling reported the cap back to us.
+
+### What is still unmeasured
+
+The gap-closure point. Playback ended four steps before the cap began to bind,
+so the run never reached it. A 1080p title typically ships 6-9 rungs and we
+identified one.
+
+### Smaller things worth not rediscovering
+
+- **`used-max-input-size` carries real signal at session granularity.** The
+  largest compressed frame read 477,956 on a mostly-unconstrained session and
+  203,681 on a fully-capped one. It is a running maximum, so it cannot track
+  switches WITHIN a session, but it separates a constrained run from a free one.
+- **`media.metrics` publishes a session only when that session ENDS.** The
+  rendition playing right now is never visible; changes are reported strictly in
+  arrears.
+- **A 34-minute episode at 100 kbps never stalled** -- `underrunFrames=0`
+  throughout, including three minutes at a fifteenth of its rate. The buffer is
+  deep enough to absorb far more than any 60s test will reveal.
+- **Watchability, by eye: terrible at 0.4 Mbps, acceptable at 0.7.** No
+  instrument here can produce that number.
+- **`dumpsys media.metrics` is 335 KB and adb serialises per device.** Polling it
+  every 4s while another script also queried it made both time out -- an
+  instrument failing under its own measurement load.
