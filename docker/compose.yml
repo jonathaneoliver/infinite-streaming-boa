@@ -1,0 +1,77 @@
+# The appliance as one container that owns its own network namespace.
+#
+# network_mode: none is doing real work here. It gives the container an EMPTY
+# namespace -- lo and nothing else -- which is exactly what is wanted, because
+# every interface it gets is moved in from the host by scripts/docker-attach.sh.
+# Any of Docker's own network modes would either put a managed veth in the way
+# or share the host's namespace and defeat the isolation entirely.
+#
+# The consequence: `ports:` cannot work, since Docker has no interface here to
+# publish through. The attach script installs a DNAT to the management address
+# instead.
+services:
+  boa:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    # Tagged for this arrangement specifically, not :local. A bare :local is
+    # what any other attempt on the same host would also reach for, and
+    # rebuilding under a shared tag silently detaches a RUNNING container from
+    # the image it was made from -- which is exactly what happened here on
+    # 2026-09-09.
+    image: infinite-streaming-boa:bridged
+    container_name: boa
+    network_mode: none
+    # NET_ADMIN configures the bridge, the queueing disciplines and nl80211;
+    # NET_RAW opens the packet socket the daemon learns client addresses from.
+    # Not privileged: those two are the whole list, and the difference is the
+    # rest of the host's surface.
+    # SYSLOG is for /dev/kmsg and nothing else: this host has
+    # kernel.dmesg_restrict=1, so without it the read fails and the USB fault
+    # watch (#276) is silently absent -- the box would go on reporting a radio
+    # as healthy after its USB link had died, which is the exact failure that
+    # feature exists to catch.
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+      - SYSLOG
+    # rfkill: a radio moved between namespaces keeps its soft block, and
+    # clearing one needs the character device.
+    # kmsg: the USB fault watch reads the kernel ring buffer for the disconnect
+    # messages the driver logs. Same kernel as the host, so the events are the
+    # real ones.
+    devices:
+      - /dev/rfkill:/dev/rfkill
+      - /dev/kmsg:/dev/kmsg
+    restart: unless-stopped
+    environment:
+      AP_SSID: "${AP_SSID:-infinite-streaming-boa}"
+      AP_PASSWORD: "${AP_PASSWORD:-change-me-please}"
+      AP_COUNTRY: "${AP_COUNTRY:-US}"
+      BOA_ADDR: ":80"
+      BOA_BRIDGE: "br-lan"
+      BOA_WAN_PORT: "wan0"
+    volumes:
+      # The USB recovery path (#276) writes a device name into a driver's
+      # unbind and bind files to reload its firmware. Docker mounts /sys
+      # read-only, so without this bind the daemon detects a wedged radio,
+      # decides to reset it, and fails with "read-only file system" -- which is
+      # the diagnosis reached and the remedy refused. Observed on 2026-09-09
+      # when the mt7921u started timing out its vendor requests.
+      #
+      # Narrow on purpose: only the drivers subtree, not /sys.
+      - /sys/bus/usb/drivers:/sys/bus/usb/drivers
+      # Operator policy only. Chart history stays on the container's own
+      # writable layer, matching the Pi, where it lives on tmpfs: it must
+      # survive a daemon restart and must not be written to durable storage
+      # every few seconds.
+      - boa-state:/var/lib/infinite-streaming-boa
+    healthcheck:
+      test: ["CMD", "sh", "-c", "ip link show br-lan >/dev/null 2>&1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 150s
+
+volumes:
+  boa-state:

@@ -1,0 +1,152 @@
+#!/bin/sh
+# A systemctl that answers only what the daemon actually asks, and refuses the
+# rest out loud.
+#
+# The daemon shells out to systemctl in exactly two places, and both matter here:
+#
+#   1. hostapdUnitFor() runs
+#        systemctl list-units --type=service --state=active --no-legend --plain \
+#          'infinite-streaming-boa-hostapd@*.service'
+#      and then reads /etc/hostapd/boa-<instance>.conf looking for the line
+#      "interface=<iface>". restartHostapd() restarts whatever that returns. This
+#      is the FALLBACK path taken when a radio has stopped answering its control
+#      socket, which is precisely when a driver has wedged -- so it has to work,
+#      not merely not crash.
+#
+#   2. serviceStates() / SetService() drive ntopng and glances. Neither is in
+#      this image, by decision. is-active reports them inactive, which is the
+#      truth and makes the interface offer "start"; start and stop then say why
+#      they cannot, rather than exiting 0 and changing nothing.
+#
+# WHY A SHIM AND NOT SYSTEMD IN THE CONTAINER. Running systemd as PID 1 would
+# need cgroup delegation and a writable /sys/fs/cgroup on a host already running
+# k3s, to gain one thing: unit semantics for four processes this script can
+# supervise in thirty lines. The trade is not close.
+#
+# The unit-to-interface mapping is NOT hardcoded here either. radioplan names
+# each config after the interface it drives, so instance name and interface name
+# are the same string -- and the daemon still resolves it by reading the config,
+# exactly as it does on the Pi.
+set -u
+
+RUNDIR=/run/boa/hostapd
+UNIT_PREFIX=infinite-streaming-boa-hostapd@
+
+# The two services the Pi image ships and this image deliberately does not.
+# Named so the refusal can say which, instead of "unknown unit".
+absent_service() {
+  case "$1" in
+    ntopng|ntopng.service|glances|glances.service) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# hostapd_pid echoes the live pid for an instance, or nothing. A pid file whose
+# process is gone is treated as absent rather than reported as active: a stale
+# file would make the daemon restart a unit that is not there and believe it
+# succeeded, which is the silent failure this whole file exists to avoid.
+hostapd_pid() {
+  _pf="$RUNDIR/$1.pid"
+  [ -r "$_pf" ] || return 1
+  _p=$(cat "$_pf" 2>/dev/null) || return 1
+  [ -n "$_p" ] || return 1
+  [ -d "/proc/$_p" ] || return 1
+  echo "$_p"
+}
+
+# instance_of strips infinite-streaming-boa-hostapd@X.service down to X.
+instance_of() {
+  _n=${1#"$UNIT_PREFIX"}
+  _n=${_n%.service}
+  echo "$_n"
+}
+
+verb=${1:-}
+[ $# -gt 0 ] && shift
+
+case "$verb" in
+
+list-units)
+  # Every flag the daemon passes is a formatting flag, and this shim only ever
+  # emits active hostapd instances -- so they are consumed and ignored rather
+  # than parsed. The output shape is what matters: the unit name must be the
+  # first whitespace-separated field of its line, because that is all the
+  # daemon reads.
+  for pf in "$RUNDIR"/*.pid; do
+    [ -e "$pf" ] || continue
+    inst=$(basename "$pf" .pid)
+    hostapd_pid "$inst" >/dev/null || continue
+    printf '%s%s.service loaded active running boa access point on %s\n' \
+      "$UNIT_PREFIX" "$inst" "$inst"
+  done
+  ;;
+
+is-active)
+  unit=${1:-}
+  if absent_service "$unit"; then
+    echo inactive
+    exit 3
+  fi
+  case "$unit" in
+    "$UNIT_PREFIX"*)
+      if hostapd_pid "$(instance_of "$unit")" >/dev/null; then
+        echo active
+        exit 0
+      fi
+      echo inactive
+      exit 3
+      ;;
+  esac
+  echo inactive
+  exit 3
+  ;;
+
+restart|stop|start)
+  unit=${1:-}
+  if absent_service "$unit"; then
+    # Loud, and on stderr, because the daemon passes CombinedOutput straight
+    # through to the operator. "Failed to restart ntopng.service" would read as
+    # a broken service; this reads as a build decision.
+    echo "$unit is not part of the container image: ntopng and glances are not installed here" >&2
+    exit 1
+  fi
+  case "$unit" in
+    "$UNIT_PREFIX"*) ;;
+    *)
+      echo "systemctl shim: refusing $verb $unit -- only $UNIT_PREFIX*.service is controllable here" >&2
+      exit 1
+      ;;
+  esac
+  inst=$(instance_of "$unit")
+  case "$verb" in
+    stop)  : >"$RUNDIR/$inst.stop" ;;
+    start) rm -f "$RUNDIR/$inst.stop" ;;
+    # restart leaves the stop flag alone: the supervisor loops on its own.
+  esac
+  pid=$(hostapd_pid "$inst") || {
+    [ "$verb" = start ] && exit 0
+    echo "no running hostapd for $inst" >&2
+    exit 1
+  }
+  kill "$pid" 2>/dev/null
+  [ "$verb" = stop ] && exit 0
+  # Wait for the supervisor to put a NEW process in place, so `restart` returns
+  # having actually restarted rather than merely having killed. The supervisor
+  # sleeps 5s between attempts -- the same RestartSec the Pi's unit uses -- so
+  # 20s is four attempts' worth of patience and still bounded.
+  i=0
+  while [ "$i" -lt 40 ]; do
+    sleep 0.5
+    new=$(hostapd_pid "$inst") || { i=$((i + 1)); continue; }
+    [ "$new" != "$pid" ] && exit 0
+    i=$((i + 1))
+  done
+  echo "hostapd for $inst did not come back within 20s" >&2
+  exit 1
+  ;;
+
+*)
+  echo "systemctl shim: $verb is not implemented in the boa container" >&2
+  exit 1
+  ;;
+esac

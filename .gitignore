@@ -46,3 +46,7 @@ node_modules/
 # is per-machine.
 .claude/*
 !.claude/skills/
+
+# The amd64 daemon built into the container image by scripts/docker-deploy.sh.
+# Same reasoning as the Pi binary: a build artefact, never a source file.
+docker/boad

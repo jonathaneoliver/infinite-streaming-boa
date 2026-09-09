@@ -1,0 +1,24 @@
+# Re-hands the adapters to the container every time it starts.
+#
+# A network namespace dies with its container, and the interfaces inside it
+# return to the host when it does. So attaching is not a one-off: `docker
+# restart`, a healthcheck restart, a host reboot -- each one needs the move done
+# again, and without this unit the container would come up with an empty bridge
+# and condition nothing.
+#
+# Restart=always rather than a timer: the watcher blocks on `docker events`, so
+# the only reasons it exits are the docker daemon restarting or the socket going
+# away, and both are exactly when it should come back.
+[Unit]
+Description=Attach physical adapters to the boa container
+After=docker.service network-online.target
+Requires=docker.service
+
+[Service]
+Type=simple
+ExecStart=/usr/local/sbin/boa-attach-watch
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

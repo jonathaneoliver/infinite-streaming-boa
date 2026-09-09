@@ -1,0 +1,46 @@
+#!/bin/sh
+# Runs the attach once now, then once more after every container start.
+#
+# `docker events` is the trigger rather than a polling loop, so a restart is
+# picked up in the second it happens instead of on the next tick -- which
+# matters because the container's entrypoint is sitting in a bounded wait for
+# wan0 to appear and gives up eventually.
+#
+# The one-second pause before each attach is not superstition: `start` fires
+# when the container's namespace exists, and the pid read from `docker inspect`
+# an instant earlier can still be the previous one.
+set -u
+
+ATTACH=${ATTACH:-/usr/local/sbin/boa-attach}
+CONTAINER=${CONTAINER:-boa}
+
+log() { echo "boa-attach-watch: $*" >&2; }
+
+# The container may already be running -- after a restart of this unit alone,
+# it will be -- and nothing would fire an event to say so.
+if docker inspect -f '{{.State.Running}}' "$CONTAINER" 2>/dev/null | grep -qx true; then
+  log "$CONTAINER already running; attaching now"
+  "$ATTACH" || log "initial attach failed; will retry on the next container start"
+fi
+
+log "watching for $CONTAINER to start"
+# {{.Action}}, NOT {{.Status}}. Status is the pre-1.10 API field and Docker 29
+# renders it as a template error rather than an empty string -- so the pipeline
+# exited immediately, systemd restarted the unit, and it exited again: 882
+# restarts in an hour, each one re-running the attach. Measured on 2026-09-09.
+#
+# The value is not used for anything; only the arrival of a line matters. It is
+# printed rather than dropped so that a future format break shows up in the
+# journal as wrong text instead of as this same silent hot loop.
+docker events --filter "container=$CONTAINER" --filter event=start --format '{{.Action}}' |
+while read -r _ev; do
+  sleep 1
+  log "$CONTAINER started; attaching"
+  "$ATTACH" || log "attach failed"
+done
+
+# A floor on how fast this unit can come back, so a broken event stream degrades
+# into a slow retry rather than a hot loop. Restart=always would otherwise spin
+# this as fast as the pipeline can fail, and every spin re-runs the attach.
+log "event stream ended; pausing before systemd restarts this unit"
+sleep 10

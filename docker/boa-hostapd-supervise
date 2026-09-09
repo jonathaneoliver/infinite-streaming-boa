@@ -1,0 +1,61 @@
+#!/bin/sh
+# Keeps one hostapd alive for one radio. The container's stand-in for
+# infinite-streaming-boa-hostapd@%i.service.
+#
+# RestartSec=5 and Restart=on-failure are the Pi unit's settings, and they are
+# reproduced rather than improved on: the daemon's restart path waits on this
+# interval, and a faster loop here would change how long a wedged radio takes to
+# come back in a way that the Pi would not share.
+#
+# The pid file is the whole interface between this and the systemctl shim. It
+# holds hostapd's own pid, never this script's, because the shim kills what it
+# finds there and relies on this loop to put a new process in place.
+set -u
+
+iface=${1:?usage: boa-hostapd-supervise <interface>}
+conf=/etc/hostapd/boa-$iface.conf
+rundir=/run/boa/hostapd
+pidfile=$rundir/$iface.pid
+stopfile=$rundir/$iface.stop
+
+mkdir -p "$rundir"
+rm -f "$stopfile"
+
+# THIS SCRIPT's pid, distinct from hostapd's below. The entrypoint needs to know
+# whether a radio still has a supervisor, and the hostapd pid file cannot answer
+# that: it is absent both while hostapd is in its five-second backoff and after
+# the supervisor has exited for good. Tracking it in a shell variable instead was
+# worse -- it survived neither `systemctl stop` nor anything else that ended this
+# process, so a stopped radio could never be started again.
+supfile=$rundir/$iface.sup
+echo "$$" >"$supfile"
+
+if [ ! -r "$conf" ]; then
+  echo "boa-hostapd: no config at $conf for $iface; the radio will not come up" >&2
+  exit 1
+fi
+
+# Removed on the way out so a dead supervisor never leaves a pid file that
+# outlives it -- the shim treats a stale file as absent, but the log is clearer
+# when the file agrees.
+cleanup() {
+  kill "${child:-0}" 2>/dev/null
+  rm -f "$pidfile" "$supfile"
+}
+trap cleanup EXIT INT TERM
+
+while :; do
+  hostapd "$conf" &
+  child=$!
+  echo "$child" >"$pidfile"
+  echo "boa-hostapd: $iface serving from $conf (pid $child)" >&2
+  wait "$child"
+  status=$?
+  rm -f "$pidfile"
+  if [ -e "$stopfile" ]; then
+    echo "boa-hostapd: $iface stopped on request" >&2
+    exit 0
+  fi
+  echo "boa-hostapd: $iface exited with status $status; restarting in 5s" >&2
+  sleep 5
+done
