@@ -432,6 +432,28 @@ while :; do
       eval "strikes_${iface//-/_}=0"
       continue
     fi
+    # AN AP THAT HOSTAPD KNOWS IS DOWN IS NOT A WEDGED ONE.
+    #
+    # `disable AP` in the interface, and the daemon's own outage patterns, take
+    # the BSS down through hostapd's control socket. hostapd stays healthy and
+    # reports state=DISABLED, and there is no ssid on the interface -- which is
+    # indistinguishable, from the kernel alone, from a radio that has died.
+    #
+    # Measured 2026-09-09: an operator disabling a radio had it restarted and
+    # serving again within fifteen seconds, repeatedly, with the log cheerfully
+    # announcing the rescue. A loop that undoes a deliberate action is worse
+    # than no loop.
+    #
+    # The wedge this is FOR is the opposite reading and is documented at length
+    # in radiopower.go (#182): hostapd asserting a BSS the kernel cannot find.
+    # So the strike is only counted when hostapd claims to be ENABLED while the
+    # interface has no ssid. hostapd saying DISABLED is it agreeing with the
+    # kernel, and agreement is never the fault.
+    if hostapd_cli -p /var/run/hostapd -i "$iface" status 2>/dev/null |
+       grep -q '^state=DISABLED'; then
+      eval "strikes_${iface//-/_}=0"
+      continue
+    fi
     eval "n=\${strikes_${iface//-/_}:-0}"
     n=$((n + 1))
     eval "strikes_${iface//-/_}=$n"
