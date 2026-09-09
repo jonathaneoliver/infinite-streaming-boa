@@ -21,3 +21,17 @@ hostapd
 # +dfsg, with the built web frontend stripped out, so `glances -w` from the
 # .deb serves nothing. See that section.
 python3-venv
+
+# The only packet capture this image has, and not a redundant one: ntopng is
+# built from source as a COMMUNITY edition (6.7, no n2disk), where live PCAP
+# extraction is a Pro feature. Its endpoint answers
+# {"rc":-3,"rc_str":"NOT_GRANTED"} even with --disable-login=1 in effect --
+# a capability gate, not an authentication one, which reads exactly like a
+# forgotten password until you check the edition.
+#
+# What capture buys that the counters cannot: a TLS stream hides its URLs and
+# its content, but not its SHAPE. A player fetching DASH segments produces one
+# burst per segment, so burst size and spacing give per-segment bitrate for a
+# service whose manifest cannot be read at all. That is the only route to
+# Netflix's rungs -- see scripts/measure-segments.py.
+tcpdump
