@@ -253,10 +253,34 @@ func (e *Engine) notePower(iface string, on bool) {
 // Returns whether a REBUILD was performed, so the caller can leave the
 // reporting to it rather than announcing the same recovery twice.
 func (e *Engine) reenableAP(iface string) bool {
+	return e.enableAP(iface, true)
+}
+
+// enableAPNow is the same recovery WITHOUT the wait, for a caller that took the
+// access point down itself and knows it is not coming back on its own.
+//
+// A deliberate DISABLE leaves hostapd waiting for an ENABLE nobody has sent, so
+// the wait below cannot succeed and spends its whole budget before the command
+// that does the work. MEASURED 2026-09-09 on a 5GHz block-to-block move: 6.5s
+// of outage, of which about four seconds were that wait. Six and a half seconds
+// is long enough to drain a player's buffer, which on a box whose subject is
+// what a player does through a transition is measurement noise the box is
+// adding itself (#281).
+//
+// Everything after the wait is shared and stays shared: the FAIL-plus-failed-
+// wait wedge detection from #182, the confirmation, and the rebuild.
+func (e *Engine) enableAPNow(iface string) bool {
+	return e.enableAP(iface, false)
+}
+
+// enableAP is the body of both. waitFirst distinguishes a radio that is
+// recovering by itself from one that is waiting to be told.
+func (e *Engine) enableAP(iface string, waitFirst bool) bool {
 	if !hostapdReachable(iface) {
 		return false
 	}
-	// WAIT FIRST. Do not command what is already happening.
+	// WAIT FIRST, when the access point may already be coming back.
+	// Do not command what is already happening.
 	//
 	// hostapd watches rfkill itself. Measured on both radios 2026-09-03, its
 	// own log shows the unblock and the recovery in the same second:
@@ -273,7 +297,7 @@ func (e *Engine) reenableAP(iface string) bool {
 	// 500ms and fired ENABLE blind, the other retried ENABLE six times and
 	// turned 4.5s into 27.8s. Both were commanding a recovery that was already
 	// under way. Watch for it instead, and only intervene if it does not come.
-	if waitAPEnabled(iface, 4*time.Second) {
+	if waitFirst && waitAPEnabled(iface, 4*time.Second) {
 		return false
 	}
 	// It did not come back by itself, which is the case ENABLE is actually for.
@@ -311,7 +335,26 @@ func (e *Engine) reenableAP(iface string) bool {
 	// verified directly -- and writes "Enabling of interface failed" to the log
 	// when it does, which is what makes that line worthless as evidence by
 	// itself. It is the PAIRING with a failed wait that carries the meaning.
-	if err == nil && strings.HasPrefix(strings.TrimSpace(reply), "FAIL") {
+	//
+	// AND ONLY WHEN THE WAIT ACTUALLY RAN. The paragraph above is the whole
+	// argument, and it depends on a fact the no-wait path does not have: that
+	// the access point did NOT look enabled a moment ago. Without the wait
+	// there is no such observation, so FAIL means nothing more than what the
+	// paragraph already concedes it can mean on a healthy interface.
+	//
+	// MEASURED 2026-09-09, and this was a regression I introduced with the
+	// no-wait path. Ten channel moves produced thirteen AP-DISABLED against
+	// nine AP-ENABLED: an ordinary FAIL was read as the wedge, rebuildBSS tore
+	// a healthy radio down, and repeated moves compounded it until the driver
+	// itself wedged -- ENABLE answering FAIL while STATUS said DISABLED, the
+	// netdev refusing to come up, and hostapd cycling through HT_SCAN to
+	// "Interface is disabled" every five seconds. Restarting hostapd did not
+	// clear it; a USB unbind and rebind did.
+	//
+	// So the no-wait path falls through to the confirmation below and rebuilds
+	// only if the BSS genuinely never appears, which is the same remedy reached
+	// by evidence rather than by inference.
+	if waitFirst && err == nil && strings.HasPrefix(strings.TrimSpace(reply), "FAIL") {
 		e.rebuildBSS(iface)
 		return true
 	}
@@ -398,6 +441,17 @@ func (e *Engine) endRecovery(iface string) {
 // against how it reacts to working it out wants to vary it between one press
 // and the next, not configure it once.
 func (e *Engine) SetAPEnabled(iface string, on bool, deauth bool) error {
+	return e.setAPEnabled(iface, on, deauth, offByOperator)
+}
+
+// setAPEnabled is the body, plus WHY the access point is going down.
+//
+// The reason is what the startup check reads back. offByOperator is indefinite
+// and only the operator undoes it; offByOutage is a cut the daemon means to end
+// itself, so a daemon that died mid-outage must not leave the BSS down forever
+// -- checkRadiosAtStart clears that one and lets the access point return. The
+// same split radiointent.go already makes for the radio's power.
+func (e *Engine) setAPEnabled(iface string, on bool, deauth bool, why radioOffReason) error {
 	if err := e.radioExists(iface); err != nil {
 		return err
 	}
@@ -412,6 +466,27 @@ func (e *Engine) SetAPEnabled(iface string, on bool, deauth bool) error {
 	cmd := "DISABLE"
 	if on {
 		cmd = "ENABLE"
+	}
+
+	// RECORDED BEFORE THE COMMAND, and cleared on the way up.
+	//
+	// Before, because the failure that matters is a daemon that restarts having
+	// taken the BSS down and not written down that it meant to. Writing after a
+	// successful DISABLE leaves exactly that window. A marker for an access
+	// point that then failed to go down is harmless: the startup check only
+	// declines to REBUILD, and an access point that is already serving is not
+	// rebuilt anyway.
+	mark := why
+	if on {
+		mark = ""
+	}
+	if err := setAPOffMarker(iface, mark); err != nil {
+		// Loud, not fatal. The action still happens; what is lost is only that
+		// it survives a restart, and silence here is how that would be
+		// discovered much later as an access point that came back by itself.
+		e.logEvent(EventWarning, iface, "",
+			"could not record that the access point on %s is down: %v — it may "+
+				"come back on its own if the daemon restarts", iface, err)
 	}
 
 	// BEFORE the teardown, and only on the way down. Reported with a count
@@ -1035,6 +1110,24 @@ func (e *Engine) checkRadiosAtStart() {
 			if on, known := radioPowered(iface); known && !on {
 				return // deliberately off; restoreRadioPower owns that case
 			}
+			// The ACCESS POINT may be down on purpose too, which is a different
+			// intent from the radio's power and reads the same from here: a
+			// powered radio with no BSS. Without this the rebuild below undoes
+			// a deliberate `disable AP` about fifty seconds after any daemon
+			// restart, and says it is rescuing the radio while it does (#282).
+			switch apOffMarker(iface) {
+			case offByOperator:
+				return // indefinite; only the operator ends it
+			case offByOutage:
+				// A timed cut the daemon meant to undo itself, and did not,
+				// because it died mid-outage. Clear it and let the check below
+				// bring the access point back -- the same reasoning
+				// restoreRadioPower applies to a half-finished power cut.
+				if err := setAPOffMarker(iface, ""); err != nil {
+					e.logEvent(EventWarning, iface, "",
+						"could not clear the AP-off marker for %s: %v", iface, err)
+				}
+			}
 			if !hostapdReachable(iface) {
 				return // no control socket: nothing to ask and nothing to fix
 			}
@@ -1211,9 +1304,25 @@ func (e *Engine) MoveChannel(iface string, channel, widthMHz int) (int, error) {
 		}
 	}
 	if wasEnabled {
-		e.reenableAP(iface)
+		// enableAPNow, not reenableAP: this function did the DISABLE, so there
+		// is no self-recovery to wait for. See #281.
+		e.enableAPNow(iface)
 	}
 	e.forgetRadioOn()
+	// AND THE BRIDGE VIEW, which is what the interface actually reads.
+	//
+	// forgetRadioOn drops the per-client cache; it does nothing to the bridge
+	// snapshot the adapter rows are drawn from. Every other radio action marks
+	// that stale -- power, AP enable and disable, a finished rebuild -- and a
+	// channel move was the one that did not. So the new channel reached the
+	// interface only when the ordinary cycle caught up: the next poll finds the
+	// snapshot past its one-second TTL, starts a rebuild in the background, and
+	// still returns the OLD value, so it takes the poll after that to show.
+	//
+	// MEASURED 2026-09-09: the kernel was on the new channel immediately, and
+	// the API still reported the old one at t+0 and t+2, changing at t+4. The
+	// operator sees a control they pressed appear not to have worked.
+	e.freshenBridge()
 
 	now := 0
 	if st, err := hostapdCmd(iface, "STATUS"); err == nil {
