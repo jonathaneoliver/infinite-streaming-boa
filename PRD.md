@@ -1182,8 +1182,11 @@ damages packets, never link state.
   bridge with `nmcli`, and the script refuses to guess rather than acting on a
   host it cannot put back. A host using netplan with systemd-networkd — the
   Ubuntu Server default — is not supported by it today.
-- **The container's uplink interface name is not yet discovered.** It defaults
-  to one specific name and must otherwise be supplied by hand on first setup.
+- **The container host's uplink is discovered, and refuses to guess.** It is
+  taken from the interface carrying the default route, excluding the USB
+  adapters and any radio, and recovered from the bridge on a re-run. Where that
+  is ambiguous the setup step stops and asks to be told, rather than bridging
+  the wrong port and taking the host off the network.
 - **Neither target has been measured with two radios carrying clients at once.**
   Every published wireless figure is a single radio. It is the largest gap in
   the evidence for a box whose whole point is several radios in a rack.

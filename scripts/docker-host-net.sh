@@ -24,7 +24,14 @@
 # rather than leaving a host that needs a keyboard.
 set -euo pipefail
 
-WAN_IF=${WAN_IF:-enp4s0}
+# The uplink is DISCOVERED, not named. It defaulted to one specific interface
+# for a while, which was this machine's name for it and nobody else's -- so the
+# script died on the first line of the first run on any other hardware, with a
+# message about a missing device rather than about a wrong default.
+#
+# Setting WAN_IF explicitly still wins, for the case detection cannot resolve:
+# two default routes, or a host whose uplink is not the route it currently uses.
+WAN_IF=${WAN_IF:-}
 BR=${BR:-br-wan}
 BR_CON=boa-br-wan
 PORT_CON=boa-wan-port
@@ -50,6 +57,83 @@ gateway_reachable() {
   gw=$(ip route show default 2>/dev/null | awk '/^default/ {print $3; exit}')
   [ -n "$gw" ] || return 1
   ping -c1 -W2 "$gw" >/dev/null 2>&1
+}
+
+# --- which interface is the uplink -------------------------------------------
+#
+# host_nic asks whether a device could be this machine's own uplink. It must
+# have a real bus device -- which rules out the bridge, every veth and every
+# tunnel -- and must not be on the USB bus, because those adapters belong to the
+# container and moving one into the bridge would take the host off the network
+# to no purpose. A radio is excluded for the same reason: an 802.11 phy is
+# something the container serves clients on, never the way this host reaches its
+# router.
+host_nic() {
+  local dev=$1 path
+  [ "$dev" = "$BR" ] && return 1
+  [ -e "/sys/class/net/$dev/phy80211" ] && return 1
+  path=$(readlink -f "/sys/class/net/$dev/device" 2>/dev/null) || return 1
+  [ -n "$path" ] || return 1
+  case "$path" in *//usb*|*/usb[0-9]*) return 1 ;; esac
+  return 0
+}
+
+host_nics() {
+  local path dev out=""
+  for path in /sys/class/net/*; do
+    dev=$(basename "$path")
+    host_nic "$dev" && out="${out:+$out }$dev"
+  done
+  printf '%s' "$out"
+}
+
+# The interface carrying the default route, which is the honest definition of
+# "the port facing the router" and needs no list.
+#
+# On a RE-RUN the default route is already on the bridge, because that is what
+# apply did. So the fallback is the bridge's own ports: exactly one of them is a
+# host NIC and it is the same interface apply used.
+detect_wan_if() {
+  local dev
+  dev=$(ip route show default 2>/dev/null |
+        awk '/^default/ { for (i = 1; i < NF; i++) if ($i == "dev") { print $(i+1); exit } }')
+  if [ -n "$dev" ] && host_nic "$dev"; then
+    printf '%s' "$dev"; return 0
+  fi
+  if [ -d "/sys/class/net/$BR/brif" ]; then
+    for dev in /sys/class/net/"$BR"/brif/*; do
+      [ -e "$dev" ] || continue
+      dev=$(basename "$dev")
+      if host_nic "$dev"; then printf '%s' "$dev"; return 0; fi
+    done
+  fi
+  # Last resort, and only when it is unambiguous. Guessing between two is how a
+  # script takes a host off the network by bridging the wrong port.
+  dev=$(host_nics)
+  case "$dev" in
+    "" ) return 1 ;;
+    *\ * ) return 1 ;;
+    * ) printf '%s' "$dev"; return 0 ;;
+  esac
+}
+
+# revert must undo what apply did, so it uses the interface apply RECORDED
+# rather than re-detecting: by then the default route is on the bridge and the
+# original connection is down, which is precisely when detection is least
+# trustworthy.
+resolve_wan_if() {   # $1 = the subcommand, so revert can prefer the record
+  if [ -n "$WAN_IF" ]; then
+    log "uplink $WAN_IF (from WAN_IF in the environment)"
+    return 0
+  fi
+  if [ "$1" = revert ] && [ -r "$STATE/wan-if" ]; then
+    WAN_IF=$(cat "$STATE/wan-if")
+    log "uplink $WAN_IF (recorded by apply)"
+    return 0
+  fi
+  WAN_IF=$(detect_wan_if) || die "could not identify the uplink interface.\
+ Candidates on this host: $(host_nics). Re-run with WAN_IF=<name> to name it."
+  log "uplink $WAN_IF (detected)"
 }
 
 # --- what NetworkManager must not touch --------------------------------------
@@ -107,6 +191,16 @@ UDEV
 case "${1:-}" in
 
 apply)
+  # NetworkManager is checked before anything is touched, not discovered halfway
+  # through by an nmcli that fails. A host using netplan with systemd-networkd,
+  # which is the Ubuntu Server default, needs a different script than this one
+  # and should be told so rather than left half-bridged.
+  command -v nmcli >/dev/null 2>&1 \
+    || die "nmcli not found. This script configures the bridge through NetworkManager; a host using netplan/systemd-networkd is not supported by it."
+  nmcli -t -f RUNNING general 2>/dev/null | grep -q running \
+    || die "NetworkManager is not running. See the note above; nothing has been changed."
+
+  resolve_wan_if apply
   ip link show "$WAN_IF" >/dev/null 2>&1 || die "$WAN_IF does not exist"
 
   if ip link show "$BR" >/dev/null 2>&1 \
@@ -123,6 +217,10 @@ apply)
 
   mkdir -p "$STATE"
   printf '%s\n' "$OLD_CON" >"$STATE/old-connection"
+  # The interface too, not just the connection: revert runs when the default
+  # route has moved to the bridge, which is exactly when detection cannot see
+  # what the uplink used to be.
+  printf '%s\n' "$WAN_IF" >"$STATE/wan-if"
   log "current connection on $WAN_IF is '$OLD_CON'; recorded for rollback"
 
   write_unmanaged
@@ -195,6 +293,7 @@ apply)
   ;;
 
 revert)
+  resolve_wan_if revert
   OLD_CON=$(cat "$STATE/old-connection" 2>/dev/null || true)
   nmcli con down "$PORT_CON" >/dev/null 2>&1 || true
   nmcli con delete "$PORT_CON" >/dev/null 2>&1 || true
@@ -219,6 +318,12 @@ revert)
   ;;
 
 status)
+  echo "== uplink =="
+  if [ -r "$STATE/wan-if" ]; then
+    echo "  $(cat "$STATE/wan-if")  (recorded by apply)"
+  else
+    echo "  $(detect_wan_if || echo '(cannot tell)')  (detected; apply has not run)"
+  fi
   echo "== $BR =="
   ip -br addr show "$BR" 2>/dev/null || echo "  (absent)"
   echo "== ports =="

@@ -14,16 +14,29 @@
 # and reversible step because it briefly disconnects the machine:
 #
 #   scripts/docker-deploy.sh <host> --setup-network
+#
+# The uplink interface is discovered from the host's default route. Name it only
+# if that cannot resolve, which the network script says when it happens:
+#
+#   scripts/docker-deploy.sh <host> --setup-network --wan-if enp1s0
 set -euo pipefail
 
-HOST=${1:?usage: $0 <host> [--setup-network]}
+HOST=${1:?usage: $0 <host> [--setup-network] [--wan-if <name>]}
 shift || true
 SETUP_NETWORK=0
-for arg in "$@"; do
-  case "$arg" in
+# Empty means "let the host work it out", which is the normal case: the network
+# script finds the interface carrying the default route. This is here for the
+# hosts it cannot resolve -- two default routes, or an uplink that is not the
+# route currently in use.
+WAN_IF=""
+while [ $# -gt 0 ]; do
+  case "$1" in
     --setup-network) SETUP_NETWORK=1 ;;
-    *) echo "unknown argument: $arg" >&2; exit 2 ;;
+    --wan-if) shift; WAN_IF=${1:?--wan-if needs an interface name} ;;
+    --wan-if=*) WAN_IF=${1#*=} ;;
+    *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
+  shift
 done
 
 REPO=$(cd "$(dirname "$0")/.." && pwd)
@@ -99,7 +112,12 @@ if [ "$SETUP_NETWORK" = 1 ]; then
   # un-detached script down with it -- leaving a half-built bridge and no way
   # back in. The script rolls itself back if the gateway does not return.
   log "bridging the host NIC (connectivity will drop briefly)"
-  ssh "$HOST" "sudo systemd-run --unit=boa-netswitch --collect \
+  # --setenv, not an environment prefix: systemd-run starts the unit from the
+  # service manager's own environment, so `WAN_IF=x systemd-run ...` sets the
+  # variable for systemd-run and not for the script it launches.
+  SETENV=""
+  [ -n "$WAN_IF" ] && SETENV="--setenv=WAN_IF=$WAN_IF"
+  ssh "$HOST" "sudo systemd-run --unit=boa-netswitch --collect $SETENV \
       $REMOTE_DIR/scripts/docker-host-net.sh apply" || true
   log "waiting for $HOST to come back"
   for _ in $(seq 60); do

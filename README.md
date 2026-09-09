@@ -933,14 +933,16 @@ here.
 | `root` on the host | Only root can move a netdev or an 802.11 phy between namespaces |
 | A workstation with `go`, `npm` and `ssh` | Builds the daemon and interface; the host needs neither toolchain |
 
-Two limits of the current scripts are worth knowing before you start, and both
-are tracked in
+The uplink interface is discovered rather than named: the setup script takes the
+interface carrying the host's default route, ignoring the USB adapters and any
+radio, and on a re-run recovers it from the bridge it already built. It refuses
+rather than guesses when that is ambiguous, and tells you to pass `--wan-if`.
+
+One real gap remains: ntopng and glances are not in the container image, so it
+has the conditioner and the interface but neither of the two optional analysis
+tools. The interface reports them inactive and says why, rather than failing
+quietly. That and the host footprint are tracked in
 [#286](https://github.com/jonathaneoliver/infinite-streaming-boa/issues/286).
-The uplink interface name defaults to `enp4s0` and `scripts/docker-deploy.sh`
-does not pass an override through, so on other hardware the network step has to
-be run by hand once — the walkthrough below shows how. And ntopng and glances
-are not in the image, so the container has the conditioner and the interface but
-not the two optional analysis tools.
 
 **Give the USB adapters their own powered hub, or their own root ports.** The
 hub ceiling measured here was 5 Gbit/s shared across three adapters, which is
@@ -1855,73 +1857,47 @@ The passphrase is deliberately shared between the two. One credential is what
 keeps them from drifting apart, and a device that already knows one box then
 associates with the other without being re-taught.
 
-### 2. Ship the files
+### 2. Deploy, once, with the network step
 
 ```sh
-scripts/docker-deploy.sh <host>
+scripts/docker-deploy.sh <host> --setup-network
 ```
 
 This builds the interface and an amd64 `boad`, copies the build context to
-`/opt/infinite-streaming-boa` on the host, and installs the attach helpers.
+`/opt/infinite-streaming-boa` on the host, installs the attach helpers, prepares
+the host's network, then builds and starts the container and hands it the
+adapters.
 
-**On a first run the container will not come up yet, and that is expected.** It
-needs the host's network prepared, which has not happened. The attach step fails
-with `br-wan does not exist. Run scripts/docker-host-net.sh apply first.`, and
-the container waits two minutes for an uplink and then says so:
+`--setup-network` belongs on the **first** run only. Every run after it is the
+bare command, and the network is already prepared.
 
-```
-boa-entrypoint: FATAL: wan0 never appeared after 120s. The host has not run
-scripts/docker-attach.sh against this container, so there is no path to the
-network and nothing to condition.
-```
-
-### 3. Prepare the host network, once
-
-**This briefly disconnects the host**, so it is a separate, reversible and
-deliberately detached step. Find the uplink NIC first — the one facing your
-router:
-
-```sh
-ssh <host> "ip route show default"
-```
-
-Then run the network switch over SSH, naming that interface. `systemd-run`
-detaches it so a dropped SSH session cannot leave the host half-bridged:
-
-```sh
-ssh <host> "sudo systemd-run --unit=boa-netswitch --collect \
-    --setenv=WAN_IF=enp1s0 \
-    /opt/infinite-streaming-boa/scripts/docker-host-net.sh apply"
-```
+The network step **briefly disconnects the machine**. The script is launched detached through `systemd-run`, so an SSH
+session dropping mid-switch cannot leave the host half-bridged, and it rolls
+itself back if the gateway does not answer afterwards. You do not need a
+keyboard on the box to recover from a failure here.
 
 The host disappears for a few seconds and comes back on the same address: the
 bridge is pinned to the NIC's own MAC, so the router hands back the same lease.
-If the gateway does not answer within the settle window the script puts
-everything back by itself, rather than leaving a machine that needs a keyboard.
+
+The uplink interface is worked out from the host's default route. If two
+candidates are equally plausible the script refuses rather than bridging the
+wrong port, and says so — name it yourself in that case:
+
+```sh
+scripts/docker-deploy.sh <host> --setup-network --wan-if enp1s0
+```
 
 Check what it did:
 
 ```sh
-ssh <host> "sudo journalctl -u boa-netswitch --no-pager -o cat | tail -20"
 ssh <host> "sudo /opt/infinite-streaming-boa/scripts/docker-host-net.sh status"
+ssh <host> "sudo journalctl -u boa-netswitch --no-pager -o cat | tail -20"
 ```
 
-> **If your uplink NIC happens to be `enp4s0`**, the deploy script can do this
-> for you in one go with `scripts/docker-deploy.sh <host> --setup-network`. That
-> path does not accept a different interface name, which is why the manual step
-> above is the one documented. See
-> [#286](https://github.com/jonathaneoliver/infinite-streaming-boa/issues/286).
+The deploy prints the container's log tail when it finishes. That should show
+the bridge coming up and an access point starting on each radio.
 
-### 4. Deploy again
-
-```sh
-scripts/docker-deploy.sh <host>
-```
-
-The container starts, the adapters are moved in, and the log tail printed at the
-end should show the bridge coming up and an access point starting on each radio.
-
-### 5. Use it
+### 3. Use it
 
 ```
 http://<host>:8080/
@@ -1950,7 +1926,7 @@ Rebuilds, recreates the container and re-attaches. There is no equivalent of
 reflashing, because the image is rebuilt every time — the reason the Pi needs a
 reflash for units, packages and kernel settings does not arise here.
 
-Steps 1 and 3 are the only ones you do once.
+Step 1 and the `--setup-network` flag are the only parts you do once.
 
 ### What this puts on your host
 
@@ -1989,8 +1965,10 @@ at afterwards.
 
 | Symptom | Cause |
 |---|---|
-| `br-wan does not exist` | Step 3 has not run, or ran against the wrong interface |
-| `no NetworkManager connection is active on <if>` | The host is not using NetworkManager, or you named the wrong NIC. Ubuntu Server defaults to netplan and is not supported by this script |
+| `br-wan does not exist` | The deploy ran without `--setup-network`, or that step failed. Check `journalctl -u boa-netswitch` |
+| `could not identify the uplink interface` | Detection found no candidate or more than one. The message lists what it saw; pass `--wan-if <name>` |
+| `nmcli not found`, or NetworkManager not running | The host uses netplan with systemd-networkd, the Ubuntu Server default. Not supported by this script; nothing was changed |
+| `no NetworkManager connection is active on <if>` | The named interface is real but unmanaged. Usually the wrong NIC |
 | `wan0 never appeared after 120s` | The attach never ran. Check `journalctl -u boa-attach` |
 | Container up, but no client ports | Look for `no lan-usb-* port was handed over` in `docker logs boa`. The adapters are discovered on the USB bus, so a device on a PCIe slot is not picked up |
 | No access point | `no radio this box can serve`, or a country code the radio will not accept. `AP_COUNTRY` must match where the machine physically is |
