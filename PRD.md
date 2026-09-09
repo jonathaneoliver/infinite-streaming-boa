@@ -1174,11 +1174,14 @@ damages packets, never link state.
   Ubuntu Server default — is not supported by it today.
 - **The container's uplink interface name is not yet discovered.** It defaults
   to one specific name and must otherwise be supplied by hand on first setup.
-- **Container measurements are thinner than the Pi's.** Concurrent wired and
-  wireless throughput, an unshaped ceiling and cap enforcement have been
-  measured; a wired uplink figure, a per-channel breakdown and any two-radio
-  concurrent figure have not. An unmeasured case is recorded as unmeasured
-  rather than assumed equivalent.
+- **Neither target has been measured with two radios carrying clients at once.**
+  Every published wireless figure is a single radio. It is the largest gap in
+  the evidence for a box whose whole point is several radios in a rack.
+- **Only the container has been measured end to end.** Conditioning verified
+  through the box to a host beyond it — the only arrangement in which both
+  directions are simultaneously true — exists for the container and not for the
+  Pi, whose published figures are all ceilings taken against the box itself. An
+  unmeasured case is recorded as unmeasured rather than assumed equivalent.
 - **Client-to-client traffic is not conditioned** on the uplink path, as it
   never crosses the WAN port.
 - **A shared budget across media is not expressible** while downlink is shaped

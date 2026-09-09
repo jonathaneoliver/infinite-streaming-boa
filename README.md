@@ -730,24 +730,32 @@ Throughput is comparable so far, which is the point of listing both. These are
 separate machines with separate radios, so read the table as "neither target is
 obviously the bottleneck" rather than as a benchmark of one against the other.
 
-**The container column is thinner than the Pi column, and the gaps are real
-rather than implied equivalence.** Each `not measured` below is a run nobody has
-done yet, not a figure too dull to record.
+Each `not measured` below is a run nobody has done yet, not a figure too dull to
+record.
 
-| Unshaped, `iperf3` to the box | Raspberry Pi 5 | Linux container |
+| Unshaped, `iperf3` **to** the box | Raspberry Pi 5 | Linux container |
 |---|---|---|
-| Wired downlink | 1.91 Gbit/s | 1.82 Gbit/s |
-| Wired uplink | 2.35 Gbit/s | *not measured* |
-| Wired ceiling, no other traffic | — | 1.95 Gbit/s |
-| One radio, 80 MHz 802.11ax | 536–683 Mbit/s | 586 Mbit/s |
+| Wired downlink, 2.5 GbE | 1.91 Gbit/s | 1.95 Gbit/s |
+| Wired uplink, 2.5 GbE | 2.35 Gbit/s | 2.35 Gbit/s |
+| One radio, 80 MHz 802.11ax | 495–683 Mbit/s | 454 Mbit/s |
 | Two radios carrying clients at once | *not measured* | *not measured* |
-| Wired and wireless concurrently | *not measured* | 1819 + 586 Mbit/s |
-| Enforcement, against a 90/40 cap | — | 86.0 / 38.1 Mbit/s |
 
-The one thing the container column does have and the Pi column does not is a
-concurrent wired-plus-wireless figure, and it is the more interesting number of
-the two: it says the bridge carries both at once without either starving the
-other.
+The wired figures agree to within 2%, on two machines with different CPUs, which
+says the 2.5 GbE adapter rather than the target is the limit in both.
+
+| Through the box, or under a cap | Raspberry Pi 5 | Linux container |
+|---|---|---|
+| Wired through to an external host, down / up | *not measured* | 1.95 / 2.35 Gbit/s |
+| Wireless through to an external host | *not measured* | 423 Mbit/s |
+| Wired and wireless concurrently | *not measured* | 1819 + 586, and 1778 + 449 Mbit/s |
+| Enforcement, against a 90/40 Mbit/s cap | *not measured* | 86.0 / 38.1 Mbit/s |
+| Enforcement over the radio, 60/20 cap | *not measured* | 57 down / 13.6 up Mbit/s |
+
+**The second table is the container's, and the gap there runs the other way.**
+Conditioning has only ever been measured end to end on the container host: the
+Pi's published figures are all ceilings taken against the box itself, which is
+the measurement that cannot show a cap working. Running that set on the Pi is
+the more valuable missing work of the two.
 
 ### 1. A Raspberry Pi 5, from an image
 
@@ -1572,44 +1580,69 @@ Taken on the x86_64 Ubuntu host on 2026-09-09. A different machine with
 different radios from the Pi above, so treat these as evidence that the
 container arrangement is not itself a bottleneck rather than as a head-to-head.
 
-| | Measured | Notes |
+**Ceilings, taken against the box itself.** What a cap must sit under, and never
+evidence that a cap is working.
+
+| | Downlink | Uplink |
 |---|---|---|
-| Wired and wireless carrying traffic concurrently | **1819 + 586 Mbit/s** | Both through the bridge at the same time |
-| Unshaped wired ceiling | **1945 Mbit/s** | Wired alone, nothing else running |
-| Enforcement, against a 90/40 Mbit/s cap | **86.0 / 38.1 Mbit/s** | The measurement that actually matters |
-| Enforcement over the radio, against a 60/20 cap | **56.9 Mbit/s** downlink | See the direction caveat below |
-| USB hub ceiling, shared by three adapters | 5 Gbit/s | Bus limit, not a boa limit |
+| Wired, 2.5 GbE | **1945 Mbit/s** | **2353 Mbit/s** |
+| Wireless, 80 MHz 802.11ax | **454 Mbit/s** | 144 Mbit/s |
 
-**What has not been measured here yet**, and is listed so an absent run reads as
-absent rather than as a result:
+**Through the box to a host beyond it.** The only arrangement that shows both
+directions conditioned, and the one the Pi has never been run in.
 
-- **Two radios carrying clients simultaneously.** The 586 Mbit/s figure is one
-  radio. The rack supports several and the Pi has never been measured this way
-  either, so this is the most interesting missing number on both targets.
-- **Wired uplink.** Only the downlink direction was run. The Pi reaches
-  2.35 Gbit/s uplink against 1.91 downlink, so the asymmetry is worth
-  confirming rather than assuming.
-- **Per-radio breakdown by channel and width.** The Pi has a table of these; the
-  container has a single figure.
-- **A ceiling on a quiet channel.** The Pi's best 5 GHz figures came from
-  UNII-3, which is also allowed more power. Nothing says which channel the
-  586 Mbit/s run was on.
+| | Downlink | Uplink |
+|---|---|---|
+| Wired, 2.5 GbE, unshaped | **1945 Mbit/s** | **2353 Mbit/s** |
+| Wireless, unshaped | **423 Mbit/s** | — |
+| Wireless, under a 60/20 Mbit/s cap | **57 Mbit/s** | **13.6 Mbit/s** |
+| Wired, under a 90/40 Mbit/s cap | **86.0 Mbit/s** | **38.1 Mbit/s** |
+
+The wired path forwards through the bridge at the same rate it terminates at the
+box, in both directions. That is the useful thing this pair of tables says: the
+bridge and the shaper are not costing anything the adapter was not already
+costing.
+
+**Both media at once**, run twice with the radio on different channels:
+
+| Wired, 2.5 GbE | Wireless | Radio |
+|---|---|---|
+| 1819 Mbit/s | 586 Mbit/s | Channel 149 |
+| 1778 Mbit/s | 449 Mbit/s | The lower 5 GHz block |
+
+Neither starves the other, which is the question worth asking of a box that
+conditions both at once.
+
+The USB hub ceiling shared by three adapters is 5 Gbit/s. That is a bus limit
+rather than a boa limit, and it bounds every figure above.
+
+**What has not been measured here**, listed so an absent run reads as absent
+rather than as a result:
+
+- **Two radios carrying clients simultaneously.** Every wireless figure above is
+  a single radio. The Pi has never been measured this way either, so it is the
+  most interesting missing number on both targets.
+- **A per-radio breakdown by channel and width.** The Pi has a table of these;
+  the container has two channels and does not name either precisely.
 
 The wired ceiling is close enough to the Pi's that the same caution applies:
 anything measured above roughly 1.9 Gbit/s with `-R` is measuring a saturated
 CPU core rather than the shaper.
 
-**The direction caveat, which is the easiest way to publish a wrong number.**
-Traffic terminating at the box is exempt from conditioning on the uplink only,
-so the forward direction reports an unconditioned ceiling while `-R` reports the
-downlink cap actually being enforced. Over the radio against a 60/20 cap the box
-gave 143 Mbit/s forward and 56.9 Mbit/s reversed. **The second is the real
-one.** Neither substitutes for a host **beyond** the box, which remains the only
-way to see both directions conditioned at once.
+**The direction caveat, which is the easiest way to publish a wrong number, and
+the reason the two tables above are kept apart.** Traffic terminating **at** the
+box is exempt from conditioning on the uplink only, so the forward direction
+reports an unconditioned ceiling while `-R` reports the downlink cap actually
+being enforced. Over the radio against a 60/20 cap, a test against the box gave
+143 Mbit/s forward and 56.9 Mbit/s reversed. **Only the second is real.**
 
-To fill the gaps above, the method is the one in
-[Measuring it yourself](#measuring-it-yourself) — it is not Pi-specific, and
-`<pi>` is just the box's address either way.
+Repeating that same run **through** the box to a host beyond it gave 13.6 Mbit/s
+uplink, against a 20 Mbit/s cap — the number the 143 was hiding. If you take one
+thing from this section, take that: a target on the far side of the box is the
+only place both directions are true at once.
+
+The method is the one in [Measuring it yourself](#measuring-it-yourself). It is
+not Pi-specific; `<pi>` is just the box's address either way.
 
 ## Power
 
