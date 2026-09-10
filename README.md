@@ -19,6 +19,11 @@ An appliance that sits invisibly in your network and conditions each client's
 internet connection independently — rate, latency, jitter and packet loss, per
 device, in each direction, adjustable live from a web interface.
 
+It also **drives the radios those clients are associated to**, from the same
+page: move one to another channel, take its access point down, deauthenticate or
+disassociate a device, or push it onto a different radio. Conditioning the link
+and disturbing the radio are separate axes, and a run can use either or both.
+
 It runs on **either of two targets, on equal terms**: a Raspberry Pi 5 flashed
 from an image, or a container on an ordinary x86_64 Linux host. The same daemon
 binary and the same interface serve both, and no code under `daemon/` differs
@@ -871,13 +876,21 @@ every Pi number in this document.
 | Board | [Raspberry Pi 5 Model B, 4 GB](https://www.amazon.com/dp/B0CK3L9WD3?tag=jonathaneoliv-20) — or the cheaper [2 GB](https://www.amazon.com/dp/B0DDL91V2R?tag=jonathaneoliv-20), see below | A Pi 4 works; the onboard NIC must not be USB, which is why a Pi 3 does not — see the udev rule in `scripts/customize.sh` |
 | Power | [Official Raspberry Pi 27 W USB-C PSU](https://www.amazon.com/dp/B0CW7XCY75?tag=jonathaneoliv-20), or the [CanaKit 45 W USB-C PD supply](https://www.amazon.com/dp/B07H125ZRL?tag=jonathaneoliv-20) which also delivers 5 A | A SuperSpeed Wi-Fi adapter is a real load. **5 A is what `BOA_USB_MAX_CURRENT` needs** — under it the Pi 5 caps every USB port at 600 mA between them, which reads as a flaky adapter rather than a power problem. Check `vcgencmd get_throttled` reads `0x0` — and if it does not, or a radio keeps dropping off the bus, see [Power](#power) |
 | Storage | [SanDisk Ultra 16 GB microSDHC](https://www.amazon.com/dp/B074B4P7KD?tag=jonathaneoliv-20) | What was used, and enough — the finished image is ~4.6 GB. A 32 GB card costs little more and leaves room for `ntopng` data |
-| Wi-Fi adapter | [Panda Wireless PAU0F AXE3000 (mt7921u)](https://www.amazon.com/dp/B0D972VY9B?tag=jonathaneoliv-20) | Optional, and the single biggest change to what the box can test — see below |
+| Wi-Fi adapter | [Panda Wireless PAU0F AXE3000 (mt7921u)](https://www.amazon.com/dp/B0D972VY9B?tag=jonathaneoliv-20) | Optional, and the single biggest change to what the box can test — see below. **A client part, and it does not do everything this box would like**: see [The radios here are client parts](#the-radios-here-are-client-parts-and-that-is-the-ceiling) |
 | Wired downstream | Any USB ethernet adapter — e.g. [UGREEN USB-C 2.5 GbE](https://www.amazon.com/dp/B0CD1FDKT1?tag=jonathaneoliv-20); the figures below are a Realtek RTL8156 at both ends | Becomes `lan0`. Optional. 2.5 GbE needs a SuperSpeed link end to end, and a USB-C part reaches the Pi's USB-A socket through a converter that is usually the weak point — see [The cable decides whether you get 2.5 GbE at all](#the-cable-decides-whether-you-get-25-gbe-at-all) |
 
 The product links above are Amazon affiliate links. **As an Amazon Associate I
 earn from qualifying purchases.** No part was chosen for that reason — each one
 is what the numbers in this document were measured on, and buying it anywhere
 else works identically.
+
+**These are the parts this was built on, not the parts it deserves.** The list
+above is a record of what produced the figures in this document, and the Wi-Fi
+adapters in particular are the compromise the rest of the box is shaped around.
+Buy them to reproduce what is written here. Do not read the list as a
+recommendation for the best boa anyone could build, because nobody has built
+that one yet — see [Hardware worth trying, none of it
+tried](#hardware-worth-trying-none-of-it-tried).
 
 ### How much RAM this actually needs
 
@@ -950,6 +963,130 @@ the same constraint the Pi has and the same one the
 [powered hub figures](#what-a-hub-costs-a-radio-separated-from-what-the-channel-is-worth)
 below quantify.
 
+### The radios here are client parts, and that is the ceiling
+
+Every radio this box has ever run is a **station chip with AP mode bolted on**.
+Not one is an access-point part.
+
+| Radio | Where | What it is |
+|---|---|---|
+| mt7921u (Panda PAU0F) | USB, both targets | Client sibling of the mt7915/mt7916 AP line |
+| BCM43455 | Onboard, Pi | Embedded client chip |
+| Intel AX200 | PCIe, the container host | Laptop client card, self-managed regulatory domain |
+
+That single fact explains most of the limits catalogued in
+[what the radios will not do](#channel-manipulation-what-client-class-silicon-will-not-do):
+no channel switch announcement, so every channel move is an outage; no DFS, so
+16 of the 25 usable 5 GHz channels are off the table; one BSS per radio; no rate
+pinning, which is why distance is *modelled* rather than imposed.
+
+The AX200 has bitten in its own way. It carries its own regulatory domain rather
+than the global one, and it is not final the moment the phy lands in the
+container's namespace — the channel plan was correct against what it could see
+and wrong a second later. The entrypoint waits for the channel set to stop
+moving because of it.
+
+### Wi-Fi features not yet exercised
+
+Distinct from the list of things the silicon **refuses**. These are implemented,
+or believed to work, and have never been confirmed doing their job on hardware.
+An unexercised feature is recorded as unexercised rather than assumed working.
+
+| | Status |
+|---|---|
+| **A client accepting a steer onto 5 GHz** | The one direction ever seen to work is onto 2.4 GHz. A malformed operating class made every 5 GHz request describe a block that does not exist; it was fixed and **no client has been observed moving onto 5 GHz since** |
+| **Steer as a way to place a client** | Every recorded attempt on a real device was declined. An iPhone ignored a same-band request and refused a cross-band one, offering its own candidate list. Two Apple clients ignored an evict outright and had to be disassociated |
+| **RSSI-driven client behaviour** | The distance model does not move real signal, so a client's radio still reads an excellent link while the box reports it as distant. Anything that depends on a device *reacting to* its own RSSI has never been truly tested here |
+| **Per-station signal on the onboard Pi radio** | Absent from `iw station dump` entirely. The USB adapters report it, with per-antenna values, and the interface shows it |
+| **Two radios carrying clients at once** | Never measured on either target, despite the rack being the point |
+| **6 GHz** | The adapter is an AXE3000 and the phy offers 59 usable channels with AP mode. The box neither scans nor serves there |
+| **WPA3/SAE, PMF, 802.11r, mesh, multi-BSS** | Supported by hostapd or advertised by the phy; none configured |
+| **Airtime fairness** | Measured, never enforced |
+
+**The steer rows are the ones worth dwelling on**, because they are easy to
+misread as a bug. The control is working: it sends a well-formed request and
+reports honestly what came back, including a refusal with the client's own
+candidate list. 802.11v simply has no request that *places* a station on a BSS.
+That is why the controls that reliably move a client are the ones that remove
+the alternatives — `gather` and `evict` — rather than the one that asks.
+
+### Hardware worth trying, none of it tried
+
+**None of this has been bought, run or measured.** It is where the limits above
+would go if someone did.
+
+OpenWrt's split is the useful frame. The mt7915 and mt7916 are purpose-built AP
+parts on the same `mt76` driver already in use here, where the mt7921 in these
+adapters is the client sibling — it works in AP mode but was never optimised for
+it. Qualcomm's `ath11k`, and the older `ath9k`/`ath10k`, are the other AP-class
+family, and `ath9k`/`ath10k` are the ones that expose raw
+[spectral scan](#what-ap-class-silicon-would-add-in-order-of-what-it-changes)
+data, which would let this box see interference that does not beacon.
+
+| Candidate | Form factor | What it would unlock here |
+|---|---|---|
+| **mt7916** (e.g. AW7916-NPD, 3×3 DBDC) | mPCIe / M.2 | AP-class `mt76`: CSA so a channel move stops being an outage, DFS, multiple BSS per radio, off-channel scan while beaconing, and possibly **OFDMA** |
+| **mt7915** (AW7915-NP1 4×4, or NPD-2X 2×2) | mPCIe / M.2 | As above, and 4×4 doubles the two-stream ceiling |
+| **ath11k** (e.g. QCN9074) | M.2 / PCIe | The non-MediaTek AP family, for a second opinion on driver-specific behaviour |
+| **ath9k / ath10k** | mPCIe / PCIe | Old and slow, but the only realistic route to **spectral scan** and mature **airtime fairness** |
+
+**OFDMA is the one to select on, and the datasheet will not answer it.** This
+box serves a purely time-shared radio, which
+[bounds every throughput figure in this document](#this-box-does-not-do-ofdma-and-that-bounds-every-figure-above)
+— and OFDMA attacks precisely the weakness the width sweep found, because the
+fixed overhead a wide channel wastes on one client is shared out when several
+are served in the same transmission. It is the difference between measuring a
+radio that behaves like a modern router and one that does not.
+
+The current adapter is exactly why the datasheet is worthless as evidence. It
+advertises HE and `Full Bandwidth UL MU-MIMO` and delivers neither: `mt76`
+exposes no MU counters, and every frame on the air is single-user aggregation of
+at most two MSDUs. So the acceptance test for any candidate is on the box, not
+on the box it came in — MU or OFDMA counters present under
+`/sys/kernel/debug/ieee80211/phy*/mt76/`, and `tx_stats` showing multi-user
+transmissions under load.
+
+**The other catch is form factor, not price.** AP-class silicon is essentially
+not sold as USB. Every card above is mPCIe or M.2, which decides where each
+target can go next.
+
+**The container host can take one today.** It has an Intel AX200 on PCIe and
+three free slots: a PCIe x16, a PCIe x4, and an M.2. An mPCIe or M.2 card on a
+cheap adapter drops straight into the x4 or x16, alongside or instead of the
+AX200. No power problem, no enclosure problem. This is the shortest path from
+here to AP-class behaviour, and it is a strong argument for the container target
+independent of anything else.
+
+**The Pi needs a HAT, and power is the constraint.** The Pi 5 exposes a single
+PCIe lane on its FFC connector, so an AP-class card needs a PCIe HAT — an M.2 or
+mini-PCIe adapter. Supernetworks builds one specifically for Wi-Fi 6 AP cards
+and states the reason plainly: **the FFC connector is limited to about 5 W**, so
+they built a HAT that can draw over 10 W. A 3×3 or 4×4 AP radio is a real load,
+and this repository has already lost a day to
+[a Pi 5 browning out two USB radios](#power). The same lesson, one connector
+over.
+
+### Would PCIe beat USB here? Nobody has checked
+
+Worth benchmarking on its own, separately from what the chip can do, because
+three different things could move and they matter for different reasons.
+
+| | Why it might change | Why it matters here |
+|---|---|---|
+| **Throughput** | The Pi 5's lane is PCIe Gen 2 ×1, about 500 MB/s, roughly 4 Gbit/s. USB 3.0 offers 5 Gbit/s **shared by every adapter on the bus** — and the hub ceiling measured here was exactly that, across three | A dedicated lane per radio, instead of a bus three radios contend for |
+| **Latency** | USB is a polled, packetised transport with host-controller round trips in the path. PCIe is memory-mapped | **This is the one that could change a measurement.** Bus latency lands on top of every conditioned delay, and adaptive bitrate decisions are made on buffer level and round-trip time |
+| **CPU overhead** | Every USB frame costs the host controller driver work. The wired path here is already CPU-bound: anything above roughly 1.9 Gbit/s with `-R` is measuring a saturated core | The box is the instrument as well as the subject. CPU spent on the bus is CPU not spent conditioning |
+
+The Pi 5's lane can be pushed to Gen 3, about 1 GB/s, with `dtparam=pciex1_gen=3`.
+It is not certified for it and may be unstable, so treat that as part of the
+experiment rather than a baseline.
+
+The latency row is the one to design the test around. Throughput is already
+adequate on USB for every rendition this box serves, and CPU headroom on the
+container host is generous. A repeatable difference in round-trip time under
+load would change what the ladder measurements mean, and nothing here has ever
+isolated the bus from the radio.
+
 ## Access point performance
 
 The AP's ceiling bounds the top of a measured ladder, so it decides which
@@ -963,66 +1100,47 @@ container host running the same adapter — see
 [Measured on the container host](#measured-on-the-container-host) for what was
 confirmed there.
 
-| Radio | Downlink | Uplink | Channel | Run |
-|---|---|---|---|---|
-| Onboard (brcmfmac) | 55 Mbit/s | 57 Mbit/s | 20 MHz | 60s, sole client |
-| PAU0F on **USB 2.0** | 162 Mbit/s | 146 Mbit/s | 80 MHz, 802.11ax | 15s, 2 clients |
-| PAU0F on **USB 3.0** | **~540 Mbit/s** | ~156 Mbit/s | 80 MHz, 802.11ax | 15s, 2 clients |
-| PAU0F on **USB 3.0** | **544–552 Mbit/s** | — | 80 MHz, 802.11ax, ch 40 | 20–30s, 2–3 clients, 2026-09-03 |
-| Wired 1 GbE, for reference | 924 Mbit/s | — | — | 8s |
-| Wired 2.5 GbE, for reference | **1.91 Gbit/s** | **2.35 Gbit/s** | — | 30s, 2026-09-03 |
-| PAU0F on **USB 3.0** | **677 Mbit/s** | — | 80 MHz, 802.11ax, **ch 149** | 12s, sole client, 2026-09-04 |
-| PAU0F on **USB 3.0** | **462 Mbit/s** | **145 Mbit/s** | 80 MHz, 802.11ax, ch 40 | 26s each way, 2 clients, 2026-09-07 |
-| PAU0F on **USB 3.0** | **683 Mbit/s** | — | 80 MHz, 802.11ax, **ch 149** | 70s, sole client, 2026-09-07 |
-| PAU0F on **USB 3.0** | **536 Mbit/s** | — | 80 MHz, 802.11ax, ch 40 | 70s, sole client, 2026-09-07 |
-| PAU0F on **USB 3.0** | **691 Mbit/s** | — | **80 MHz**, 802.11ax, ch 149 | 60s, sole client, 2026-09-08 |
-| PAU0F on **USB 3.0** | **379 Mbit/s** | — | **40 MHz**, 802.11ax, ch 149 | 60s, sole client, 2026-09-08 |
-| PAU0F on **USB 3.0** | **198 Mbit/s** | — | **20 MHz**, 802.11ax, ch 149 | 60s, sole client, 2026-09-08 |
-| PAU0F, **root port** `2-1` | **672 Mbit/s** | — | 80 MHz, ch 149 | 60s, sole client, 2026-09-08 |
-| PAU0F, **behind a hub** `4-1.3` | **575 Mbit/s** | — | 80 MHz, ch 149 | 60s, sole client, 2026-09-08 |
-| PAU0F, **root port** `2-1` | **546 Mbit/s** | — | 80 MHz, ch 40 | 60s, sole client, 2026-09-08 |
-| PAU0F, **behind a hub** `4-1.3` | **472 Mbit/s** | — | 80 MHz, ch 40 | 60s, sole client, 2026-09-08 |
+| Link | Downlink | Uplink |
+|---|---|---|
+| Onboard radio (brcmfmac), 20 MHz | 55 Mbit/s | 57 Mbit/s |
+| USB adapter on **USB 2.0**, 80 MHz ax | 162 Mbit/s | 146 Mbit/s |
+| USB adapter on **USB 3.0**, 80 MHz ax | **536–691 Mbit/s** | ~150 Mbit/s |
+| Wired 1 GbE, for reference | 924 Mbit/s | — |
+| Wired 2.5 GbE, for reference | **1.91 Gbit/s** | **2.35 Gbit/s** |
 
-> **Every figure above this pair was measured on a Pi that was browning out.**
-> The supply negotiated 900 mA rather than 5 A — no USB-PD objects were
-> exchanged at all — so the firmware fell back to the USB default while two
-> mt7921u adapters drew against it. 269 under-voltage events in a day, and
-> adapters dropping off the bus *mid-transfer* three times. Replacing the cable
-> restored PD negotiation (`max_current` 900 → 5000) and the events stopped
-> dead. See [Power](#power).
->
-> The older rows are **depressed rather than wrong**, and by less than that
-> story suggests: re-measured on healthy power the same channel and client went
-> 556 → 660 Mbit/s, about **+19%**. Individual samples were already reaching
-> 725–751 Mbit/s while the box was failing — the radio was always capable, it
-> simply could not *sustain* it, and the sustained totals were dragged down by
-> collapses, retransmits and twice by an adapter vanishing altogether.
->
-> What actually changed is the **variance**. Runs used to swing between 398 and
-> 725 Mbit/s for reasons unconnected to anything under test. On a box whose
-> whole purpose is measuring what an impairment does to a link, an unshaped
-> baseline that moves by a factor of two is the fault that matters, more than
-> any single number above it.
+Two things to take from it. **The USB adapter on a SuperSpeed port is the only
+radio here worth testing a modern ladder against**, at roughly ten times the
+onboard one; and **the wired port is not a substitute for it**, because the
+question is usually what a radio does, not what a cable does.
 
-The three 20/40/80 MHz rows are one width sweep on one channel with one client,
-and are the cleanest set here — see
-[Channel width, and what it is worth](#channel-width-and-what-it-is-worth) for
-what they say about width, about idle clients, and about where the ceiling is
-not.
+**The spread on that third row is the whole subject of the sections below.** It
+is not noise. The same adapter, the same client and the same transfer land
+anywhere in that range depending on three things, each isolated with a
+controlled comparison rather than left as a range:
 
-**The last four rows are a grid, not four separate runs**, and reading any one of
-them alone will mislead: they are the same measurement repeated across two
-channels and two USB topologies precisely because those two effects had been
-cancelling each other out. See
-[What a hub costs a radio](#what-a-hub-costs-a-radio-separated-from-what-the-channel-is-worth).
-They also say which rows above them were taken on a root port — the ones that
-match the historical ceilings.
+- the **channel** — 683 against 536 Mbit/s, and it is contention rather than
+  link quality: [What a channel is worth](#what-a-channel-is-worth)
+- the **channel width** — 691, 379 and 198 Mbit/s across 80, 40 and 20 MHz:
+  [Channel width, and what it is worth](#channel-width-and-what-it-is-worth)
+- the **USB topology** — a root port against a powered hub, measured on both
+  channels at once because the two effects had been cancelling out:
+  [What a hub costs a radio](#what-a-hub-costs-a-radio-separated-from-what-the-channel-is-worth)
+
+All of it was measured after the power fault described under
+[Power](#power) was found and fixed. Figures taken before that, between
+2026-09-03 and the morning of 09-07, ran lower and are not reproduced here.
+
+**Read the three comparisons below as controlled experiments, not as a list of
+results.** Each holds everything constant but one variable, which is why they
+are kept apart from the ceiling table rather than folded into it — the hub
+grid in particular is a single measurement repeated across two channels and two
+USB topologies, precisely because those two effects had been cancelling each
+other out, and reading any one of its four numbers alone will mislead.
 
 ### What a channel is worth
 
-The last two rows are the same radio, the same client and the same 70-second
-transfer, minutes apart, on a box with its power fixed. Nothing differs but the
-channel:
+Two runs: the same radio, the same client and the same 70-second transfer,
+minutes apart, on a box with its power fixed. Nothing differs but the channel:
 
 | | ch 149 | ch 40 |
 |---|---|---|
@@ -1172,13 +1290,6 @@ otherwise: 0.6 Gbit/s of Wi-Fi has an order of magnitude of headroom on a 5 Gb/s
 bus, nothing else on the hub was transferring, and the cost is *the same
 proportion* as it was at 2.35 Gbit/s on the wire. A proportional cost that
 survives an idle bus is not contention for bandwidth.
-
-**Two things this does NOT establish.** The two topologies are two different
-physical dongles — same model, same `mt7921u` firmware build, not the same unit
-— so "hub" is confounded with "which adapter", and separating them needs the two
-swapped between ports by hand. And the `hub`/ch 149 cell ran at a better link
-than the other three (PHY 1200.9, MCS 11, −20 dBm against 960.7, MCS 9, −26 to
-−29 dBm), which flatters it: the true cost there is likely worse than 14%.
 
 > **Both "ch 36" runs are really ch 40.** hostapd's 20/40 MHz coexistence scan
 > found neighbours on the secondary channel and swapped its primary and
@@ -1662,6 +1773,24 @@ loses the interface, `select-radio` re-plans around the missing adapter and
 restarts the daemon, clients scatter onto whichever radio is left, and an
 `iperf3` run that was doing 725 Mbit/s finishes at 398 with retransmits and a
 PHY rate that collapsed to 6.0. It reads exactly like a Wi-Fi fault. It is not.
+
+**It was the cable.** No USB-PD objects were exchanged at all, so the firmware
+fell back to the 900 mA USB default while two mt7921u adapters drew against it:
+269 under-voltage events in a day, and adapters dropping off the bus
+*mid-transfer* three times. Replacing the cable restored negotiation
+(`max_current` 900 → 5000) and the events stopped dead.
+
+**What it cost the measurements was variance, not throughput.** Re-measured on
+healthy power, the same channel and client went 556 → 660 Mbit/s, about +19% —
+so the older figures were depressed rather than wrong. Individual samples had
+been reaching 725–751 Mbit/s even while the box was failing, because the radio
+was always capable and simply could not *sustain* it.
+
+The number that mattered was the spread. Runs swung between 398 and 725 Mbit/s
+for reasons unconnected to anything under test. **On a box whose whole purpose
+is measuring what an impairment does to a link, an unshaped baseline that moves
+by a factor of two is a worse fault than any single wrong figure** — it makes
+every comparison drawn against it unsound, and says nothing about which ones.
 
 ### Ask the firmware what it negotiated
 
