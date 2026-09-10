@@ -72,8 +72,19 @@ host_nic() {
   local dev=$1 path
   [ "$dev" = "$BR" ] && return 1
   [ -e "/sys/class/net/$dev/phy80211" ] && return 1
+  # -e ON THE LINK ITSELF, before resolving it. GNU `readlink -f` requires only
+  # that every component BUT THE LAST exists, so on a veth -- which has no
+  # `device` entry at all -- it happily prints /sys/devices/virtual/net/<if>/device
+  # and exits 0. The guard was written as "did readlink succeed", which is
+  # therefore always true on Linux, and the veth to the container was picked as
+  # the host's uplink. Measured on the Ubuntu box on 2026-09-09.
+  #
+  # It passed on macOS, where readlink -f fails on a missing path -- the exact
+  # shape of "container tests pass that hardware fails" this repository keeps
+  # relearning. `-e` follows the symlink and demands the target exist, which is
+  # the same answer on both.
+  [ -e "/sys/class/net/$dev/device" ] || return 1
   path=$(readlink -f "/sys/class/net/$dev/device" 2>/dev/null) || return 1
-  [ -n "$path" ] || return 1
   case "$path" in *//usb*|*/usb[0-9]*) return 1 ;; esac
   return 0
 }
