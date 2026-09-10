@@ -1025,14 +1025,30 @@ data, which would let this box see interference that does not beacon.
 
 | Candidate | Form factor | What it would unlock here |
 |---|---|---|
-| **mt7916** (e.g. AW7916-NPD, 3×3 DBDC) | mPCIe / M.2 | AP-class `mt76`: CSA so a channel move stops being an outage, DFS, multiple BSS per radio, off-channel scan while beaconing |
+| **mt7916** (e.g. AW7916-NPD, 3×3 DBDC) | mPCIe / M.2 | AP-class `mt76`: CSA so a channel move stops being an outage, DFS, multiple BSS per radio, off-channel scan while beaconing, and possibly **OFDMA** |
 | **mt7915** (AW7915-NP1 4×4, or NPD-2X 2×2) | mPCIe / M.2 | As above, and 4×4 doubles the two-stream ceiling |
 | **ath11k** (e.g. QCN9074) | M.2 / PCIe | The non-MediaTek AP family, for a second opinion on driver-specific behaviour |
 | **ath9k / ath10k** | mPCIe / PCIe | Old and slow, but the only realistic route to **spectral scan** and mature **airtime fairness** |
 
-**The catch is form factor, not price.** AP-class silicon is essentially not
-sold as USB. Every card above is mPCIe or M.2, which decides where each target
-can go next.
+**OFDMA is the one to select on, and the datasheet will not answer it.** This
+box serves a purely time-shared radio, which
+[bounds every throughput figure in this document](#this-box-does-not-do-ofdma-and-that-bounds-every-figure-above)
+— and OFDMA attacks precisely the weakness the width sweep found, because the
+fixed overhead a wide channel wastes on one client is shared out when several
+are served in the same transmission. It is the difference between measuring a
+radio that behaves like a modern router and one that does not.
+
+The current adapter is exactly why the datasheet is worthless as evidence. It
+advertises HE and `Full Bandwidth UL MU-MIMO` and delivers neither: `mt76`
+exposes no MU counters, and every frame on the air is single-user aggregation of
+at most two MSDUs. So the acceptance test for any candidate is on the box, not
+on the box it came in — MU or OFDMA counters present under
+`/sys/kernel/debug/ieee80211/phy*/mt76/`, and `tx_stats` showing multi-user
+transmissions under load.
+
+**The other catch is form factor, not price.** AP-class silicon is essentially
+not sold as USB. Every card above is mPCIe or M.2, which decides where each
+target can go next.
 
 **The container host can take one today.** It has an Intel AX200 on PCIe and
 three free slots: a PCIe x16, a PCIe x4, and an M.2. An mPCIe or M.2 card on a
