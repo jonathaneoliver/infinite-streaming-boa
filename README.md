@@ -1275,13 +1275,6 @@ bus, nothing else on the hub was transferring, and the cost is *the same
 proportion* as it was at 2.35 Gbit/s on the wire. A proportional cost that
 survives an idle bus is not contention for bandwidth.
 
-**Two things this does NOT establish.** The two topologies are two different
-physical dongles — same model, same `mt7921u` firmware build, not the same unit
-— so "hub" is confounded with "which adapter", and separating them needs the two
-swapped between ports by hand. And the `hub`/ch 149 cell ran at a better link
-than the other three (PHY 1200.9, MCS 11, −20 dBm against 960.7, MCS 9, −26 to
-−29 dBm), which flatters it: the true cost there is likely worse than 14%.
-
 > **Both "ch 36" runs are really ch 40.** hostapd's 20/40 MHz coexistence scan
 > found neighbours on the secondary channel and swapped its primary and
 > secondary to avoid them, so a radio asked for 36 at 80 MHz came back on 40.
