@@ -155,9 +155,6 @@ delay, jitter and loss lanes unused in this run.
   throughput per direction on each folded row.
 - **Keeps five minutes of history server-side**, so a browser refresh does not
   start from a blank chart.
-- **Measures a player's rendition ladder** by sweeping the cap downward and
-  recording where throughput settles — no manifest, no payload inspection. Kept
-  per service, because no two streaming services share a ladder.
 - **Ships ntopng** on `:3000`, watching the bridge, with per-device deep links
   from each card for traffic breakdown and nDPI-labelled flows.
 - **Ships glances** on `:61208`, linked from the header — the appliance
