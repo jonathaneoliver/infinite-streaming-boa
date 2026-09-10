@@ -1084,27 +1084,36 @@ container host running the same adapter — see
 [Measured on the container host](#measured-on-the-container-host) for what was
 confirmed there.
 
-| Radio | Downlink | Uplink | Channel | Run |
-|---|---|---|---|---|
-| Onboard (brcmfmac) | 55 Mbit/s | 57 Mbit/s | 20 MHz | 60s, sole client |
-| PAU0F on **USB 2.0** | 162 Mbit/s | 146 Mbit/s | 80 MHz, 802.11ax | 15s, 2 clients |
-| PAU0F on **USB 3.0** | **~540 Mbit/s** | ~156 Mbit/s | 80 MHz, 802.11ax | 15s, 2 clients |
-| PAU0F on **USB 3.0** | **544–552 Mbit/s** | — | 80 MHz, 802.11ax, ch 40 | 20–30s, 2–3 clients, 2026-09-03 |
-| Wired 1 GbE, for reference | 924 Mbit/s | — | — | 8s |
-| Wired 2.5 GbE, for reference | **1.91 Gbit/s** | **2.35 Gbit/s** | — | 30s, 2026-09-03 |
-| PAU0F on **USB 3.0** | **677 Mbit/s** | — | 80 MHz, 802.11ax, **ch 149** | 12s, sole client, 2026-09-04 |
-| PAU0F on **USB 3.0** | **462 Mbit/s** | **145 Mbit/s** | 80 MHz, 802.11ax, ch 40 | 26s each way, 2 clients, 2026-09-07 |
-| PAU0F on **USB 3.0** | **683 Mbit/s** | — | 80 MHz, 802.11ax, **ch 149** | 70s, sole client, 2026-09-07 |
-| PAU0F on **USB 3.0** | **536 Mbit/s** | — | 80 MHz, 802.11ax, ch 40 | 70s, sole client, 2026-09-07 |
-| PAU0F on **USB 3.0** | **691 Mbit/s** | — | **80 MHz**, 802.11ax, ch 149 | 60s, sole client, 2026-09-08 |
-| PAU0F on **USB 3.0** | **379 Mbit/s** | — | **40 MHz**, 802.11ax, ch 149 | 60s, sole client, 2026-09-08 |
-| PAU0F on **USB 3.0** | **198 Mbit/s** | — | **20 MHz**, 802.11ax, ch 149 | 60s, sole client, 2026-09-08 |
-| PAU0F, **root port** `2-1` | **672 Mbit/s** | — | 80 MHz, ch 149 | 60s, sole client, 2026-09-08 |
-| PAU0F, **behind a hub** `4-1.3` | **575 Mbit/s** | — | 80 MHz, ch 149 | 60s, sole client, 2026-09-08 |
-| PAU0F, **root port** `2-1` | **546 Mbit/s** | — | 80 MHz, ch 40 | 60s, sole client, 2026-09-08 |
-| PAU0F, **behind a hub** `4-1.3` | **472 Mbit/s** | — | 80 MHz, ch 40 | 60s, sole client, 2026-09-08 |
+| Link | Downlink | Uplink |
+|---|---|---|
+| Onboard radio (brcmfmac), 20 MHz | 55 Mbit/s | 57 Mbit/s |
+| USB adapter on **USB 2.0**, 80 MHz ax | 162 Mbit/s | 146 Mbit/s |
+| USB adapter on **USB 3.0**, 80 MHz ax | **536–691 Mbit/s** | ~150 Mbit/s |
+| Wired 1 GbE, for reference | 924 Mbit/s | — |
+| Wired 2.5 GbE, for reference | **1.91 Gbit/s** | **2.35 Gbit/s** |
 
-> **Every figure above this pair was measured on a Pi that was browning out.**
+Two things to take from it. **The USB adapter on a SuperSpeed port is the only
+radio here worth testing a modern ladder against**, at roughly ten times the
+onboard one; and **the wired port is not a substitute for it**, because the
+question is usually what a radio does, not what a cable does.
+
+**The spread on that third row is the whole subject of the sections below.** It
+is not noise. The same adapter, the same client and the same transfer land
+anywhere in that range depending on three things, each isolated with a
+controlled comparison rather than left as a range:
+
+- the **channel** — 683 against 536 Mbit/s, and it is contention rather than
+  link quality: [What a channel is worth](#what-a-channel-is-worth)
+- the **channel width** — 691, 379 and 198 Mbit/s across 80, 40 and 20 MHz:
+  [Channel width, and what it is worth](#channel-width-and-what-it-is-worth)
+- the **USB topology** — a root port against a powered hub, measured on both
+  channels at once because the two effects had been cancelling out:
+  [What a hub costs a radio](#what-a-hub-costs-a-radio-separated-from-what-the-channel-is-worth)
+
+Every figure above is post-fix. An earlier set, from 2026-09-03 to the morning
+of 09-07, ran 462 to 677 Mbit/s and is **depressed rather than wrong**:
+
+> **Those figures were measured on a Pi that was browning out.**
 > The supply negotiated 900 mA rather than 5 A — no USB-PD objects were
 > exchanged at all — so the firmware fell back to the USB default while two
 > mt7921u adapters drew against it. 269 under-voltage events in a day, and
@@ -1123,27 +1132,19 @@ confirmed there.
 > 725 Mbit/s for reasons unconnected to anything under test. On a box whose
 > whole purpose is measuring what an impairment does to a link, an unshaped
 > baseline that moves by a factor of two is the fault that matters, more than
-> any single number above it.
+> any single number it produced.
 
-The three 20/40/80 MHz rows are one width sweep on one channel with one client,
-and are the cleanest set here — see
-[Channel width, and what it is worth](#channel-width-and-what-it-is-worth) for
-what they say about width, about idle clients, and about where the ceiling is
-not.
-
-**The last four rows are a grid, not four separate runs**, and reading any one of
-them alone will mislead: they are the same measurement repeated across two
-channels and two USB topologies precisely because those two effects had been
-cancelling each other out. See
-[What a hub costs a radio](#what-a-hub-costs-a-radio-separated-from-what-the-channel-is-worth).
-They also say which rows above them were taken on a root port — the ones that
-match the historical ceilings.
+**Read the three comparisons below as controlled experiments, not as a list of
+results.** Each holds everything constant but one variable, which is why they
+are kept apart from the ceiling table rather than folded into it — the hub
+grid in particular is a single measurement repeated across two channels and two
+USB topologies, precisely because those two effects had been cancelling each
+other out, and reading any one of its four numbers alone will mislead.
 
 ### What a channel is worth
 
-The last two rows are the same radio, the same client and the same 70-second
-transfer, minutes apart, on a box with its power fixed. Nothing differs but the
-channel:
+Two runs: the same radio, the same client and the same 70-second transfer,
+minutes apart, on a box with its power fixed. Nothing differs but the channel:
 
 | | ch 149 | ch 40 |
 |---|---|---|
