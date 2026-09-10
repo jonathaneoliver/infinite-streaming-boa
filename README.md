@@ -159,11 +159,13 @@ delay, jitter and loss lanes unused in this run.
   recording where throughput settles — no manifest, no payload inspection. Kept
   per service, because no two streaming services share a ladder.
 - **Ships ntopng** on `:3000`, watching the bridge, with per-device deep links
-  from each card for traffic breakdown and nDPI-labelled flows.
+  from each card for traffic breakdown and nDPI-labelled flows. **Pi image
+  only** — the container omits it, and the interface says why.
 - **Ships glances** on `:61208`, linked from the header — the appliance
   watching itself rather than the traffic: CPU, memory, SoC temperature, disk
   and per-process load, for when a throughput number is wrong because the Pi is
-  throttling rather than because the policy says so.
+  throttling rather than because the policy says so. **Pi image only**, on the
+  same terms.
 - **Ships an iperf3 server** on `:5201`, so the ceiling a cap has to sit under
   can be measured without installing anything on the device under test. It
   measures the link **unshaped** — see below.
@@ -1056,12 +1058,17 @@ are served in the same transmission. It is the difference between measuring a
 radio that behaves like a modern router and one that does not.
 
 The current adapter is exactly why the datasheet is worthless as evidence. It
-advertises HE and `Full Bandwidth UL MU-MIMO` and delivers neither: `mt76`
-exposes no MU counters, and every frame on the air is single-user aggregation of
-at most two MSDUs. So the acceptance test for any candidate is on the box, not
-on the box it came in — MU or OFDMA counters present under
-`/sys/kernel/debug/ieee80211/phy*/mt76/`, and `tx_stats` showing multi-user
-transmissions under load.
+advertises HE and `Full Bandwidth UL MU-MIMO` and delivers neither: `mt7921`
+exposes no MU counters at all, and every frame on the air is single-user
+aggregation of at most two MSDUs.
+
+**The AP-class driver does have them**, which is the encouraging half.
+`mt7915/debugfs.c` carries a `muru_debug` switch and a `muru_stats` file
+reporting downlink MU-MIMO, downlink OFDMA and trigger-based uplink MU-MIMO and
+OFDMA as per-PPDU counts; `mt7921/debugfs.c` contains none of those words. So
+the acceptance test for any candidate is on the box, not on the box it came in —
+enable `muru_debug` first, since `muru_stats` reports nothing until you do, then
+look for multi-user transmissions under load.
 
 **The other catch is form factor, not price.** AP-class silicon is essentially
 not sold as USB. Every card above is mPCIe or M.2, which decides where each
@@ -1315,7 +1322,7 @@ survives an idle bus is not contention for bandwidth.
 > reported the substitution rather than silently serving a different channel,
 > which is the only reason the label above is right.
 
-**An idle client is not free.** Measured twice today, at two widths: an iPhone
+**An idle client is not free.** Measured twice on 2026-09-08, at two widths: an iPhone
 associated and transferring *nothing* — 0.0 Mbit/s, 0.0% airtime by its own
 counters — cost the MacBook **37 Mbit/s** both times, 697 → 660 at 80 MHz and
 379 → 342 at 40 MHz. Around 10%, for a device doing nothing but existing on the
@@ -1369,7 +1376,7 @@ rather than splitting the band.
 # hostapd sets width and centre only -- no MU options are configured
 grep -hE 'he_|mu_|ofdma' /etc/hostapd/*.conf
 
-# mt76 exposes no MU or OFDMA counters at all
+# mt7921 exposes no MU or OFDMA counters at all (mt7915 has muru_stats)
 ls /sys/kernel/debug/ieee80211/phy0/mt76/
 
 # and every transmission is single-user aggregation
@@ -2429,7 +2436,7 @@ An AP-class part with DFS would have five more.
 
 | | Status | Why |
 |---|---|---|
-| **OFDMA / MU-MIMO scheduling** | not done | Driver. The hardware advertises HE and `Full Bandwidth UL MU-MIMO`, but mt76 exposes no MU counters and every frame is single-user — see [above](#this-box-does-not-do-ofdma-and-that-bounds-every-figure-above) |
+| **OFDMA / MU-MIMO scheduling** | not done | Driver, and specific to this chip. The hardware advertises HE and `Full Bandwidth UL MU-MIMO`, but `mt7921` exposes no MU counters and every frame is single-user. `mt7915` does expose them — see [above](#this-box-does-not-do-ofdma-and-that-bounds-every-figure-above) |
 | **160 MHz channels** | not possible | Hardware. `iw phy` lists no 160 MHz capability on either adapter |
 | **6 GHz (Wi-Fi 6E)** | **not implemented** | **Ours.** The adapter is an AX**E**3000 and the PHY offers 59 usable 6 GHz channels with AP mode among its HE Iftypes. boa neither scans nor serves there because `scanFreqs()` and `apChannels` stop at 5 GHz |
 | **Mesh / 802.11s** | not used | Ours. Both adapters list `mesh point` among their interface modes; nothing here builds on it |
@@ -2651,7 +2658,7 @@ cd daemon && go build -ldflags "-X main.version=$(../scripts/version.sh)" \
     -o ~/.local/bin/boactl ./cmd/boactl
 ```
 
-The API has 54 endpoints and they were previously reached with hand-assembled
+The API has 55 endpoints and they were previously reached with hand-assembled
 `curl`, which is fine until it isn't: a typo in a path returns an HTML error
 page that decodes into a zero-valued struct and reads exactly like a healthy
 empty answer. `boactl` reports the status line instead.
