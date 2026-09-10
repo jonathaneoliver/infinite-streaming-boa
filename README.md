@@ -1110,29 +1110,9 @@ controlled comparison rather than left as a range:
   channels at once because the two effects had been cancelling out:
   [What a hub costs a radio](#what-a-hub-costs-a-radio-separated-from-what-the-channel-is-worth)
 
-Every figure above is post-fix. An earlier set, from 2026-09-03 to the morning
-of 09-07, ran 462 to 677 Mbit/s and is **depressed rather than wrong**:
-
-> **Those figures were measured on a Pi that was browning out.**
-> The supply negotiated 900 mA rather than 5 A — no USB-PD objects were
-> exchanged at all — so the firmware fell back to the USB default while two
-> mt7921u adapters drew against it. 269 under-voltage events in a day, and
-> adapters dropping off the bus *mid-transfer* three times. Replacing the cable
-> restored PD negotiation (`max_current` 900 → 5000) and the events stopped
-> dead. See [Power](#power).
->
-> The older rows are **depressed rather than wrong**, and by less than that
-> story suggests: re-measured on healthy power the same channel and client went
-> 556 → 660 Mbit/s, about **+19%**. Individual samples were already reaching
-> 725–751 Mbit/s while the box was failing — the radio was always capable, it
-> simply could not *sustain* it, and the sustained totals were dragged down by
-> collapses, retransmits and twice by an adapter vanishing altogether.
->
-> What actually changed is the **variance**. Runs used to swing between 398 and
-> 725 Mbit/s for reasons unconnected to anything under test. On a box whose
-> whole purpose is measuring what an impairment does to a link, an unshaped
-> baseline that moves by a factor of two is the fault that matters, more than
-> any single number it produced.
+All of it was measured after the power fault described under
+[Power](#power) was found and fixed. Figures taken before that, between
+2026-09-03 and the morning of 09-07, ran lower and are not reproduced here.
 
 **Read the three comparisons below as controlled experiments, not as a list of
 results.** Each holds everything constant but one variable, which is why they
@@ -1784,6 +1764,24 @@ loses the interface, `select-radio` re-plans around the missing adapter and
 restarts the daemon, clients scatter onto whichever radio is left, and an
 `iperf3` run that was doing 725 Mbit/s finishes at 398 with retransmits and a
 PHY rate that collapsed to 6.0. It reads exactly like a Wi-Fi fault. It is not.
+
+**It was the cable.** No USB-PD objects were exchanged at all, so the firmware
+fell back to the 900 mA USB default while two mt7921u adapters drew against it:
+269 under-voltage events in a day, and adapters dropping off the bus
+*mid-transfer* three times. Replacing the cable restored negotiation
+(`max_current` 900 → 5000) and the events stopped dead.
+
+**What it cost the measurements was variance, not throughput.** Re-measured on
+healthy power, the same channel and client went 556 → 660 Mbit/s, about +19% —
+so the older figures were depressed rather than wrong. Individual samples had
+been reaching 725–751 Mbit/s even while the box was failing, because the radio
+was always capable and simply could not *sustain* it.
+
+The number that mattered was the spread. Runs swung between 398 and 725 Mbit/s
+for reasons unconnected to anything under test. **On a box whose whole purpose
+is measuring what an impairment does to a link, an unshaped baseline that moves
+by a factor of two is a worse fault than any single wrong figure** — it makes
+every comparison drawn against it unsound, and says nothing about which ones.
 
 ### Ask the firmware what it negotiated
 
