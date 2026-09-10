@@ -57,20 +57,20 @@ already is. The two compose rather than compete: degrade the link with boa,
 manipulate what travels over it there.
 
 ```
-                    [ your existing router ]
-                              │
-                            eth0                       ← WAN port, conditioning
-                       ┌──────────────┐                  is applied here
-                       │     boa     │
-                       └──────────────┘
-                         br-lan  (one layer-2 segment)
-                    ╱          │          ╲
-              wlan-usb       wlan0        lan0
-             Wi-Fi 5GHz   Wi-Fi 2.4GHz  USB ethernet
-                    ╲          │          ╱
-                  wireless clients    wired client
-                         ╲            ╱
-                    conditioned identically
+                      [ your existing router ]
+                                 │
+                               eth0                  ← WAN port, conditioning
+                        ┌────────────────┐             is applied here
+                        │      boa       │
+                        └────────────────┘
+                          br-lan  (one layer-2 segment)
+              ╱                    │                    ╲
+        wlan-usb-46c7            wlan0            lan-usb-6518
+          Wi-Fi 5GHz          Wi-Fi 2.4GHz        USB ethernet
+              ╲                    │                    ╱
+                     wireless clients        wired client
+                              ╲             ╱
+                        conditioned identically
 ```
 
 The port names above are the Pi's. On a container host the shape is identical
@@ -156,11 +156,13 @@ delay, jitter and loss lanes unused in this run.
 - **Keeps five minutes of history server-side**, so a browser refresh does not
   start from a blank chart.
 - **Ships ntopng** on `:3000`, watching the bridge, with per-device deep links
-  from each card for traffic breakdown and nDPI-labelled flows.
+  from each card for traffic breakdown and nDPI-labelled flows. **Pi image
+  only** — the container omits it, and the interface says why.
 - **Ships glances** on `:61208`, linked from the header — the appliance
   watching itself rather than the traffic: CPU, memory, SoC temperature, disk
   and per-process load, for when a throughput number is wrong because the Pi is
-  throttling rather than because the policy says so.
+  throttling rather than because the policy says so. **Pi image only**, on the
+  same terms.
 - **Ships an iperf3 server** on `:5201`, so the ceiling a cap has to sit under
   can be measured without installing anything on the device under test. It
   measures the link **unshaped** — see below.
@@ -296,32 +298,49 @@ impairment started, how long it ran, whether the device had settled first, how
 long you took to click the second button. A script makes run A and run B
 identical except for the one line that differs.
 
+**Use `boactl`, not `curl`.** It imports the daemon's own types, so it cannot
+drift from what the box sends, and it reports a bad status line instead of
+handing you an HTML error page that decodes into a zero-valued struct and reads
+exactly like a healthy empty answer. That failure is silent, and in an A/B it
+means comparing two nothings.
+
 ```sh
-BOX=http://infinite-streaming-boa.local
-MAC=fc:9c:a7:93:7f:ed
+export BOA_BOX=infinite-streaming-boa.local
+DEV="Apple TV"
+RADIO=$(boactl -json bridge | jq -r '.ifaces[] | select(.wireless and .serving) | .name' | head -1)
 
 run () {                                    # $1 is A or B
-  curl -sX POST "$BOX/api/devices/$MAC/reset"
-  curl -sN "$BOX/api/events/stream" > "run-$1.ndjson" &   # ground truth
+  boactl shape "$DEV" -clear
+  boactl events -follow > "run-$1.ndjson" & # ground truth, from the box itself
   cap=$!
   sleep 30                                  # let the device settle
   if [ "$1" = B ]; then                     # the ONLY difference
-    curl -sX POST "$BOX/api/bridge/radios/wlan-usb/gather"
+    boactl radio "$RADIO" gather
   fi
   sleep 120
   kill $cap
 }
 
-run A
-run B
+run A && run B
 diff <(jq -r 'select(.kind).kind' run-A.ndjson) \
      <(jq -r 'select(.kind).kind' run-B.ndjson)
 ```
 
-Most of the radio controls need no request body at all — `steer` picks the
-other serving radio itself, and `gather`, `deadzone` and the rest take their
-options as query parameters (`?pin=10`, `?dur=30&scope=all`) — so a run is
-readable as a sequence of bare `POST`s rather than as a pile of JSON.
+**Ask the box for the interface name, never hardcode it.** Radios are named
+after the device rather than the socket — `wlan-usb-46c7`, from the last four
+of its MAC — so a name is stable across replugging and across which hole it is
+in, and is different on every box. `boactl bridge` is where it comes from.
+
+`boactl -h` lists what exists and `boactl <command> -h` the flags. It does not
+cover the whole API; [#263](https://github.com/jonathaneoliver/infinite-streaming-boa/issues/263)
+tracks the gap. For anything it does not cover, `curl` against the same API is
+fine — the page is a client like any other — but check the status code.
+
+**Claude Code drives this through skills rather than by hand.** The
+`verify-on-hardware` skill reads back the queueing disciplines, classes and
+filters from the kernel and asserts against them, which is the same discipline
+`boactl probe` applies: assert, exit non-zero, never print numbers to be
+eyeballed.
 
 Two things follow from scripting that are hard to get any other way: a run can
 be **repeated exactly**, weeks later, by someone else; and the box's own event
@@ -1036,12 +1055,17 @@ are served in the same transmission. It is the difference between measuring a
 radio that behaves like a modern router and one that does not.
 
 The current adapter is exactly why the datasheet is worthless as evidence. It
-advertises HE and `Full Bandwidth UL MU-MIMO` and delivers neither: `mt76`
-exposes no MU counters, and every frame on the air is single-user aggregation of
-at most two MSDUs. So the acceptance test for any candidate is on the box, not
-on the box it came in — MU or OFDMA counters present under
-`/sys/kernel/debug/ieee80211/phy*/mt76/`, and `tx_stats` showing multi-user
-transmissions under load.
+advertises HE and `Full Bandwidth UL MU-MIMO` and delivers neither: `mt7921`
+exposes no MU counters at all, and every frame on the air is single-user
+aggregation of at most two MSDUs.
+
+**The AP-class driver does have them**, which is the encouraging half.
+`mt7915/debugfs.c` carries a `muru_debug` switch and a `muru_stats` file
+reporting downlink MU-MIMO, downlink OFDMA and trigger-based uplink MU-MIMO and
+OFDMA as per-PPDU counts; `mt7921/debugfs.c` contains none of those words. So
+the acceptance test for any candidate is on the box, not on the box it came in —
+enable `muru_debug` first, since `muru_stats` reports nothing until you do, then
+look for multi-user transmissions under load.
 
 **The other catch is form factor, not price.** AP-class silicon is essentially
 not sold as USB. Every card above is mPCIe or M.2, which decides where each
@@ -1295,7 +1319,7 @@ survives an idle bus is not contention for bandwidth.
 > reported the substitution rather than silently serving a different channel,
 > which is the only reason the label above is right.
 
-**An idle client is not free.** Measured twice today, at two widths: an iPhone
+**An idle client is not free.** Measured twice on 2026-09-08, at two widths: an iPhone
 associated and transferring *nothing* — 0.0 Mbit/s, 0.0% airtime by its own
 counters — cost the MacBook **37 Mbit/s** both times, 697 → 660 at 80 MHz and
 379 → 342 at 40 MHz. Around 10%, for a device doing nothing but existing on the
@@ -1349,7 +1373,7 @@ rather than splitting the band.
 # hostapd sets width and centre only -- no MU options are configured
 grep -hE 'he_|mu_|ofdma' /etc/hostapd/*.conf
 
-# mt76 exposes no MU or OFDMA counters at all
+# mt7921 exposes no MU or OFDMA counters at all (mt7915 has muru_stats)
 ls /sys/kernel/debug/ieee80211/phy0/mt76/
 
 # and every transmission is single-user aggregation
@@ -2148,9 +2172,12 @@ event to the control socket of the radio that client is actually associated to.
 A radio the daemon is *not* watching still appears in the Bridge tab, named
 whatever the kernel called it and marked *not conditioned*, with a standing
 notice saying its clients pass traffic without appearing in the Clients tab.
-That is the case to know about if you fit a **second USB adapter**: the udev
-rule renames only the first USB wlan device to `wlan-usb`, so a second one
-keeps its kernel name and no hostapd instance is configured for it.
+A **second USB adapter** used to land in exactly that state, because the udev
+rule renamed only the first one and no hostapd instance was configured for the
+rest. That was [#227](https://github.com/jonathaneoliver/infinite-streaming-boa/issues/227)
+and it is fixed: every USB radio is named after its own MAC, and `radioplan`
+walks each phy at boot and on hotplug and writes a config for whatever it
+finds. Two adapters is now the ordinary case.
 
 **Both radios are driven by hostapd** — the onboard one the same way as the USB
 adapter. For the USB `mt7921u` hostapd is not optional: NetworkManager's AP mode
@@ -2187,7 +2214,7 @@ lsusb -t                             # the adapter's line should read 5000M, not
 dmesg | grep -i "new .* USB device"  # "new SuperSpeed USB device" is the one you want
 ```
 
-One thing that will mislead you: `iw dev wlan-usb info` reports
+One thing that will mislead you: `iw dev <radio> info` reports
 `txpower 3.00 dBm` on this adapter no matter what it is set to. It is a driver
 misreport, not the radio — clients see −27 to −38 dBm and negotiate full rates.
 Trust the client-side signal, not that field.
@@ -2406,7 +2433,7 @@ An AP-class part with DFS would have five more.
 
 | | Status | Why |
 |---|---|---|
-| **OFDMA / MU-MIMO scheduling** | not done | Driver. The hardware advertises HE and `Full Bandwidth UL MU-MIMO`, but mt76 exposes no MU counters and every frame is single-user — see [above](#this-box-does-not-do-ofdma-and-that-bounds-every-figure-above) |
+| **OFDMA / MU-MIMO scheduling** | not done | Driver, and specific to this chip. The hardware advertises HE and `Full Bandwidth UL MU-MIMO`, but `mt7921` exposes no MU counters and every frame is single-user. `mt7915` does expose them — see [above](#this-box-does-not-do-ofdma-and-that-bounds-every-figure-above) |
 | **160 MHz channels** | not possible | Hardware. `iw phy` lists no 160 MHz capability on either adapter |
 | **6 GHz (Wi-Fi 6E)** | **not implemented** | **Ours.** The adapter is an AX**E**3000 and the PHY offers 59 usable 6 GHz channels with AP mode among its HE Iftypes. boa neither scans nor serves there because `scanFreqs()` and `apChannels` stop at 5 GHz |
 | **Mesh / 802.11s** | not used | Ours. Both adapters list `mesh point` among their interface modes; nothing here builds on it |
@@ -2628,7 +2655,7 @@ cd daemon && go build -ldflags "-X main.version=$(../scripts/version.sh)" \
     -o ~/.local/bin/boactl ./cmd/boactl
 ```
 
-The API has 54 endpoints and they were previously reached with hand-assembled
+The API has 55 endpoints and they were previously reached with hand-assembled
 `curl`, which is fine until it isn't: a typo in a path returns an HTML error
 page that decodes into a zero-valued struct and reads exactly like a healthy
 empty answer. `boactl` reports the status line instead.
@@ -2640,8 +2667,8 @@ boactl bridge                    # radios, channels, how contested each one is
 boactl shape "Apple TV" -down 5 -delay 40 -loss 0.5
 boactl sweep "Apple TV" -service netflix  # measure its rendition ladder
 boactl pattern play "Apple TV" -name ramp_down   # and: pattern stop, pattern list
-boactl radio wlan-usb scan                # free on the onboard radio
-boactl radio wlan-usb channel -to 149     # DROPS every client on that radio
+boactl radio wlan-usb-46c7 scan           # free on the onboard radio
+boactl radio wlan-usb-46c7 channel -to 149  # DROPS every client on that radio
 boactl link "Apple TV" deauth             # and: disassoc, deadzone, steer, measure
 boactl events -follow > run.ndjson        # what HAPPENED, as it happens
 boactl history -window 10m -o run.csv     # what the link was DOING, per second
