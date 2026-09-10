@@ -19,6 +19,11 @@ An appliance that sits invisibly in your network and conditions each client's
 internet connection independently — rate, latency, jitter and packet loss, per
 device, in each direction, adjustable live from a web interface.
 
+It also **drives the radios those clients are associated to**, from the same
+page: move one to another channel, take its access point down, deauthenticate or
+disassociate a device, or push it onto a different radio. Conditioning the link
+and disturbing the radio are separate axes, and a run can use either or both.
+
 It runs on **either of two targets, on equal terms**: a Raspberry Pi 5 flashed
 from an image, or a container on an ordinary x86_64 Linux host. The same daemon
 binary and the same interface serve both, and no code under `daemon/` differs
