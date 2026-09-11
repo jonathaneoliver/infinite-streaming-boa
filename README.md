@@ -436,18 +436,18 @@ moved and the real RSSI beside it has not changed.
 Under each adapter, separate from per-client conditioning, because these affect
 every client on that radio:
 
-- **A generation ladder** — `default` (the way back), then `802.11ac`,
-  `802.11n` and
-  plain OFDM, each dropping the radio a rung. **Which rungs appear depends on
-  the radio and the band it is on**, because a rung above its ceiling cannot be
-  reached and VHT does not exist on 2.4 GHz at all — so `802.11ac` is simply
-  absent there, and the OFDM rung calls itself `802.11a` on 5 GHz and
-  `802.11g` on 2.4 GHz.
+- **A generation ladder** — `default` (the best this radio has), then
+  `802.11ac`, `802.11n` and plain OFDM, each dropping it a rung.
 
-  There is no `802.11ax` button: on a capable radio that is what `default`
-  already
-  returns you to, and on one that cannot do ax it would be a control that
-  fails. Width is not among them either — it lives in the channel plan, where a
+  **Only the rungs strictly below a radio's ceiling appear.** `default` already
+  restores the best it can do, so a button for that same generation would do
+  nothing — which is why there is no `802.11ax` button, and why an ac-only
+  radio shows no `802.11ac` one either. On the Pi's onboard chip, which tops
+  out at 802.11n, the whole ladder is `default` and `802.11g`.
+
+  **The band decides too.** VHT does not exist on 2.4 GHz, so `802.11ac` is
+  simply absent there, and the OFDM rung calls itself `802.11a` on 5 GHz and
+  `802.11g` on 2.4 GHz. Width is not among them either — it lives in the channel plan, where a
   channel and a width are picked together.
 
   **`802.11n` also caps the width at 40 MHz**, because HT has no 80 MHz

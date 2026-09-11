@@ -102,13 +102,27 @@ const POWER_SAVE = [
 
 /** The rungs this radio can actually be put on, in ladder order.
  *
+ *  STRICTLY BELOW THE CEILING, not merely supported. `default` restores the
+ *  best the radio has, so a rung equal to that ceiling is a second button for
+ *  the same state — press it and nothing changes. That is the same reason
+ *  there is no `802.11ax` button, applied one rung down: on a radio whose top
+ *  is ac, an `802.11ac` button is as redundant as an `802.11ax` one is on a
+ *  radio whose top is ax.
+ *
+ *  It matters most on the weakest radio. The Pi's onboard chip tops out at
+ *  802.11n, so its ladder is `default` and `802.11g` — an `802.11n` button
+ *  there would do nothing at all.
+ *
+ *  `gens` is oldest-first, so the last entry is the ceiling.
+ *
  *  Unreachable rungs are HIDDEN rather than shown disabled. The row is short
  *  and changes as you click between radios, so a greyed button that is greyed
  *  on this radio and live on the next reads as flakiness; the tooltip on what
  *  remains says what the radio is. */
 function profilesFor(ap?: { gens?: string[]; freq_mhz?: number }) {
   const gens = ap?.gens ?? [];
-  return PROFILES.filter(p => !p.needs || gens.includes(p.needs));
+  const ceiling = gens[gens.length - 1];
+  return PROFILES.filter(p => !p.needs || (gens.includes(p.needs) && p.needs !== ceiling));
 }
 
 /** Plain OFDM is 802.11a on 5GHz and 802.11g on 2.4GHz — one profile, two
