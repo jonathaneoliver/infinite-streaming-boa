@@ -331,6 +331,41 @@ const signalClass = computed(() => {
 // How long the station has been continuously associated. It resets to ~0 when
 // the link drops and re-associates, so after a drop/nudge it visibly falls to a
 // few seconds -- which is the ground-truth confirmation the event landed.
+/** The negotiated rate for one direction, with the generation that sets its
+ *  ceiling. Both halves are needed or neither means anything: VHT tops out at
+ *  MCS 9 and HE at MCS 11, so 780 Mbit/s on 802.11ac is a link with nothing
+ *  left while 720 on 802.11ax has four steps in hand. */
+function phyLabel(dir: 'tx' | 'rx'): string {
+  const s = props.client.station;
+  if (!s) return '\u2014';
+  const mbps = dir === 'tx' ? s.tx_phy_mbps : s.rx_phy_mbps;
+  const mode = dir === 'tx' ? s.tx_phy_mode : s.rx_phy_mode;
+  if (!mbps) return '\u2014';
+  return mode ? `${mbps.toFixed(0)} Mbit/s \u00b7 ${mode}` : `${mbps.toFixed(0)} Mbit/s`;
+}
+
+/** Retries and give-ups in one cell, because they are one subject read
+ *  together: the first is transmissions that eventually landed, the second is
+ *  the share the radio abandoned. A link can retry heavily and lose nothing,
+ *  and that is a very different report from the same retry share with failures
+ *  behind it.
+ *
+ *  ONE dash for both when the driver does not count, not two: the daemon zeroes
+ *  fail alongside retry when it withdraws the claim, so showing "0.0%" beside
+ *  an absent retry share would invent a measurement out of the same silence. */
+const retryFact = computed(() => {
+  const c = props.client;
+  if (!c.station?.retries_known) return '\u2014';
+  return `${(c.retry_pct ?? 0).toFixed(1)}% / ${(c.fail_pct ?? 0).toFixed(1)}%`;
+});
+
+const retryFactTitle = computed(() =>
+  retryTitle.value
+  + (props.client.station?.retries_known
+    ? ' The second figure is the share given up on entirely after the retries were '
+      + 'exhausted, which is loss a player actually sees.'
+    : ''));
+
 const connectedLabel = computed(() => {
   const s = props.client.station?.connected_sec ?? 0;
   if (s < 60) return `${s}s`;
@@ -927,8 +962,8 @@ function fmtBytes(n: number): string {
         class="cell meta num"
         :class="retryClass"
         :title="retryTitle"
-      >{{ client.station?.retries_known && client.retry_pct != null
-            ? `retry ${client.retry_pct.toFixed(1)}%`
+      >{{ client.station?.retries_known
+            ? `retry ${(client.retry_pct ?? 0).toFixed(1)}%`
             : (client.station ? '—' : '') }}</span>
 
       <!-- PHY rate, labelled. It routinely reads 400+ Mbps on a link moving
@@ -1048,6 +1083,61 @@ function fmtBytes(n: number): string {
     <!-- Folding is presentation only: the card keeps receiving live updates,
          so the summary above stays current and expanding shows no gap. -->
     <template v-if="!collapsed">
+    <!-- WHAT THIS DEVICE IS, first in the fold and shaped like the strip at the
+         top of a radio fold, so opening either one puts the standing facts in
+         the same place.
+
+         It exists because the head above SHEDS cells as the window narrows --
+         IPv6 count below 1600px, association age below 1500, retries below
+         1450, PHY below 1400, MAC below 1300, signal below 1200 -- and until
+         now they had nowhere to land. On a 1280px laptop an expanded card
+         showed no MAC, no PHY rate, no retry share and no association age
+         anywhere on the page: the daemon measured them and the UI threw them
+         away. This is where they go, so the head is free to shed more.
+
+         Two of these appear nowhere else at any width. The hostname is the name
+         the device calls itself, as against the label an operator typed. The
+         UPLINK PHY rate is the one that moves first on a marginal link, because
+         a client picks its rate with far less information than the access point
+         has -- and the head only ever had room for the downlink figure. -->
+    <div class="facts">
+      <div><span class="k">hostname</span>
+        <span class="v" :title="client.hostname || ''">{{ client.hostname || '—' }}</span></div>
+      <div><span class="k">MAC</span><span class="v num">{{ client.mac }}</span></div>
+      <div><span class="k">IPv4</span><span class="v num">{{ client.ip || '—' }}</span></div>
+      <!-- Every address, not a count. Privacy extensions give a device several
+           v6 addresses at once and each one needs its own filter, so an
+           operator asking whether conditioning is complete needs the list --
+           the count in the head answers "are there more", not "which". -->
+      <div><span class="k">IPv6</span>
+        <span class="v num" :title="client.ipv6?.length ? client.ipv6.join('\n') : ''"
+        >{{ client.ipv6?.length ? client.ipv6.join(', ') : '—' }}</span></div>
+
+      <!-- THE RADIO FACTS, gated on the medium and never on `station`.
+           A wired client has none of these and a wireless one always shows all
+           five, dash included. `station` disappears every time a device
+           disassociates, which is exactly when an operator is watching, and a
+           v-if on it would delete five grid items and reflow the fold under
+           their eyes. The medium cannot change while a card is open. -->
+      <template v-if="client.medium === 'wifi'">
+        <div><span class="k">signal</span>
+          <span class="v num" :class="client.station?.signal_dbm ? signalClass : ''"
+            :title="client.station && !client.station.signal_dbm
+              ? 'This radio reports no per-station signal level in AP mode.' : ''"
+          >{{ client.station?.signal_dbm ? `${client.station.signal_dbm} dBm` : '—' }}</span></div>
+        <div><span class="k">retry / gave up</span>
+          <span class="v num" :class="retryClass" :title="retryFactTitle">{{ retryFact }}</span></div>
+        <!-- Named for the direction the traffic moves, matching the throughput
+             plots below, rather than tx/rx which is named from the box's end
+             and reverses the reader's meaning of "down". -->
+        <div><span class="k">PHY down</span><span class="v num">{{ phyLabel('tx') }}</span></div>
+        <div><span class="k">PHY up</span><span class="v num">{{ phyLabel('rx') }}</span></div>
+        <div><span class="k">associated</span>
+          <span class="v num" title="How long this device has been continuously associated. It resets when the link drops and re-associates, so it falls to a few seconds right after a drop or nudge."
+          >{{ client.station ? connectedLabel : '—' }}</span></div>
+      </template>
+    </div>
+
     <div v-if="!client.shapeable && client.present" class="notice bad" style="margin: 10px 14px">
       This device has no IP address yet, so it cannot be conditioned. Traffic
       filters match on addresses, and there is nothing to match on until it
@@ -1578,6 +1668,36 @@ function fmtBytes(n: number): string {
   padding: 2px 7px;
 }
 .ntop-link:hover { color: var(--ink); border-color: var(--ink-faint); }
+/* Deliberately a COPY of the strip in AdapterRack.vue rather than a shared
+   rule: `.facts` already names a different layout in BridgeView.vue, so
+   hoisting any one of the three into the global sheet would restyle the other
+   two by accident. The duplication is three declarations; the alternative is a
+   silent regression in a file nobody edited.
+
+   auto-fit with a floor is what makes the strip survive a narrow window: the
+   columns collapse from four to one and the rows wrap, instead of a long value
+   pushing the whole fold sideways. */
+.facts {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 2px 14px;
+  font-size: 12px;
+  padding: 10px 14px 0;
+}
+/* A grid item defaults to min-content, which refuses to shrink -- so without
+   this a long hostname or a list of four v6 addresses widens the whole card
+   rather than truncating. An ellipsis is a visible failure; a card that
+   overflows its neighbours is an invisible one. */
+.facts > div { white-space: nowrap; min-width: 0; overflow: hidden; }
+.facts .k { color: var(--ink-faint); margin-right: 6px; }
+.facts .v { color: var(--ink-dim); overflow: hidden; text-overflow: ellipsis; }
+.facts .v.num { font-variant-numeric: tabular-nums; }
+/* More specific than `.facts .v`, which would otherwise win on specificity and
+   grey out every health colour in the strip. */
+.facts .v.ok { color: var(--ok); }
+.facts .v.warn { color: var(--warn); }
+.facts .v.bad { color: var(--bad); }
+
 .ok { color: var(--ok); }
 .warn { color: var(--warn); }
 .bad { color: var(--bad); }
