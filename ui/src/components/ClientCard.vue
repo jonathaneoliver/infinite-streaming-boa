@@ -300,10 +300,11 @@ const radioSummary = computed(() => {
   // NOT the channel: the adapter token beside this carries it, and the same
   // number twice in one row reads as two facts about the same radio. What is
   // left is what the token leaves out, and what says how the link behaves.
-  return [
-    r.width_mhz ? `${r.width_mhz} MHz` : '',
-    r.mode || '',
-  ].filter(Boolean).join(' · ');
+  //
+  // The generation is the other half of that and is deliberately NOT joined in
+  // here: the template renders it as its own span so the ellipsis this string
+  // may take can never reach it. See the `.gen` note in the styles.
+  return r.width_mhz ? `${r.width_mhz} MHz` : '';
 });
 
 // Signal quality bands are the conventional Wi-Fi ones: above -60 dBm is a
@@ -334,14 +335,18 @@ const signalClass = computed(() => {
 /** The negotiated rate for one direction, with the generation that sets its
  *  ceiling. Both halves are needed or neither means anything: VHT tops out at
  *  MCS 9 and HE at MCS 11, so 780 Mbit/s on 802.11ac is a link with nothing
- *  left while 720 on 802.11ax has four steps in hand. */
-function phyLabel(dir: 'tx' | 'rx'): string {
+ *  left while 720 on 802.11ax has four steps in hand.
+ *
+ *  Returned as two pieces rather than one string so the template can protect
+ *  the family from the ellipsis -- see the note by `.gen` in the styles. */
+function phyParts(dir: 'tx' | 'rx'): { gen: string; rate: string } {
   const s = props.client.station;
-  if (!s) return '\u2014';
-  const mbps = dir === 'tx' ? s.tx_phy_mbps : s.rx_phy_mbps;
-  const mode = dir === 'tx' ? s.tx_phy_mode : s.rx_phy_mode;
-  if (!mbps) return '\u2014';
-  return mode ? `${mbps.toFixed(0)} Mbit/s \u00b7 ${mode}` : `${mbps.toFixed(0)} Mbit/s`;
+  const mbps = s ? (dir === 'tx' ? s.tx_phy_mbps : s.rx_phy_mbps) : 0;
+  if (!s || !mbps) return { gen: '', rate: '—' };
+  return {
+    gen: (dir === 'tx' ? s.tx_phy_mode : s.rx_phy_mode) ?? '',
+    rate: `${mbps.toFixed(0)} Mbit/s`,
+  };
 }
 
 /** Retries and give-ups in one cell, because they are one subject read
@@ -355,7 +360,7 @@ function phyLabel(dir: 'tx' | 'rx'): string {
  *  an absent retry share would invent a measurement out of the same silence. */
 const retryFact = computed(() => {
   const c = props.client;
-  if (!c.station?.retries_known) return '\u2014';
+  if (!c.station?.retries_known) return '—';
   return `${(c.retry_pct ?? 0).toFixed(1)}% / ${(c.fail_pct ?? 0).toFixed(1)}%`;
 });
 
@@ -896,8 +901,9 @@ function fmtBytes(n: number): string {
       <!-- What that radio is doing, in the same words the diagram uses. Its own
            column rather than a second line: the head is one row by design, and
            a wrapping cell makes this card taller than its neighbours. -->
-      <span class="cell meta num" :title="client.radio_on ? 'The access point this client is associated to' : ''">
-        {{ radioSummary }}
+      <span class="cell meta num phy" :title="client.radio_on ? 'The access point this client is associated to' : ''">
+        <span v-if="client.radio_on?.mode" class="gen">{{ client.radio_on.mode }}</span>
+        <span class="rate">{{ radioSummary }}</span>
       </span>
 
       <span
@@ -1130,8 +1136,16 @@ function fmtBytes(n: number): string {
         <!-- Named for the direction the traffic moves, matching the throughput
              plots below, rather than tx/rx which is named from the box's end
              and reverses the reader's meaning of "down". -->
-        <div><span class="k">PHY down</span><span class="v num">{{ phyLabel('tx') }}</span></div>
-        <div><span class="k">PHY up</span><span class="v num">{{ phyLabel('rx') }}</span></div>
+        <div><span class="k">PHY down</span>
+          <span class="v num phy">
+            <span v-if="phyParts('tx').gen" class="gen">{{ phyParts('tx').gen }}</span>
+            <span class="rate">{{ phyParts('tx').rate }}</span>
+          </span></div>
+        <div><span class="k">PHY up</span>
+          <span class="v num phy">
+            <span v-if="phyParts('rx').gen" class="gen">{{ phyParts('rx').gen }}</span>
+            <span class="rate">{{ phyParts('rx').rate }}</span>
+          </span></div>
         <div><span class="k">associated</span>
           <span class="v num" title="How long this device has been continuously associated. It resets when the link drops and re-associates, so it falls to a few seconds right after a drop or nudge."
           >{{ client.station ? connectedLabel : '—' }}</span></div>
@@ -1679,7 +1693,11 @@ function fmtBytes(n: number): string {
    pushing the whole fold sideways. */
 .facts {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  /* 230px, not 200. The widest value in the strip is a PHY rate with its
+     generation, and at a 200px floor the columns landed exactly where that
+     value started to clip. A higher floor drops the strip to fewer columns
+     slightly sooner and spares the one value that cannot clip safely. */
+  grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
   gap: 2px 14px;
   font-size: 12px;
   padding: 10px 14px 0;
@@ -1692,6 +1710,24 @@ function fmtBytes(n: number): string {
 .facts .k { color: var(--ink-faint); margin-right: 6px; }
 .facts .v { color: var(--ink-dim); overflow: hidden; text-overflow: ellipsis; }
 .facts .v.num { font-variant-numeric: tabular-nums; }
+/* A GENERATION LABEL MUST NEVER BE THE THING THAT GETS CLIPPED.
+   Every other value here degrades honestly under `text-overflow`, because a cut
+   number or a cut address is visibly incomplete. The 802.11 family names do
+   not: each of them is a PREFIX OF ANOTHER ONE. Clip "802.11ax" and what is
+   left is "802.11a", which is not a broken string -- it is a different
+   standard, twenty years older, 54 Mbit/s, no MIMO. The ellipsis does not save
+   it, because a reader who knows the names reads a valid answer.
+
+   So the family goes FIRST and does not shrink, and whatever shares the cell
+   with it takes the ellipsis instead. Right-edge clipping can then only eat the
+   part that is incapable of lying about what it is. */
+.phy { display: flex; gap: 6px; align-items: baseline; min-width: 0; }
+.phy .gen { flex: 0 0 auto; }
+/* The separator is drawn, not typed, so it leaves with the family rather than
+   stranding a leading dot on a link whose rate names no generation. */
+.phy .gen + .rate::before { content: '\00b7'; margin-right: 6px; }
+.phy .rate { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+
 /* More specific than `.facts .v`, which would otherwise win on specificity and
    grey out every health colour in the strip. */
 .facts .v.ok { color: var(--ok); }
