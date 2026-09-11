@@ -373,6 +373,44 @@ type Station struct {
 	ConnectedSec int    `json:"connected_sec"`
 	InactiveMs   int    `json:"inactive_ms"`
 
+	// TxRetries is cumulative retransmission ATTEMPTS, and TxPackets and
+	// RxPackets are the frame counts that make it and TxFailed readable.
+	//
+	// Retries are the one measurement that separates loss this box CAUSED from
+	// loss the room caused. A netem drop happens after the radio has already
+	// succeeded, so it costs nothing at the MAC layer; real RF loss shows as
+	// retries first and failures later. In throughput the two are
+	// indistinguishable. For an instrument whose whole job is imposing
+	// impairments, that distinction is the difference between a result that is
+	// yours and one that is the environment's.
+	//
+	// A share of TRANSMISSIONS, not of packets, when derived: retries are extra
+	// attempts, so a frame retried three times contributes three, and
+	// retries/packets can exceed 1. Δretries / (Δpackets + Δretries) is bounded
+	// and reads as "what fraction of transmissions were wasted".
+	//
+	// TRANSMIT ONLY. The access point cannot know how often a client retried
+	// its own uplink frames, so there is no receive-side equivalent and none
+	// should be invented.
+	TxRetries uint64 `json:"tx_retries,omitempty"`
+	TxPackets uint64 `json:"tx_packets,omitempty"`
+	RxPackets uint64 `json:"rx_packets,omitempty"`
+	// RetriesKnown says the dump CARRIED the line, for the same reason
+	// DurationKnown exists: a driver that omits it and a link that genuinely
+	// retried nothing both leave a zero, and those are not the same fact.
+	RetriesKnown bool `json:"retries_known,omitempty"`
+
+	// TxPhyMode and RxPhyMode are the generation each rate is running --
+	// "802.11ax", "802.11ac", "802.11n" -- or empty for a legacy rate that
+	// names no family.
+	//
+	// Without it a rate is ambiguous. The MCS index means different things per
+	// family: VHT tops out at 9 and HE at 11, so 780 Mbit/s at VHT-MCS 9 is a
+	// link with nothing left, and 720 Mbit/s at HE-MCS 7 has four steps in
+	// hand. The numbers alone say the opposite of the truth.
+	TxPhyMode string `json:"tx_phy_mode,omitempty"`
+	RxPhyMode string `json:"rx_phy_mode,omitempty"`
+
 	// TxDurationUs and RxDurationUs are cumulative AIRTIME for this station in
 	// microseconds -- how long the radio actually spent transmitting to it and
 	// receiving from it, including the per-frame overhead that bytes do not
@@ -507,6 +545,21 @@ type Client struct {
 	// IfaceInfo.AirtimePerClient tells those apart, and anything drawing this
 	// must consult it first.
 	AirPct float64 `json:"air_pct,omitempty"`
+
+	// RetryPct is the share of this client's transmissions over the last tick
+	// that were retries, and FailPct the share given up on entirely.
+	//
+	// READ THEM WITH AirPct, never alone. Airtime says how much of the channel
+	// a client took; these say whether it was spent or wasted. High airtime
+	// with low retries is a busy, healthy client using the medium
+	// productively. The same airtime with high retries is a client burning the
+	// channel on retransmission. Low airtime with climbing retries is a
+	// marginal link, visible here before throughput moves at all.
+	//
+	// Transmit only, so downlink only: an access point cannot know how often a
+	// client retried its own uplink frames.
+	RetryPct float64 `json:"retry_pct,omitempty"`
+	FailPct  float64 `json:"fail_pct,omitempty"`
 
 	// DownCounters and UpCounters are the device default class. Sub-class
 	// counters are keyed by SubClass.ID.

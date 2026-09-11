@@ -93,6 +93,35 @@ type airSample struct {
 	at     time.Time
 }
 
+// retrySample remembers one station's cumulative transmit counters, for the
+// same reason airSample does: these are counters, and a raw total answers
+// "since when" rather than "how is it doing".
+type retrySample struct {
+	retries, failed, packets uint64
+	// seen is how many frames this station has transmitted since the daemon
+	// started watching it, and everRetried whether the retry counter has EVER
+	// moved. Together they answer a question one sample cannot: is this link
+	// clean, or is the driver not counting?
+	//
+	// MEASURED 2026-09-11 on mt7921u: 602,648 frames pushed by iperf3 and
+	// `tx retries` stayed at exactly 0. The line is present in every dump, so
+	// the DurationKnown trick -- trust the line, not the value -- says
+	// "supported" and the box would report a flawless link on a counter nobody
+	// implemented. Real Wi-Fi does not do six hundred thousand frames without a
+	// single retry.
+	seen        uint64
+	everRetried bool
+}
+
+// retriesUnsupportedAfter is how many frames a station may send with a retry
+// counter stuck at zero before the daemon stops believing it.
+//
+// Generous on purpose. A genuinely excellent link close to the access point
+// really can retry very little, and calling a good link broken instrumentation
+// is the worse error of the two -- so this only fires well past the point where
+// silence has stopped being plausible.
+const retriesUnsupportedAfter = 100_000
+
 // Engine owns all mutable state and is the only thing that talks to the Shaper.
 //
 // Revisions follow the pattern proven in the streaming test harness:
@@ -154,6 +183,11 @@ type Engine struct {
 	// airPrev is keyed by MAC and holds the last airtime counters seen for that
 	// station, so the tick can difference them into a percentage.
 	airPrev map[string]airSample
+	// retryPrev is the same idea for the transmit counters. Kept beside
+	// airPrev and sampled on the same tick, because retry share and airtime are
+	// only interpretable together: airtime says how much channel a client used,
+	// retries say whether it used it or wasted it.
+	retryPrev map[string]retrySample
 
 	// lastAssoc is when each MAC was last present in the radio's station
 	// table. Wi-Fi association is the one fact about a wireless client that is
@@ -391,6 +425,7 @@ func newEngine(cfg Config) *Engine {
 		learn:        NewLearner(cfg.Bridge, append(append([]string{}, cfg.WlanPorts...), cfg.LanPorts...)...),
 		prev:         map[string]counterSample{},
 		airPrev:      map[string]airSample{},
+		retryPrev:    map[string]retrySample{},
 		lastActive:   map[string]int64{},
 		lastAssoc:    map[string]int64{},
 		stationRadio: map[string]string{},
@@ -700,6 +735,61 @@ func (e *Engine) airtimeSeen() map[string]bool {
 // re-association looks like -- the driver restarts both counters at zero, and
 // without the check a rejoining client renders as a negative spike. Same reason
 // rate() checks, and the same reason surveyPrev does in radioctl.go.
+// retryPct is the share of this client's transmissions that were retries, and
+// failPct the share that were given up on, both over the last tick.
+//
+// A SHARE OF TRANSMISSIONS, not of packets. Retries are extra attempts, so a
+// frame retried three times contributes three and retries/packets can exceed 1.
+// Δretries / (Δpackets + Δretries) is bounded and reads as "what fraction of
+// what we put on the air was wasted".
+//
+// WHY THIS IS WORTH HAVING AT ALL: it is the only measurement that separates
+// loss this box caused from loss the room caused. A netem drop happens after
+// the radio has already succeeded, so it costs no retries; real RF loss shows
+// as retries first and failures later. Apply a cap and watch retries stay flat
+// and the result is yours; watch them climb and the run is contaminated.
+//
+// Zero on the first sample and across a counter reset, which is what a
+// re-association looks like -- same reason airtimePct checks.
+func (e *Engine) retryPct(mac string, st *Station, present bool) (retry, fail float64) {
+	if st == nil || !st.RetriesKnown {
+		// A driver that never answers, not a clean link. The caller renders the
+		// absence; Station.RetriesKnown says which it is.
+		delete(e.retryPrev, mac)
+		return 0, 0
+	}
+	p, ok := e.retryPrev[mac]
+	next := retrySample{
+		retries: st.TxRetries, failed: st.TxFailed, packets: st.TxPackets,
+		seen: p.seen, everRetried: p.everRetried || st.TxRetries > 0,
+	}
+	if ok && st.TxPackets >= p.packets {
+		next.seen += st.TxPackets - p.packets
+	}
+	e.retryPrev[mac] = next
+	// A counter that has not moved in a hundred thousand frames is not a clean
+	// link, it is a driver that does not implement it. Withdrawing the claim is
+	// the whole point: a zero presented as a measurement is worse than no
+	// measurement, because it reads as good news.
+	if !next.everRetried && next.seen > retriesUnsupportedAfter {
+		st.RetriesKnown = false
+		return 0, 0
+	}
+	if !ok || st.TxRetries < p.retries || st.TxFailed < p.failed || st.TxPackets < p.packets {
+		return 0, 0
+	}
+	dRetry := st.TxRetries - p.retries
+	dFail := st.TxFailed - p.failed
+	dPkt := st.TxPackets - p.packets
+	if sent := dPkt + dRetry; sent > 0 {
+		retry = float64(dRetry) / float64(sent) * 100
+	}
+	if tried := dPkt + dFail; tried > 0 {
+		fail = float64(dFail) / float64(tried) * 100
+	}
+	return retry, fail
+}
+
 func (e *Engine) airtimePct(mac string, st *Station, now time.Time) float64 {
 	if st == nil || !st.DurationKnown {
 		// Not a quiet client: a driver that never answers. The caller decides
@@ -1194,6 +1284,9 @@ func (e *Engine) tick() {
 		// from the snapshot, so a value that existed only in history would
 		// leave the chart flat until the next page load.
 		c.AirPct = air
+		// Sampled on the same tick as the airtime beside it, and for the same
+		// reason: the two are read together or not at all.
+		c.RetryPct, c.FailPct = e.retryPct(c.MAC, c.Station, true)
 		// Where it was attached, and on what channel. Only while PRESENT: a
 		// listed device that has gone away keeps its port for display, and
 		// recording that as the sample's adapter would draw an unbroken band

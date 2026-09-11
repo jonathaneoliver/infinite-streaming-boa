@@ -21,8 +21,24 @@ and documented so they are not rediscovered.
 ## Known limitations — accepted, documented so they are not rediscovered
 
 - **No per-station RSSI.** The Pi 5's Broadcom radio reports no `signal` line in
-  `iw station dump` in AP mode. The UI shows `tx-fail` as the link-quality proxy
-  instead. Not fixable in software.
+  `iw station dump` in AP mode. Not fixable in software.
+- **`mt7921` never reports per-station transmit retries**, and prints the line
+  anyway. Measured 2026-09-11: 602,648 frames pushed by iperf3 with `tx retries`
+  unmoved at zero. `mt7915/main.c` and `mt7996/main.c` fill
+  `NL80211_STA_INFO_TX_RETRIES` in their statistics callback; `mt7921/main.c`
+  contains no reference to it. The same callback also fills `ack_signal`, which
+  is the uplink signal as the access point hears it, so that is absent too.
+
+  This costs more than a number. Retries are the only measurement that separates
+  loss this box **imposed** from loss the **environment** caused — a netem drop
+  lands after the radio already succeeded and costs no retries, where real RF
+  loss shows as retries first and failures later. On this hardware the two
+  cannot be told apart.
+
+  The daemon collects it regardless, since it works on any driver that populates
+  the field, and withdraws the claim after 100,000 frames of silence rather than
+  presenting a flattering zero. An AP-class card would turn the instrument on;
+  see #290.
 - **The PHY rate cannot be clamped from the host, on either radio.** Measured
   2026-09-05: `iw dev wlan-usb set bitrates vht-mcs-5 2:0-2` and
   `iw dev wlan0 set bitrates ht-mcs-2.4 0 1 2` both return
