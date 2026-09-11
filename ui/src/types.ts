@@ -513,6 +513,25 @@ export interface Station {
   tx_phy_mbps: number;
   rx_phy_mbps: number;
   tx_failed: number;
+  /** Cumulative retransmission ATTEMPTS, and the frame counts that make them
+   *  and tx_failed readable. A count without a denominator says nothing: five
+   *  hundred failures out of ten million is a healthy link and out of two
+   *  thousand is a dying one. */
+  tx_retries?: number;
+  tx_packets?: number;
+  rx_packets?: number;
+  /** Whether the driver CARRIED the retry line. A driver that omits it and a
+   *  link that retried nothing both leave a zero, and those differ. */
+  retries_known?: boolean;
+  /** The generation each rate is running — "802.11ax", "802.11ac", "802.11n" —
+   *  or absent for a legacy rate that names no family.
+   *
+   *  Without it a rate is ambiguous, because the MCS index means different
+   *  things per family: VHT tops out at 9 and HE at 11. 780 Mbit/s at VHT-MCS 9
+   *  is a link with nothing left; 720 at HE-MCS 7 has four steps in hand. The
+   *  numbers alone say the opposite of the truth. */
+  tx_phy_mode?: string;
+  rx_phy_mode?: string;
   connected_sec: number;
   inactive_ms: number;
 }
@@ -579,6 +598,23 @@ export interface Client {
    *  and for a radio whose driver cannot attribute airtime; only the adapter's
    *  `airtime_per_client` tells the last of those apart. See `Series.air`. */
   air_pct?: number;
+  /** The share of this client's transmissions over the last tick that were
+   *  retries, and the share given up on entirely.
+   *
+   *  READ THEM WITH air_pct, never alone. Airtime says how much of the channel
+   *  a client took; these say whether it was spent or wasted. High airtime with
+   *  low retries is a busy, healthy client. The same airtime with high retries
+   *  is one burning the channel on retransmission. Low airtime with climbing
+   *  retries is a marginal link, visible before throughput moves.
+   *
+   *  They are also the only way to tell loss this box CAUSED from loss the room
+   *  caused: a netem drop lands after the radio already succeeded and costs no
+   *  retries, where real RF loss shows as retries first and failures later.
+   *
+   *  Transmit only, so downlink only — an access point cannot know how often a
+   *  client retried its own uplink frames. */
+  retry_pct?: number;
+  fail_pct?: number;
   sweep?: SweepView;
   pattern_run?: PatternView;
 }

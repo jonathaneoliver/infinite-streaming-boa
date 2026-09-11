@@ -70,10 +70,28 @@ func parseStationDump(raw string) map[string]*Station {
 			cur.RxBytes = atou64(f[0])
 		case "tx failed":
 			cur.TxFailed = atou64(f[0])
+		case "tx retries":
+			cur.TxRetries = atou64(f[0])
+			cur.RetriesKnown = true
+		// THE DENOMINATOR. tx failed and tx retries are counts, and a count
+		// without one says nothing: five hundred failures out of ten million is
+		// a healthy link and out of two thousand is a dying one.
+		case "tx packets":
+			cur.TxPackets = atou64(f[0])
+		case "rx packets":
+			cur.RxPackets = atou64(f[0])
+		// The rate lines carry more than the number. f[0] is the Mbit/s and the
+		// rest names the modulation -- "780.0 MBit/s VHT-MCS 9 80MHz VHT-NSS 2".
+		// Keeping only the number loses which GENERATION the link is running,
+		// and the MCS index means different things in each: VHT tops out at 9
+		// and HE at 11, so the same index is a ceiling in one and mid-range in
+		// the other. Two clients at 780 Mbit/s can have opposite headroom.
 		case "tx bitrate":
 			cur.TxPhyMbps = atofSafe(f[0])
+			cur.TxPhyMode = phyModeOf(f)
 		case "rx bitrate":
 			cur.RxPhyMbps = atofSafe(f[0])
+			cur.RxPhyMode = phyModeOf(f)
 		case "connected time":
 			cur.ConnectedSec = atoiSafe(f[0])
 		case "inactive time":
@@ -91,6 +109,36 @@ func parseStationDump(raw string) map[string]*Station {
 		}
 	}
 	return out
+}
+
+// phyModeOf pulls the modulation family out of a rate line's remaining fields,
+// as the generation it belongs to: "802.11ax" for HE, "802.11ac" for VHT,
+// "802.11n" for HT, "802.11be" for EHT.
+//
+// Translated rather than passed through, because the driver's vocabulary and
+// the one the rest of this box uses are different: HE names the PHY, 802.11ax
+// names the generation, and every label, profile and document here says the
+// latter. Two vocabularies for one fact is how a reader ends up unable to line
+// up a rate with the rung that produced it.
+//
+// An empty string for a legacy rate, which carries no family marker at all --
+// plain OFDM and DSSS are what remains when none of the above is present, and
+// the caller renders the absence rather than inventing "802.11a" from a line
+// that does not say so.
+func phyModeOf(fields []string) string {
+	for _, f := range fields {
+		switch {
+		case strings.HasPrefix(f, "EHT-"):
+			return "802.11be"
+		case strings.HasPrefix(f, "HE-"):
+			return "802.11ax"
+		case strings.HasPrefix(f, "VHT-"):
+			return "802.11ac"
+		case strings.HasPrefix(f, "HT-") || f == "MCS":
+			return "802.11n"
+		}
+	}
+	return ""
 }
 
 // BridgePort is where the bridge last saw a MAC. In a transparent bridge this

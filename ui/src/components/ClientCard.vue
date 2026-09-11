@@ -146,6 +146,11 @@ const showAssoc = computed(() => identityBudget.value >= 1500);
 const showPHY = computed(() => identityBudget.value >= 1400);
 const showMAC = computed(() => identityBudget.value >= 1300);
 const showSignal = computed(() => identityBudget.value >= 1200);
+// Retries go BEFORE signal in the give-up order, at a wider breakpoint, because
+// signal is the one an operator reaches for first and the one that exists on
+// every radio that reports it at all. This is the deeper measurement, not the
+// more important cell.
+const showRetry = computed(() => identityBudget.value >= 1450);
 
 // The ntopng links are in the SHARED trailing group, so this is keyed off the
 // raw window width rather than the folded-adjusted budget: dropping them in one
@@ -184,6 +189,9 @@ const IDENTITY_COLS = computed(() => [
   ...(showIPv6Count.value ? ['minmax(0, 62px)'] : []),
   ...(showMAC.value ? ['minmax(0, 132px)'] : []),
   ...(showSignal.value ? ['minmax(0, 96px)'] : []),
+  // 86px: "retry 12.3%" is the longest form, and "unsupported" is rendered as a
+  // dash rather than a word for exactly this reason.
+  ...(showRetry.value ? ['minmax(0, 86px)'] : []),
   ...(showPHY.value ? ['minmax(0, 76px)'] : []),
   // 104px, not 92: "assoc 42m 35s" is the longest common form and 92 clipped
   // it to "assoc 42m 3...". A column narrower than the value it always holds is
@@ -252,6 +260,36 @@ const EXPANDED_H = 196;
 const expandedH = computed(() => (props.chart.tallCharts ? EXPANDED_H * 2 : EXPANDED_H));
 
 const open = ref(false);
+
+/** Retries colour on the same three-step scale the signal cell uses, because
+ *  they answer the same question from different ends and a reader should not
+ *  have to learn two vocabularies for "is this link healthy".
+ *
+ *  The thresholds are deliberately loose. Some retransmission is normal on any
+ *  radio -- a link with none at all is usually a driver that does not count --
+ *  so only a sustained double-digit share is worth colouring as trouble. */
+const retryClass = computed(() => {
+  const r = props.client.retry_pct;
+  if (!props.client.station?.retries_known || r == null) return '';
+  if (r >= 20) return 'bad';
+  if (r >= 8) return 'warn';
+  return 'ok';
+});
+
+const retryTitle = computed(() => {
+  const c = props.client;
+  if (!c.station) return '';
+  if (!c.station.retries_known) {
+    return 'This driver does not report per-station transmit retries. mt7921 never '
+      + 'populates the counter, so a zero here would be an instrument nobody '
+      + 'implemented rather than a clean link — it is shown as absent instead.';
+  }
+  return 'Share of transmissions that were retries, over the last tick. Read it with '
+    + 'the airtime chart: airtime is how much channel this client took, this is '
+    + 'whether it was spent or wasted. It is also what separates loss this box '
+    + 'imposed — a netem drop costs no retries — from loss the radio environment '
+    + 'caused. Transmit only, so downlink.';
+});
 
 /** "ch 40 · 80 MHz · 802.11ax", the same phrasing the bridge diagram uses for
  *  the radio node, so the two read as descriptions of the same thing. Empty
@@ -863,10 +901,35 @@ function fmtBytes(n: number): string {
           {{ client.station.signal_dbm }} dBm
         </template>
         <template v-else-if="client.station">
-          <span title="This radio reports no per-station signal level in AP mode; transmit failures stand in as the link-quality indicator"
-          >tx-fail {{ client.station.tx_failed.toLocaleString() }}</span>
+          <span title="This radio reports no per-station signal level in AP mode. The retry column beside this is the link-quality measurement where the driver provides it."
+          >—</span>
         </template>
       </span>
+
+      <!-- RETRY SHARE, on every radio rather than only where signal is missing.
+           It is a measurement in its own right, not a substitute for one.
+
+           Read it WITH the airtime chart: airtime says how much of the channel
+           a client took, this says whether it was spent or wasted. High airtime
+           with low retries is a busy healthy client; the same airtime with high
+           retries is one burning the channel on retransmission; low airtime
+           with climbing retries is a marginal link, visible here before
+           throughput moves.
+
+           A DASH WHERE THE DRIVER DOES NOT COUNT, never a zero. mt7921 never
+           populates this field and `iw` prints the line anyway, so a zero would
+           read as a flawless link on an instrument nobody implemented --
+           measured 2026-09-11 at 602,648 frames with the counter unmoved. The
+           daemon withdraws the claim after 100,000 frames of silence and clears
+           retries_known; this renders that as an absence. -->
+      <span
+        v-if="showRetry"
+        class="cell meta num"
+        :class="retryClass"
+        :title="retryTitle"
+      >{{ client.station?.retries_known && client.retry_pct != null
+            ? `retry ${client.retry_pct.toFixed(1)}%`
+            : (client.station ? '—' : '') }}</span>
 
       <!-- PHY rate, labelled. It routinely reads 400+ Mbps on a link moving
            2 Mbps, so it is never allowed to appear as a bare number next to the
@@ -874,7 +937,12 @@ function fmtBytes(n: number): string {
       <span
         v-if="showPHY"
         class="cell meta num"
-        :title="client.station ? 'Negotiated radio modulation rate, NOT achieved throughput' : ''"
+        :title="client.station
+          ? `Negotiated radio modulation rate, NOT achieved throughput.${
+              client.station.tx_phy_mode
+                ? ` Running ${client.station.tx_phy_mode} — the MCS ceiling differs by generation, so the same rate means different headroom on each.`
+                : ''}`
+          : ''"
       >{{ client.station ? `PHY ${client.station.tx_phy_mbps.toFixed(0)}` : '' }}</span>
 
       <!-- Association age, folded and open alike. It resets to a few seconds
