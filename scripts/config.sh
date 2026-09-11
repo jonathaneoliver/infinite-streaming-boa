@@ -44,8 +44,15 @@ import)
 	esac
 
 	# Fail before touching the box rather than halfway through it.
-	command -v python3 >/dev/null &&
-		python3 -c 'import json,sys; json.load(open(sys.argv[1]))' "$file" ||
+	#
+	# The interpreter check is a SEPARATE statement from the parse, deliberately.
+	# Chained as `command -v python3 && python3 -c ... || die "not valid JSON"`,
+	# a control host with no python3 short-circuited the && and landed on the
+	# parse failure's message -- so a missing interpreter was reported as a
+	# malformed file, sending the reader to inspect a profile that was fine.
+	command -v python3 >/dev/null ||
+		die "python3 is required to check $file before sending it to the box"
+	python3 -c 'import json,sys; json.load(open(sys.argv[1]))' "$file" ||
 		die "not valid JSON: $file"
 
 	if [ "$mode" = replace ]; then
