@@ -1119,7 +1119,22 @@ Clients ARE told it has gone, unlike a power cut.`
                that can lie is only safe while what it is lying about is on
                screen next to it. -->
           <section class="group">
-          <h4>What the beacon says</h4>
+          <!-- NAMED FOR WHAT IT IS, not for how it travels.
+               "What the beacon says" named the mechanism, and a beacon also
+               carries the DTIM period and the capability bits -- which are the
+               power-save and generation rows. A heading about the beacon would
+               have accepted both, blurring the line those sections rest on.
+
+               The boundary is that nothing here changes what HAPPENS, only what
+               clients are told. Rate pinning through supported_rates is the
+               counter-example worth remembering: it is advertised, so it looks
+               like it belongs, and a client restricted to 6 Mbit/s really does
+               transmit at 6 Mbit/s. That is enforced, so it belongs with the
+               generation ladder instead.
+
+               Named this way the boundary polices itself: anything that is
+               enforced obviously does not go here. -->
+          <h4>Advertised, not enforced</h4>
           <p class="meta group-note">
             Neither of these touches the link — they change what this radio
             <em>tells</em> clients about itself, which some weigh when choosing
