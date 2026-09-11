@@ -436,19 +436,29 @@ moved and the real RSSI beside it has not changed.
 Under each adapter, separate from per-client conditioning, because these affect
 every client on that radio:
 
-- **A generation ladder** — `clean` (the way back), then `11ac`, `11n` and
+- **A generation ladder** — `default` (the way back), then `802.11ac`,
+  `802.11n` and
   plain OFDM, each dropping the radio a rung. **Which rungs appear depends on
   the radio and the band it is on**, because a rung above its ceiling cannot be
-  reached and VHT does not exist on 2.4 GHz at all — so `11ac` is simply absent
-  there, and the OFDM rung calls itself `11a` on 5 GHz and `11g` on 2.4 GHz.
+  reached and VHT does not exist on 2.4 GHz at all — so `802.11ac` is simply
+  absent there, and the OFDM rung calls itself `802.11a` on 5 GHz and
+  `802.11g` on 2.4 GHz.
 
-  There is no `11ax` button: on a capable radio that is what `clean` already
+  There is no `802.11ax` button: on a capable radio that is what `default`
+  already
   returns you to, and on one that cannot do ax it would be a control that
   fails. Width is not among them either — it lives in the channel plan, where a
   channel and a width are picked together.
 
-  **`11n` also caps the width at 40 MHz**, because HT has no 80 MHz channel, so
-  a run against `clean` moves two things rather than one.
+  **`802.11n` also caps the width at 40 MHz**, because HT has no 80 MHz
+  channel, so
+  a run against `default` moves two things rather than one.
+  **Every row begins with `default`**, and it means the same thing in each: put
+  this axis back to whatever the system decided, leaving the others alone. The
+  generation and power-save rows restore from the radio's own configuration; the
+  two thresholds restore to the phy's default of disabled, because nothing in
+  the image ever sets one. Rows read left to right from untouched to most
+  impaired.
 - **Power save**, in two rungs. `power-save` is DTIM 3 at a 100 ms beacon with
   U-APSD off, which is a common access point default and delivers buffered
   downlink about every 300 ms. `power-save deep` is DTIM 10 at 300 ms — roughly

@@ -51,19 +51,31 @@ const props = defineProps<{
  * — so `ac` disappears the moment a radio moves to 2.4GHz, where VHT does not
  * exist, and a radio whose ceiling is n never offers a rung above itself.
  *
- * `clean` and the power-save pair carry no `needs`: they are always available.
- * `clean` is the way back from everything and is defined relative to the radio
+ * EVERY ROW READS LEFT TO RIGHT FROM UNTOUCHED TO MOST IMPAIRED, and the
+ * ordering comes from three different places -- `profileOrder` in the daemon
+ * for the generation, the array below for power save, and markup order for the
+ * two thresholds -- which is exactly how they drifted apart. Anything added to
+ * any of them goes after the `default`.
+ *
+ * EVERY ROW HAS A `default` AT THE LEFT, and it means the same thing in each:
+ * put this axis back to whatever the system decided, leaving the others alone.
+ * Generation and power save restore from the radio's own config; the two
+ * thresholds restore to the phy's default of disabled, because nothing in the
+ * image ever sets one.
+ *
+ * `default` and the power-save pair carry no `needs`: they are always available.
+ * `default` is the way back from everything and is defined relative to the radio
  * rather than to an absolute, which is also why there is no `ax` rung — on a
- * capable radio that is what `clean` already returns you to, and on one that
+ * capable radio that is what `default` already returns you to, and on one that
  * cannot do ax it would be a button that fails.
  */
 const PROFILES: { name: string; label: string; desc: string; needs?: string }[] = [
-  { name: 'clean', label: 'clean', desc: 'the generation back to how the image configured it — power save has its own way back.' },
-  { name: 'ac', label: '11ac', needs: 'ac',
-    desc: 'Wi-Fi 5 instead of Wi-Fi 6 — VHT rates, with the MCS ceiling that goes with them.' },
-  { name: 'legacy', label: '11n', needs: 'n',
+  { name: 'default', label: 'default', desc: 'the generation back to whatever the image configured for this radio.' },
+  { name: 'ac', label: '802.11ac', needs: 'ac',
+    desc: 'no 802.11ax — VHT rates instead of HE ones, with the MCS ceiling that goes with them.' },
+  { name: 'legacy', label: '802.11n', needs: 'n',
     desc: 'no ac, no ax — the ceiling an older device sees. Also caps the width at 40MHz, because HT has no 80MHz channel.' },
-  { name: 'ofdm', label: '11a', needs: 'ofdm',
+  { name: 'ofdm', label: '802.11a', needs: 'ofdm',
     desc: 'plain OFDM, 54 Mbit/s at the top and 6 at the bottom — a client here costs the channel roughly 200x the airtime per byte an ax one does.' },
 ];
 
@@ -71,7 +83,7 @@ const PROFILES: { name: string; label: string; desc: string; needs?: string }[] 
  * POWER SAVE IS A DIFFERENT AXIS, and it gets its own row.
  *
  * It composes with the ladder rather than replacing it: ApplyRadioProfile
- * writes only the profile's own settings, so putting a radio on 11n leaves its
+ * writes only the profile's own settings, so putting a radio on 802.11n leaves its
  * beacon timing alone and putting it to sleep leaves its generation alone. A
  * single row of six buttons said the opposite — that picking one undid the
  * other — which is not what the radio does.
@@ -80,7 +92,7 @@ const PROFILES: { name: string; label: string; desc: string; needs?: string }[] 
  * client: how long a dozing device waits for buffered downlink.
  */
 const POWER_SAVE = [
-  { name: 'power-save-off', label: 'off',
+  { name: 'power-save-default', label: 'default',
     desc: 'back to this radio\'s own beacon timing, leaving the generation where it is.' },
   { name: 'power-save', label: 'typical · 300 ms',
     desc: 'DTIM 3 at a 100 ms beacon, U-APSD off — a common access point default. A dozing client waits about 300 ms for buffered downlink.' },
@@ -101,9 +113,16 @@ function profilesFor(ap?: { gens?: string[]; freq_mhz?: number }) {
 
 /** Plain OFDM is 802.11a on 5GHz and 802.11g on 2.4GHz — one profile, two
  *  names, because the band decides which you get and the label should say
- *  which one this radio would land on. */
+ *  which one this radio would land on.
+ *
+ *  ONE FORM THROUGHOUT: `802.11ax`, never `11ax` and never `Wi-Fi 6`. It is
+ *  what the daemon already reports as `ap.mode`, so labels and data agree; it
+ *  cannot be misread as a quantity beside `> 1000` and `at 512`; and it extends
+ *  to the bottom of the ladder, where `11a` and `11g` look like typos for
+ *  `11ac`. HE, VHT and HT stay separate: they name the PHY in a rate string,
+ *  not the generation, and are not interchangeable with these. */
 function profileLabel(p: { name: string; label: string }, ap?: { freq_mhz?: number }) {
-  if (p.name === 'ofdm' && ap?.freq_mhz && ap.freq_mhz < 3000) return '11g';
+  if (p.name === 'ofdm' && ap?.freq_mhz && ap.freq_mhz < 3000) return '802.11g';
   return p.label;
 }
 
@@ -1000,7 +1019,7 @@ Clients ARE told it has gone, unlike a power cut.`
                 <label class="k">generation</label>
                 <button
                   v-for="p in profilesFor(r.ap)" :key="p.name"
-                  :class="{ accent: p.name === 'clean' }"
+                  :class="{ accent: p.name === 'default' }"
                   :disabled="busy"
                   :title="`${p.desc} Restarts the AP, dropping all ${r.ap.stations} client(s).`"
                   @click="bridge.applyProfile(r.name, p.name)"
@@ -1038,28 +1057,32 @@ Clients ARE told it has gone, unlike a power cut.`
             <div class="action-row">
               <label class="k">RTS/CTS</label>
               <button :disabled="busy"
-                title="RTS/CTS before every frame — roughly halves throughput and adds two control frames of latency per data frame. The control frames go at a basic rate every station can hear, so the cost does not shrink as your data rate grows."
-                @click="bridge.setThreshold(r.name, 'rts', 0)">every frame</button>
+                title="No RTS/CTS handshake. That is the phy's own default — nothing in the image sets a threshold, so this is what the system decided."
+                @click="bridge.setThreshold(r.name, 'rts', 'off')">default</button>
+              <button :disabled="busy"
+                title="Above 1000 bytes — roughly where a real access point sets it in a dense deployment."
+                @click="bridge.setThreshold(r.name, 'rts', 1000)">&gt; 1000</button>
               <button :disabled="busy"
                 title="Above 512 bytes. Small frames go unprotected, so the cost lands on bulk traffic and not on ACKs and control."
                 @click="bridge.setThreshold(r.name, 'rts', 512)">&gt; 512</button>
               <button :disabled="busy"
-                title="Above 1000 bytes — roughly where a real access point sets it in a dense deployment."
-                @click="bridge.setThreshold(r.name, 'rts', 1000)">&gt; 1000</button>
-              <button :disabled="busy" @click="bridge.setThreshold(r.name, 'rts', 'off')">off</button>
+                title="RTS/CTS before every frame — roughly halves throughput and adds two control frames of latency per data frame. The control frames go at a basic rate every station can hear, so the cost does not shrink as your data rate grows."
+                @click="bridge.setThreshold(r.name, 'rts', 0)">every frame</button>
             </div>
           </div>
           <div class="ctl-box">
             <div class="action-row">
               <label class="k">fragment</label>
               <button :disabled="busy"
-                title="Fragment every frame at 256 bytes. With any error rate the retry cost explodes superlinearly, because losing one fragment costs the whole frame."
-                @click="bridge.setThreshold(r.name, 'frag', 256)">at 256</button>
-              <button :disabled="busy" title="Fragment at 512 bytes — half the retry amplification of 256."
-                @click="bridge.setThreshold(r.name, 'frag', 512)">at 512</button>
+                title="No fragmentation. That is the phy's own default — nothing in the image sets a threshold, so this is what the system decided."
+                @click="bridge.setThreshold(r.name, 'frag', 'off')">default</button>
               <button :disabled="busy" title="Fragment at 1024 bytes — the mildest rung that still fragments a full-size frame."
                 @click="bridge.setThreshold(r.name, 'frag', 1024)">at 1024</button>
-              <button :disabled="busy" @click="bridge.setThreshold(r.name, 'frag', 'off')">off</button>
+              <button :disabled="busy" title="Fragment at 512 bytes — half the retry amplification of 256."
+                @click="bridge.setThreshold(r.name, 'frag', 512)">at 512</button>
+              <button :disabled="busy"
+                title="Fragment every frame at 256 bytes. With any error rate the retry cost explodes superlinearly, because losing one fragment costs the whole frame."
+                @click="bridge.setThreshold(r.name, 'frag', 256)">at 256</button>
             </div>
           </div>
             </div>
