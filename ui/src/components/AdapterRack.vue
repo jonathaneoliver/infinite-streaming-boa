@@ -994,34 +994,41 @@ Clients ARE told it has gone, unlike a power cut.`
             <p class="ctl-set-label">
               restarts the access point — drops all {{ r.ap.stations }} client(s)
             </p>
-            <div class="action-row">
-              <label class="k">generation</label>
-              <button
-                v-for="p in profilesFor(r.ap)" :key="p.name"
-                :class="{ accent: p.name === 'clean' }"
-                :disabled="busy"
-                :title="p.name === 'clean'
-                  ? `${p.desc} Resets the power-save timing too. Restarts the AP, dropping all ${r.ap.stations} client(s).`
-                  : `${p.desc} Restarts the AP, dropping all ${r.ap.stations} client(s).`"
-                @click="bridge.applyProfile(r.name, p.name)"
-              >{{ profileLabel(p, r.ap) }}</button>
+            <div class="ctl-boxes">
+            <div class="ctl-box">
+              <div class="action-row">
+                <label class="k">generation</label>
+                <button
+                  v-for="p in profilesFor(r.ap)" :key="p.name"
+                  :class="{ accent: p.name === 'clean' }"
+                  :disabled="busy"
+                  :title="p.name === 'clean'
+                    ? `${p.desc} Resets the power-save timing too. Restarts the AP, dropping all ${r.ap.stations} client(s).`
+                    : `${p.desc} Restarts the AP, dropping all ${r.ap.stations} client(s).`"
+                  @click="bridge.applyProfile(r.name, p.name)"
+                >{{ profileLabel(p, r.ap) }}</button>
+              </div>
             </div>
             <!-- ITS OWN ROW: power save composes with the ladder above rather
                  than replacing it, and one row of six buttons implied otherwise. -->
-            <div class="action-row">
-              <label class="k">power save</label>
-              <button
-                v-for="p in POWER_SAVE" :key="p.name"
-                :disabled="busy"
-                :title="`${p.desc} Restarts the AP, dropping all ${r.ap.stations} client(s).`"
-                @click="bridge.applyProfile(r.name, p.name)"
-              >{{ p.label }}</button>
+            <div class="ctl-box">
+              <div class="action-row">
+                <label class="k">power save</label>
+                <button
+                  v-for="p in POWER_SAVE" :key="p.name"
+                  :disabled="busy"
+                  :title="`${p.desc} Restarts the AP, dropping all ${r.ap.stations} client(s).`"
+                  @click="bridge.applyProfile(r.name, p.name)"
+                >{{ p.label }}</button>
+              </div>
+            </div>
             </div>
           </div>
           <div class="ctl-set free">
             <p class="ctl-set-label">
               live on the next frame — nobody is dropped
             </p>
+            <div class="ctl-boxes">
           <!-- BOTH THRESHOLDS ARE A RANGE, and only the two ends were reachable.
                SetPhyThreshold takes an arbitrary integer, so 512 and 1000 --
                which is where a real access point sits when it uses RTS at all
@@ -1029,30 +1036,35 @@ Clients ARE told it has gone, unlike a power cut.`
                single extreme point says whether a client survives; a few rungs
                say where it stops surviving, which is what the rest of this box
                is for. -->
-          <div class="action-row">
-            <label class="k">RTS/CTS</label>
-            <button :disabled="busy"
-              title="RTS/CTS before every frame — roughly halves throughput and adds two control frames of latency per data frame. The control frames go at a basic rate every station can hear, so the cost does not shrink as your data rate grows."
-              @click="bridge.setThreshold(r.name, 'rts', 0)">every frame</button>
-            <button :disabled="busy"
-              title="Above 512 bytes. Small frames go unprotected, so the cost lands on bulk traffic and not on ACKs and control."
-              @click="bridge.setThreshold(r.name, 'rts', 512)">&gt; 512</button>
-            <button :disabled="busy"
-              title="Above 1000 bytes — roughly where a real access point sets it in a dense deployment."
-              @click="bridge.setThreshold(r.name, 'rts', 1000)">&gt; 1000</button>
-            <button :disabled="busy" @click="bridge.setThreshold(r.name, 'rts', 'off')">off</button>
+          <div class="ctl-box">
+            <div class="action-row">
+              <label class="k">RTS/CTS</label>
+              <button :disabled="busy"
+                title="RTS/CTS before every frame — roughly halves throughput and adds two control frames of latency per data frame. The control frames go at a basic rate every station can hear, so the cost does not shrink as your data rate grows."
+                @click="bridge.setThreshold(r.name, 'rts', 0)">every frame</button>
+              <button :disabled="busy"
+                title="Above 512 bytes. Small frames go unprotected, so the cost lands on bulk traffic and not on ACKs and control."
+                @click="bridge.setThreshold(r.name, 'rts', 512)">&gt; 512</button>
+              <button :disabled="busy"
+                title="Above 1000 bytes — roughly where a real access point sets it in a dense deployment."
+                @click="bridge.setThreshold(r.name, 'rts', 1000)">&gt; 1000</button>
+              <button :disabled="busy" @click="bridge.setThreshold(r.name, 'rts', 'off')">off</button>
+            </div>
           </div>
-          <div class="action-row">
-            <label class="k">fragment</label>
-            <button :disabled="busy"
-              title="Fragment every frame at 256 bytes. With any error rate the retry cost explodes superlinearly, because losing one fragment costs the whole frame."
-              @click="bridge.setThreshold(r.name, 'frag', 256)">at 256</button>
-            <button :disabled="busy" title="Fragment at 512 bytes — half the retry amplification of 256."
-              @click="bridge.setThreshold(r.name, 'frag', 512)">at 512</button>
-            <button :disabled="busy" title="Fragment at 1024 bytes — the mildest rung that still fragments a full-size frame."
-              @click="bridge.setThreshold(r.name, 'frag', 1024)">at 1024</button>
-            <button :disabled="busy" @click="bridge.setThreshold(r.name, 'frag', 'off')">off</button>
+          <div class="ctl-box">
+            <div class="action-row">
+              <label class="k">fragment</label>
+              <button :disabled="busy"
+                title="Fragment every frame at 256 bytes. With any error rate the retry cost explodes superlinearly, because losing one fragment costs the whole frame."
+                @click="bridge.setThreshold(r.name, 'frag', 256)">at 256</button>
+              <button :disabled="busy" title="Fragment at 512 bytes — half the retry amplification of 256."
+                @click="bridge.setThreshold(r.name, 'frag', 512)">at 512</button>
+              <button :disabled="busy" title="Fragment at 1024 bytes — the mildest rung that still fragments a full-size frame."
+                @click="bridge.setThreshold(r.name, 'frag', 1024)">at 1024</button>
+              <button :disabled="busy" @click="bridge.setThreshold(r.name, 'frag', 'off')">off</button>
+            </div>
           </div>
+            </div>
           </div>
           </section>
 
@@ -1405,6 +1417,29 @@ Clients ARE told it has gone, unlike a power cut.`
    simply has a price. */
 .ctl-set.costly { border-color: color-mix(in srgb, var(--warn) 35%, var(--line)); }
 .ctl-set.costly .ctl-set-label { color: var(--warn); opacity: 0.75; }
+
+/* SIDE BY SIDE, each in its own box.
+
+   The two families inside a set are independent -- generation and power save
+   compose, RTS and fragmentation are separate thresholds -- so they sit next to
+   each other and use the width the fold has. What they must NOT do is read as
+   one row of buttons, which is exactly what they did before and what implied
+   that picking one undid the other. The boxes are what keeps them apart.
+
+   Wrapping, so a narrow window stacks them rather than squeezing. */
+.ctl-boxes {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: flex-start;
+}
+.ctl-box {
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 2px 8px 3px;
+}
+/* The rows already carry their own margin, which doubles up inside a box. */
+.ctl-box .action-row { margin: 3px 0; }
 /* EVERY CELL IS EXACTLY ONE LINE TALL, at every width.
 
    The grid already sizes its columns from the container rather than from its
