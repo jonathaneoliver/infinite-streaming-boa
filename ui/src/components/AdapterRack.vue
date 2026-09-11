@@ -788,17 +788,30 @@ Clients ARE told it has gone, unlike a power cut.`
                adapter between the two changes this while the interface name
                deliberately does not. Only for USB: the onboard radio is on
                mmc and has no port to name. -->
+          <!-- Still conditional, and safely so: bus is a property of the
+               hardware and cannot change while this fold is open, so it cannot
+               reflow the grid the way the AP fields could. -->
           <div v-if="r.radio?.bus === 'usb'"><span class="k">USB port</span>
             <span class="v num">{{ r.radio.socket || '—' }}</span></div>
           <div><span class="k">MAC</span><span class="v num">{{ r.mac }}</span></div>
           <div><span class="k">bridge port</span><span class="v num">{{ r.master || 'not bridged' }}</span></div>
-          <template v-if="r.ap">
-            <div><span class="k">SSID</span><span class="v">{{ r.ap.ssid || '—' }}</span></div>
-            <div><span class="k">BSSID</span><span class="v num">{{ r.ap.bssid || '—' }}</span></div>
-            <div><span class="k">country</span><span class="v num">{{ r.ap.country || '—' }}</span></div>
-            <div><span class="k">beacon / DTIM</span>
-              <span class="v num">{{ r.ap.beacon_int_ms }} ms / {{ r.ap.dtim_period }}</span></div>
-          </template>
+          <!-- ALWAYS RENDERED, em-dash when there is no access point, rather
+               than hidden behind v-if="r.ap".
+
+               These four used to disappear together whenever the AP went down,
+               which is every profile apply, every channel move and every
+               restart. In a grid that is a whole row arriving and leaving, so
+               everything below the strip jumped while an operator watched it.
+
+               A dash is also the better answer on its own terms: a field that
+               vanishes cannot be told apart from a field that is broken, and
+               this strip already says "not bridged" rather than hiding the
+               bridge port for the same reason. -->
+          <div><span class="k">SSID</span><span class="v">{{ r.ap?.ssid || '—' }}</span></div>
+          <div><span class="k">BSSID</span><span class="v num">{{ r.ap?.bssid || '—' }}</span></div>
+          <div><span class="k">country</span><span class="v num">{{ r.ap?.country || '—' }}</span></div>
+          <div><span class="k">beacon / DTIM</span>
+            <span class="v num">{{ r.ap ? `${r.ap.beacon_int_ms} ms / ${r.ap.dtim_period}` : '—' }}</span></div>
         </div>
 
         <!-- WHAT IT IS CARRYING, with the facts rather than with the
@@ -1260,14 +1273,36 @@ Clients ARE told it has gone, unlike a power cut.`
   flex-wrap: wrap;
   margin: 4px 0;
 }
+/* EVERY CELL IS EXACTLY ONE LINE TALL, at every width.
+
+   The grid already sizes its columns from the container rather than from its
+   content, so a value getting longer does not add a column. What it could still
+   do is wrap INSIDE its cell: the 200px is a floor, `1fr` lets a track be
+   narrower than what is in it, and `adapter MediaTek Inc. Wireless_Device` is
+   about 215px at this size. One wrapped cell makes its whole row two lines and
+   shoves everything below the strip down.
+
+   So the value truncates instead. An ellipsis is a visible, stable failure; a
+   reflow is an invisible one that moves the page under a reader's eyes.
+
+   Deliberately NOT a fixed or minimum height on the strip: the right height
+   genuinely differs with width, so any constant is wrong somewhere. */
 .facts {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
   gap: 2px 14px;
   font-size: 12px;
 }
+.facts > div {
+  white-space: nowrap;
+  min-width: 0; /* a grid item defaults to min-content, which refuses to shrink */
+  overflow: hidden;
+}
 .facts .k { color: var(--ink-faint); margin-right: 6px; }
-.facts .v { color: var(--ink-dim); }
+.facts .v { color: var(--ink-dim); overflow: hidden; text-overflow: ellipsis; }
+/* Hex, MACs and counts, so digits keep their column as they change rather than
+   sliding the rest of the value sideways on every update. */
+.facts .v.num { font-variant-numeric: tabular-nums; }
 .meta { font-size: 11px; color: var(--ink-faint); }
 .warn-line { color: var(--warn); font-size: 11px; margin: 2px 0; }
 .group-note { margin: 0 0 4px; }
