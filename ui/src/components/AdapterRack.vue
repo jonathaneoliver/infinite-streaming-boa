@@ -46,7 +46,6 @@ const props = defineProps<{
 const PROFILES = [
   { name: 'clean', label: 'clean', desc: 'everything back to how the image configured it.' },
   { name: 'legacy', label: '11n', desc: 'no ac, no ax — the ceiling an older device sees.' },
-  { name: 'narrow', label: '20MHz', desc: 'a quarter of the spectrum, so airtime contention is real.' },
   { name: 'dozy', label: 'power-save', desc: 'DTIM 10 at 300 ms beacon, U-APSD off.' },
 ];
 

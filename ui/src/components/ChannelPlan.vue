@@ -347,6 +347,26 @@ function isCurrent(radio: IfaceInfo, row: PlanRow, cell: PlanCell): boolean {
 }
 
 /**
+ * The cell holding the PRIMARY channel -- the one the radio actually beacons on
+ * -- at any width.
+ *
+ * `here` marks the block a radio occupies, and at 80MHz that block is four
+ * channels wide. Which of the four is primary is invisible in it, and that is
+ * the fact an operator needs: the primary decides where beacons go, where CCA
+ * happens, which sub-channel a 20MHz-only client associates on -- and, the
+ * moment the radio narrows, it IS the radio's location.
+ *
+ * It cannot be inferred from what was asked for, either. hostapd's 20/40
+ * coexistence scan swaps primary and secondary to dodge neighbours, so a radio
+ * asked for 36 at 80MHz comes back running 40. This marks the value read back
+ * from the running radio, so the swap is visible rather than only in the log.
+ */
+function isPrimary(radio: IfaceInfo, cell: PlanCell): boolean {
+  const ch = radio.ap?.channel ?? 0;
+  return !!ch && !!radio.ap?.enabled && cell.channels.includes(ch);
+}
+
+/**
  * A block is only as clear as its busiest slice, so a cell takes the WORST
  * rating of the channels it covers. An 80MHz block containing one channel with
  * six neighbours on it is not a quiet block, however empty the other three are.
@@ -366,7 +386,16 @@ function cellNote(radio: IfaceInfo, row: PlanRow, cell: PlanCell): string {
   const per = cell.channels
     .map((c) => `ch ${c}: ${describeChannel(merged.value, c)}`)
     .join('; ');
-  if (isCurrent(radio, row, cell)) return `${radio.name} is here now. ${per}`;
+  if (isCurrent(radio, row, cell)) {
+    return `${radio.name} is here now, beaconing on channel ${radio.ap?.channel}. ${per}`;
+  }
+  if (isPrimary(radio, cell)) {
+    return (
+      `Channel ${radio.ap?.channel} is ${radio.name}'s primary — the one it ` +
+      `beacons on — so this is where it lands if narrowed to ${row.width} MHz ` +
+      `without moving. ${per}`
+    );
+  }
   // Our OWN radio, which is a refusal rather than a warning: putting two of the
   // box's access points on one channel halves both for nothing, while the rest
   // of the band sits empty. Named, so the answer to "why can I not press this"
@@ -435,6 +464,7 @@ function cellNote(radio: IfaceInfo, row: PlanRow, cell: PlanCell): string {
           class="cell"
           :class="[cellClass(radio, cell), {
             here: isCurrent(radio, row, cell),
+            primary: isPrimary(radio, cell) && !isCurrent(radio, row, cell),
             taken: !isCurrent(radio, row, cell) && !!takenName(cell),
           }]"
           :style="{ gridColumn: `span ${cell.span}` }"
@@ -540,6 +570,17 @@ function cellNote(radio: IfaceInfo, row: PlanRow, cell: PlanCell): string {
    `background` are set here, which leaves `border-color` to the rating -- so a
    crowded channel you are sitting on still shows a red edge around the blue.
    Both facts, one cell. */
+/* The primary channel, on rows the radio is NOT currently at.
+
+   A left edge rather than a fill or a border. Fill is taken by `here` and a
+   border is taken by the quality rating, and both of those are facts this must
+   not displace -- a crowded channel you would narrow onto still needs its red
+   edge. A thick inside edge is the one piece of the cell nothing else claims.
+
+   Deliberately quieter than `here`: this is not where the radio is, it is where
+   narrowing would put it. */
+.cell.primary { box-shadow: inset 3px 0 0 var(--down); }
+
 .cell.here {
   background: var(--down);
   color: var(--bg);

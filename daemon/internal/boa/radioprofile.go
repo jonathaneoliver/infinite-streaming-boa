@@ -194,8 +194,10 @@ func cleanSetsFor(iface string) []string {
 			sets = append(sets, "SET "+k+" "+v)
 		}
 	}
-	// Width too: "narrow" clears these, and only the config knows whether this
-	// radio was ever wide.
+	// Width too. No profile changes it any more -- that is the channel plan's
+	// job, which picks a channel and a width together -- but a radio moved to
+	// 20MHz there still has to be restorable, and only the config knows whether
+	// this radio was ever wide.
 	for _, k := range []string{"vht_oper_chwidth", "he_oper_chwidth"} {
 		v := kv[k]
 		if v == "" {
@@ -228,15 +230,6 @@ var radioProfiles = map[string]radioProfile{
 		Desc: "802.11n only -- no ac, no ax. Drops the ceiling to what an older " +
 			"device sees, with real MAC-layer cost rather than a rate limit.",
 		Sets: []string{"SET ieee80211ax 0", "SET ieee80211ac 0", "SET ieee80211n 1"},
-	},
-	"narrow": {
-		Name: "narrow", Restart: true,
-		Desc: "20MHz. A quarter of the spectrum, so airtime contention is real " +
-			"and shared rather than imposed per client.",
-		Sets: []string{
-			"SET vht_oper_chwidth 0", "SET he_oper_chwidth 0",
-			"SET secondary_channel 0",
-		},
 	},
 	"dozy": {
 		Name: "dozy", Restart: true,
