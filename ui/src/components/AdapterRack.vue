@@ -65,10 +65,27 @@ const PROFILES: { name: string; label: string; desc: string; needs?: string }[] 
     desc: 'no ac, no ax — the ceiling an older device sees. Also caps the width at 40MHz, because HT has no 80MHz channel.' },
   { name: 'ofdm', label: '11a', needs: 'ofdm',
     desc: 'plain OFDM, 54 Mbit/s at the top and 6 at the bottom — a client here costs the channel roughly 200x the airtime per byte an ax one does.' },
-  { name: 'power-save', label: 'power-save',
-    desc: 'DTIM 3 at a 100 ms beacon, U-APSD off — a common access point default. About 300 ms for buffered downlink.' },
-  { name: 'power-save-deep', label: 'power-save deep',
-    desc: 'DTIM 10 at a 300 ms beacon, U-APSD off. Up to three seconds for buffered downlink — roughly 10x any real access point, so a stress test rather than a mimicry.' },
+];
+
+/**
+ * POWER SAVE IS A DIFFERENT AXIS, and it gets its own row.
+ *
+ * It composes with the ladder rather than replacing it: ApplyRadioProfile
+ * writes only the profile's own settings, so putting a radio on 11n leaves its
+ * beacon timing alone and putting it to sleep leaves its generation alone. A
+ * single row of six buttons said the opposite — that picking one undid the
+ * other — which is not what the radio does.
+ *
+ * Labelled by the delivery gap, because that is the number that matters to a
+ * client: how long a dozing device waits for buffered downlink.
+ */
+const POWER_SAVE = [
+  { name: 'power-save-off', label: 'off',
+    desc: 'back to this radio\'s own beacon timing, leaving the generation where it is.' },
+  { name: 'power-save', label: '300 ms',
+    desc: 'DTIM 3 at a 100 ms beacon, U-APSD off — a common access point default.' },
+  { name: 'power-save-deep', label: '3 s',
+    desc: 'DTIM 10 at a 300 ms beacon, U-APSD off. Roughly 10x any real access point, so a stress test rather than a mimicry.' },
 ];
 
 /** The rungs this radio can actually be put on, in ladder order.
@@ -969,21 +986,42 @@ Clients ARE told it has gone, unlike a power cut.`
 
           <section class="group">
           <h4>Conditioning the link</h4>
-          <p class="meta group-note">
-            A profile restarts the access point, dropping all
-            {{ r.ap.stations }} client(s). The thresholds below do not — they are
-            live on the next frame and nobody is dropped.
-          </p>
-          <div class="action-row">
-            <label class="k">profile</label>
-            <button
-              v-for="p in profilesFor(r.ap)" :key="p.name"
-              :class="{ accent: p.name === 'clean' }"
-              :disabled="busy"
-              :title="`${p.desc} Restarts the AP, dropping all ${r.ap.stations} client(s).`"
-              @click="bridge.applyProfile(r.name, p.name)"
-            >{{ profileLabel(p, r.ap) }}</button>
+          <!-- GROUPED BY WHAT THEY COST, not by what they change.
+               Whether a control drops every client on the radio is the fact an
+               operator needs before pressing it, and it used to be a sentence
+               above the row rather than something the layout said. -->
+          <div class="ctl-set costly">
+            <p class="ctl-set-label">
+              restarts the access point — drops all {{ r.ap.stations }} client(s)
+            </p>
+            <div class="action-row">
+              <label class="k">generation</label>
+              <button
+                v-for="p in profilesFor(r.ap)" :key="p.name"
+                :class="{ accent: p.name === 'clean' }"
+                :disabled="busy"
+                :title="p.name === 'clean'
+                  ? `${p.desc} Resets the power-save timing too. Restarts the AP, dropping all ${r.ap.stations} client(s).`
+                  : `${p.desc} Restarts the AP, dropping all ${r.ap.stations} client(s).`"
+                @click="bridge.applyProfile(r.name, p.name)"
+              >{{ profileLabel(p, r.ap) }}</button>
+            </div>
+            <!-- ITS OWN ROW: power save composes with the ladder above rather
+                 than replacing it, and one row of six buttons implied otherwise. -->
+            <div class="action-row">
+              <label class="k">power save</label>
+              <button
+                v-for="p in POWER_SAVE" :key="p.name"
+                :disabled="busy"
+                :title="`${p.desc} Restarts the AP, dropping all ${r.ap.stations} client(s).`"
+                @click="bridge.applyProfile(r.name, p.name)"
+              >{{ p.label }}</button>
+            </div>
           </div>
+          <div class="ctl-set free">
+            <p class="ctl-set-label">
+              live on the next frame — nobody is dropped
+            </p>
           <!-- BOTH THRESHOLDS ARE A RANGE, and only the two ends were reachable.
                SetPhyThreshold takes an arbitrary integer, so 512 and 1000 --
                which is where a real access point sits when it uses RTS at all
@@ -1014,6 +1052,7 @@ Clients ARE told it has gone, unlike a power cut.`
             <button :disabled="busy" title="Fragment at 1024 bytes — the mildest rung that still fragments a full-size frame."
               @click="bridge.setThreshold(r.name, 'frag', 1024)">at 1024</button>
             <button :disabled="busy" @click="bridge.setThreshold(r.name, 'frag', 'off')">off</button>
+          </div>
           </div>
           </section>
 
@@ -1332,6 +1371,40 @@ Clients ARE told it has gone, unlike a power cut.`
   flex-wrap: wrap;
   margin: 4px 0;
 }
+
+/* THE CONTROLS ARE GROUPED BY WHAT THEY COST YOU.
+
+   Everything in the first box takes the access point down and back up, so every
+   client on that radio is dropped and not told. Everything in the second takes
+   effect on the next frame with nobody dropped. That distinction decides
+   whether a control can be used mid-run, and it was previously a sentence above
+   the rows -- which is the kind of thing a reader takes in once and then stops
+   seeing.
+
+   The costly box gets the full width of the fold. It holds two rows of up to
+   six buttons and is the half an operator hesitates over; the live half is
+   four buttons twice and needs no room to breathe. */
+.ctl-set {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 6px 10px 8px;
+  margin: 8px 0;
+}
+/* Both boxes take the full width, stacked -- they are two rows, and the split
+   between them is the point. Side by side they would read as alternatives. */
+.ctl-set { width: 100%; box-sizing: border-box; }
+/* Quieter than a heading and louder than the button labels: it is a property of
+   the group rather than a thing to read first. */
+.ctl-set-label {
+  margin: 0 0 2px;
+  font-size: 11px;
+  color: var(--ink-faint);
+}
+/* The one that costs clients is edged in the warning colour, at low opacity so
+   it reads as a boundary rather than as an alarm -- nothing here is wrong, it
+   simply has a price. */
+.ctl-set.costly { border-color: color-mix(in srgb, var(--warn) 35%, var(--line)); }
+.ctl-set.costly .ctl-set-label { color: var(--warn); opacity: 0.75; }
 /* EVERY CELL IS EXACTLY ONE LINE TALL, at every width.
 
    The grid already sizes its columns from the container rather than from its

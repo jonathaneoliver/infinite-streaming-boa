@@ -180,11 +180,34 @@ func runningConfigFor(iface string) map[string]string {
 //
 // Falls back to the timing parameters alone when the config cannot be read, so
 // clean still undoes a power-save profile rather than doing nothing.
-func cleanSetsFor(iface string) []string {
+// cleanPowerSets restores JUST the power-save timing, from this radio's own
+// config, leaving the generation alone.
+//
+// It exists because power save is a different axis from the generation ladder
+// and composes with it: ApplyRadioProfile writes only the profile's own SETs,
+// so putting a radio on 11n does not touch its beacon timing and putting it to
+// sleep does not touch its generation. Without this the only way back from a
+// power-save rung was "clean", which would also have undone the generation --
+// coupling two things the radio itself keeps apart.
+//
+// The defaults are hostapd's, used when the config cannot be read.
+func cleanPowerSets(iface string) []string {
 	sets := []string{
 		"SET beacon_int 100", "SET dtim_period 2",
 		"SET uapsd_advertisement_enabled 1",
 	}
+	kv := runningConfigFor(iface)
+	if bi := kv["beacon_int"]; bi != "" {
+		sets[0] = "SET beacon_int " + bi
+	}
+	if dp := kv["dtim_period"]; dp != "" {
+		sets[1] = "SET dtim_period " + dp
+	}
+	return sets
+}
+
+func cleanSetsFor(iface string) []string {
+	sets := cleanPowerSets(iface)
 	kv := runningConfigFor(iface)
 	if kv == nil {
 		return sets
@@ -205,13 +228,28 @@ func cleanSetsFor(iface string) []string {
 		}
 		sets = append(sets, "SET "+k+" "+v)
 	}
-	if bi := kv["beacon_int"]; bi != "" {
-		sets[0] = "SET beacon_int " + bi
-	}
-	if dp := kv["dtim_period"]; dp != "" {
-		sets[1] = "SET dtim_period " + dp
-	}
 	return sets
+}
+
+// perRadioSets returns the builder for a profile whose settings are computed
+// from the radio's own running config, or nil for the ordinary kind that
+// carries a fixed list.
+//
+// ONE LIST, because two things need this answer and they must not drift: the
+// apply path, which has to call the builder, and the test asserting every
+// profile sets something, which would otherwise flag these as setting nothing.
+// That test named "clean" directly and broke the moment there were two.
+//
+// Both members RESTORE rather than impose, which is why neither can be fixed:
+// what "as the image configured it" means differs between radios.
+func perRadioSets(name string) func(string) []string {
+	switch name {
+	case "clean":
+		return cleanSetsFor
+	case "power-save-off":
+		return cleanPowerSets
+	}
+	return nil
 }
 
 // radioProfiles is the closed set. Every one of them is reversible by applying
@@ -280,6 +318,14 @@ var radioProfiles = map[string]radioProfile{
 	// Named power-save rather than "dozy" because the interface has always
 	// shown it as power-save, and the daemon saying something else was a
 	// translation that existed for no reason.
+	// The way back from the power-save pair WITHOUT undoing the generation.
+	// Carries no Sets for the same reason clean does not: they are built per
+	// radio, from that radio's own config.
+	"power-save-off": {
+		Name: "power-save-off", Restart: true,
+		Desc: "Back to this radio's own beacon timing, leaving the generation " +
+			"where it is.",
+	},
 	"power-save": {
 		Name: "power-save", Restart: true,
 		Desc: "DTIM 3 at a 100ms beacon, U-APSD off -- what a common access " +
@@ -310,7 +356,8 @@ var radioProfiles = map[string]radioProfile{
 // families -- ac, legacy, ofdm, power-save, power-save-deep reads as one list
 // of five unrelated things. A profile absent from here still appears, at the
 // end, so adding one cannot make it invisible.
-var profileOrder = []string{"clean", "ac", "legacy", "ofdm", "power-save", "power-save-deep"}
+var profileOrder = []string{"clean", "ac", "legacy", "ofdm",
+	"power-save-off", "power-save", "power-save-deep"}
 
 // RadioProfileNames lists the profiles in ladder order, with "clean" first
 // because it is the way back from every other one.
@@ -373,8 +420,8 @@ func (e *Engine) ApplyRadioProfile(iface, name string) (int, error) {
 	}()
 
 	sets := p.Sets
-	if name == "clean" {
-		sets = cleanSetsFor(iface)
+	if build := perRadioSets(name); build != nil {
+		sets = build(iface)
 	}
 	var refused []string
 	for _, cmd := range sets {

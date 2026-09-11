@@ -236,10 +236,11 @@ func TestEveryProfileSaysWhatItDoes(t *testing.T) {
 		if strings.TrimSpace(p.Desc) == "" {
 			t.Errorf("profile %q has no description", name)
 		}
-		// clean is the exception: its sets are built per radio by cleanSetsFor,
-		// because what "as the image configured it" means differs between the
-		// two radios.
-		if name != "clean" && len(p.Sets) == 0 {
+		// The exceptions are the profiles whose sets are built per radio,
+		// because what "as the image configured it" means differs between
+		// radios. Asked of perRadioSets rather than listed here, so this cannot
+		// disagree with what the apply path actually does.
+		if perRadioSets(name) == nil && len(p.Sets) == 0 {
 			t.Errorf("profile %q sets nothing", name)
 		}
 	}
