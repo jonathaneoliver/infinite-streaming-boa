@@ -190,6 +190,24 @@ radio_ifaces() {
   printf '%s' "${out# }"
 }
 
+# The listen-only radios, BY NAME PREFIX, because that is the one thing the host
+# and the container agree on about this device.
+#
+# docker-attach.sh renames the phy it hands in to "wlan-scan-<last 4 of MAC>",
+# the same rule every other adapter here is named by. So the prefix carries the
+# operator's intent across the namespace boundary with no second setting to keep
+# in step -- the host is told which card once, and everything downstream reads
+# it off the name. radioplan and boad both take the answer from here.
+scan_ifaces() {
+  local out="" link iface
+  for link in /sys/class/net/wlan-scan-*/phy80211; do
+    [ -e "$link" ] || continue
+    iface=$(basename "$(dirname "$link")")
+    out="$out $iface"
+  done
+  printf '%s' "${out# }"
+}
+
 # usable_channels is the signature the settle wait below compares. It is the set
 # of channels every phy will actually let an AP BEACON on, which is a different
 # and smaller set than the channels a phy lists: "no IR" means the radio may not
@@ -259,6 +277,12 @@ LAST_RADIO_SET=""
 sync_radios() {
   local now plan planned iface out=""
   now=$(radio_ifaces)
+  # Exported, not passed: radioplan reads BOA_SCAN_PORT from the environment
+  # when it has one, and this is the only place in the container that knows
+  # which radios were handed in to listen rather than to serve. Re-derived on
+  # every sync because a hotplug can add or remove one.
+  BOA_SCAN_PORT=$(scan_ifaces | tr ' ' ',')
+  export BOA_SCAN_PORT
   if [ -z "$now" ]; then
     LAST_RADIO_SET=""
     SYNC_WLAN="wlan-none"
@@ -355,12 +379,13 @@ fi
 # confusing failure this box can present -- so the signal has to reach it, and
 # this shell has to still be here to forward it.
 start_boad() {
-  log "starting boad: bridge=$BOA_BRIDGE wan=$BOA_WAN_PORT wlan=$WLAN_PORTS lan=$LAN_PORTS"
+  log "starting boad: bridge=$BOA_BRIDGE wan=$BOA_WAN_PORT wlan=$WLAN_PORTS lan=$LAN_PORTS scan=${BOA_SCAN_PORT:-none}"
   boad -addr "$BOA_ADDR" \
        -bridge "$BOA_BRIDGE" \
        -wan "$BOA_WAN_PORT" \
        -wlan "$WLAN_PORTS" \
        -lan "$LAN_PORTS" \
+       -scan "${BOA_SCAN_PORT:-}" \
        -state /var/lib/infinite-streaming-boa/policies.json \
        $BOA_EXTRA_ARGS &
   BOAD_PID=$!

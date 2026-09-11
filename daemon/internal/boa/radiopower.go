@@ -1603,7 +1603,7 @@ func (e *Engine) scanBandFree(iface string) (ScanResult, error) {
 }
 
 func (e *Engine) scanBand(iface string, apply, allowOutage bool) (ScanResult, error) {
-	if err := e.radioReady(iface); err != nil {
+	if err := e.readyToScan(iface); err != nil {
 		return ScanResult{}, err
 	}
 	started := time.Now()
@@ -1728,6 +1728,13 @@ func (e *Engine) scanBand(iface string, apply, allowOutage bool) (ScanResult, er
 			"and its clients were dropped -- either because this radio refuses " +
 			"to scan while serving, or because scanning knocked it off the air " +
 			"anyway. It has been brought back."
+	} else if e.cfg.IsScanner(iface) {
+		// A scanner has no access point to keep up, so "nobody was dropped --
+		// the cost was a few beacon gaps" describes a cost it did not pay. The
+		// point of this radio is that the reading is free, and the note is
+		// where that is visible.
+		res.Note += " This is the scanner: it serves no access point, so " +
+			"the scan cost nothing and dropped nobody."
 	} else {
 		res.Note += " This radio scans off-channel while still serving, so " +
 			"nobody was dropped -- the cost was a few beacon gaps."

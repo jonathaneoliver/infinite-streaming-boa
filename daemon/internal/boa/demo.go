@@ -545,6 +545,29 @@ func demoBridgeState(cfg Config) BridgeInfo {
 			},
 		},
 		{
+			// The listen-only radio, in the fixture for the same reason the
+			// airtime-incapable radio above is: this state needs specific
+			// hardware and a specific setting, so without it here the rack row
+			// and the diagram node could only ever be styled on the box. It is
+			// the state most likely to be got wrong precisely because it is
+			// the hardest to see. See #288.
+			//
+			// No AP, no Serving, and no stations -- all three deliberate. A
+			// scanner with any of them would be a different thing.
+			// NO Master, deliberately. A scanner is not a bridge port: it
+			// carries no traffic, and it is hostapd's `bridge=` line that puts
+			// a radio into br-lan in the first place -- which a radio with no
+			// hostapd config never gets. Claiming a master here would draw a
+			// link into the bridge that does not exist.
+			Name: "wlan-scan-3ff2", Role: RoleScanner, MAC: "9c:ef:d5:f6:3f:f2",
+			Up: true, Carrier: true, CarrierKnown: true,
+			Wireless: true, Serving: false,
+			Powered: true, PowerKnown: true,
+			Radio: &RadioInfo{
+				Iface: "wlan-scan-3ff2", Driver: "iwlwifi", Bus: "onboard",
+			},
+		},
+		{
 			Name: firstOr(cfg.LanPorts, "lan0"), Role: RoleLAN, MAC: "00:e0:4c:68:03:1b",
 			Up: true, Carrier: true, CarrierKnown: true, SpeedMbps: 1000,
 			Master: cfg.Bridge,
@@ -552,22 +575,32 @@ func demoBridgeState(cfg Config) BridgeInfo {
 	}
 	// Contention per radio, so the rack's figures can be designed without a Pi.
 	//
-	// Both states are here on purpose. The 5GHz radio carries a full reading
-	// taken by the OTHER radio -- which is the whole point of the merge, since
-	// on real hardware an mt7921u cannot scan without dropping its clients. The
-	// 2.4GHz radio is the one that did the scanning, so it has no "ours"
-	// figure: a radio cannot hear itself, and that em dash is a state which
-	// only ever appears on the scanner and would otherwise never get styled.
+	// EVERY reading here is attributed to the listen-only radio, which is the
+	// arrangement #288 exists to produce: one radio that serves nothing takes
+	// both bands' readings, and the merge hands them to every other row. On
+	// real all-mt7921u hardware neither serving radio can scan without
+	// dropping its clients, so this is the only shape in which these figures
+	// are free.
+	//
+	// The scanner's own row carries no "ours" figure: a radio cannot hear
+	// itself, and that em dash is a state which appears only on the radio that
+	// did the scanning and would otherwise never get styled.
 	now := time.Now().UnixMilli()
+	const demoScanner = "wlan-scan-3ff2"
 	bi.Air = map[string]AirView{
 		cfg.PrimaryWlan(): {
-			Channel: 36, From: "wlan1", At: now - 12_000,
+			Channel: 36, From: demoScanner, At: now - 12_000,
 			UtilPct: 36, UtilKnown: true, LoudestDBm: -18,
 			OursDBm: -27, OursKnown: true,
 		},
 		"wlan1": {
-			Channel: 6, From: "wlan1", At: now - 12_000,
+			Channel: 6, From: demoScanner, At: now - 12_000,
 			UtilPct: 12, UtilKnown: true, LoudestDBm: -34,
+			OursDBm: -31, OursKnown: true,
+		},
+		demoScanner: {
+			Channel: 36, From: demoScanner, At: now - 12_000,
+			UtilPct: 36, UtilKnown: true, LoudestDBm: -18,
 		},
 	}
 	bi.Notes = bridgeNotes(bi, cfg)

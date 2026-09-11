@@ -32,6 +32,26 @@ CONTAINER=${CONTAINER:-boa}
 BR=${BR:-br-wan}
 NETNS=boa
 
+# A radio to hand in as an INSTRUMENT rather than an access point, named by the
+# host's interface name -- "wlp5s0" for the motherboard's AX200.
+#
+# NAMED, not discovered, and it is the one adapter here that is. Everything else
+# in this script is found on the USB bus precisely so that plugging a dongle in
+# is the whole of adding a radio. This one is not on that bus: it is the host's
+# own onboard card, which the host may well be using, and taking it away on the
+# strength of "it is a radio and it is here" would disconnect the machine the
+# container runs on. Opting in is the only safe default.
+#
+# Why this radio is worth the trouble: #279 measured the AX200 to be a poor
+# access point here, because it is a self-managed regulatory device that loses
+# its country through the namespace handover. All of that is about
+# TRANSMITTING. A radio may receive in the world domain -- every 5GHz channel
+# it cannot beacon on is still marked PASSIVE-SCAN, which is exactly the
+# permission to hear -- so the card's one real limitation does not apply to
+# listening, and one scan of it heard 15 access points across both bands with
+# BSS Load from 12 of them. See #288.
+SCAN_IF=${SCAN_IF:-}
+
 # EVERY USB NETWORK DEVICE, discovered, not a list.
 #
 # This began as a hardcoded MAC allowlist and that was wrong in the way this
@@ -171,6 +191,28 @@ fi
 # and a USB radio here is the name prefix and whether the PHY has to move
 # instead of the netdev.
 radio_specs=""
+# The named listen-only radio joins the same list, with its own prefix, exactly
+# as the header below anticipates: "a radio on another bus can be added later by
+# putting a differently-prefixed entry in this list and changing nothing else".
+# The move, the rename and the rfkill clear do not care what bus it is on.
+#
+# Resolved to a MAC here rather than carried as a name, because the loop below
+# looks devices up by MAC -- which is what makes a re-run idempotent after the
+# interface has already been renamed inside the container.
+if [ -n "$SCAN_IF" ]; then
+  if scan_mac=$(cat "/sys/class/net/$SCAN_IF/address" 2>/dev/null); then
+    if [ -e "/sys/class/net/$SCAN_IF/phy80211" ]; then
+      radio_specs="$radio_specs wlan-scan/$scan_mac"
+    else
+      die "SCAN_IF=$SCAN_IF has no phy80211; it is not a wireless device"
+    fi
+  else
+    # Loud, not skipped. A mistyped name here produces a container with no
+    # instrument, and the symptom is contention figures that go on costing an
+    # outage for a reason nothing states.
+    die "SCAN_IF=$SCAN_IF is not an interface on this host"
+  fi
+fi
 for host_if in $(usb_net_devices); do
   mac=$(cat "/sys/class/net/$host_if/address" 2>/dev/null) || continue
   if [ -e "/sys/class/net/$host_if/phy80211" ]; then

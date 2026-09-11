@@ -332,6 +332,57 @@ func (e *Engine) radioReady(iface string) error {
 	return nil
 }
 
+// readyToScan is the gate the scan paths share, and it differs by ROLE.
+//
+// A serving radio goes through radioReady, which insists on a hostapd control
+// socket. That is right for every other action on such a radio -- power, a
+// channel move, a broadcast deauthentication -- because each one IS a hostapd
+// command, so one gate covers them all.
+//
+// A listen-only radio has no hostapd and never will. Sent through the same
+// gate it is refused with "hostapd is not serving", which is true and is
+// entirely the wrong reason to decline a scan: scanning needs a station
+// interface that is up, and nothing more. See #288.
+func (e *Engine) readyToScan(iface string) error {
+	if e.cfg.IsScanner(iface) {
+		return e.scanReady(iface)
+	}
+	return e.radioReady(iface)
+}
+
+// scanReady gates a scan on a listen-only radio: it exists, and it is up.
+func (e *Engine) scanReady(iface string) error {
+	if iface == "" {
+		return fmt.Errorf("no radio named")
+	}
+	if e.cfg.Demo {
+		return nil
+	}
+	if !LinkExists(iface) {
+		return fmt.Errorf("no interface named %s on this box", iface)
+	}
+	// A DOWN interface cannot scan, and on this radio nothing else will raise
+	// it: there is no hostapd here, and NetworkManager has been told to leave
+	// the device alone on the way into the namespace. The serving path records
+	// what that costs -- radiopower.go measured `DISABLE` taking an interface
+	// down and the scan then failing with "Network is down (-100)" -- so bring
+	// it up here rather than report a stale figure with no cause attached.
+	if !linkIsUp(iface) {
+		out, err := exec.Command("ip", "link", "set", iface, "up").CombinedOutput()
+		if err != nil {
+			return fmt.Errorf("%s is down and could not be brought up: %w: %s",
+				iface, err, strings.TrimSpace(string(out)))
+		}
+	}
+	return nil
+}
+
+// linkIsUp reads operstate, the same source readIface uses for IfaceInfo.Up,
+// so the gate and the rack cannot disagree about whether a radio is up.
+func linkIsUp(name string) bool {
+	return strings.TrimSpace(readSysfs("/sys/class/net/"+name+"/operstate")) == "up"
+}
+
 // --- airtime survey ------------------------------------------------------
 
 // SurveyChannel is one channel's airtime, as a fraction of the time the radio

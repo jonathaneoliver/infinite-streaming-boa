@@ -195,6 +195,16 @@ function showClient(mac: string) {
  * healthy while it is true.
  */
 function warnText(r: IfaceInfo): string {
+  // FIRST, and it returns a plain label rather than a warning. Every other
+  // branch here names something an operator might want to fix; this one names
+  // what the radio is DOING. "not serving" was true of it and read as the
+  // fault report for a radio working exactly as configured.
+  //
+  // "scanning", not "listening", and not "not serving": the role is `scanner`,
+  // so the state it is in gets the same word family -- one word for one thing,
+  // which is the whole point of #229. A reader should not have to work out
+  // that the listening row and the scanner role are the same radio.
+  if (r.role === 'scanner') return 'scanning';
   if (!r.serving) return 'not serving';
   // The STATE, in the same words the pattern lane uses for it: a lane authoring
   // `radio-off` and a badge reading `off` are the same condition, and a reader
@@ -670,12 +680,14 @@ function degraded(i: IfaceInfo): boolean {
                radio whose state was changing. -->
           <span
             v-if="r.wireless" class="badge warn-badge"
-            :class="{ blank: !warnText(r) }"
+            :class="{ blank: !warnText(r), 'role-badge': r.role === 'scanner' }"
             :title="warnText(r) === 'AP disabled'
               ? `${r.name} is powered, but its access point is down — clients cannot join it.`
               : warnText(r) === 'no AP'
                 ? `${r.name} is powered and watched, but hostapd is not answering for it.`
-                : undefined"
+                : warnText(r) === 'scanning'
+                  ? `${r.name} is the scanner: no access point, no clients, swept every 15s so the channel colouring costs no outage.`
+                  : undefined"
           >{{ warnText(r) || '\u00a0' }}</span>
 
         <!-- The actions reached for constantly. Every one of these acts on
@@ -690,8 +702,16 @@ function degraded(i: IfaceInfo): boolean {
              and slid everything below it upwards, so a click already committed
              to landed somewhere else.
              A disabled button says "not now"; an absent one says "this box
-             cannot do that", and only one of those is true here. -->
-        <template v-if="r.wireless">
+             cannot do that", and only one of those is true here.
+
+             THE SCANNER IS THE EXCEPTION, and it is the case the paragraph
+             above describes: "this box cannot do that" is exactly true of it.
+             Every control in this block acts through hostapd, a scanner has no
+             hostapd and never will, and none of these will ever become
+             available on it. Nor does hiding them shift anything mid-press --
+             a radio's role does not change while someone is reaching for a
+             button. `scan` moves below, because that one does apply. -->
+        <template v-if="r.wireless && r.role !== 'scanner'">
           <!-- CUTTING POWER IS BEHIND developer=1.
                It is the most destructive control here and the least
                recoverable: rfkill wedges the USB adapter often enough that
@@ -852,18 +872,29 @@ Clients ARE told it has gone, unlike a power cut.`
                   + `asking. Use steer on a client to test whether it honours a request.`"
             @click="bridge.gather(r.name)"
           >gather</button>
-          <button
-            class="ghost" :disabled="busy || !apLive(r)"
-            :title="apLive(r)
-              ? 'Survey the band. Costs a few beacon gaps, or an outage on a radio that will not scan while serving.'
-              : `${r.name} has no access point up; a scan takes the BSS down and puts it back, so there is nothing to take down.`"
-            @click="bridge.scanBand(r.name, false)"
-          >scan</button>
           <!-- The profiles are NOT here. They restart the access point and drop
                every client on it, which is a different weight of action from
                the rest of this row, and they belong beside the thresholds in
                the fold where the heading says what they do. -->
         </template>
+
+        <!-- SCAN SITS OUTSIDE the block above, because it is the one action on
+             this row that needs no access point.
+             On a scanner it is the only control that means anything, and it is
+             the one an operator most wants: the radio serves nobody, so there
+             is no BSS to take down and nobody to drop. Left inside the block it
+             was drawn permanently disabled, under a tooltip explaining that a
+             scan would take down an access point this radio does not have. -->
+        <button
+          v-if="r.wireless"
+          class="ghost" :disabled="busy || (!apLive(r) && r.role !== 'scanner')"
+          :title="r.role === 'scanner'
+            ? `Sweep both bands on ${r.name} now. It serves nobody, so this drops no client and costs no outage — the same reading the 15s poll takes.`
+            : apLive(r)
+              ? 'Survey the band. Costs a few beacon gaps, or an outage on a radio that will not scan while serving.'
+              : `${r.name} has no access point up; a scan takes the BSS down and puts it back, so there is nothing to take down.`"
+          @click="bridge.scanBand(r.name, false)"
+        >scan</button>
         </div>
       </header>
 
@@ -1613,5 +1644,12 @@ Clients ARE told it has gone, unlike a power cut.`
 .badge.warn-badge {
   color: var(--warn);
   border-color: color-mix(in srgb, var(--warn) 45%, var(--line));
+}
+/* The badge slot is shared with every real fault on the row, so a label that is
+   NOT a fault has to drop the warning colour as well as the wording. An amber
+   "listening" reads as a problem with the one radio that is behaving. */
+.badge.warn-badge.role-badge {
+  color: var(--ink-dim);
+  border-color: var(--line);
 }
 </style>

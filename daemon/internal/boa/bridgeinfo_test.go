@@ -89,7 +89,9 @@ func TestADownRadioAndTheServingRadioProduceNoNotes(t *testing.T) {
 func TestRoleOrderPutsTheTopologyInReadingOrder(t *testing.T) {
 	// The diagram draws upstream at the top and downstream at the bottom, so
 	// the list has to arrive in that order rather than alphabetically.
-	want := []string{RoleWAN, RoleBridge, RoleAP, RoleRadio, RoleLAN, RoleOther}
+	// RoleScanner sits with the radios and after the serving ones: it is a
+	// radio the box has, and the row that matters most goes first.
+	want := []string{RoleWAN, RoleBridge, RoleAP, RoleScanner, RoleRadio, RoleLAN, RoleOther}
 	for i := 1; i < len(want); i++ {
 		if roleOrder(want[i-1]) >= roleOrder(want[i]) {
 			t.Errorf("%s should sort before %s", want[i-1], want[i])

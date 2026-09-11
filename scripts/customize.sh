@@ -1032,8 +1032,18 @@ if [ -z "$PLANNED" ]; then
   # nothing has told us it could not work out what to do -- tearing down the
   # access points on the strength of that would turn a puzzling boot into a box
   # with no network at all.
-  log "radioplan produced no radios; leaving the access points as they are"
-  exit 0
+  #
+  # UNLESS every radio it saw was a listen-only one, which is not a planner
+  # that failed: it is a planner that was told there is nothing to serve. The
+  # two are indistinguishable from an empty PLANNED alone, and conflating them
+  # leaves the instrument BEACONING from a config written before it was named
+  # -- a radio the box reports as an instrument and the air hears as an access
+  # point. Fall through so the stop loop below runs, and stop there.
+  if [ -z "$(sed -n 's/^BOA_SCAN_PORT=//p' "$DEFAULTS" 2>/dev/null)" ]; then
+    log "radioplan produced no radios; leaving the access points as they are"
+    exit 0
+  fi
+  log "every radio is listen-only; stopping any access point still running"
 fi
 
 # Every instance that should NOT be running, named explicitly.
@@ -1065,10 +1075,15 @@ done
 # argument, and -wlan splits it. Restart only when it actually changed -- a
 # restart drops a running sweep.
 CUR=$(sed -n 's/^BOA_WLAN_PORT=//p' "$DEFAULTS" 2>/dev/null)
+# NEVER written empty, for the reason BOA_LAN_PORT carries a placeholder too:
+# the unit passes this as "-wlan ${BOA_WLAN_PORT}", systemd drops an empty
+# ${VAR} entirely, and -wlan would then take the NEXT argument as its value.
+# A box whose every radio is listen-only is the case that reaches here.
+WLAN_PLANNED=${PLANNED:-wlan-none}
 NEED_RESTART=0
-if [ "$CUR" != "$PLANNED" ]; then
-  sed -i "s/^BOA_WLAN_PORT=.*/BOA_WLAN_PORT=$PLANNED/" "$DEFAULTS"
-  log "BOA_WLAN_PORT '$CUR' -> '$PLANNED'; restarting daemon"
+if [ "$CUR" != "$WLAN_PLANNED" ]; then
+  sed -i "s/^BOA_WLAN_PORT=.*/BOA_WLAN_PORT=$WLAN_PLANNED/" "$DEFAULTS"
+  log "BOA_WLAN_PORT '$CUR' -> '$WLAN_PLANNED'; restarting daemon"
   NEED_RESTART=1
 fi
 
@@ -1308,6 +1323,19 @@ BOA_WLAN_PORT=wlan0
 # left empty -- systemd drops an empty ${VAR} entirely, so "-lan ${BOA_LAN_PORT}"
 # would hand -lan the NEXT argument as its value.
 BOA_LAN_PORT=lan-usb-none
+# The listen-only radio, or empty. Named here and NOT derived: a radio that
+# silently stopped serving because something inferred it was an instrument is a
+# box whose clients went elsewhere with nothing saying why.
+#
+# Empty is the default and needs no placeholder, because the unit passes this
+# one as "-scan=\${BOA_SCAN_PORT}" -- one word, so an empty value cannot eat the
+# next argument the way "-lan \${BOA_LAN_PORT}" would.
+#
+# Set it to an interface name and restart infinite-streaming-boa.service. The
+# planner reads the same value and will not write that radio a hostapd config,
+# so a radio named here serves nothing and is scanned instead, every 15s, at no
+# cost to any access point.
+BOA_SCAN_PORT=${BOA_SCAN_PORT:-}
 BOA_STATE=/var/lib/infinite-streaming-boa/policies.json
 # Extra daemon arguments. Empty by default; systemd expands an empty variable to
 # no argument at all, so leaving it blank changes nothing.

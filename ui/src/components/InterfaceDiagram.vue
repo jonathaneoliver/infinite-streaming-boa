@@ -45,8 +45,14 @@ const byRole = (r: string) => props.info.ifaces.filter((i) => i.role === r);
 const wan = computed(() => byRole('wan')[0]);
 const bridge = computed(() => props.info.ifaces.find((i) => i.role === 'bridge'));
 // Radios and the wired downstream port, in one row beneath the bridge.
+//
+// A scanner belongs here even though it carries no traffic: it is a radio the
+// box has, and leaving it out would draw a box with hardware missing from the
+// picture. The role decides how it READS, not whether it appears.
 const downstream = computed(() =>
-  props.info.ifaces.filter((i) => i.role === 'ap' || i.role === 'radio' || i.role === 'lan'),
+  props.info.ifaces.filter(
+    (i) => i.role === 'ap' || i.role === 'scanner' || i.role === 'radio' || i.role === 'lan',
+  ),
 );
 
 const NODE_W = 190;
@@ -157,6 +163,12 @@ function subtitle(i: IfaceInfo): string {
     if (i.ap.mode) bits.push(i.ap.mode);
     return bits.join(' · ');
   }
+  // Before the generic radio case. "idle" is what this used to say about a
+  // scanner, and idle is precisely what it is not: it is the radio taking the
+  // reading every other row's channel colouring depends on.
+  //
+  // The same word as the rack's badge and the role itself. See #229.
+  if (i.role === 'scanner') return i.up ? 'scanning' : 'down';
   if (i.role === 'radio') return i.up ? 'idle' : 'down';
   if (i.speed_mbps) return `${i.speed_mbps} Mb/s`;
   if (!i.up) return 'down';
@@ -164,8 +176,12 @@ function subtitle(i: IfaceInfo): string {
 }
 
 /** A radio the daemon does not watch gets marked, because its clients are
- *  conditioned by nothing and appear nowhere in the Clients tab. */
-const unwatched = (i: IfaceInfo) => i.wireless && !i.serving;
+ *  conditioned by nothing and appear nowhere in the Clients tab.
+ *
+ *  A SCANNER IS NOT THAT. It serves nobody on purpose, so there are no
+ *  unconditioned clients on it to warn about, and the dashed link and warning
+ *  colour would report the box's instrument as its fault. */
+const unwatched = (i: IfaceInfo) => i.wireless && !i.serving && i.role !== 'scanner';
 
 
 /**
@@ -254,6 +270,11 @@ function otherRadio(i: IfaceInfo): string {
         A dashed link marks a radio the daemon is not watching — its clients are
         not conditioned and do not appear in the Clients tab.
       </template>
+      <template v-if="downstream.some((i) => i.role === 'scanner')">
+        The dotted radio is scanning, not serving: it carries no clients, and
+        it is what keeps the channel colouring fresh without ever taking an
+        access point down.
+      </template>
     </figcaption>
   </figure>
 </template>
@@ -307,6 +328,15 @@ svg {
 .node.ap rect { stroke: color-mix(in srgb, var(--down) 45%, var(--line)); }
 .node.ap .name { fill: var(--down); }
 .node.lan rect { stroke: color-mix(in srgb, var(--ok) 40%, var(--line)); }
+/* A scanner is drawn QUIETLY, not warned about. Dimmed and dotted says "carries
+   no traffic", which is true and is the whole point of it; the warning colour
+   next door says "something is wrong", which would be a lie about the one radio
+   doing its job. See #288. */
+.node.scanner rect {
+  stroke: color-mix(in srgb, var(--ink-faint) 60%, var(--line));
+  stroke-dasharray: 1 3;
+}
+.node.scanner .name { fill: var(--ink-dim); }
 .node.unwatched rect { stroke: var(--warn); stroke-dasharray: 4 4; }
 /* Powered off: the AP is silent and no client has been told. Dimmed
    rather than coloured as a fault, because it is a deliberate state. */

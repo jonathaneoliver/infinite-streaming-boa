@@ -649,7 +649,17 @@ export interface RadioInfo {
  * somebody plugs a cable in, and putting it on the 1 Hz stream would re-send an
  * unchanging inventory to every open browser once a second.
  */
-export type IfaceRole = 'wan' | 'bridge' | 'ap' | 'radio' | 'lan' | 'other';
+/**
+ * `scanner` is a radio that is present and deliberately not serving: an
+ * instrument, scanned on a timer so the contention figures cost no outage.
+ *
+ * It is a separate role from `radio` because `radio` means a fault. A wireless
+ * interface that is not serving and not a scanner is carrying clients nobody
+ * conditions, which earns a dashed link and a warning; a scanner has no
+ * clients to lose and is working correctly. Drawing them the same way reported
+ * the one radio doing its job as the one radio that had failed. See #288.
+ */
+export type IfaceRole = 'wan' | 'bridge' | 'ap' | 'scanner' | 'radio' | 'lan' | 'other';
 
 /** What a hostapd-served radio is doing right now. */
 export interface APStatus {

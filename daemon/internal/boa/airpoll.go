@@ -112,9 +112,15 @@ func (e *Engine) airScanOnce() {
 
 // airScan refreshes one radio's reading.
 func (e *Engine) airScan(iface string) {
-	if err := e.radioReady(iface); err != nil {
+	// readyToScan, not radioReady: a listen-only radio has no hostapd control
+	// socket, and radioReady's insistence on one made this return here without
+	// a word -- a configured scanner that never scanned, and figures that
+	// stayed stale for the one reason nothing was reporting. See #288.
+	if err := e.readyToScan(iface); err != nil {
+		e.noteScanBlocked(iface, err.Error())
 		return
 	}
+	e.noteScanBlocked(iface, "")
 	// scanBandFree, never ScanBand: this refreshes a reading, and a background
 	// task is never entitled to take an access point off the air to do it. A
 	// driver that refuses while serving has answered the question at no cost.
@@ -127,8 +133,23 @@ func (e *Engine) airScan(iface string) {
 	}
 }
 
-// freeScanner is a radio already known to scan without an outage, or empty.
+// freeScanner is a radio that can be scanned without an outage, or empty.
+//
+// A LISTEN-ONLY radio first, and without consulting scanFree at all. That map
+// answers "did scanning this radio take its access point down", and a scanner
+// has no access point for the question to be about: there is nothing to drop,
+// nothing to re-enable, and nothing to learn by trying. Every box that has one
+// therefore skips the probe-an-idle-radio dance below entirely.
+//
+// LinkExists is checked rather than assumed, because a configured scanner that
+// is not plugged in must fall through to the serving radios rather than make
+// the poll spend every round failing on an interface that is not there.
 func (e *Engine) freeScanner() string {
+	for _, s := range e.cfg.ScanPorts {
+		if e.cfg.Demo || LinkExists(s) {
+			return s
+		}
+	}
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 	for _, w := range e.cfg.WlanPorts {
@@ -137,6 +158,39 @@ func (e *Engine) freeScanner() string {
 		}
 	}
 	return ""
+}
+
+// noteScanBlocked reports that a radio cannot be scanned at all, on the edge.
+//
+// An empty reason clears it, which is what says the figures are live again.
+// Edge-triggered because the poll is a 15-second loop and the conditions here
+// -- an interface that is down, hardware that is not plugged in -- persist: a
+// line per round would be four a minute for ever. Reporting nothing at all is
+// the failure mode this replaces.
+func (e *Engine) noteScanBlocked(iface, reason string) {
+	e.mu.Lock()
+	if e.scanBlocked == nil {
+		e.scanBlocked = map[string]string{}
+	}
+	was := e.scanBlocked[iface]
+	if reason == "" {
+		delete(e.scanBlocked, iface)
+	} else {
+		e.scanBlocked[iface] = reason
+	}
+	e.mu.Unlock()
+
+	if reason == was {
+		return
+	}
+	if reason != "" {
+		e.logEvent(EventWarning, iface, "",
+			"%s cannot be scanned, so its contention figures will go stale: %s",
+			iface, reason)
+		return
+	}
+	e.logEvent(EventAction, iface, "",
+		"%s can be scanned again; its contention figures are live", iface)
 }
 
 // scanCostKnown reports that this radio's scan cost has already been observed,

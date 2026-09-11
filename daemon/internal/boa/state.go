@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -29,6 +30,24 @@ type Config struct {
 	//
 	// Empty is not a valid state; NewEngine falls back to one default name.
 	WlanPorts []string
+	// ScanPorts is every radio present as an INSTRUMENT rather than an access
+	// point: handed to the daemon, never given a hostapd config, never planned
+	// a channel, and scanned by the background poll so the contention figures
+	// stay fresh without ever costing an outage.
+	//
+	// A SEPARATE LIST rather than a flag beside WlanPorts, and that is the
+	// whole design. Around forty sites iterate WlanPorts -- the station dumps,
+	// shaping, BSS Load, the beacon-report requests, the channel restore, the
+	// profile controls -- and every one of them is asking "which radios serve
+	// clients". For a scanner the answer is none of them, so a separate list
+	// is right by construction where a flag would have to be re-checked at
+	// every one of those sites and would be forgotten at some.
+	//
+	// NAMED EXPLICITLY, never derived from the driver or from what failed to
+	// serve. A radio that silently stopped serving because something inferred
+	// it was an instrument is the worst failure this design could have: the
+	// clients simply go somewhere else and nothing says why. See #288.
+	ScanPorts []string
 	LanPorts  []string // the USB ethernet adapters, downstream (may be empty)
 	StatePath string
 	// Addr is where the interface is served, e.g. ":80". The shaper needs it:
@@ -75,6 +94,54 @@ func (c Config) IsWlan(name string) bool {
 		}
 	}
 	return false
+}
+
+// IsScanner reports whether an interface is a listen-only radio.
+//
+// The distinction against IsWlan is not "watched or not". A wireless interface
+// that is neither is a radio serving clients nobody conditions, which is a
+// fault worth a red notice. A scanner carries no clients and none are missing
+// because of it, so it must never be reported as an access point that is down.
+func (c Config) IsScanner(name string) bool {
+	for _, p := range c.ScanPorts {
+		if p == name {
+			return true
+		}
+	}
+	return false
+}
+
+// reconcileRoles settles a radio named as both an access point and a scanner,
+// and returns the names it took out of WlanPorts.
+//
+// THE SCANNER WINS, because the two sources are not equals. WlanPorts arrives
+// from the planner, which writes down whatever hardware it found; ScanPorts is
+// a person naming one radio as an instrument. Honouring the planner would put
+// the operator's instrument on air and take the reading away; honouring the
+// operator costs an access point that the box's other radio is usually already
+// serving.
+//
+// It returns rather than just fixing, because the caller has to SAY so. An
+// overlap means the planner and the configuration disagree about a piece of
+// hardware, and a radio that quietly vanished from the rack for a reason
+// nothing states is exactly the silent failure this repository keeps finding.
+func reconcileRoles(cfg *Config) []string {
+	if len(cfg.ScanPorts) == 0 {
+		return nil
+	}
+	var dropped, kept []string
+	for _, w := range cfg.WlanPorts {
+		if cfg.IsScanner(w) {
+			dropped = append(dropped, w)
+			continue
+		}
+		kept = append(kept, w)
+	}
+	if len(dropped) == 0 {
+		return nil
+	}
+	cfg.WlanPorts = kept
+	return dropped
 }
 
 // counterSample remembers one class's byte count so throughput can be derived
@@ -343,6 +410,17 @@ type Engine struct {
 	// touch a radio unless the answer is known to be yes. See airpoll.go.
 	scanFree map[string]bool
 
+	// scanBlocked is the last reason a radio could not be scanned at all, per
+	// radio, so the reason is reported on the EDGE rather than on every round.
+	//
+	// The poll runs every 15 seconds and a listen-only radio that is down stays
+	// down, so logging the refusal each time would push a line into the
+	// activity log four times a minute for ever and bury the events the view
+	// exists for. Silence is not the alternative -- that is the bug this field
+	// exists to avoid -- so the reason is stated when it changes and when it
+	// clears. Same shape as apLinkDown.
+	scanBlocked map[string]string
+
 	// airSeen records, per radio, whether its LAST station dump carried the
 	// airtime lines -- the driver's answer to "can you attribute airtime to a
 	// client", asked by observation rather than by driver name.
@@ -403,7 +481,24 @@ func NewEngine(cfg Config) *Engine {
 	if cfg.Tick == 0 {
 		cfg.Tick = time.Second
 	}
+	// Before the engine is built, so every list it derives -- the learner's
+	// watched interfaces above all -- is built from the settled roles rather
+	// than from the overlap.
+	dropped := reconcileRoles(&cfg)
 	e := newEngine(cfg)
+	for _, d := range dropped {
+		e.logEvent(EventRadio, d, "",
+			"%s is named both as an access point and as the scanner; "+
+				"honouring the scanner setting, so it will serve no clients", d)
+	}
+	// A box whose every radio was declared an instrument serves nothing at all.
+	// That is a legitimate configuration -- a pure monitor -- but it is also
+	// exactly what a typo in one interface name produces, so it is stated.
+	if len(cfg.WlanPorts) == 0 && len(cfg.ScanPorts) > 0 {
+		e.logEvent(EventRadio, "", "",
+			"no radio is set to serve an access point: %s is the scanner and "+
+				"nothing else was named", strings.Join(cfg.ScanPorts, ", "))
+	}
 	// -verbose is the STARTING state only; the interface owns it from here.
 	e.verboseOn.Store(cfg.Verbose)
 	// What each radio was last told to CLAIM about its congestion. Read here
