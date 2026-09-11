@@ -50,17 +50,44 @@ export function basisFor(c: ScanChannel | undefined): Basis {
   return (c.util_from ?? 0) > 0 ? 'measured' : 'estimated';
 }
 
-export function rateChannel(c: ScanChannel | undefined): Quality {
+/**
+ * A rating and the rule that produced it.
+ *
+ * ONE function, because the colour and the tooltip explaining the colour must
+ * not be able to disagree. They were separate: `rateChannel` picked the colour
+ * and `describeChannel` listed the evidence without ever naming the verdict or
+ * the threshold it turned on — so a cell measured at 22% busy drew green, the
+ * tooltip said "22% airtime busy, measured", and nothing on screen connected
+ * the two or mentioned that 25% is where green stops. Asked why a plan looked
+ * so green, the interface had no answer in it.
+ */
+export interface Verdict {
+  quality: Quality;
+  /** Why, in a clause that completes "rated <quality> because …". */
+  why: string;
+}
+
+export function judgeChannel(c: ScanChannel | undefined): Verdict {
   // Nothing heard at all. Absence IS evidence here -- the scan lists every
   // channel it heard something on -- so this stays clear rather than unknown.
-  if (!c || (c.covering ?? c.aps) === 0) return 'clear';
+  if (!c || (c.covering ?? c.aps) === 0) {
+    return {
+      quality: 'clear',
+      why: 'the scan heard no access point on it or overlapping it',
+    };
+  }
 
   // Prefer what was measured.
   if ((c.util_from ?? 0) > 0) {
     const u = c.util_pct ?? 0;
-    if (u >= CROWDED_PCT) return 'crowded';
-    if (u >= BUSY_PCT) return 'busy';
-    return 'clear';
+    const at = `${Math.round(u)}% of airtime measured busy`;
+    if (u >= CROWDED_PCT) {
+      return { quality: 'crowded', why: `${at}, at or above the ${CROWDED_PCT}% mark` };
+    }
+    if (u >= BUSY_PCT) {
+      return { quality: 'busy', why: `${at}, at or above the ${BUSY_PCT}% mark` };
+    }
+    return { quality: 'clear', why: `${at}, below the ${BUSY_PCT}% mark` };
   }
 
   // Fallback: nobody on this channel advertised BSS Load, so this is the old
@@ -69,10 +96,27 @@ export function rateChannel(c: ScanChannel | undefined): Quality {
   // channel it fills instead of only the one it beacons on.
   const n = c.covering ?? c.aps;
   const s = c.strongest_dbm;
-  if (s !== undefined && s >= LOUD_DBM) return 'crowded';
-  if (n >= 3) return 'crowded';
-  if (s !== undefined && s < FAINT_DBM && n === 1) return 'clear';
-  return 'busy';
+  const est = 'nobody here reported airtime, so this is an estimate';
+  if (s !== undefined && s >= LOUD_DBM) {
+    return {
+      quality: 'crowded',
+      why: `${est}: the loudest neighbour is ${s} dBm, at or above ${LOUD_DBM}`,
+    };
+  }
+  if (n >= 3) {
+    return { quality: 'crowded', why: `${est}: ${n} neighbours occupy it` };
+  }
+  if (s !== undefined && s < FAINT_DBM && n === 1) {
+    return {
+      quality: 'clear',
+      why: `${est}: one neighbour, and it is faint at ${s} dBm`,
+    };
+  }
+  return { quality: 'busy', why: `${est}: ${n} neighbour${n === 1 ? '' : 's'} occupy it` };
+}
+
+export function rateChannel(c: ScanChannel | undefined): Quality {
+  return judgeChannel(c).quality;
 }
 
 /**
@@ -129,14 +173,36 @@ export function mergeScans(
   return { at: newest, channels: [...best.values()].map((b) => b.c) };
 }
 
-/** What the colour is claiming, for a tooltip. */
+/**
+ * What the colour is claiming, and WHY it claims it, for a tooltip.
+ *
+ * The verdict leads. A plan is forty cells of colour and the question it
+ * provokes is always the same one -- why is that cell that colour -- so the
+ * answer belongs in the first clause rather than left to be inferred from a
+ * list of figures further along.
+ *
+ * The verdict comes from judgeChannel, the same call that picks the colour, so
+ * the explanation cannot drift away from the thing it explains.
+ */
 export function describeChannel(
   scan: ScanSummary | undefined,
   channel: number,
 ): string {
   if (!scan) return 'not scanned yet';
   const c = scan.channels?.find((x) => x.channel === channel);
-  if (!c || (c.covering ?? c.aps) === 0) return 'nothing heard here';
+  const v = judgeChannel(c);
+
+  if (!c || (c.covering ?? c.aps) === 0) {
+    // The caveat matters and used to be missing. A channel with no entry is
+    // rated clear on the strength of "the scan lists everything it heard" --
+    // which is only as good as the scan's coverage, and a partial scan is
+    // indistinguishable here from a genuinely empty channel.
+    const looked = (scan.looked ?? []).includes(channel);
+    return looked
+      ? `${v.quality} — ${v.why}. It was listened to, so this is a real absence`
+      : `${v.quality} — ${v.why}, and it is not in the list of channels the ` +
+          `scan listened to, so treat this as unmeasured rather than quiet`;
+  }
 
   const n = c.covering ?? c.aps;
   const parts: string[] = [`${c.aps} access point${c.aps === 1 ? '' : 's'}`];
@@ -144,12 +210,14 @@ export function describeChannel(
   // can be occupied by neighbours that do not beacon on it.
   if (n > c.aps) parts.push(`${n} covering it at their width`);
   if (c.strongest_dbm !== undefined) parts.push(`strongest ${c.strongest_dbm} dBm`);
-
-  if ((c.util_from ?? 0) > 0) {
-    // Lead with the measurement and name it as one, so a colour resting on
-    // evidence is distinguishable from a colour resting on a guess.
-    const s = c.stations ? `, ${c.stations} client(s)` : '';
-    return `${Math.round(c.util_pct ?? 0)}% airtime busy, measured${s} · ${parts.join(', ')}`;
+  if (c.stations) parts.push(`${c.stations} client(s)`);
+  // The spread, where several neighbours measured the same medium and
+  // disagreed. It is the one figure that says how much to trust the rest.
+  if ((c.util_from ?? 0) > 1 && c.util_min_pct !== undefined) {
+    parts.push(
+      `${c.util_from} of them measured it, ` +
+        `${Math.round(c.util_min_pct)}–${Math.round(c.util_pct ?? 0)}%`,
+    );
   }
-  return `${parts.join(', ')} · no airtime reported, so this is an estimate`;
+  return `${v.quality} — ${v.why} · ${parts.join(', ')}`;
 }

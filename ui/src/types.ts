@@ -908,6 +908,13 @@ export interface ScanChannel {
    *  one, and reading an absent value as 0% would paint the busiest green. */
   util_pct?: number;
   util_from?: number;
+  /** The LOWEST of the readings behind util_pct, which is the highest of them.
+   *
+   *  Neighbours on one channel disagree by a lot — measured, five APs on
+   *  channel 2 reported 19% to 33% — because they sit in different rooms and
+   *  genuinely hear different amounts of the same medium. Quoting only the
+   *  maximum hides that as a number which looks precise. */
+  util_min_pct?: number;
   /** Clients the BSS Load elements on this channel reported. */
   stations?: number;
   recommended?: boolean;
@@ -923,6 +930,15 @@ export interface ScanSummary {
    *  The scanning radio is never in its own map. */
   ours?: Record<string, number>;
   best_channel?: number;
+  /** Every channel this scan LISTENED to, as against the ones it found
+   *  something on.
+   *
+   *  The difference decides what a green cell means. A channel absent from
+   *  `channels` is rated clear on the reasoning that the scan lists everything
+   *  it heard — which holds only for channels it actually visited. Present
+   *  here, "nothing heard" is a measurement; absent here, it is a gap, and the
+   *  tooltip says which. */
+  looked?: number[];
 }
 
 export interface ScanResult {

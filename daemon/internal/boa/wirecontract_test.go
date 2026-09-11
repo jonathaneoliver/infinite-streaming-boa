@@ -93,7 +93,6 @@ var serverOnly = map[string]string{}
 // they were added to be, never wired to a screen -- see the Go doc comment on
 // each field for what it is for.
 var knownGaps = map[string]string{
-	"looked":         "BridgeInfo.Scans.Looked -- records that a channel was listened to and heard nothing",
 	"names_learned":  "Snapshot.Caps.NamesLearned -- mDNS bindings seen; 0 distinguishes a dead capture socket from a quiet client",
 	"names_by_mac":   "Snapshot.Caps.NamesByMAC -- the MAC-keyed count, which is the one that proves the filtered socket opened",
 	"throttle":       "Snapshot.Clients.Policy.Ladders.Throttle -- the starved-client measurement point",
