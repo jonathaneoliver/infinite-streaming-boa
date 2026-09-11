@@ -287,9 +287,9 @@ function evictTo(r: IfaceInfo): IfaceInfo | undefined {
  */
 function summary(r: IfaceInfo): string {
   if (!r.ap) return r.speed_mbps ? `${r.speed_mbps} Mb/s` : (r.up ? 'up' : 'down');
-  return [r.ap.width_mhz ? `${r.ap.width_mhz} MHz` : '', r.ap.mode ?? '']
-    .filter(Boolean)
-    .join(' · ');
+  // The mode is rendered beside this rather than joined into it, so the
+  // ellipsis this string may take cannot reach the generation name.
+  return r.ap.width_mhz ? `${r.ap.width_mhz} MHz` : '';
 }
 
 /**
@@ -582,7 +582,10 @@ function degraded(i: IfaceInfo): boolean {
 
         <AdapterToken :name="r.name" head />
 
-        <span class="sum">{{ summary(r) }}</span>
+        <span class="sum">
+          <span v-if="r.ap?.mode" class="gen">{{ r.ap.mode }}</span>
+          <span class="rest">{{ summary(r) }}</span>
+        </span>
 
         <!-- Contention, in the fixed column the old survey-derived `air` badge
              used to hold. Three figures rather than one because they answer
@@ -1316,15 +1319,31 @@ Clients ARE told it has gone, unlike a power cut.`
   padding: 3px 8px;
 }
 .caret:hover { color: var(--ink); }
+/* A GENERATION LABEL MUST NEVER BE THE THING THAT GETS CLIPPED.
+   Every other value here degrades honestly under `text-overflow`, because a cut
+   number or a cut address is visibly incomplete. The 802.11 family names do
+   not: each of them is a PREFIX OF ANOTHER ONE. Clip "802.11ax" and what is
+   left is "802.11a", which is not a broken string -- it is a different
+   standard, twenty years older, 54 Mbit/s, no MIMO. The ellipsis does not save
+   it, because a reader who knows the names reads a valid answer.
+
+   So the family goes FIRST and does not shrink, and whatever shares the cell
+   with it takes the ellipsis instead. Right-edge clipping can then only eat the
+   part that is incapable of lying about what it is. */
 .sum {
   font-family: var(--mono);
   font-size: 12px;
   min-width: 0;
   overflow: hidden;
-  text-overflow: ellipsis;
   white-space: nowrap;
   color: var(--ink-dim);
+  display: flex;
+  gap: 6px;
+  align-items: baseline;
 }
+.sum .gen { flex: 0 0 auto; }
+.sum .gen + .rest::before { content: '\00b7'; margin-right: 6px; }
+.sum .rest { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 /* The contention triple. Keys are faint and small so the numbers lead: the
    labels are read once and the figures are read every time. Tabular numerals so
    the column does not jitter as values change. */
