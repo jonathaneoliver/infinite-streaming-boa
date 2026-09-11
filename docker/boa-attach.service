@@ -16,6 +16,17 @@ Requires=docker.service
 
 [Service]
 Type=simple
+# SCAN_IF lives here, and it has to: the attach is run BY THIS UNIT rather than
+# from a shell, so a variable set on a command line reaches nothing. Written
+# every deploy by scripts/docker-deploy.sh from BOA_SCAN_IF in .env, the same
+# way docker/.env carries the access point settings -- so the host cannot drift
+# away from the checkout that deployed it.
+#
+# The leading '-' makes it optional. A host deployed before this existed has no
+# such file, and a missing EnvironmentFile without the dash is a start failure
+# -- which would take the adapters away from a working container to add a
+# setting it is not using.
+EnvironmentFile=-/etc/default/boa-attach
 ExecStart=/usr/local/sbin/boa-attach-watch
 Restart=always
 RestartSec=5

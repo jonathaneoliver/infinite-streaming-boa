@@ -1104,10 +1104,17 @@ damages packets, never link state.
   says so. A wireless interface that is neither serving nor a scanner is
   carrying clients nobody is conditioning, which is an error; a scanner is
   working correctly, and is drawn and labelled as scanning rather than as idle,
-  unwatched or down. The one thing about it that IS reported as a fault is its
-  interface being down, or its being named in the configuration while absent
-  from the box — in both cases nothing is refreshing the figures, and every
-  channel colour on the box is quietly going stale.
+  unwatched or down.
+
+  **What is reported about it is the age of its reading, never the state of its
+  link.** A radio of this kind may scan perfectly while its interface is down
+  and may refuse to come up at all, so the interface is not evidence of
+  anything; a reading that has stopped advancing is. A scanner whose figures
+  have gone stale is a warning, one that has taken no reading yet says so
+  plainly, and one named in the configuration while absent from the box is an
+  error. In each case nothing is refreshing the figures and every channel
+  colour is quietly going stale, which is the failure the arrangement exists to
+  avoid.
 
   Access-point controls are not offered on it. Every one of them acts through
   hostapd, which a scanner does not have and will never have, so they are

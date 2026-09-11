@@ -2442,11 +2442,17 @@ says so.** A wireless interface that is neither serving nor scanning is
 carrying clients nobody is conditioning, which is an error. A scanner is
 working correctly: it is drawn dotted rather than dashed, labelled `scanning`
 rather than `idle`, and offered no access-point controls, because every one of
-those acts through a hostapd it does not have. Two things about it *are*
-reported — its interface being down, and its being named here while absent from
-the box. In both cases nothing is refreshing the figures and every channel
-colour is quietly going stale, which is the failure this whole arrangement
-exists to avoid.
+those acts through a hostapd it does not have.
+
+**What the box reports about it is the age of its reading, not the state of its
+link.** Measured on the container host: the AX200 sits at operstate `down`,
+exits zero and stays down when asked to come up, and scans anyway — 19 access
+points across both bands in 1.2 seconds, zero outage. So the interface being
+down says nothing, and a warning keyed on it would stand permanently over the
+one radio that is working. A reading that has stopped advancing is the honest
+signal, and it catches every reason a scan can stop rather than the one reason
+somebody predicted. A name here that matches no interface is an error in its
+own right.
 
 An interface name, and it has to match one. A USB adapter is named after itself
 (`wlan-usb-46c7`) and that is not knowable before the box boots, so the stable

@@ -48,6 +48,20 @@ import "time"
 // scan takes 4047 ms, and this interval would cost 27% of the radio.
 const airScanEvery = 15 * time.Second
 
+// scanStaleAfter is when a radio's last reading stops describing the present
+// well enough to be worth drawing colours from, and the interface says so.
+//
+// Twelve missed rounds of a 15-second poll, which is long enough that a busy
+// box skipping a few -- a pattern running, a radio mid-restart -- never raises
+// it, and short enough that a scanner which has genuinely stopped is reported
+// while the operator is still in front of the box.
+//
+// This is what replaced a guess. The staleness warning was first written as
+// "the scanner's interface is down", which measured false: the AX200 scans
+// perfectly while down. Age is the honest signal, and it catches every reason
+// a scan can stop rather than the one reason somebody predicted.
+const scanStaleAfter = 12 * airScanEvery
+
 // watchAir refreshes the contention figures on a radio that can afford it.
 func (e *Engine) watchAir() {
 	for {
@@ -120,17 +134,26 @@ func (e *Engine) airScan(iface string) {
 		e.noteScanBlocked(iface, err.Error())
 		return
 	}
-	e.noteScanBlocked(iface, "")
 	// scanBandFree, never ScanBand: this refreshes a reading, and a background
 	// task is never entitled to take an access point off the air to do it. A
 	// driver that refuses while serving has answered the question at no cost.
 	//
 	// It also never moves a radio -- a background task that relocated an access
 	// point on its own would be the single most surprising thing this box does.
+	//
+	// The outcome goes through noteScanBlocked rather than straight to the log,
+	// for the failures that REPEAT. A serving radio that refuses is asked once
+	// and never again, because rememberScanCost takes it out of the running --
+	// but a scanner is picked every round regardless, since it is free by
+	// definition and there is no cost to remember. So a scanner whose driver
+	// hangs or errors would put a line in the activity log every fifteen
+	// seconds for ever and bury the events the view exists for. Edge-triggered,
+	// it says so once, and says so again when it recovers.
 	if _, err := e.scanBandFree(iface); err != nil {
-		e.logEvent(EventRadio, iface, "",
-			"background scan of %s failed, so its contention figures are stale: %v", iface, err)
+		e.noteScanBlocked(iface, err.Error())
+		return
 	}
+	e.noteScanBlocked(iface, "")
 }
 
 // freeScanner is a radio that can be scanned without an outage, or empty.
@@ -167,6 +190,8 @@ func (e *Engine) freeScanner() string {
 // -- an interface that is down, hardware that is not plugged in -- persist: a
 // line per round would be four a minute for ever. Reporting nothing at all is
 // the failure mode this replaces.
+// The message is the dedup key, so a driver that fails the same way every
+// round is reported once and a NEW failure is still reported.
 func (e *Engine) noteScanBlocked(iface, reason string) {
 	e.mu.Lock()
 	if e.scanBlocked == nil {

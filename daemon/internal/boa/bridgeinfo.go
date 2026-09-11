@@ -532,7 +532,6 @@ func (e *Engine) buildBridgeState() BridgeInfo {
 	sort.SliceStable(bi.Ifaces, func(i, j int) bool {
 		return roleOrder(bi.Ifaces[i].Role) < roleOrder(bi.Ifaces[j].Role)
 	})
-	bi.Notes = bridgeNotes(bi, e.cfg)
 	bi.Scans = e.lastScans()
 	// Each radio's contention, from whoever measured its channel. Built here
 	// rather than in the UI so the title bar and the band plan colours cannot
@@ -544,6 +543,15 @@ func (e *Engine) buildBridgeState() BridgeInfo {
 		}
 	}
 	bi.Air = airViews(bi.Scans, chanOf)
+	// AFTER Scans, and that ordering is load-bearing.
+	//
+	// bridgeNotes judges a scanner on the age of its last reading, which it
+	// reads out of bi.Scans. Computed above this line it saw a map that had not
+	// been filled in yet, so a box scanning happily every fifteen seconds
+	// reported "has taken no reading yet" for ever -- measured on the container
+	// host 2026-09-11, with the successful scans sitting in the activity log at
+	// the same moment.
+	bi.Notes = bridgeNotes(bi, e.cfg)
 	// What each radio has been told to CLAIM about its congestion, beside the
 	// floor of what it is really doing. Both, always: a control that can lie is
 	// only safe while the truth is on screen next to it.
@@ -604,11 +612,30 @@ func bridgeNotes(bi BridgeInfo, cfg Config) []Notice {
 		// A scanner is not serving ON PURPOSE. "up but not serving" is true of
 		// it and reads as a fault, which is the whole confusion this role
 		// exists to end.
+		//
+		// What IS worth saying about it is that the figures have stopped
+		// moving -- and that is judged on the AGE OF ITS LAST READING, never
+		// on whether the interface is up.
+		//
+		// It was written as `!in.Up`, and that was a guess that measured
+		// false. On the container host 2026-09-11 the AX200 sat at operstate
+		// "down", refused to come up when asked, and scanned anyway: 19 access
+		// points in 1.2s, zero outage, both bands. The box would have carried
+		// a permanent warning about the one radio that was working -- which is
+		// precisely the failure this role was added to stop. Reading age also
+		// covers every other reason a scan can stop, including the ones nobody
+		// has thought of.
 		if in.Role == RoleScanner {
-			if !in.Up {
+			at := bi.Scans[in.Name].At
+			switch {
+			case at == 0:
+				out = append(out, Notice{"info", fmt.Sprintf(
+					"%s is the scanner and has taken no reading yet.", in.Name)})
+			case time.Since(time.UnixMilli(at)) > scanStaleAfter:
 				out = append(out, Notice{"warn", fmt.Sprintf(
-					"%s is the scanner and its interface is down, so nothing "+
-						"is refreshing the contention figures.", in.Name)})
+					"%s is the scanner but its last reading is %s old, so the "+
+						"contention figures are stale.", in.Name,
+					time.Since(time.UnixMilli(at)).Round(time.Minute))})
 			}
 			continue
 		}

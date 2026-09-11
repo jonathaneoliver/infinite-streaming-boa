@@ -633,7 +633,16 @@ func (a *API) postRadioPower(w http.ResponseWriter, r *http.Request) {
 // access point simply reappears elsewhere.
 func (a *API) postScan(w http.ResponseWriter, r *http.Request) {
 	iface := r.PathValue("iface")
-	if err := a.e.radioReady(iface); err != nil {
+	// readyToScan, not radioReady. This endpoint is the ONE action here that
+	// does not go through hostapd, and a listen-only radio has no control
+	// socket for radioReady to find: MEASURED on the container host
+	// 2026-09-11, a scan of the scanner came back 503 "hostapd is not serving
+	// wlan-scan-9e44" while the radio sat there perfectly able to scan.
+	//
+	// scanBand gates itself the same way, so this is belt and braces rather
+	// than the only check -- but it has to agree with the one below it, or the
+	// endpoint refuses what the engine would have allowed.
+	if err := a.e.readyToScan(iface); err != nil {
 		writeErr(w, http.StatusServiceUnavailable, err.Error())
 		return
 	}

@@ -361,18 +361,29 @@ func (e *Engine) scanReady(iface string) error {
 	if !LinkExists(iface) {
 		return fmt.Errorf("no interface named %s on this box", iface)
 	}
-	// A DOWN interface cannot scan, and on this radio nothing else will raise
-	// it: there is no hostapd here, and NetworkManager has been told to leave
-	// the device alone on the way into the namespace. The serving path records
-	// what that costs -- radiopower.go measured `DISABLE` taking an interface
-	// down and the scan then failing with "Network is down (-100)" -- so bring
-	// it up here rather than report a stale figure with no cause attached.
+	// Raising the interface is BEST EFFORT and deliberately not a gate.
+	//
+	// It was written as a gate, on the reasoning that a down interface cannot
+	// scan -- which radiopower.go records for the serving path, where
+	// `DISABLE` takes an interface down and the scan then fails with "Network
+	// is down (-100)". Both halves of that turned out to be wrong here,
+	// MEASURED on the container host 2026-09-11 against an AX200 handed into
+	// the container's namespace:
+	//
+	//	ip link set <if> up   exits 0 and leaves operstate "down"
+	//	iw dev <if> scan      19 BSSes in 3s, with it still "down"
+	//
+	// So the interface neither comes up on request -- it is a self-managed
+	// regulatory device and does not have to -- nor needs to. A gate on either
+	// the exit code or the resulting state would have refused the one radio
+	// this whole arrangement exists to use, and the exit code in particular
+	// says nothing: it succeeded and changed nothing.
+	//
+	// The attempt stays because a radio that CAN come up scans better up, and
+	// nothing else on this box will raise it: there is no hostapd here, and
+	// NetworkManager was told to leave the device alone on the way in.
 	if !linkIsUp(iface) {
-		out, err := exec.Command("ip", "link", "set", iface, "up").CombinedOutput()
-		if err != nil {
-			return fmt.Errorf("%s is down and could not be brought up: %w: %s",
-				iface, err, strings.TrimSpace(string(out)))
-		}
+		_ = exec.Command("ip", "link", "set", iface, "up").Run()
 	}
 	return nil
 }

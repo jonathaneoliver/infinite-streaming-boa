@@ -3,6 +3,7 @@ package boa
 import (
 	"strings"
 	"testing"
+	"time"
 )
 
 // The listen-only radio: present, deliberately not serving, scanned so the
@@ -53,34 +54,70 @@ func TestAScannerIsNotWatchedAndIsNotAFault(t *testing.T) {
 	}
 }
 
+// scanningBox is a scanner with a reading taken `age` ago.
+func scanningBox(up bool, age time.Duration) BridgeInfo {
+	return BridgeInfo{
+		Ifaces: []IfaceInfo{
+			{Name: "wlan-usb", Wireless: true, Serving: true, Up: true,
+				AP: &APStatus{Enabled: true}},
+			{Name: "wlan0", Role: RoleScanner, Wireless: true, Serving: false, Up: up},
+		},
+		Scans: map[string]ScanSummary{
+			"wlan0": {At: time.Now().Add(-age).UnixMilli()},
+		},
+	}
+}
+
 func TestAScannerProducesNoIdleRadioNote(t *testing.T) {
 	// "wlan0 is up but not serving the access point" is true of a scanner and
 	// reads as a fault. This is the note that made the box report its
 	// instrument as its problem.
-	bi := BridgeInfo{Ifaces: []IfaceInfo{
-		{Name: "wlan-usb", Wireless: true, Serving: true, Up: true, AP: &APStatus{Enabled: true}},
-		{Name: "wlan0", Role: RoleScanner, Wireless: true, Serving: false, Up: true},
-	}}
-	if notes := bridgeNotes(bi, scanCfg); len(notes) != 0 {
-		t.Errorf("a listening radio is not worth a note: %+v", notes)
+	if notes := bridgeNotes(scanningBox(true, time.Second), scanCfg); len(notes) != 0 {
+		t.Errorf("a scanning radio is not worth a note: %+v", notes)
 	}
 }
 
-func TestAScannerThatIsDownIsWorthSaying(t *testing.T) {
-	// The one thing about a scanner that IS a fault: nothing is refreshing the
-	// figures, and every channel colour on the box quietly goes stale.
-	bi := BridgeInfo{Ifaces: []IfaceInfo{
-		{Name: "wlan-usb", Wireless: true, Serving: true, Up: true, AP: &APStatus{Enabled: true}},
-		{Name: "wlan0", Role: RoleScanner, Wireless: true, Serving: false, Up: false},
-	}}
-	notes := bridgeNotes(bi, scanCfg)
+func TestAScannerThatIsDownButScanningIsNotAFault(t *testing.T) {
+	// MEASURED on the container host 2026-09-11: the AX200 sits at operstate
+	// "down", will not come up when asked, and scans anyway -- 19 access
+	// points in 1.2s across both bands, zero outage.
+	//
+	// So a warning keyed on the interface being down would stand permanently
+	// over the one radio doing its job, which is exactly the confusion this
+	// role exists to end. Judged on the reading, never on the link.
+	if notes := bridgeNotes(scanningBox(false, time.Second), scanCfg); len(notes) != 0 {
+		t.Errorf("down and scanning is working, not broken: %+v", notes)
+	}
+}
+
+func TestAStaleScannerIsWorthSaying(t *testing.T) {
+	// The thing that IS a fault: the figures have stopped moving, whatever the
+	// reason. Every channel colour on the box is quietly going stale.
+	notes := bridgeNotes(scanningBox(true, scanStaleAfter+time.Minute), scanCfg)
 	if len(notes) != 1 || notes[0].Level != "warn" {
 		t.Fatalf("want one warn note, got %+v", notes)
 	}
-	for _, want := range []string{"wlan0", "contention"} {
+	for _, want := range []string{"wlan0", "stale"} {
 		if !strings.Contains(notes[0].Text, want) {
 			t.Errorf("note should mention %q: %s", want, notes[0].Text)
 		}
+	}
+}
+
+func TestAScannerWithNoReadingYetSaysSo(t *testing.T) {
+	// A box in its first fifteen seconds. True, and not alarming -- so it is
+	// info rather than a warning, and it is not silence either: a scanner that
+	// never takes a first reading would otherwise look identical to one that
+	// is working.
+	bi := BridgeInfo{Ifaces: []IfaceInfo{
+		{Name: "wlan0", Role: RoleScanner, Wireless: true, Serving: false, Up: true},
+	}}
+	notes := bridgeNotes(bi, scanCfg)
+	if len(notes) != 1 || notes[0].Level != "info" {
+		t.Fatalf("want one info note, got %+v", notes)
+	}
+	if !strings.Contains(notes[0].Text, "no reading yet") {
+		t.Errorf("note should say no reading has been taken: %s", notes[0].Text)
 	}
 }
 

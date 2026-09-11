@@ -200,17 +200,44 @@ radio_specs=""
 # looks devices up by MAC -- which is what makes a re-run idempotent after the
 # interface has already been renamed inside the container.
 if [ -n "$SCAN_IF" ]; then
-  if scan_mac=$(cat "/sys/class/net/$SCAN_IF/address" 2>/dev/null); then
-    if [ -e "/sys/class/net/$SCAN_IF/phy80211" ]; then
-      radio_specs="$radio_specs wlan-scan/$scan_mac"
-    else
-      die "SCAN_IF=$SCAN_IF has no phy80211; it is not a wireless device"
-    fi
+  # THE NAME IS STICKY, and resolving it by the configured name alone is
+  # correct exactly once.
+  #
+  # MEASURED 2026-09-11: wlp5s0 was handed in, renamed wlan-scan-9e44 inside
+  # the container, and when the container was recreated the card returned to
+  # the HOST still called wlan-scan-9e44. The next attach then looked for
+  # wlp5s0, did not find it, and skipped the radio -- on the one run where the
+  # hardware was sitting right there. The USB adapters do not do this: they
+  # come back under their udev names, because the rename happened inside the
+  # namespace that died.
+  #
+  # So an existing wlan-scan-* on the host is the same card under the name a
+  # previous run gave it, and is accepted as such.
+  scan_if=$SCAN_IF
+  if [ ! -e "/sys/class/net/$scan_if" ]; then
+    for c in /sys/class/net/wlan-scan-*; do
+      [ -e "$c/phy80211" ] || continue
+      scan_if=$(basename "$c")
+      log "SCAN_IF=$SCAN_IF is absent; using $scan_if, which a previous attach renamed"
+      break
+    done
+  fi
+  if ! scan_mac=$(cat "/sys/class/net/$scan_if/address" 2>/dev/null); then
+    # WARNED, NOT FATAL, and that distinction cost a box.
+    #
+    # This was `die`, which aborted the whole script -- so one absent optional
+    # instrument took every radio and every wired port with it and left the
+    # container with nothing but its bridge. Measured the hard way on
+    # 2026-09-11. The sibling case a few lines below has always warned and
+    # carried on, and for the same reason: a missing adapter must cost only
+    # itself.
+    log "WARNING: SCAN_IF=$SCAN_IF is not an interface on this host, and no" \
+        "wlan-scan-* stands in for it; the container will have no listen-only radio"
+  elif [ ! -e "/sys/class/net/$scan_if/phy80211" ]; then
+    log "WARNING: SCAN_IF=$scan_if has no phy80211; it is not a wireless" \
+        "device and will not be handed over"
   else
-    # Loud, not skipped. A mistyped name here produces a container with no
-    # instrument, and the symptom is contention figures that go on costing an
-    # outage for a reason nothing states.
-    die "SCAN_IF=$SCAN_IF is not an interface on this host"
+    radio_specs="$radio_specs wlan-scan/$scan_mac"
   fi
 fi
 for host_if in $(usb_net_devices); do
