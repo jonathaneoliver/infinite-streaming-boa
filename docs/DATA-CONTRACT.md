@@ -1441,7 +1441,7 @@ different route and is the first thing a reader will ask about.
 **Conclusion for the product:** transmit power cannot be set from this box, so
 attenuation is not an impairment boa can offer. Weak-signal testing means
 physical distance or obstruction. The per-client controls condition the link
-above the radio; `legacy`, `narrow` and `dozy` impose real MAC-layer cost; none
+above the radio; `legacy` and `dozy` impose real MAC-layer cost; none
 of them changes how loudly the radio talks.
 
 ---

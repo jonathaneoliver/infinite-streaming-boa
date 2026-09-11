@@ -436,10 +436,11 @@ moved and the real RSSI beside it has not changed.
 Under each adapter, separate from per-client conditioning, because these affect
 every client on that radio:
 
-- **Profiles** — `clean` (the way back), `legacy` (drop to 802.11n),
-  `narrow` (drop to 20 MHz), and `dozy` (DTIM 10 at a 300 ms beacon with U-APSD
-  off, so a sleeping client waits up to three seconds for buffered downlink — a
-  power-save effect no netem delay distribution can produce).
+- **Profiles** — `clean` (the way back), `legacy` (drop to 802.11n), and
+  `dozy` (DTIM 10 at a 300 ms beacon with U-APSD off, so a sleeping client
+  waits up to three seconds for buffered downlink — a power-save effect no
+  netem delay distribution can produce). Width is not among them: it lives in
+  the channel plan, where a channel and a width are picked together.
 - **RTS/CTS** — request-to-send before every frame. Roughly halves throughput
   and adds per-frame latency; it is what a radio does when it believes there are
   hidden nodes.

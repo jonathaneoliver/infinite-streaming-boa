@@ -209,10 +209,6 @@ func TestEveryProfileIsReversibleByClean(t *testing.T) {
 				t.Errorf("%s: malformed SET %q", name, s)
 				continue
 			}
-			// Width is restored by the channel path, which always names it.
-			if strings.Contains(f[1], "chwidth") || f[1] == "secondary_channel" {
-				continue
-			}
 			if !cleanSets[f[1]] {
 				t.Errorf("%s sets %q, which clean never restores -- there would "+
 					"be no way back from it", name, f[1])
