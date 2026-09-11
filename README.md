@@ -436,16 +436,36 @@ moved and the real RSSI beside it has not changed.
 Under each adapter, separate from per-client conditioning, because these affect
 every client on that radio:
 
-- **Profiles** — `clean` (the way back), `legacy` (drop to 802.11n), and
-  `dozy` (DTIM 10 at a 300 ms beacon with U-APSD off, so a sleeping client
-  waits up to three seconds for buffered downlink — a power-save effect no
-  netem delay distribution can produce). Width is not among them: it lives in
-  the channel plan, where a channel and a width are picked together.
-- **RTS/CTS** — request-to-send before every frame. Roughly halves throughput
-  and adds per-frame latency; it is what a radio does when it believes there are
-  hidden nodes.
-- **Fragmentation** — split frames at a threshold (256 bytes, say), so each one
-  needs more airtime and more acknowledgements.
+- **A generation ladder** — `clean` (the way back), then `11ac`, `11n` and
+  plain OFDM, each dropping the radio a rung. **Which rungs appear depends on
+  the radio and the band it is on**, because a rung above its ceiling cannot be
+  reached and VHT does not exist on 2.4 GHz at all — so `11ac` is simply absent
+  there, and the OFDM rung calls itself `11a` on 5 GHz and `11g` on 2.4 GHz.
+
+  There is no `11ax` button: on a capable radio that is what `clean` already
+  returns you to, and on one that cannot do ax it would be a control that
+  fails. Width is not among them either — it lives in the channel plan, where a
+  channel and a width are picked together.
+
+  **`11n` also caps the width at 40 MHz**, because HT has no 80 MHz channel, so
+  a run against `clean` moves two things rather than one.
+- **Power save**, in two rungs. `power-save` is DTIM 3 at a 100 ms beacon with
+  U-APSD off, which is a common access point default and delivers buffered
+  downlink about every 300 ms. `power-save deep` is DTIM 10 at 300 ms — roughly
+  ten times any real access point, and openly a stress test rather than a
+  mimicry. You cannot control a client's power management from outside, so the
+  only lever is the half of the contract the access point owns, and exaggerating
+  it is what makes a sleeping client's behaviour visible instead of buried in
+  variance.
+- **RTS/CTS** — request-to-send before every frame, or above 512 or 1000 bytes.
+  Every frame roughly halves throughput and adds per-frame latency; it is what
+  a radio does when it believes there are hidden nodes, and the control frames
+  go at a basic rate every station can hear, so the cost does not shrink as your
+  data rate grows. The higher thresholds are where a real access point sits when
+  it uses RTS at all.
+- **Fragmentation** — split frames at 256, 512 or 1024 bytes, so each one needs
+  more airtime and more acknowledgements. With any error rate the retry cost
+  explodes superlinearly, because losing one fragment costs the whole frame.
 
 Both thresholds are phy-level settings that apply without restarting the access
 point, so nobody is dropped when you change them.

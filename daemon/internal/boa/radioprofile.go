@@ -225,17 +225,77 @@ var radioProfiles = map[string]radioProfile{
 		Name: "clean", Restart: true,
 		Desc: "Everything back to how the image configured THIS radio.",
 	},
+	// THE GENERATION LADDER, oldest last. Which of these an operator is offered
+	// depends on the radio and the band it is on -- see APStatus.Gens -- because
+	// a rung above a radio's ceiling cannot be reached and "ac" cannot exist on
+	// 2.4GHz at all.
+	//
+	// Each rung is worth having for the same reason: it changes what a client
+	// COSTS the others on its radio, which no per-device impairment can. 802.11
+	// shares transmit opportunities rather than bits, so a slow station holds
+	// the channel for the whole of its slow transmission. Measured elsewhere in
+	// this repository: a station linked at 65 Mbit/s occupies roughly 18x the
+	// airtime per byte of an ax one.
+	"ac": {
+		Name: "ac", Restart: true,
+		Desc: "802.11ac -- no ax. Wi-Fi 5 instead of Wi-Fi 6, so VHT rates " +
+			"instead of HE ones, with the MCS ceiling that goes with them.",
+		Sets: []string{"SET ieee80211ax 0", "SET ieee80211ac 1", "SET ieee80211n 1"},
+	},
 	"legacy": {
 		Name: "legacy", Restart: true,
 		Desc: "802.11n only -- no ac, no ax. Drops the ceiling to what an older " +
-			"device sees, with real MAC-layer cost rather than a rate limit.",
+			"device sees, with real MAC-layer cost rather than a rate limit. " +
+			"NOTE it also caps the width at 40MHz, because HT has no 80MHz " +
+			"channel -- so a run against clean moves two things, not one.",
 		Sets: []string{"SET ieee80211ax 0", "SET ieee80211ac 0", "SET ieee80211n 1"},
 	},
-	"dozy": {
-		Name: "dozy", Restart: true,
+	// The bottom rung, and it has two names depending on where the radio sits:
+	// 802.11a on 5GHz, 802.11g on 2.4GHz. Same settings either way -- plain
+	// OFDM is what remains once HT, VHT and HE are all off -- so it is one
+	// profile that the interface labels for the band.
+	//
+	// 802.11b is NOT here. It needs DSSS rather than OFDM, exists only on
+	// 2.4GHz, and whether mt7921u will serve it at all is untested. Rate
+	// pinning through supported_rates is the sharper tool at this end and is
+	// untested the same way. Both are deliberately left to a follow-on rather
+	// than shipped unverified.
+	"ofdm": {
+		Name: "ofdm", Restart: true,
+		Desc: "Plain OFDM -- 802.11a on 5GHz, 802.11g on 2.4GHz. 54 Mbit/s at " +
+			"the very top and 6 at the bottom, so a client here costs the " +
+			"channel roughly 200x the airtime per byte that an ax one does.",
+		Sets: []string{"SET ieee80211ax 0", "SET ieee80211ac 0", "SET ieee80211n 0"},
+	},
+	// POWER SAVE, in two rungs, because one extreme point cannot say which side
+	// of realistic it is on.
+	//
+	// Real access points run a 100ms beacon at DTIM 1-3, so "power-save" here
+	// is a configuration you will actually meet. "power-save-deep" is roughly
+	// ten times that and is openly a stress test: you cannot control a client's
+	// power management from outside, so the only lever is the half of the
+	// contract the AP owns, and exaggerating it is what makes the client's
+	// sleep path dominate a measurement instead of being buried in variance.
+	//
+	// Named power-save rather than "dozy" because the interface has always
+	// shown it as power-save, and the daemon saying something else was a
+	// translation that existed for no reason.
+	"power-save": {
+		Name: "power-save", Restart: true,
+		Desc: "DTIM 3 at a 100ms beacon, U-APSD off -- what a common access " +
+			"point default does. A dozing client waits about 300ms for " +
+			"buffered downlink.",
+		Sets: []string{
+			"SET beacon_int 100", "SET dtim_period 3",
+			"SET uapsd_advertisement_enabled 0",
+		},
+	},
+	"power-save-deep": {
+		Name: "power-save-deep", Restart: true,
 		Desc: "DTIM 10 at a 300ms beacon interval, and U-APSD off. A dozing " +
 			"phone then waits up to three seconds for buffered downlink, which " +
-			"draws a comb of periodic spikes no netem delay distribution can.",
+			"draws a comb of periodic spikes no netem delay distribution can. " +
+			"Roughly 10x any real access point: a stress test, not a mimicry.",
 		Sets: []string{
 			"SET beacon_int 300", "SET dtim_period 10",
 			"SET uapsd_advertisement_enabled 0",
@@ -243,17 +303,33 @@ var radioProfiles = map[string]radioProfile{
 	},
 }
 
-// RadioProfileNames lists the profiles, sorted, with "clean" first because it
-// is the way back from every other one.
+// profileOrder is the ladder, strongest first, with the power-save pair after
+// it because they are a different axis rather than a further rung down.
+//
+// NOT alphabetical, which is what this used to be and which interleaved the two
+// families -- ac, legacy, ofdm, power-save, power-save-deep reads as one list
+// of five unrelated things. A profile absent from here still appears, at the
+// end, so adding one cannot make it invisible.
+var profileOrder = []string{"clean", "ac", "legacy", "ofdm", "power-save", "power-save-deep"}
+
+// RadioProfileNames lists the profiles in ladder order, with "clean" first
+// because it is the way back from every other one.
 func RadioProfileNames() []string {
+	seen := map[string]bool{}
 	var out []string
-	for n := range radioProfiles {
-		if n != "clean" {
-			out = append(out, n)
+	for _, n := range profileOrder {
+		if _, ok := radioProfiles[n]; ok {
+			out, seen[n] = append(out, n), true
 		}
 	}
-	sort.Strings(out)
-	return append([]string{"clean"}, out...)
+	var rest []string
+	for n := range radioProfiles {
+		if !seen[n] {
+			rest = append(rest, n)
+		}
+	}
+	sort.Strings(rest)
+	return append(out, rest...)
 }
 
 // ApplyRadioProfile pushes a profile onto a radio, restarting its BSS.
