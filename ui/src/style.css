@@ -419,3 +419,26 @@ select, input[type='text'], input[type='number'] {
   opacity: 0;
   pointer-events: none;
 }
+
+/* THE PAGE MUST NOT SCROLL ITSELF WHILE SOMEBODY IS READING IT.
+
+   Every chart here redraws its SVG on each tick, and Chrome's scroll anchoring
+   reacts to that: it picks an element to hold visually still, loses it when Vue
+   replaces the node, picks another, and adjusts window.scrollY to compensate.
+   The page then creeps under the reader with no layout change to explain it.
+
+   MEASURED on the container host 2026-09-11, scrolled to the middle of the
+   page: document height constant at 3978px for twenty seconds while scrollY
+   wandered 1652 -> 1790, a drift of 138px. Adding this rule took the same
+   measurement to a drift of ZERO.
+
+   Why it reads as a scroll bug and not a layout bug: nothing changes size, so
+   watching element heights finds nothing. The symptom also depends on where you
+   happen to be scrolled, because that decides which element anchoring chooses.
+
+   Scoped to svg rather than set on the scroll container, deliberately. Turning
+   anchoring off wholesale would give up what it is FOR -- content genuinely
+   growing above the viewport, like a new activity line, would then shove the
+   page down. Excluding only the elements that redraw leaves anchoring a stable
+   text node to hold onto instead. */
+svg { overflow-anchor: none; }
