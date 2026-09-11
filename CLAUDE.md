@@ -144,5 +144,22 @@ index file, will abort the script — both have caused real breakage here.
 | `docs/API.md` | Every HTTP endpoint and payload field. GENERATED -- never hand-edit |
 | `docs/DATA-CONTRACT.md` | Where every displayed number comes from, and its units |
 | `docs/LICENSING.md` | What may be redistributed, and what may not |
-| `docs/BACKLOG.md` | Candidate work, with the constraint each item runs into |
+| `docs/BACKLOG.md` | Accepted limitations, documented so they are not rediscovered |
+| GitHub issues | Candidate work. NOT `docs/BACKLOG.md` -- see below |
 | `README.md` | What the box is and how to build one |
+
+**Candidate work lives in GitHub issues.** `docs/BACKLOG.md` used to hold it and
+says, at the top of itself, why it no longer does: the reasoning drifted out of
+date within a day, and a standup read the file and reported two finished items
+as blockers. What remains in it is the set of constraints that are accepted, so
+they are not rediscovered.
+
+```sh
+gh issue list --label priority:P2        # what is worth doing next
+gh issue list --label decision           # blocked on a choice, not on work
+gh issue list --label correctness        # produces wrong or missing behaviour
+```
+
+Each issue carries its own reasoning, a Fibonacci size, and priority and value
+labels -- several are deliberately P3 or `value:low` because they are not worth
+doing.
