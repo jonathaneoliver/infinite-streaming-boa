@@ -936,6 +936,23 @@ way to learn them on a running box is to ask hostapd. See Source K.
 > it learns a country, and in world domain every one of its 5GHz channels
 > is no-IR. Offering 5GHz there would offer a move that cannot work.
 
+**`gens`** `[]string` _(omitted when empty)_
+> Gens is the 802.11 generations this radio can serve ON THE BAND IT IS
+> CURRENTLY ON, oldest first: "a"/"g" (plain OFDM), "n", "ac", "ax".
+>
+> Per band, not per radio, because the answer differs between them and
+> offering the wrong rung is worse than offering none. VHT does not exist on
+> 2.4GHz at all -- setChannelCommands already forces ieee80211ac off when a
+> move crosses into hw_mode g, because a config carrying VHT there is a
+> contradiction hostapd is entitled to refuse -- so "ac" must never appear
+> for a radio sitting on 2.4GHz however capable the silicon is.
+>
+> CAPABILITY IN AP MODE, which is not the same as capability. `iw phy info`
+> reports HE separately for each interface type, and a phy that offers
+> "HE Iftypes: managed" and not "HE Iftypes: AP" can join an ax network and
+> cannot serve one. Reading the first would offer a rung that fails at
+> hostapd start.
+
 **`beacon_int_ms`** `int` _(omitted when empty)_
 > BeaconIntMs and DTIMPeriod are the power-save timing knobs. Shown
 > because a phone's downlink behaviour between segment fetches is governed

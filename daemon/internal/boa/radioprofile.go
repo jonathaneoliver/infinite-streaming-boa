@@ -168,26 +168,63 @@ func runningConfigFor(iface string) map[string]string {
 	return nil
 }
 
-// cleanSetsFor builds the "clean" profile for a SPECIFIC radio, from the config
+// defaultSetsFor builds the "default" profile for a SPECIFIC radio, from the config
 // the image actually gave it.
 //
 // One hardcoded set was wrong, and visibly so: it applied ieee80211ax=1 to both
 // radios, but the image configures the onboard chip as 802.11n only (ac=0,
-// ax=0) because that is all brcmfmac can do at 20MHz. Restoring "clean" there
+// ax=0) because that is all brcmfmac can do at 20MHz. Restoring "default" there
 // therefore left the card claiming a 20MHz 802.11n radio was 802.11ax -- the
 // interface asserting something the hardware cannot do, which is exactly the
 // confident wrongness this codebase exists to avoid.
 //
 // Falls back to the timing parameters alone when the config cannot be read, so
 // clean still undoes a power-save profile rather than doing nothing.
-func cleanSetsFor(iface string) []string {
+// defaultPowerSets restores JUST the power-save timing, from this radio's own
+// config, leaving the generation alone.
+//
+// It exists because power save is a different axis from the generation ladder
+// and composes with it: ApplyRadioProfile writes only the profile's own SETs,
+// so putting a radio on 802.11n does not touch its beacon timing and putting
+// sleep does not touch its generation. Without this the only way back from a
+// power-save rung was "default", which would also have undone the generation --
+// coupling two things the radio itself keeps apart.
+//
+// The defaults are hostapd's, used when the config cannot be read.
+func defaultPowerSets(iface string) []string {
 	sets := []string{
 		"SET beacon_int 100", "SET dtim_period 2",
 		"SET uapsd_advertisement_enabled 1",
 	}
 	kv := runningConfigFor(iface)
+	if bi := kv["beacon_int"]; bi != "" {
+		sets[0] = "SET beacon_int " + bi
+	}
+	if dp := kv["dtim_period"]; dp != "" {
+		sets[1] = "SET dtim_period " + dp
+	}
+	return sets
+}
+
+// defaultSetsFor restores the GENERATION, and the width that goes with it, from
+// this radio's own config. It does NOT touch power-save timing.
+//
+// It used to, and that was the coupling this whole file has been untangling.
+// "default" sits in the generation row, so resetting a radio's beacon timing from
+// there is an effect nobody asked for and nothing on screen predicts. Each axis
+// resets itself now: clean for the generation, power-save-off for the timing,
+// and the channel plan for channel and width.
+//
+// Width stays here because nothing else restores it through a profile -- the
+// plan can, by picking a cell, but a radio narrowed there should still come
+// back with the generation it belongs to.
+func defaultSetsFor(iface string) []string {
+	var sets []string
+	kv := runningConfigFor(iface)
 	if kv == nil {
-		return sets
+		// Nothing readable: name the parameters anyway, at hostapd's defaults
+		// for the width pair, so the caller still restores something known.
+		return []string{"SET vht_oper_chwidth 0", "SET he_oper_chwidth 0"}
 	}
 	for _, k := range []string{"ieee80211n", "ieee80211ac", "ieee80211ax"} {
 		if v, ok := kv[k]; ok {
@@ -205,37 +242,122 @@ func cleanSetsFor(iface string) []string {
 		}
 		sets = append(sets, "SET "+k+" "+v)
 	}
-	if bi := kv["beacon_int"]; bi != "" {
-		sets[0] = "SET beacon_int " + bi
-	}
-	if dp := kv["dtim_period"]; dp != "" {
-		sets[1] = "SET dtim_period " + dp
-	}
 	return sets
 }
 
+// perRadioSets returns the builder for a profile whose settings are computed
+// from the radio's own running config, or nil for the ordinary kind that
+// carries a fixed list.
+//
+// ONE LIST, because two things need this answer and they must not drift: the
+// apply path, which has to call the builder, and the test asserting every
+// profile sets something, which would otherwise flag these as setting nothing.
+// That test named "default" directly and broke the moment there were two.
+//
+// Both members RESTORE rather than impose, which is why neither can be fixed:
+// what "as the image configured it" means differs between radios.
+func perRadioSets(name string) func(string) []string {
+	switch name {
+	case "default":
+		return defaultSetsFor
+	case "power-save-default":
+		return defaultPowerSets
+	}
+	return nil
+}
+
 // radioProfiles is the closed set. Every one of them is reversible by applying
-// "clean", which is why that exists as a profile rather than as a reset button
+// "default", which is why that exists as a profile rather than as a reset button
 // somewhere else.
 //
-// clean carries no Sets: they are built per radio by cleanSetsFor, because what
+// clean carries no Sets: they are built per radio by defaultSetsFor, because what
 // "as the image configured it" means differs between the two radios.
 var radioProfiles = map[string]radioProfile{
-	"clean": {
-		Name: "clean", Restart: true,
-		Desc: "Everything back to how the image configured THIS radio.",
+	"default": {
+		Name: "default", Restart: true,
+		Desc: "The generation back to how the image configured THIS radio. " +
+			"Leaves power-save timing alone -- that has its own way back.",
+	},
+	// THE GENERATION LADDER, oldest last. Which of these an operator is offered
+	// depends on the radio and the band it is on -- see APStatus.Gens -- because
+	// a rung above a radio's ceiling cannot be reached and "ac" cannot exist on
+	// 2.4GHz at all.
+	//
+	// Each rung is worth having for the same reason: it changes what a client
+	// COSTS the others on its radio, which no per-device impairment can. 802.11
+	// shares transmit opportunities rather than bits, so a slow station holds
+	// the channel for the whole of its slow transmission. Measured elsewhere in
+	// this repository: a station linked at 65 Mbit/s occupies roughly 18x the
+	// airtime per byte of an ax one.
+	"ac": {
+		Name: "ac", Restart: true,
+		Desc: "802.11ac -- no 802.11ax. VHT rates instead of HE ones, with " +
+			"the MCS ceiling that goes with them.",
+		Sets: []string{"SET ieee80211ax 0", "SET ieee80211ac 1", "SET ieee80211n 1"},
 	},
 	"legacy": {
 		Name: "legacy", Restart: true,
-		Desc: "802.11n only -- no ac, no ax. Drops the ceiling to what an older " +
-			"device sees, with real MAC-layer cost rather than a rate limit.",
+		Desc: "802.11n only -- no 802.11ac, no 802.11ax. Drops the ceiling to " +
+			"what an older " +
+			"device sees, with real MAC-layer cost rather than a rate limit. " +
+			"NOTE it also caps the width at 40MHz, because HT has no 80MHz " +
+			"channel -- so a run against clean moves two things, not one.",
 		Sets: []string{"SET ieee80211ax 0", "SET ieee80211ac 0", "SET ieee80211n 1"},
 	},
-	"dozy": {
-		Name: "dozy", Restart: true,
+	// The bottom rung, and it has two names depending on where the radio sits:
+	// 802.11a on 5GHz, 802.11g on 2.4GHz. Same settings either way -- plain
+	// OFDM is what remains once HT, VHT and HE are all off -- so it is one
+	// profile that the interface labels for the band.
+	//
+	// 802.11b is NOT here. It needs DSSS rather than OFDM, exists only on
+	// 2.4GHz, and whether mt7921u will serve it at all is untested. Rate
+	// pinning through supported_rates is the sharper tool at this end and is
+	// untested the same way. Both are deliberately left to a follow-on rather
+	// than shipped unverified.
+	"ofdm": {
+		Name: "ofdm", Restart: true,
+		Desc: "Plain OFDM -- 802.11a on 5GHz, 802.11g on 2.4GHz. 54 Mbit/s at " +
+			"the very top and 6 at the bottom, so a client here costs the " +
+			"channel roughly 200x the airtime per byte that an ax one does.",
+		Sets: []string{"SET ieee80211ax 0", "SET ieee80211ac 0", "SET ieee80211n 0"},
+	},
+	// POWER SAVE, in two rungs, because one extreme point cannot say which side
+	// of realistic it is on.
+	//
+	// Real access points run a 100ms beacon at DTIM 1-3, so "power-save" here
+	// is a configuration you will actually meet. "power-save-deep" is roughly
+	// ten times that and is openly a stress test: you cannot control a client's
+	// power management from outside, so the only lever is the half of the
+	// contract the AP owns, and exaggerating it is what makes the client's
+	// sleep path dominate a measurement instead of being buried in variance.
+	//
+	// Named power-save rather than "dozy" because the interface has always
+	// shown it as power-save, and the daemon saying something else was a
+	// translation that existed for no reason.
+	// The way back from the power-save pair WITHOUT undoing the generation.
+	// Carries no Sets for the same reason clean does not: they are built per
+	// radio, from that radio's own config.
+	"power-save-default": {
+		Name: "power-save-default", Restart: true,
+		Desc: "Back to this radio's own beacon timing, leaving the generation " +
+			"where it is.",
+	},
+	"power-save": {
+		Name: "power-save", Restart: true,
+		Desc: "DTIM 3 at a 100ms beacon, U-APSD off -- what a common access " +
+			"point default does. A dozing client waits about 300ms for " +
+			"buffered downlink.",
+		Sets: []string{
+			"SET beacon_int 100", "SET dtim_period 3",
+			"SET uapsd_advertisement_enabled 0",
+		},
+	},
+	"power-save-deep": {
+		Name: "power-save-deep", Restart: true,
 		Desc: "DTIM 10 at a 300ms beacon interval, and U-APSD off. A dozing " +
 			"phone then waits up to three seconds for buffered downlink, which " +
-			"draws a comb of periodic spikes no netem delay distribution can.",
+			"draws a comb of periodic spikes no netem delay distribution can. " +
+			"Roughly 10x any real access point: a stress test, not a mimicry.",
 		Sets: []string{
 			"SET beacon_int 300", "SET dtim_period 10",
 			"SET uapsd_advertisement_enabled 0",
@@ -243,17 +365,34 @@ var radioProfiles = map[string]radioProfile{
 	},
 }
 
-// RadioProfileNames lists the profiles, sorted, with "clean" first because it
-// is the way back from every other one.
+// profileOrder is the ladder, strongest first, with the power-save pair after
+// it because they are a different axis rather than a further rung down.
+//
+// NOT alphabetical, which is what this used to be and which interleaved the two
+// families -- ac, legacy, ofdm, power-save, power-save-deep reads as one list
+// of five unrelated things. A profile absent from here still appears, at the
+// end, so adding one cannot make it invisible.
+var profileOrder = []string{"default", "ac", "legacy", "ofdm",
+	"power-save-default", "power-save", "power-save-deep"}
+
+// RadioProfileNames lists the profiles in ladder order, with "default" first
+// because it is the way back from every other one.
 func RadioProfileNames() []string {
+	seen := map[string]bool{}
 	var out []string
-	for n := range radioProfiles {
-		if n != "clean" {
-			out = append(out, n)
+	for _, n := range profileOrder {
+		if _, ok := radioProfiles[n]; ok {
+			out, seen[n] = append(out, n), true
 		}
 	}
-	sort.Strings(out)
-	return append([]string{"clean"}, out...)
+	var rest []string
+	for n := range radioProfiles {
+		if !seen[n] {
+			rest = append(rest, n)
+		}
+	}
+	sort.Strings(rest)
+	return append(out, rest...)
 }
 
 // ApplyRadioProfile pushes a profile onto a radio, restarting its BSS.
@@ -297,8 +436,8 @@ func (e *Engine) ApplyRadioProfile(iface, name string) (int, error) {
 	}()
 
 	sets := p.Sets
-	if name == "clean" {
-		sets = cleanSetsFor(iface)
+	if build := perRadioSets(name); build != nil {
+		sets = build(iface)
 	}
 	var refused []string
 	for _, cmd := range sets {

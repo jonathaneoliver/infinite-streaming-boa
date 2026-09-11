@@ -159,49 +159,80 @@ func TestThe40MHzSideComesFromTheChannelTable(t *testing.T) {
 	}
 }
 
-func TestCleanCarriesNoHardcodedSets(t *testing.T) {
-	// clean is built per radio by cleanSetsFor, because "as the image
+func TestDefaultCarriesNoHardcodedSets(t *testing.T) {
+	// clean is built per radio by defaultSetsFor, because "as the image
 	// configured it" differs between them: the image gives the onboard chip
 	// ieee80211ac=0/ax=0 and the adapter 1/1. A single hardcoded set applied
 	// ax=1 to both, leaving the interface claiming a 20MHz 802.11n radio was
 	// 802.11ax -- the interface asserting something the hardware cannot do.
-	if len(radioProfiles["clean"].Sets) != 0 {
+	if len(radioProfiles["default"].Sets) != 0 {
 		t.Errorf("clean must be built per radio, not hardcoded: %v",
-			radioProfiles["clean"].Sets)
+			radioProfiles["default"].Sets)
 	}
 }
 
-func TestCleanAlwaysRestoresTheTimingParameters(t *testing.T) {
-	// Even with no config to read -- not on a Pi, or hostapd not running --
-	// clean must still undo a power-save profile rather than doing nothing.
-	got := strings.Join(cleanSetsFor("definitely-not-an-interface"), " | ")
+func TestPowerSaveDefaultAlwaysRestoresTheTimingParameters(t *testing.T) {
+	// Even with no config to read -- not on a Pi, or hostapd not running -- the
+	// power-save reset must still undo a power-save profile rather than doing
+	// nothing.
+	//
+	// This used to assert it of clean, which is where the timing restore lived
+	// while the two axes were one control. They are not: clean sits in the
+	// generation row, and resetting a radio's beacon timing from there is an
+	// effect nothing on screen predicts. Each axis resets itself now, and this
+	// asserts the one that owns these parameters still does.
+	got := strings.Join(defaultPowerSets("definitely-not-an-interface"), " | ")
 	for _, want := range []string{"beacon_int", "dtim_period", "uapsd_advertisement_enabled"} {
 		if !strings.Contains(got, want) {
-			t.Errorf("clean must restore %s even with no config: %s", want, got)
+			t.Errorf("power-save-off must restore %s even with no config: %s", want, got)
 		}
 	}
 }
 
-func TestEveryProfileIsReversibleByClean(t *testing.T) {
+func TestDefaultLeavesPowerSaveTimingAlone(t *testing.T) {
+	// The other half of the same rule, and the half a later change is likely to
+	// undo by accident: clean must not reach into the power-save axis.
+	got := strings.Join(defaultSetsFor("definitely-not-an-interface"), " | ")
+	for _, unwanted := range []string{"beacon_int", "dtim_period", "uapsd_advertisement_enabled"} {
+		if strings.Contains(got, unwanted) {
+			t.Errorf("clean must not touch %s -- power-save-off owns it: %s", unwanted, got)
+		}
+	}
+}
+
+func TestEveryProfileIsReversibleByADefault(t *testing.T) {
 	// Each profile must be undoable, or the only way back from "dozy" is a
 	// reflash. Every parameter any profile sets has to appear in clean.
-	// cleanSetsFor with no readable config still names every parameter clean is
+	// defaultSetsFor with no readable config still names every parameter clean is
 	// responsible for putting back, which is what this checks against.
-	cleanSets := map[string]bool{}
-	for _, s := range cleanSetsFor("no-such-iface") {
-		f := strings.Fields(s)
-		if len(f) >= 2 {
-			cleanSets[f[1]] = true
+	// The union of what EVERY per-radio reset restores, not just clean's.
+	//
+	// There is more than one reset now, because there is more than one axis:
+	// clean puts the generation back and power-save-off puts the beacon timing
+	// back. A profile is reversible if SOME reset names its parameters, which
+	// is the property that matters -- requiring clean alone to name them would
+	// force the two axes back together.
+	defaultSets := map[string]bool{}
+	for _, name := range RadioProfileNames() {
+		build := perRadioSets(name)
+		if build == nil {
+			continue
+		}
+		for _, s := range build("no-such-iface") {
+			f := strings.Fields(s)
+			if len(f) >= 2 {
+				defaultSets[f[1]] = true
+			}
 		}
 	}
 	// Restored from the config file when there is one to read.
 	for _, k := range []string{"ieee80211n", "ieee80211ac", "ieee80211ax",
 		"vht_oper_chwidth", "he_oper_chwidth"} {
-		cleanSets[k] = true
+		defaultSets[k] = true
 	}
 	for name, p := range radioProfiles {
-		if name == "clean" {
-			continue
+		if perRadioSets(name) != nil {
+			continue // a reset, not a thing to be reset
 		}
 		for _, s := range p.Sets {
 			f := strings.Fields(s)
@@ -209,7 +240,7 @@ func TestEveryProfileIsReversibleByClean(t *testing.T) {
 				t.Errorf("%s: malformed SET %q", name, s)
 				continue
 			}
-			if !cleanSets[f[1]] {
+			if !defaultSets[f[1]] {
 				t.Errorf("%s sets %q, which clean never restores -- there would "+
 					"be no way back from it", name, f[1])
 			}
@@ -221,7 +252,7 @@ func TestProfileNamesLeadWithClean(t *testing.T) {
 	// clean is the way back from every other profile, so it is offered first
 	// rather than sorted into the middle of the list.
 	got := RadioProfileNames()
-	if len(got) == 0 || got[0] != "clean" {
+	if len(got) == 0 || got[0] != "default" {
 		t.Fatalf("clean must be first, got %v", got)
 	}
 	if len(got) != len(radioProfiles) {
@@ -236,10 +267,11 @@ func TestEveryProfileSaysWhatItDoes(t *testing.T) {
 		if strings.TrimSpace(p.Desc) == "" {
 			t.Errorf("profile %q has no description", name)
 		}
-		// clean is the exception: its sets are built per radio by cleanSetsFor,
-		// because what "as the image configured it" means differs between the
-		// two radios.
-		if name != "clean" && len(p.Sets) == 0 {
+		// The exceptions are the profiles whose sets are built per radio,
+		// because what "as the image configured it" means differs between
+		// radios. Asked of perRadioSets rather than listed here, so this cannot
+		// disagree with what the apply path actually does.
+		if perRadioSets(name) == nil && len(p.Sets) == 0 {
 			t.Errorf("profile %q sets nothing", name)
 		}
 	}

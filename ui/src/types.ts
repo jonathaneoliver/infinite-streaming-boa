@@ -639,6 +639,18 @@ export interface APStatus {
    *  out. A capability, not the band it is currently on: a channel move may
    *  cross bands, so the plan offers every band the radio actually has. */
   bands?: string[];
+  /** The 802.11 generations this radio can SERVE on the band it is currently
+   *  on, oldest first: "ofdm", "n", "ac", "ax".
+   *
+   *  Per band, because the answer differs. VHT does not exist on 2.4GHz, so
+   *  "ac" is absent there however capable the silicon is — and the daemon
+   *  already forces ieee80211ac off when a channel move crosses into 2.4GHz,
+   *  because a config carrying VHT there is one hostapd may refuse.
+   *
+   *  Capability in AP MODE, not capability: a phy can offer HE to a managed
+   *  interface and not to an access point, and that one can join an ax network
+   *  without being able to serve one. */
+  gens?: string[];
   beacon_int_ms?: number;
   dtim_period?: number;
 }

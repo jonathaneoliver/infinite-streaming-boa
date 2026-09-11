@@ -43,11 +43,102 @@ const props = defineProps<{
   labels?: Record<string, string>;
 }>();
 
-const PROFILES = [
-  { name: 'clean', label: 'clean', desc: 'everything back to how the image configured it.' },
-  { name: 'legacy', label: '11n', desc: 'no ac, no ax — the ceiling an older device sees.' },
-  { name: 'dozy', label: 'power-save', desc: 'DTIM 10 at 300 ms beacon, U-APSD off.' },
+/**
+ * The conditioning row: a generation ladder, then the power-save pair.
+ *
+ * `needs` is the rung's own generation. A rung is offered only when the radio
+ * reports it in `ap.gens`, which is capability ON THE BAND IT IS CURRENTLY ON
+ * — so `ac` disappears the moment a radio moves to 2.4GHz, where VHT does not
+ * exist, and a radio whose ceiling is n never offers a rung above itself.
+ *
+ * EVERY ROW READS LEFT TO RIGHT FROM UNTOUCHED TO MOST IMPAIRED, and the
+ * ordering comes from three different places -- `profileOrder` in the daemon
+ * for the generation, the array below for power save, and markup order for the
+ * two thresholds -- which is exactly how they drifted apart. Anything added to
+ * any of them goes after the `default`.
+ *
+ * EVERY ROW HAS A `default` AT THE LEFT, and it means the same thing in each:
+ * put this axis back to whatever the system decided, leaving the others alone.
+ * Generation and power save restore from the radio's own config; the two
+ * thresholds restore to the phy's default of disabled, because nothing in the
+ * image ever sets one.
+ *
+ * `default` and the power-save pair carry no `needs`: they are always available.
+ * `default` is the way back from everything and is defined relative to the radio
+ * rather than to an absolute, which is also why there is no `ax` rung — on a
+ * capable radio that is what `default` already returns you to, and on one that
+ * cannot do ax it would be a button that fails.
+ */
+const PROFILES: { name: string; label: string; desc: string; needs?: string }[] = [
+  { name: 'default', label: 'default', desc: 'the generation back to whatever the image configured for this radio.' },
+  { name: 'ac', label: '802.11ac', needs: 'ac',
+    desc: 'no 802.11ax — VHT rates instead of HE ones, with the MCS ceiling that goes with them.' },
+  { name: 'legacy', label: '802.11n', needs: 'n',
+    desc: 'no ac, no ax — the ceiling an older device sees. Also caps the width at 40MHz, because HT has no 80MHz channel.' },
+  { name: 'ofdm', label: '802.11a', needs: 'ofdm',
+    desc: 'plain OFDM, 54 Mbit/s at the top and 6 at the bottom — a client here costs the channel roughly 200x the airtime per byte an ax one does.' },
 ];
+
+/**
+ * POWER SAVE IS A DIFFERENT AXIS, and it gets its own row.
+ *
+ * It composes with the ladder rather than replacing it: ApplyRadioProfile
+ * writes only the profile's own settings, so putting a radio on 802.11n leaves its
+ * beacon timing alone and putting it to sleep leaves its generation alone. A
+ * single row of six buttons said the opposite — that picking one undid the
+ * other — which is not what the radio does.
+ *
+ * Labelled by the delivery gap, because that is the number that matters to a
+ * client: how long a dozing device waits for buffered downlink.
+ */
+const POWER_SAVE = [
+  { name: 'power-save-default', label: 'default',
+    desc: 'back to this radio\'s own beacon timing, leaving the generation where it is.' },
+  { name: 'power-save', label: 'typical · 300 ms',
+    desc: 'DTIM 3 at a 100 ms beacon, U-APSD off — a common access point default. A dozing client waits about 300 ms for buffered downlink.' },
+  { name: 'power-save-deep', label: 'extreme · 3 s',
+    desc: 'DTIM 10 at a 300 ms beacon, U-APSD off. Roughly 10x any real access point — a stress test rather than a mimicry of anything you would meet.' },
+];
+
+/** The rungs this radio can actually be put on, in ladder order.
+ *
+ *  STRICTLY BELOW THE CEILING, not merely supported. `default` restores the
+ *  best the radio has, so a rung equal to that ceiling is a second button for
+ *  the same state — press it and nothing changes. That is the same reason
+ *  there is no `802.11ax` button, applied one rung down: on a radio whose top
+ *  is ac, an `802.11ac` button is as redundant as an `802.11ax` one is on a
+ *  radio whose top is ax.
+ *
+ *  It matters most on the weakest radio. The Pi's onboard chip tops out at
+ *  802.11n, so its ladder is `default` and `802.11g` — an `802.11n` button
+ *  there would do nothing at all.
+ *
+ *  `gens` is oldest-first, so the last entry is the ceiling.
+ *
+ *  Unreachable rungs are HIDDEN rather than shown disabled. The row is short
+ *  and changes as you click between radios, so a greyed button that is greyed
+ *  on this radio and live on the next reads as flakiness; the tooltip on what
+ *  remains says what the radio is. */
+function profilesFor(ap?: { gens?: string[]; freq_mhz?: number }) {
+  const gens = ap?.gens ?? [];
+  const ceiling = gens[gens.length - 1];
+  return PROFILES.filter(p => !p.needs || (gens.includes(p.needs) && p.needs !== ceiling));
+}
+
+/** Plain OFDM is 802.11a on 5GHz and 802.11g on 2.4GHz — one profile, two
+ *  names, because the band decides which you get and the label should say
+ *  which one this radio would land on.
+ *
+ *  ONE FORM THROUGHOUT: `802.11ax`, never `11ax` and never `Wi-Fi 6`. It is
+ *  what the daemon already reports as `ap.mode`, so labels and data agree; it
+ *  cannot be misread as a quantity beside `> 1000` and `at 512`; and it extends
+ *  to the bottom of the ladder, where `11a` and `11g` look like typos for
+ *  `11ac`. HE, VHT and HT stay separate: they name the PHY in a rate string,
+ *  not the generation, and are not interchangeable with these. */
+function profileLabel(p: { name: string; label: string }, ap?: { freq_mhz?: number }) {
+  if (p.name === 'ofdm' && ap?.freq_mhz && ap.freq_mhz < 3000) return '802.11g';
+  return p.label;
+}
 
 const OUTAGES = [5, 10, 30, 60];
 const outage = defineModel<Record<string, number>>('outage', { default: () => ({}) });
@@ -928,32 +1019,87 @@ Clients ARE told it has gone, unlike a power cut.`
 
           <section class="group">
           <h4>Conditioning the link</h4>
-          <p class="meta group-note">
-            A profile restarts the access point, dropping all
-            {{ r.ap.stations }} client(s). The thresholds below do not — they are
-            live on the next frame and nobody is dropped.
-          </p>
-          <div class="action-row">
-            <label class="k">profile</label>
-            <button
-              v-for="p in PROFILES" :key="p.name"
-              :class="{ accent: p.name === 'clean' }"
-              :disabled="busy"
-              :title="`${p.desc} Restarts the AP, dropping all ${r.ap.stations} client(s).`"
-              @click="bridge.applyProfile(r.name, p.name)"
-            >{{ p.label }}</button>
+          <!-- GROUPED BY WHAT THEY COST, not by what they change.
+               Whether a control drops every client on the radio is the fact an
+               operator needs before pressing it, and it used to be a sentence
+               above the row rather than something the layout said. -->
+          <div class="ctl-set costly">
+            <p class="ctl-set-label">
+              restarts the access point — drops all {{ r.ap.stations }} client(s)
+            </p>
+            <div class="ctl-boxes">
+            <div class="ctl-box">
+              <div class="action-row">
+                <label class="k">generation</label>
+                <button
+                  v-for="p in profilesFor(r.ap)" :key="p.name"
+                  :class="{ accent: p.name === 'default' }"
+                  :disabled="busy"
+                  :title="`${p.desc} Restarts the AP, dropping all ${r.ap.stations} client(s).`"
+                  @click="bridge.applyProfile(r.name, p.name)"
+                >{{ profileLabel(p, r.ap) }}</button>
+              </div>
+            </div>
+            <!-- ITS OWN ROW: power save composes with the ladder above rather
+                 than replacing it, and one row of six buttons implied otherwise. -->
+            <div class="ctl-box">
+              <div class="action-row">
+                <label class="k">power save</label>
+                <button
+                  v-for="p in POWER_SAVE" :key="p.name"
+                  :disabled="busy"
+                  :title="`${p.desc} Restarts the AP, dropping all ${r.ap.stations} client(s).`"
+                  @click="bridge.applyProfile(r.name, p.name)"
+                >{{ p.label }}</button>
+              </div>
+            </div>
+            </div>
           </div>
-          <div class="action-row">
-            <label class="k">RTS/CTS</label>
-            <button :disabled="busy"
-              title="RTS/CTS before every frame — roughly halves throughput and adds two control frames of latency per data frame."
-              @click="bridge.setThreshold(r.name, 'rts', 0)">every frame</button>
-            <button :disabled="busy" @click="bridge.setThreshold(r.name, 'rts', 'off')">off</button>
-            <label class="k">fragment</label>
-            <button :disabled="busy"
-              title="Fragment every frame at 256 bytes. With any error rate the retry cost explodes superlinearly."
-              @click="bridge.setThreshold(r.name, 'frag', 256)">at 256</button>
-            <button :disabled="busy" @click="bridge.setThreshold(r.name, 'frag', 'off')">off</button>
+          <div class="ctl-set free">
+            <p class="ctl-set-label">
+              live on the next frame — nobody is dropped
+            </p>
+            <div class="ctl-boxes">
+          <!-- BOTH THRESHOLDS ARE A RANGE, and only the two ends were reachable.
+               SetPhyThreshold takes an arbitrary integer, so 512 and 1000 --
+               which is where a real access point sits when it uses RTS at all
+               -- were already possible over the API and simply absent here. A
+               single extreme point says whether a client survives; a few rungs
+               say where it stops surviving, which is what the rest of this box
+               is for. -->
+          <div class="ctl-box">
+            <div class="action-row">
+              <label class="k">RTS/CTS</label>
+              <button :disabled="busy"
+                title="No RTS/CTS handshake. That is the phy's own default — nothing in the image sets a threshold, so this is what the system decided."
+                @click="bridge.setThreshold(r.name, 'rts', 'off')">default</button>
+              <button :disabled="busy"
+                title="Above 1000 bytes — roughly where a real access point sets it in a dense deployment."
+                @click="bridge.setThreshold(r.name, 'rts', 1000)">&gt; 1000</button>
+              <button :disabled="busy"
+                title="Above 512 bytes. Small frames go unprotected, so the cost lands on bulk traffic and not on ACKs and control."
+                @click="bridge.setThreshold(r.name, 'rts', 512)">&gt; 512</button>
+              <button :disabled="busy"
+                title="RTS/CTS before every frame — roughly halves throughput and adds two control frames of latency per data frame. The control frames go at a basic rate every station can hear, so the cost does not shrink as your data rate grows."
+                @click="bridge.setThreshold(r.name, 'rts', 0)">every frame</button>
+            </div>
+          </div>
+          <div class="ctl-box">
+            <div class="action-row">
+              <label class="k">fragment</label>
+              <button :disabled="busy"
+                title="No fragmentation. That is the phy's own default — nothing in the image sets a threshold, so this is what the system decided."
+                @click="bridge.setThreshold(r.name, 'frag', 'off')">default</button>
+              <button :disabled="busy" title="Fragment at 1024 bytes — the mildest rung that still fragments a full-size frame."
+                @click="bridge.setThreshold(r.name, 'frag', 1024)">at 1024</button>
+              <button :disabled="busy" title="Fragment at 512 bytes — half the retry amplification of 256."
+                @click="bridge.setThreshold(r.name, 'frag', 512)">at 512</button>
+              <button :disabled="busy"
+                title="Fragment every frame at 256 bytes. With any error rate the retry cost explodes superlinearly, because losing one fragment costs the whole frame."
+                @click="bridge.setThreshold(r.name, 'frag', 256)">at 256</button>
+            </div>
+          </div>
+            </div>
           </div>
           </section>
 
@@ -1272,6 +1418,63 @@ Clients ARE told it has gone, unlike a power cut.`
   flex-wrap: wrap;
   margin: 4px 0;
 }
+
+/* THE CONTROLS ARE GROUPED BY WHAT THEY COST YOU.
+
+   Everything in the first box takes the access point down and back up, so every
+   client on that radio is dropped and not told. Everything in the second takes
+   effect on the next frame with nobody dropped. That distinction decides
+   whether a control can be used mid-run, and it was previously a sentence above
+   the rows -- which is the kind of thing a reader takes in once and then stops
+   seeing.
+
+   The costly box gets the full width of the fold. It holds two rows of up to
+   six buttons and is the half an operator hesitates over; the live half is
+   four buttons twice and needs no room to breathe. */
+.ctl-set {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 6px 10px 8px;
+  margin: 8px 0;
+}
+/* Both boxes take the full width, stacked -- they are two rows, and the split
+   between them is the point. Side by side they would read as alternatives. */
+.ctl-set { width: 100%; box-sizing: border-box; }
+/* Quieter than a heading and louder than the button labels: it is a property of
+   the group rather than a thing to read first. */
+.ctl-set-label {
+  margin: 0 0 2px;
+  font-size: 11px;
+  color: var(--ink-faint);
+}
+/* The one that costs clients is edged in the warning colour, at low opacity so
+   it reads as a boundary rather than as an alarm -- nothing here is wrong, it
+   simply has a price. */
+.ctl-set.costly { border-color: color-mix(in srgb, var(--warn) 35%, var(--line)); }
+.ctl-set.costly .ctl-set-label { color: var(--warn); opacity: 0.75; }
+
+/* SIDE BY SIDE, each in its own box.
+
+   The two families inside a set are independent -- generation and power save
+   compose, RTS and fragmentation are separate thresholds -- so they sit next to
+   each other and use the width the fold has. What they must NOT do is read as
+   one row of buttons, which is exactly what they did before and what implied
+   that picking one undid the other. The boxes are what keeps them apart.
+
+   Wrapping, so a narrow window stacks them rather than squeezing. */
+.ctl-boxes {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: flex-start;
+}
+.ctl-box {
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 2px 8px 3px;
+}
+/* The rows already carry their own margin, which doubles up inside a box. */
+.ctl-box .action-row { margin: 3px 0; }
 /* EVERY CELL IS EXACTLY ONE LINE TALL, at every width.
 
    The grid already sizes its columns from the container rather than from its

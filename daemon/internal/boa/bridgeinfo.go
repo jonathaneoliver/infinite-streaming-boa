@@ -91,6 +91,22 @@ type APStatus struct {
 	// it learns a country, and in world domain every one of its 5GHz channels
 	// is no-IR. Offering 5GHz there would offer a move that cannot work.
 	Bands []string `json:"bands,omitempty"`
+	// Gens is the 802.11 generations this radio can serve ON THE BAND IT IS
+	// CURRENTLY ON, oldest first: "a"/"g" (plain OFDM), "n", "ac", "ax".
+	//
+	// Per band, not per radio, because the answer differs between them and
+	// offering the wrong rung is worse than offering none. VHT does not exist on
+	// 2.4GHz at all -- setChannelCommands already forces ieee80211ac off when a
+	// move crosses into hw_mode g, because a config carrying VHT there is a
+	// contradiction hostapd is entitled to refuse -- so "ac" must never appear
+	// for a radio sitting on 2.4GHz however capable the silicon is.
+	//
+	// CAPABILITY IN AP MODE, which is not the same as capability. `iw phy info`
+	// reports HE separately for each interface type, and a phy that offers
+	// "HE Iftypes: managed" and not "HE Iftypes: AP" can join an ax network and
+	// cannot serve one. Reading the first would offer a rung that fails at
+	// hostapd start.
+	Gens []string `json:"gens,omitempty"`
 	// BeaconIntMs and DTIMPeriod are the power-save timing knobs. Shown
 	// because a phone's downlink behaviour between segment fetches is governed
 	// by them and by nothing else visible in this interface.
@@ -843,6 +859,7 @@ func apStatus(iface, country string) *APStatus {
 	}
 	ap.Stations = len(StationDump(iface))
 	ap.Bands = phyBands(iface)
+	ap.Gens = phyGens(iface, ap.FreqMHz)
 	return ap
 }
 
@@ -900,6 +917,121 @@ func phyBands(iface string) []string {
 		bands = append(bands, "5GHz")
 	}
 	return bands
+}
+
+// phyGens reports which 802.11 generations this radio can SERVE on the band
+// containing freqMHz, oldest first.
+//
+// Parsed per band, because `iw phy info` reports capability inside each
+// "Band N:" block and the answer genuinely differs between them. Measured on
+// the mt7921u 2026-09-11: its 2.4GHz block carries HT and HE and no VHT, its
+// 5GHz block carries all three. A single per-radio answer would have offered
+// "ac" on 2.4GHz, where it cannot work.
+//
+// The band is identified from the frequencies inside the block rather than from
+// the band NUMBER, for the reason phyBands gives: which numbered band is 2.4GHz
+// differs between drivers.
+//
+// "HE Iftypes: AP" and not merely "HE Iftypes", because the same phy lists HE
+// separately per interface type. One that offers HE to a managed interface and
+// not to an AP can join an ax network and cannot serve one, and offering that
+// rung would produce a hostapd that refuses to start.
+//
+// Plain OFDM is not announced by anything, so it is not detected -- it is what
+// remains when n, ac and ax are all switched off, and every 802.11 radio on
+// either band can do it. It is added unconditionally.
+// bandOfMHz buckets a frequency into 2, 5 or 6 -- the three bands 802.11 has
+// here -- or 0 for anything outside them. The 5900 boundary is the same one
+// phyBands uses, so the two cannot disagree about which band a channel is in.
+func bandOfMHz(mhz int) int {
+	switch {
+	case mhz >= 2400 && mhz < 2500:
+		return 2
+	case mhz >= 5000 && mhz < 5900:
+		return 5
+	case mhz >= 5900 && mhz < 7200:
+		return 6
+	}
+	return 0
+}
+
+func phyGens(iface string, freqMHz int) []string {
+	phy, err := os.Readlink(filepath.Join("/sys/class/net", iface, "phy80211"))
+	if err != nil {
+		return nil
+	}
+	out, err := exec.Command("iw", "phy", filepath.Base(phy), "info").Output()
+	if err != nil {
+		return nil
+	}
+	// THREE BANDS, not "2.4GHz and everything else". This adapter is a 6E part
+	// and reports a 6GHz Band 4 at 5955MHz, which a two-way split lumped in
+	// with 5GHz -- and being the last block, it overwrote the right answer with
+	// its own. 6GHz is HE-only by specification: no HT, no VHT. So a radio
+	// serving 5GHz reported ofdm and ax, losing both n and ac.
+	//
+	// Measured on the container host 2026-09-11. Demo mode has no 6GHz band,
+	// so nothing short of the hardware would have shown it.
+	want := bandOfMHz(freqMHz)
+	var inBand, isOurs, ht, vht, heAP bool
+	flush := func() {
+		// Only the block we care about contributes; the others are discarded.
+		if !isOurs {
+			ht, vht, heAP = false, false, false
+		}
+	}
+	var keptHT, keptVHT, keptHE bool
+	for _, line := range strings.Split(string(out), "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "Band ") && strings.HasSuffix(trimmed, ":") {
+			if inBand && isOurs {
+				keptHT, keptVHT, keptHE = ht, vht, heAP
+			}
+			flush()
+			inBand, isOurs = true, false
+			ht, vht, heAP = false, false, false
+			continue
+		}
+		if !inBand {
+			continue
+		}
+		// Which band is this block? Decided by the frequencies it lists.
+		if strings.Contains(line, " MHz [") {
+			var mhz float64
+			if _, err := fmt.Sscanf(trimmed, "* %f MHz", &mhz); err == nil {
+				if bandOfMHz(int(mhz)) == want {
+					isOurs = true
+				}
+			}
+		}
+		switch {
+		case strings.HasPrefix(trimmed, "Capabilities: 0x"):
+			ht = true
+		case strings.HasPrefix(trimmed, "VHT Capabilities"):
+			vht = true
+		case trimmed == "HE Iftypes: AP":
+			heAP = true
+		}
+	}
+	if inBand && isOurs {
+		keptHT, keptVHT, keptHE = ht, vht, heAP
+	}
+	if freqMHz == 0 {
+		return nil
+	}
+	gens := []string{"ofdm"}
+	if keptHT {
+		gens = append(gens, "n")
+	}
+	// VHT is 5GHz only by specification, so the band test is belt and braces
+	// over the per-band parse rather than a substitute for it.
+	if keptVHT && want == 5 {
+		gens = append(gens, "ac")
+	}
+	if keptHE {
+		gens = append(gens, "ax")
+	}
+	return gens
 }
 
 // apWidth derives the channel width, which hostapd does not report.

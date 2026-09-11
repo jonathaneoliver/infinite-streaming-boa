@@ -436,16 +436,46 @@ moved and the real RSSI beside it has not changed.
 Under each adapter, separate from per-client conditioning, because these affect
 every client on that radio:
 
-- **Profiles** — `clean` (the way back), `legacy` (drop to 802.11n), and
-  `dozy` (DTIM 10 at a 300 ms beacon with U-APSD off, so a sleeping client
-  waits up to three seconds for buffered downlink — a power-save effect no
-  netem delay distribution can produce). Width is not among them: it lives in
-  the channel plan, where a channel and a width are picked together.
-- **RTS/CTS** — request-to-send before every frame. Roughly halves throughput
-  and adds per-frame latency; it is what a radio does when it believes there are
-  hidden nodes.
-- **Fragmentation** — split frames at a threshold (256 bytes, say), so each one
-  needs more airtime and more acknowledgements.
+- **A generation ladder** — `default` (the best this radio has), then
+  `802.11ac`, `802.11n` and plain OFDM, each dropping it a rung.
+
+  **Only the rungs strictly below a radio's ceiling appear.** `default` already
+  restores the best it can do, so a button for that same generation would do
+  nothing — which is why there is no `802.11ax` button, and why an ac-only
+  radio shows no `802.11ac` one either. On the Pi's onboard chip, which tops
+  out at 802.11n, the whole ladder is `default` and `802.11g`.
+
+  **The band decides too.** VHT does not exist on 2.4 GHz, so `802.11ac` is
+  simply absent there, and the OFDM rung calls itself `802.11a` on 5 GHz and
+  `802.11g` on 2.4 GHz. Width is not among them either — it lives in the channel plan, where a
+  channel and a width are picked together.
+
+  **`802.11n` also caps the width at 40 MHz**, because HT has no 80 MHz
+  channel, so
+  a run against `default` moves two things rather than one.
+  **Every row begins with `default`**, and it means the same thing in each: put
+  this axis back to whatever the system decided, leaving the others alone. The
+  generation and power-save rows restore from the radio's own configuration; the
+  two thresholds restore to the phy's default of disabled, because nothing in
+  the image ever sets one. Rows read left to right from untouched to most
+  impaired.
+- **Power save**, in two rungs. `power-save` is DTIM 3 at a 100 ms beacon with
+  U-APSD off, which is a common access point default and delivers buffered
+  downlink about every 300 ms. `power-save deep` is DTIM 10 at 300 ms — roughly
+  ten times any real access point, and openly a stress test rather than a
+  mimicry. You cannot control a client's power management from outside, so the
+  only lever is the half of the contract the access point owns, and exaggerating
+  it is what makes a sleeping client's behaviour visible instead of buried in
+  variance.
+- **RTS/CTS** — request-to-send before every frame, or above 512 or 1000 bytes.
+  Every frame roughly halves throughput and adds per-frame latency; it is what
+  a radio does when it believes there are hidden nodes, and the control frames
+  go at a basic rate every station can hear, so the cost does not shrink as your
+  data rate grows. The higher thresholds are where a real access point sits when
+  it uses RTS at all.
+- **Fragmentation** — split frames at 256, 512 or 1024 bytes, so each one needs
+  more airtime and more acknowledgements. With any error rate the retry cost
+  explodes superlinearly, because losing one fragment costs the whole frame.
 
 Both thresholds are phy-level settings that apply without restarting the access
 point, so nobody is dropped when you change them.
