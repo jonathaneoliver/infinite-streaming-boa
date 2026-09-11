@@ -171,13 +171,31 @@ func TestCleanCarriesNoHardcodedSets(t *testing.T) {
 	}
 }
 
-func TestCleanAlwaysRestoresTheTimingParameters(t *testing.T) {
-	// Even with no config to read -- not on a Pi, or hostapd not running --
-	// clean must still undo a power-save profile rather than doing nothing.
-	got := strings.Join(cleanSetsFor("definitely-not-an-interface"), " | ")
+func TestPowerSaveOffAlwaysRestoresTheTimingParameters(t *testing.T) {
+	// Even with no config to read -- not on a Pi, or hostapd not running -- the
+	// power-save reset must still undo a power-save profile rather than doing
+	// nothing.
+	//
+	// This used to assert it of clean, which is where the timing restore lived
+	// while the two axes were one control. They are not: clean sits in the
+	// generation row, and resetting a radio's beacon timing from there is an
+	// effect nothing on screen predicts. Each axis resets itself now, and this
+	// asserts the one that owns these parameters still does.
+	got := strings.Join(cleanPowerSets("definitely-not-an-interface"), " | ")
 	for _, want := range []string{"beacon_int", "dtim_period", "uapsd_advertisement_enabled"} {
 		if !strings.Contains(got, want) {
-			t.Errorf("clean must restore %s even with no config: %s", want, got)
+			t.Errorf("power-save-off must restore %s even with no config: %s", want, got)
+		}
+	}
+}
+
+func TestCleanLeavesPowerSaveTimingAlone(t *testing.T) {
+	// The other half of the same rule, and the half a later change is likely to
+	// undo by accident: clean must not reach into the power-save axis.
+	got := strings.Join(cleanSetsFor("definitely-not-an-interface"), " | ")
+	for _, unwanted := range []string{"beacon_int", "dtim_period", "uapsd_advertisement_enabled"} {
+		if strings.Contains(got, unwanted) {
+			t.Errorf("clean must not touch %s -- power-save-off owns it: %s", unwanted, got)
 		}
 	}
 }
@@ -187,11 +205,24 @@ func TestEveryProfileIsReversibleByClean(t *testing.T) {
 	// reflash. Every parameter any profile sets has to appear in clean.
 	// cleanSetsFor with no readable config still names every parameter clean is
 	// responsible for putting back, which is what this checks against.
+	// The union of what EVERY per-radio reset restores, not just clean's.
+	//
+	// There is more than one reset now, because there is more than one axis:
+	// clean puts the generation back and power-save-off puts the beacon timing
+	// back. A profile is reversible if SOME reset names its parameters, which
+	// is the property that matters -- requiring clean alone to name them would
+	// force the two axes back together.
 	cleanSets := map[string]bool{}
-	for _, s := range cleanSetsFor("no-such-iface") {
-		f := strings.Fields(s)
-		if len(f) >= 2 {
-			cleanSets[f[1]] = true
+	for _, name := range RadioProfileNames() {
+		build := perRadioSets(name)
+		if build == nil {
+			continue
+		}
+		for _, s := range build("no-such-iface") {
+			f := strings.Fields(s)
+			if len(f) >= 2 {
+				cleanSets[f[1]] = true
+			}
 		}
 	}
 	// Restored from the config file when there is one to read.
@@ -200,8 +231,8 @@ func TestEveryProfileIsReversibleByClean(t *testing.T) {
 		cleanSets[k] = true
 	}
 	for name, p := range radioProfiles {
-		if name == "clean" {
-			continue
+		if perRadioSets(name) != nil {
+			continue // a reset, not a thing to be reset
 		}
 		for _, s := range p.Sets {
 			f := strings.Fields(s)

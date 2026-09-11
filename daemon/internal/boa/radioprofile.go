@@ -206,11 +206,25 @@ func cleanPowerSets(iface string) []string {
 	return sets
 }
 
+// cleanSetsFor restores the GENERATION, and the width that goes with it, from
+// this radio's own config. It does NOT touch power-save timing.
+//
+// It used to, and that was the coupling this whole file has been untangling.
+// "clean" sits in the generation row, so resetting a radio's beacon timing from
+// there is an effect nobody asked for and nothing on screen predicts. Each axis
+// resets itself now: clean for the generation, power-save-off for the timing,
+// and the channel plan for channel and width.
+//
+// Width stays here because nothing else restores it through a profile -- the
+// plan can, by picking a cell, but a radio narrowed there should still come
+// back with the generation it belongs to.
 func cleanSetsFor(iface string) []string {
-	sets := cleanPowerSets(iface)
+	var sets []string
 	kv := runningConfigFor(iface)
 	if kv == nil {
-		return sets
+		// Nothing readable: name the parameters anyway, at hostapd's defaults
+		// for the width pair, so the caller still restores something known.
+		return []string{"SET vht_oper_chwidth 0", "SET he_oper_chwidth 0"}
 	}
 	for _, k := range []string{"ieee80211n", "ieee80211ac", "ieee80211ax"} {
 		if v, ok := kv[k]; ok {
@@ -261,7 +275,8 @@ func perRadioSets(name string) func(string) []string {
 var radioProfiles = map[string]radioProfile{
 	"clean": {
 		Name: "clean", Restart: true,
-		Desc: "Everything back to how the image configured THIS radio.",
+		Desc: "The generation back to how the image configured THIS radio. " +
+			"Leaves power-save timing alone -- that has its own way back.",
 	},
 	// THE GENERATION LADDER, oldest last. Which of these an operator is offered
 	// depends on the radio and the band it is on -- see APStatus.Gens -- because

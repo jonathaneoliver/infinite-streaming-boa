@@ -58,7 +58,7 @@ const props = defineProps<{
  * cannot do ax it would be a button that fails.
  */
 const PROFILES: { name: string; label: string; desc: string; needs?: string }[] = [
-  { name: 'clean', label: 'clean', desc: 'everything back to how the image configured it.' },
+  { name: 'clean', label: 'clean', desc: 'the generation back to how the image configured it — power save has its own way back.' },
   { name: 'ac', label: '11ac', needs: 'ac',
     desc: 'Wi-Fi 5 instead of Wi-Fi 6 — VHT rates, with the MCS ceiling that goes with them.' },
   { name: 'legacy', label: '11n', needs: 'n',
@@ -82,10 +82,10 @@ const PROFILES: { name: string; label: string; desc: string; needs?: string }[] 
 const POWER_SAVE = [
   { name: 'power-save-off', label: 'off',
     desc: 'back to this radio\'s own beacon timing, leaving the generation where it is.' },
-  { name: 'power-save', label: '300 ms',
-    desc: 'DTIM 3 at a 100 ms beacon, U-APSD off — a common access point default.' },
-  { name: 'power-save-deep', label: '3 s',
-    desc: 'DTIM 10 at a 300 ms beacon, U-APSD off. Roughly 10x any real access point, so a stress test rather than a mimicry.' },
+  { name: 'power-save', label: 'typical · 300 ms',
+    desc: 'DTIM 3 at a 100 ms beacon, U-APSD off — a common access point default. A dozing client waits about 300 ms for buffered downlink.' },
+  { name: 'power-save-deep', label: 'extreme · 3 s',
+    desc: 'DTIM 10 at a 300 ms beacon, U-APSD off. Roughly 10x any real access point — a stress test rather than a mimicry of anything you would meet.' },
 ];
 
 /** The rungs this radio can actually be put on, in ladder order.
@@ -1002,9 +1002,7 @@ Clients ARE told it has gone, unlike a power cut.`
                   v-for="p in profilesFor(r.ap)" :key="p.name"
                   :class="{ accent: p.name === 'clean' }"
                   :disabled="busy"
-                  :title="p.name === 'clean'
-                    ? `${p.desc} Resets the power-save timing too. Restarts the AP, dropping all ${r.ap.stations} client(s).`
-                    : `${p.desc} Restarts the AP, dropping all ${r.ap.stations} client(s).`"
+                  :title="`${p.desc} Restarts the AP, dropping all ${r.ap.stations} client(s).`"
                   @click="bridge.applyProfile(r.name, p.name)"
                 >{{ profileLabel(p, r.ap) }}</button>
               </div>
