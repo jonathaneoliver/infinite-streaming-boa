@@ -1010,6 +1010,35 @@ the same constraint the Pi has and the same one the
 [powered hub figures](#what-a-hub-costs-a-radio-separated-from-what-the-channel-is-worth)
 below quantify.
 
+### Requirements for the build and control host
+
+Three machines have requirements in this repository and only one of them is the
+box. The **build host** produces the image or the container payload, the **run
+host** is the Pi or the Linux host above, and the **control host** drives a
+running box with `deploy.sh`, `config.sh` and `boactl`. Build and control are
+usually the same laptop, and nothing here is specific to macOS.
+
+| Requirement | Why |
+|---|---|
+| `curl`, `docker`, `go` and `npm` on the build host | curl fetches the base image, go and npm build the payload natively, and docker runs every bit of image surgery |
+| **A runtime that can loop-mount inside a `--privileged` container** | `build.sh` runs the builder with `--privileged` and `/dev` bind-mounted, then mounts the image's own partitions. This is the requirement most likely to differ from one machine to the next |
+| **An arm64 builder, or qemu registered in `binfmt_misc` on an x86_64 build host** | `customize.sh` chroots into the arm64 Raspberry Pi OS root, and nothing here passes `--platform` or installs an emulator. On Apple Silicon and on arm64 Linux the builder is arm64 already and this is free; on x86_64 the host must be able to execute arm64 binaries. **Untested here** |
+| Go at least as new as `daemon/go.mod` asks (1.24) | The daemon is cross-compiled for `linux/arm64` with `CGO_ENABLED=0`, so neither a cross toolchain nor a C compiler is needed |
+| Node 18, 20, or 22 and later | `ui/` pins Vite 6.4, whose own `engines` field is `^18 \|\| ^20 \|\| >=22` |
+| `ssh` on the control host | Every script that touches a running box goes over ssh, and none of them install anything on it |
+| `python3` on the control host | `config.sh` validates a profile as JSON before sending it, and `deploy.sh` uses it to refuse a deploy that would interrupt a running measurement |
+| `bash` | Every script here is `#!/usr/bin/env bash`. None uses a bash-4-only construct, so macOS's own 3.2 should serve, but nothing is run against it here |
+
+**Nothing enforces the two version floors.** Below either one the failure is a
+compiler or TypeScript error from inside the build rather than a sentence
+naming the tool, so check them first when a fresh clone will not build.
+
+**Rootless Docker and podman-as-docker are untested here**, and neither
+normally exposes loop devices to a container, so expect the image build to fail
+on them. Only the *image* build needs that privilege: the container path runs
+with two added capabilities rather than `--privileged`, and builds an ordinary
+image with no loop mount anywhere.
+
 ### The radios here are client parts, and that is the ceiling
 
 Every radio this box has ever run is a **station chip with AP mode bolted on**.
@@ -1901,10 +1930,14 @@ the next reboot — which is far cheaper than a reflash.
 **For the Pi.** The container path needs no image and no card; skip to
 [Run it as a container on a Linux host](#run-it-as-a-container-on-a-linux-host).
 
-Needs `curl`, `docker`, `go` and `npm`. On macOS the Docker engine can come from
-Rancher Desktop, Docker Desktop, colima or OrbStack — it exists only to supply a
-Linux kernel, since macOS can neither mount ext4 nor loop-mount a partition
-table. On Linux no container runtime is needed at all.
+Needs `curl`, `docker`, `go` and `npm`, **including on Linux.** All image
+surgery happens inside the builder container on every host, and `build.sh` has
+no conditional for a native build: macOS can neither mount ext4 nor loop-mount
+a partition table, so there is one code path rather than two. On macOS the
+Docker engine can come from Rancher Desktop, Docker Desktop, colima or
+OrbStack; it exists only to supply a Linux kernel. See
+[Requirements for the build and control host](#requirements-for-the-build-and-control-host)
+for what that runtime has to be able to do, and for the toolchain floors.
 
 ```sh
 cp .env.example .env      # set your SSID, passphrase and country
@@ -1934,7 +1967,7 @@ adapter in for a wired device under test, then:
 | glances | `http://infinite-streaming-boa.local:61208/` — no login |
 | iperf3 | `iperf3 -c infinite-streaming-boa.local` from a device under test |
 | SSH | `ssh boa@infinite-streaming-boa.local` |
-| Rescue | `http://<BOA_RESCUE_IP>/` when upstream DHCP is absent |
+| Rescue | `http://<BOA_RESCUE_IP>/` — a fixed address on the bridge, present on every boot and not only when DHCP fails. See [Reaching the box](#reaching-the-box) |
 
 **The two directions measure different things.** `iperf3 -c <pi> -R` sends from
 the box to the device, which is that device's downlink — conditioned by its
@@ -1999,6 +2032,32 @@ frontend is on disk before it enables the unit, because an install that
 succeeds and still cannot serve is exactly how the `.deb` fails. Going through
 a venv also keeps the Debian package's dependencies — matplotlib, tk, PIL,
 fonttools, about 90 packages of desktop plotting stack — off a headless box.
+
+### When the build does not work
+
+Most `.env` mistakes are caught by name before the download starts, so they are
+not listed here. These are the ones the script cannot catch.
+
+| Symptom | Cause |
+|---|---|
+| The privileged builder cannot mount the image's partitions | A container runtime that cannot loop-mount. See [Requirements for the build and control host](#requirements-for-the-build-and-control-host) |
+| A Go or TypeScript error on a fresh clone | The toolchain is below a floor that nothing checks. Same section |
+| `could not reach downloads.raspberrypi.com` | The base image is resolved by following that URL's redirect. Set `RPIOS_URL` to pin a specific image instead |
+| The image builds with no ntopng | Expected when `cache/` holds no packaged artifact. Run `scripts/package-ntopng.sh` first, or accept the image without it |
+| `Exec format error`, or a `chroot` in `customize.sh` that fails at once | The arm64 root is being chrooted from an x86_64 kernel with no emulator registered. See the `binfmt_misc` row in [Requirements for the build and control host](#requirements-for-the-build-and-control-host) |
+
+### When the Pi does not come up
+
+| Symptom | Cause |
+|---|---|
+| The `.local` name does not resolve | mDNS on the *client*, not a fault on the box. See [Reaching the box](#reaching-the-box) |
+| Answers over IPv6 but not over IPv4 | No DHCP lease, which on a direct cable is normal. Use the rescue address |
+| Clients associate, then sit there with no address | **The WAN port is not connected.** Being invisible means boa issues no addresses of its own |
+| No access point at all | `AP_COUNTRY` does not match where the box physically is, so the radio stays rfkill-blocked; or there is no radio the box can serve |
+| A USB radio unregisters mid-transfer, and it reads as a Wi-Fi fault | Power, not Wi-Fi. See [Power](#power) |
+| An unshaped baseline that swings by a factor of two | Also power. Same section |
+| Cannot log in to a freshly flashed box | A truncated or wrapped `BOA_SSH_PUBKEY`. The build parses every key line and refuses one it cannot decode, so this should now fail at build time instead |
+| A device loses its policy and its measured ladder | Its randomised private Wi-Fi MAC rotated. See [Things that will mislead you](#things-that-will-mislead-you-if-nobody-says-them) |
 
 ## Run it as a container on a Linux host
 
@@ -2154,6 +2213,78 @@ at afterwards.
 | Container up, but no client ports | Look for `no lan-usb-* port was handed over` in `docker logs boa`. The adapters are discovered on the USB bus, so a device on a PCIe slot is not picked up |
 | No access point | `no radio this box can serve`, or a country code the radio will not accept. `AP_COUNTRY` must match where the machine physically is |
 | The box's IP changed after a redeploy | Should not happen — the uplink MAC is derived from the host NIC precisely so the lease survives. Report it |
+
+## Reaching the box
+
+Every URL in this README is an mDNS `.local` name, because that is the one
+address that survives a reflash and a new DHCP lease. It is not the only way
+in, and it is the way most likely to fail on someone else's network.
+
+| Route | Works when |
+|---|---|
+| `http://<BOA_HOSTNAME>.local/` | The client resolves mDNS and nothing is filtering `.local` |
+| `http://<BOA_RESCUE_IP>/` | Always, once you give yourself an address on that subnet. No discovery, no DHCP |
+| The DHCP address | The box has a lease, and you can find out what it is |
+| IPv6 link-local | Always, on a direct cable, with a zone index |
+
+**`.local` is not universal.** macOS resolves it out of the box. Linux needs
+avahi and `nss-mdns` installed and in `/etc/nsswitch.conf`. A corporate
+resolver or an active VPN will often swallow the query. Windows is not covered
+by anything here. And **the box publishes no mDNS *services*** — avahi is
+configured with `publish-workstation=no`, and no service files are installed —
+so it answers to its name but will never show up in a browse: `dns-sd -B` and
+`avahi-browse` find nothing. Resolve the name instead of browsing for it:
+
+```sh
+dns-sd -G v4v6 infinite-streaming-boa.local     # macOS
+avahi-resolve -n infinite-streaming-boa.local   # Linux
+```
+
+**The rescue address needs no discovery, and it is always there.** It lives on
+the bridge profile as a second address alongside DHCP, so it is present on
+every boot whether or not there is an upstream DHCP server. The step nobody
+writes down is that you have to put yourself on that subnet first:
+
+```sh
+# macOS -- en10 is whichever interface faces the box
+sudo ifconfig en10 alias 192.168.99.2 netmask 255.255.255.0
+# Linux
+sudo ip addr add 192.168.99.2/24 dev enp0s1
+
+open http://192.168.99.1/      # or ssh boa@192.168.99.1
+```
+
+Change `BOA_RESCUE_IP` before building if your real LAN is already
+`192.168.99.0/24`.
+
+**Finding the DHCP address without mDNS:** read it off your router's lease
+table, where the box appears under `BOA_HOSTNAME` and under the WAN port's
+burned-in MAC. That MAC is also the bridge's, deliberately, which is why the
+lease is stable.
+
+**IPv6 link-local always works on a direct cable, and needs a zone index.**
+This is also the explanation for the box answering over IPv6 while IPv4 is
+silent: a link with no DHCP server still has link-local addressing. Discover
+the neighbour, then talk to it:
+
+```sh
+ping6 -c3 ff02::1%en10        # all-nodes on that link
+ndp -an | grep en10           # macOS; `ip -6 neigh` on Linux
+ssh boa@fe80::xxxx:xxxx%en10
+```
+
+In a browser the zone index has to be percent-escaped, so `fe80::1%en10`
+becomes `http://[fe80::1%25en10]/`. The daemon listens on `:80`, which is dual
+stack, so an IPv6 literal reaches the interface exactly like the name does.
+
+**The bridge's address is deliberately not static.** The box plugs into
+someone else's LAN, so its subnet cannot be known at build time and a
+hardcoded address would land off-subnet or collide. `br-lan` takes DHCP
+instead, and its MAC is pinned to the WAN port's burned-in address so the
+router hands back the same lease across reboots and across a dongle hotplug
+that would otherwise change which port's MAC the bridge adopts. If you want a
+predictable IPv4, reserve that MAC in your own router rather than editing the
+profile.
 
 ## Configuration
 
