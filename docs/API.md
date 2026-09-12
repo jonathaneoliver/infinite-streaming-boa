@@ -622,6 +622,15 @@ telemetry updates never yank a control out from under the operator's cursor.
 > itself reports as read_age_ms and which has been minutes while a radio
 > was wedged.
 
+**`pairs`** `[]PortPair` _(omitted when empty)_
+> Pairs is which bridge port forwarded to which, and how much.
+>
+> The per-port totals above cannot express it -- they are row and column
+> sums and never the matrix -- so this is the only thing on the box that
+> can say whether a client is talking to the internet or to the device
+> beside it. Counted by nftables rules the daemon owns; see portpairs.go
+> for the mechanism and for the measurement that says it is free.
+
 ### BridgeInfo — GET /api/bridge
 
 BridgeInfo is the whole answer for the bridge view.
@@ -1794,6 +1803,29 @@ PortFlow is one bridge port's total throughput, both directions.
 > the throughput mean anything: 400 Mbit/s is idle on a 2.5 GbE port and
 > saturation on a 100 Mbit one. It is what turns this from a trace into an
 > answer about a bottleneck.
+
+### PortPair
+
+PortPair is one ordered port pair's forwarding rate.
+
+**`from`** `string`
+> From and To are bridge port names: in by From, out by To.
+
+**`to`** `string`
+
+**`mbps`** `float64`
+> Mbps is the rate between polls, derived the same way every other
+> throughput figure here is.
+
+**`packets`** `float64`
+> Packets is the rate in frames per second, and it is not redundant.
+>
+> The two disagree by more than a constant: measured on this box, the
+> uplink-to-radio direction ran 19,634 frames for 700 MB -- 35 KB apiece,
+> which is GRO aggregation -- while the return direction ran 96,073 frames
+> for 5.5 MB, 58 bytes apiece, being pure ACKs. A ribbon drawn from bytes
+> alone makes the second look like nothing when it is three times the
+> frame count of the first, and frames are what cost a radio airtime.
 
 ### RadioEvent
 

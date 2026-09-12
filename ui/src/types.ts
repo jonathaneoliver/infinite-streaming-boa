@@ -1139,6 +1139,8 @@ export interface Snapshot {
    *  snapshot arrives once a second on the same stream as the client
    *  throughput, so a port band and a client band share one clock. */
   ports?: PortFlow[];
+  /** Which bridge port forwarded to which, and how much. See PortPair. */
+  pairs?: PortPair[];
 }
 
 export const CLEAN: Shape = {
@@ -1251,6 +1253,28 @@ export interface PortFlow {
    *  bottleneck question. A radio has no `speed` file, so its band draws
    *  against no ceiling rather than a guessed one. */
   speed_mbps?: number;
+}
+
+/**
+ * One ordered port pair's forwarding rate: in by `from`, out by `to`.
+ *
+ * The only thing on the box that can say whether a client is talking to the
+ * internet or to the device beside it. Interface counters cannot: they give
+ * each port's row and column sums and never the matrix. Counted by an
+ * nftables rule per pair, at the point the bridge makes the decision.
+ */
+export interface PortPair {
+  from: string;
+  to: string;
+  mbps: number;
+  /** Frames per second, and not redundant with the rate.
+   *
+   *  They disagree by more than a constant: measured here, one direction ran
+   *  35 KB aggregated frames while the return ran 58-byte acknowledgements at
+   *  a similar frame rate. A ribbon drawn from bytes alone makes the second
+   *  look like nothing when it is a quarter of the box's packet load, and
+   *  frames are what cost a radio airtime. */
+  packets: number;
 }
 
 /**
