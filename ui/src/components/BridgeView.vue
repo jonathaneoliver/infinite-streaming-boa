@@ -337,34 +337,6 @@ watchEffect(() => {
   } catch { /* a preference that cannot be saved is still worth honouring now */ }
 });
 
-/*
- * WHETHER THE TRAFFIC SECTION IS OPEN, remembered across reloads.
- *
- * Its own key rather than a field in the chart preferences, because it is not
- * a chart setting -- nothing about it changes what a chart SAYS -- and not the
- * rack's open-fold map either, which is keyed by adapter name and would be
- * taking a reserved word in someone else's namespace.
- *
- * Open by default. It answers the question none of the folds beneath it can,
- * so a reader who has never touched it should see it; closing it is the
- * deliberate act.
- *
- * Wrapped, because localStorage throws in a private window and returns
- * nonsense after a hand edit. A box whose traffic view refused to render
- * because a preference would not parse would be a poor trade.
- */
-const TRAFFIC_KEY = 'boa.traffic.open';
-const trafficOpen = ref(true);
-try {
-  const held = localStorage.getItem(TRAFFIC_KEY);
-  if (held !== null) trafficOpen.value = held === '1';
-} catch { /* no stored preference is the same as the default */ }
-watchEffect(() => {
-  try {
-    localStorage.setItem(TRAFFIC_KEY, trafficOpen.value ? '1' : '0');
-  } catch { /* a preference that cannot be saved is still worth honouring now */ }
-});
-
 const portPartyLabels = computed<Record<string, string>>(
   () => (wanIface.value ? { [wanIface.value]: 'uplink' } : {}),
 );
@@ -522,18 +494,19 @@ const pending = ref('');
            that never left the box. It can also run the other way, because the
            bridge replicates every multicast frame to every port, so the
            downstream sum is not a conserved quantity. -->
-      <div v-if="totalHas" class="total" :class="{ closed: !trafficOpen }">
+      <!-- NO CARET ON THIS HEADING, and there was one for two commits.
+           A section-wide fold was built here first and then replaced by the
+           narrower one on the routing figures below, because the grouping
+           buttons in THIS row drive the stacked chart as well: collapsing the
+           section either hid a control with work still to do or left one
+           behind with nothing to act on.
+           The replacement landed and the removal did not -- a scripted edit
+           failed its own guard and wrote nothing, so a caret shipped that
+           toggled a class with no stylesheet behind it and hid the grouping
+           buttons, while every chart stayed exactly where it was. Reported as
+           the heading not folding anything, which is precisely what it did. -->
+      <div v-if="totalHas" class="total">
         <div class="total-head">
-          <!-- THE SUMMARY ROW SURVIVES THE FOLD, which is the point of folding
-               here rather than hiding the section outright: the uplink's rate
-               against its link speed is the one number worth a permanent place,
-               and it is one line. What collapses is four charts. -->
-          <button
-            class="caret" :aria-expanded="trafficOpen"
-            :title="trafficOpen ? 'Collapse the traffic charts'
-              : 'Show what crossed every adapter'"
-            @click="trafficOpen = !trafficOpen"
-          >{{ trafficOpen ? '▾' : '▸' }}</button>
           <h2 class="section-title">traffic</h2>
           <!-- A CHOICE OF GROUPING, not two charts. The bands are the same
                machinery over a different input, so the axis, the clock and the
@@ -587,7 +560,7 @@ const pending = ref('');
           </div>
           <!-- LAST, and with no auto margin of its own, so the container's own
                right edge fixes it. Nothing to its left can move it. -->
-          <span v-if="trafficOpen" class="seg" role="group" aria-label="group the total by">
+          <span class="seg" role="group" aria-label="group the total by">
             <button
               v-for="g in GROUPINGS" :key="g.key"
               class="ghost" :class="{ on: grouping === g.key }"
