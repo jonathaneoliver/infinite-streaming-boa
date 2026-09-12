@@ -16,24 +16,84 @@ Nothing yet.
 
 ## [0.3.0] — 2026-09-11
 
-**What the air is actually doing, measured rather than inferred — and a second
-place to run the box.**
+**The box no longer has to be a Raspberry Pi — and it can now tell you what the
+air is doing rather than leaving you to infer it.**
 
-0.2.0 could make a client do things to its link. What it could not do was say
-what the medium cost while it happened, so a throughput figure that moved had
-no explanation attached to it: the same client, the same cap and the same
-channel could differ by a factor of two, and every instrument on the box
-reported a healthy radio. 0.3.0 fills that in. It reads the neighbours' own
+Every release before this one assumed one shape of hardware: a Pi 5, a card to
+flash, and a machine doing nothing else. That is a fair ask of somebody who
+already owns one and a poor ask of everybody else, and it was the first thing
+standing between this box and most of the benches that could use it. 0.3.0 runs
+the same `boad` binary and the same embedded interface as a container on an
+ordinary x86_64 Linux host, owning its adapters outright, with the transparent
+bridge intact end to end. No card, no flashing, no dedicated machine — the host
+carries on being itself, with its NIC bridged and the USB adapters given away.
+
+The second theme is measurement. 0.2.0 could make a client do things to its
+link, but it could not say what the medium cost while it happened, so a
+throughput figure that moved had no explanation attached to it: the same client,
+the same cap and the same channel could differ by a factor of two while every
+instrument on the box reported a healthy radio. 0.3.0 reads the neighbours' own
 account of how busy the channel is, attributes airtime to individual clients,
-counts retries against a denominator that makes them mean something, watches
-the USB bus underneath the radio, and can dedicate a radio to listening so that
-none of those readings costs an outage.
-
-It also stops being a Raspberry Pi. The same binary and the same channel
-planner now run as a container on an ordinary x86_64 Linux host, and a new
-command-line tool drives either one.
+counts retries against a denominator that makes them mean something, watches the
+USB bus underneath the radio, and can dedicate a radio to listening so that none
+of those readings costs an outage.
 
 39 pull requests.
+
+### It runs on a Linux box you already have
+
+What it needs: an x86_64 machine with Docker and the compose plugin, an ethernet
+NIC facing your router, root, and a USB Wi-Fi adapter or two. Nothing is
+installed on the host but the attach helpers — the interface and the binary are
+built on your workstation, so the host needs neither Go nor node. One command,
+once:
+
+```sh
+scripts/docker-deploy.sh <host> --setup-network
+```
+
+**One requirement will rule out a machine, so it is worth stating plainly:
+NetworkManager has to be managing the uplink NIC.** The setup script moves that
+NIC into a bridge with `nmcli` and refuses rather than guessing if no
+NetworkManager connection is active on it. Ubuntu Desktop qualifies; **Ubuntu
+Server does not**, because it defaults to netplan with systemd-networkd.
+
+**The Pi is not the reference and the container is not a port.** The same `boad`
+binary and the same embedded interface serve both, and `radioplan` is copied
+into the container image unchanged, so a channel plan made on one cannot drift
+from a plan made on the other. What differs is only where the box gets a bridge,
+hostapd configs, hotplug handling and process supervision: the Pi takes them
+from the distribution, the container brings its own.
+
+What it costs the host, and all of it is reversible: its ethernet NIC joins a
+bridge, and the USB adapters are handed to the container outright rather than
+shared. What the container does not get is ntopng and glances, which are absent
+from that image by decision — the interface reports them inactive and says why
+rather than failing quietly.
+
+| Unshaped, `iperf3` **to** the box | Raspberry Pi 5 | Linux container |
+|---|---|---|
+| Wired downlink, 2.5 GbE | 1.91 Gbit/s | 1.95 Gbit/s |
+| Wired uplink, 2.5 GbE | 2.35 Gbit/s | 2.35 Gbit/s |
+| One radio, 80 MHz 802.11ax | 495–683 Mbit/s | 454 Mbit/s |
+
+The wired figures agree to within 2% on two machines with different CPUs, which
+says the 2.5 GbE adapter rather than the target is the limit in both.
+
+**Enforcement has only ever been measured end to end on the container**, and
+that gap runs the other way: 86.0 / 38.1 Mbit/s against a 90/40 cap, and 57 /
+13.6 against a 60/20 cap over the air. The Pi's published figures are all
+ceilings taken against the box itself, which is the measurement that cannot show
+a cap working. Running that set on the Pi is the more valuable missing work of
+the two.
+
+Why the host's NIC has to be bridged, since it is the part that looks
+heavy-handed: a transparent bridge needs a layer-2 uplink carrying arbitrary
+source MACs. A macvlan cannot provide one — in bridge mode it filters ingress by
+destination MAC, and in passthru mode it consumes the lower device's frames and
+takes the host off the network. A bridge plus a veth is the only shape that
+gives the container real layer 2 and leaves the host on it. Verified: a client
+behind the container holds a lease from the operator's own router.
 
 ### What the box can now tell you
 
@@ -84,39 +144,6 @@ at operstate `down`, exits zero when asked to come up, stays down, and scans
 perfectly anyway — so the state of the interface is not evidence of anything.
 And its first scan after a container restart hangs, twice out of two attempts,
 which is why every scan is now bounded and a timeout names itself.
-
-### Two ways to run it
-
-Neither is the reference and neither is a port. The same `boad` binary and the
-same embedded interface serve both, and `radioplan` is copied into the container
-image unchanged, so a channel plan made on one cannot drift from a plan made on
-the other. What differs is only where the box gets a bridge, hostapd configs,
-hotplug handling and process supervision: the Pi takes them from the
-distribution, the container brings its own.
-
-| Unshaped, `iperf3` **to** the box | Raspberry Pi 5 | Linux container |
-|---|---|---|
-| Wired downlink, 2.5 GbE | 1.91 Gbit/s | 1.95 Gbit/s |
-| Wired uplink, 2.5 GbE | 2.35 Gbit/s | 2.35 Gbit/s |
-| One radio, 80 MHz 802.11ax | 495–683 Mbit/s | 454 Mbit/s |
-
-The wired figures agree to within 2% on two machines with different CPUs, which
-says the 2.5 GbE adapter rather than the target is the limit in both.
-
-**Enforcement has only ever been measured end to end on the container**, and
-that gap runs the other way: 86.0 / 38.1 Mbit/s against a 90/40 cap, and 57 /
-13.6 against a 60/20 cap over the air. The Pi's published figures are all
-ceilings taken against the box itself, which is the measurement that cannot show
-a cap working. Running that set on the Pi is the more valuable missing work of
-the two.
-
-Why the host's NIC has to be bridged, since it is the part that looks
-heavy-handed: a transparent bridge needs a layer-2 uplink carrying arbitrary
-source MACs. A macvlan cannot provide one — in bridge mode it filters ingress by
-destination MAC, and in passthru mode it consumes the lower device's frames and
-takes the host off the network. A bridge plus a veth is the only shape that
-gives the container real layer 2 and leaves the host on it. Verified: a client
-behind the container holds a lease from the operator's own router.
 
 ### Driving it from a terminal
 
