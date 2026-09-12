@@ -323,6 +323,7 @@ the file are replaced, devices not mentioned are left alone.">
       :active="true" :clients="snap?.clients"
       :series="series"
       :port-series="portSeries" :ports="snap?.ports" :pairs="snap?.pairs"
+      :client-pairs="snap?.client_pairs"
       :radios="caps?.wlan_ifaces ?? []"
       :adapter-run="snap?.adapter_run ?? null"
     />

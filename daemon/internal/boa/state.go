@@ -447,6 +447,11 @@ type Engine struct {
 	// pairsBlocked is the last reason per-pair counting was unavailable, held
 	// so it is reported on the edge rather than every tick. See portpairs.go.
 	pairsBlocked string
+	// pairSetReady records that the MAC-pair set and its rule are in place, so
+	// the common tick skips the nft invocation that would recreate them. Reset
+	// when reading the set fails, because the table may have been removed
+	// under the daemon. See clientpairs.go.
+	pairSetReady bool
 
 	// airSeen records, per radio, whether its LAST station dump carried the
 	// airtime lines -- the driver's answer to "can you attribute airtime to a
@@ -1361,6 +1366,17 @@ func (e *Engine) tick() {
 	// container's own address included, which is precisely what the comment
 	// above this lock warns about.
 	pairs := e.portPairs(now)
+	// The device matrix, from the same place and under the same rule: outside
+	// the lock, because it spawns `nft` and reports through notePairsBlocked.
+	//
+	// The roster is handed in as a plain set built from the list above, so the
+	// resolution of "is this address one of ours" happens here and not against
+	// mutex-owned state from an unlocked goroutine.
+	trackedMACs := make(map[string]bool, len(clients))
+	for _, c := range clients {
+		trackedMACs[strings.ToLower(c.MAC)] = true
+	}
+	clientPairs := e.clientPairs(now, trackedMACs)
 
 	e.mu.Lock()
 	for i := range clients {
@@ -1490,6 +1506,10 @@ func (e *Engine) tick() {
 		// cannot express: they are row and column sums, never the matrix.
 		// Computed before the lock; see the note there.
 		Pairs: pairs,
+		// Which DEVICE talked to which, which the port matrix above can only
+		// gesture at: several devices share an adapter, and their traffic
+		// collapses into one ribbon there. Computed before the lock.
+		ClientPairs: clientPairs,
 	}
 	e.snap = snap
 	subs := make([]chan Snapshot, 0, len(e.subs))

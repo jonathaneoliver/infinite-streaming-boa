@@ -59,7 +59,20 @@ const ADAPTER_COLOUR_FIXED = ['wlan0', 'lan0'];
  * adapter colour ever has to carry meaning on its own rather than alongside a
  * name, that check is owed.
  */
-const ADAPTER_COLOURS = ['#a78bfa', '#2dd4bf', '#f472b6', '#c084fc', '#22d3ee'];
+/*
+ * Five hues that are actually five. It was
+ * ['#a78bfa', '#2dd4bf', '#f472b6', '#c084fc', '#22d3ee'] -- which is violet,
+ * teal, pink, ANOTHER violet and a cyan a shade off the teal, so five slots
+ * carried about three distinguishable colours. Reported as too close to tell
+ * apart, on a token whose whole job is telling one adapter from another.
+ */
+const ADAPTER_COLOURS = [
+  '#a78bfa', // violet
+  '#2dd4bf', // teal
+  '#f472b6', // pink
+  '#fbbf24', // amber
+  '#38bdf8', // sky
+];
 
 /** Interfaces the rack shows. The bridge and the WAN port are the fabric, not
  *  adapters -- they carry every client rather than any particular one. */

@@ -14,30 +14,40 @@
  */
 
 /**
- * The device palette: MUTED, and that is what separates it from everything else.
+ * The device palette: SEPARATED BY HUE, and it used to be separated by nothing.
  *
- * The reserved colours -- the direction pair, ok/warn/bad, and the adapter
- * tokens -- are all strongly saturated. These sit at a visibly lower saturation
- * in the same lightness band, so a device band reads as one of a family rather
- * than as a state that has come on. Hue alone could not do this any more: with
- * five status colours and five adapter colours already spoken for, the wheel is
- * genuinely crowded, and saturation is the axis still free.
+ * It was eight muted colours inside one lightness band, on the argument that
+ * the reserved hues -- the direction pair, ok/warn/bad, the adapter tokens --
+ * are all strongly saturated, so a quieter family would read as identity
+ * rather than as a state that had come on. The argument was sound and the
+ * result was unusable: reported as colours "just too close for my eyes to tell
+ * apart", and it was right. Muted blue against muted indigo, and muted green
+ * against muted teal and muted olive, are four ways of saying grey-ish.
  *
- * Honest limitation, the same one the adapter palette carries: this set has not
- * been through the contrast and colour-vision checks that `--down` / `--up`
- * documented in style.css. It is used only where a legend names each band, so
- * nothing is lost by failing to tell two bands apart -- but it must not be
- * given work that colour alone has to do.
+ * So hue separation wins and the family resemblance goes. What remains of the
+ * old reasoning is the part that still holds: THESE COLOURS ARE NEVER THE ONLY
+ * THING CARRYING A MEANING. Every band is named in a legend and every node in
+ * this interface is labelled, so a device sharing a hue with `--warn` costs a
+ * moment's hesitation rather than a wrong reading -- while two devices no
+ * reader can separate cost the chart its point.
+ *
+ * Ordered so that the first few, which is all most boxes will use, are the
+ * furthest apart of the set.
+ *
+ * Honest limitation, unchanged: this set has not been through the contrast and
+ * colour-vision checks that `--down` / `--up` documented in style.css. Red
+ * against green in particular will fail for some readers, which is survivable
+ * only because of the labelling above.
  */
 const CLIENT_COLOURS = [
-  '#6ea8d8', // muted blue
-  '#8fbf7f', // muted green
-  '#d4a15a', // muted gold
-  '#b98ec4', // muted violet
-  '#6fbdb0', // muted teal
-  '#cf8b8b', // muted rose
-  '#9aa87c', // muted olive
-  '#8f9ecf', // muted indigo
+  '#4c9aff', // blue
+  '#ffa726', // orange
+  '#46d160', // green
+  '#ff5c5c', // red
+  '#b98cff', // violet
+  '#24c9d8', // cyan
+  '#ff7ad9', // pink
+  '#d7d34a', // olive
 ];
 
 const KEY = 'boa.clients.colour';

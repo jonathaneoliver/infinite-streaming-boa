@@ -1141,6 +1141,8 @@ export interface Snapshot {
   ports?: PortFlow[];
   /** Which bridge port forwarded to which, and how much. See PortPair. */
   pairs?: PortPair[];
+  /** Which device talked to which, and how much. See ClientPair. */
+  client_pairs?: ClientPair[];
 }
 
 export const CLEAN: Shape = {
@@ -1276,6 +1278,73 @@ export interface PortPair {
    *  frames are what cost a radio airtime. */
   packets: number;
 }
+
+/**
+ * One ordered device pair's forwarding rate: in from `from`, out to `to`.
+ *
+ * What the port matrix cannot say. Several devices share an adapter, so two
+ * phones on one radio talking to two machines on one switch are a single
+ * ribbon in PortPair and named devices here.
+ *
+ * `from` and `to` are a client's MAC, or one of two sentinels the daemon
+ * substitutes — see CLIENT_PAIR_PARTIES. Resolving a MAC to a name is left to
+ * the interface, which already holds the roster.
+ */
+export interface ClientPair {
+  from: string;
+  to: string;
+  mbps: number;
+  /** Frames per second, carried for the same reason PortPair carries it. */
+  packets: number;
+}
+
+/**
+ * The two counterparties that are not devices, and what each means.
+ *
+ * NOT A MAC BETWEEN THEM, deliberately: they must not collide with a real
+ * address, and a reader seeing one in a payload should not mistake it for one.
+ *
+ * `beyond-the-box` is the honest answer rather than a vague one. Everything
+ * past this box is reached through the upstream router, so every frame to or
+ * from the internet carries that router's address on one side — and so does a
+ * device on the bridge the box has not identified. A MAC pair cannot separate
+ * those two, so they are not separated.
+ */
+/**
+ * The empty pair list, shared.
+ *
+ * Frozen and module-level so an absent matrix has ONE identity. A `?? []` at
+ * each call site produces a new array per render, which retriggers the flow
+ * diagram's sampling watch on every render instead of once per tick.
+ */
+export const NO_PAIRS: readonly never[] = Object.freeze([]);
+
+export const CLIENT_PAIR_PARTIES: Record<string, string> = {
+  'beyond-the-box': 'beyond the box',
+  broadcast: 'broadcast',
+};
+
+/**
+ * What each sentinel covers, for the tooltip. Answers the question the short
+ * label invites: is this just the WAN port?
+ *
+ * ALMOST, AND NOT QUITE, which is the reason for the vaguer name. The upstream
+ * router is reached through the WAN port, so nearly all of this did cross it
+ * — measured on the container host, this bucket and the WAN port's own
+ * counters agreed to 0.01 Mbit/s. But a device on the bridge the box has not
+ * identified lands here too, and its traffic never goes near the WAN port.
+ * Naming this node `wan0` would claim a port the traffic may not have crossed,
+ * and would imply it is the same measurement as the uplink node in the adapter
+ * figure, which is a port counter rather than a bucket of addresses.
+ */
+export const CLIENT_PAIR_NOTES: Record<string, string> = {
+  'beyond-the-box':
+    'the upstream router, and any device here the box has not identified. '
+    + 'Nearly all of this crossed the WAN port, but not by definition',
+  broadcast:
+    'sent to every device at once — ARP, mDNS and the like, addressed to nobody '
+    + 'in particular',
+};
 
 /**
  * Throughput history for one client, in Mbps.
