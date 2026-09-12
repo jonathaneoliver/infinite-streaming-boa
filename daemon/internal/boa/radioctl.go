@@ -332,6 +332,68 @@ func (e *Engine) radioReady(iface string) error {
 	return nil
 }
 
+// readyToScan is the gate the scan paths share, and it differs by ROLE.
+//
+// A serving radio goes through radioReady, which insists on a hostapd control
+// socket. That is right for every other action on such a radio -- power, a
+// channel move, a broadcast deauthentication -- because each one IS a hostapd
+// command, so one gate covers them all.
+//
+// A listen-only radio has no hostapd and never will. Sent through the same
+// gate it is refused with "hostapd is not serving", which is true and is
+// entirely the wrong reason to decline a scan: scanning needs a station
+// interface that is up, and nothing more. See #288.
+func (e *Engine) readyToScan(iface string) error {
+	if e.cfg.IsScanner(iface) {
+		return e.scanReady(iface)
+	}
+	return e.radioReady(iface)
+}
+
+// scanReady gates a scan on a listen-only radio: it exists, and it is up.
+func (e *Engine) scanReady(iface string) error {
+	if iface == "" {
+		return fmt.Errorf("no radio named")
+	}
+	if e.cfg.Demo {
+		return nil
+	}
+	if !LinkExists(iface) {
+		return fmt.Errorf("no interface named %s on this box", iface)
+	}
+	// Raising the interface is BEST EFFORT and deliberately not a gate.
+	//
+	// It was written as a gate, on the reasoning that a down interface cannot
+	// scan -- which radiopower.go records for the serving path, where
+	// `DISABLE` takes an interface down and the scan then fails with "Network
+	// is down (-100)". Both halves of that turned out to be wrong here,
+	// MEASURED on the container host 2026-09-11 against an AX200 handed into
+	// the container's namespace:
+	//
+	//	ip link set <if> up   exits 0 and leaves operstate "down"
+	//	iw dev <if> scan      19 BSSes in 3s, with it still "down"
+	//
+	// So the interface neither comes up on request -- it is a self-managed
+	// regulatory device and does not have to -- nor needs to. A gate on either
+	// the exit code or the resulting state would have refused the one radio
+	// this whole arrangement exists to use, and the exit code in particular
+	// says nothing: it succeeded and changed nothing.
+	//
+	// The attempt stays because a radio that CAN come up scans better up, and
+	// nothing else on this box will raise it: there is no hostapd here, and
+	// NetworkManager was told to leave the device alone on the way in.
+	if !linkIsUp(iface) {
+		_ = exec.Command("ip", "link", "set", iface, "up").Run()
+	}
+	return nil
+}
+
+// linkIsUp reads operstate, the same source readIface uses for IfaceInfo.Up,
+// so the gate and the rack cannot disagree about whether a radio is up.
+func linkIsUp(name string) bool {
+	return strings.TrimSpace(readSysfs("/sys/class/net/"+name+"/operstate")) == "up"
+}
+
 // --- airtime survey ------------------------------------------------------
 
 // SurveyChannel is one channel's airtime, as a fraction of the time the radio

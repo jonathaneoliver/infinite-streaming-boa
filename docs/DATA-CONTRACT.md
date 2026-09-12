@@ -1311,6 +1311,19 @@ airtime, not a bug fix.
 - **2.4GHz is deliberately excluded from width-derived coverage.** That band is
   already counted with a ±4-channel overlap window, and layering a second
   coverage set on top would count the same interference twice.
+- **Which radio took the reading is part of the reading.** Every figure derived
+  from here is attributed, because on this hardware the answer to "what did this
+  cost" depends entirely on which radio answered. A `brcmfmac` scans both bands
+  while it keeps serving; an `mt7921u` refuses while beaconing and can only
+  scan with its access point taken down. A radio configured as the **scanner**
+  (`BOA_SCAN_PORT`) serves nothing at all, so its scan costs nothing and can be
+  repeated on a timer for ever.
+
+  What this means for reading a figure: `From` naming a different radio is the
+  normal case and not a degradation — one scan describes every radio's channel,
+  and the merge takes the freshest reading per channel regardless of which
+  radio heard it. A radio's own row shows no `ours` figure when `From` is
+  itself, because a radio cannot hear its own beacon.
 
 ## Source P — hostapd `BSS-TM-RESP` · what a client said about a steer
 

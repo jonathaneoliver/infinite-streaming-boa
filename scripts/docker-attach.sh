@@ -32,6 +32,26 @@ CONTAINER=${CONTAINER:-boa}
 BR=${BR:-br-wan}
 NETNS=boa
 
+# A radio to hand in as an INSTRUMENT rather than an access point, named by the
+# host's interface name -- "wlp5s0" for the motherboard's AX200.
+#
+# NAMED, not discovered, and it is the one adapter here that is. Everything else
+# in this script is found on the USB bus precisely so that plugging a dongle in
+# is the whole of adding a radio. This one is not on that bus: it is the host's
+# own onboard card, which the host may well be using, and taking it away on the
+# strength of "it is a radio and it is here" would disconnect the machine the
+# container runs on. Opting in is the only safe default.
+#
+# Why this radio is worth the trouble: #279 measured the AX200 to be a poor
+# access point here, because it is a self-managed regulatory device that loses
+# its country through the namespace handover. All of that is about
+# TRANSMITTING. A radio may receive in the world domain -- every 5GHz channel
+# it cannot beacon on is still marked PASSIVE-SCAN, which is exactly the
+# permission to hear -- so the card's one real limitation does not apply to
+# listening, and one scan of it heard 15 access points across both bands with
+# BSS Load from 12 of them. See #288.
+SCAN_IF=${SCAN_IF:-}
+
 # EVERY USB NETWORK DEVICE, discovered, not a list.
 #
 # This began as a hardcoded MAC allowlist and that was wrong in the way this
@@ -171,6 +191,55 @@ fi
 # and a USB radio here is the name prefix and whether the PHY has to move
 # instead of the netdev.
 radio_specs=""
+# The named listen-only radio joins the same list, with its own prefix, exactly
+# as the header below anticipates: "a radio on another bus can be added later by
+# putting a differently-prefixed entry in this list and changing nothing else".
+# The move, the rename and the rfkill clear do not care what bus it is on.
+#
+# Resolved to a MAC here rather than carried as a name, because the loop below
+# looks devices up by MAC -- which is what makes a re-run idempotent after the
+# interface has already been renamed inside the container.
+if [ -n "$SCAN_IF" ]; then
+  # THE NAME IS STICKY, and resolving it by the configured name alone is
+  # correct exactly once.
+  #
+  # MEASURED 2026-09-11: wlp5s0 was handed in, renamed wlan-scan-9e44 inside
+  # the container, and when the container was recreated the card returned to
+  # the HOST still called wlan-scan-9e44. The next attach then looked for
+  # wlp5s0, did not find it, and skipped the radio -- on the one run where the
+  # hardware was sitting right there. The USB adapters do not do this: they
+  # come back under their udev names, because the rename happened inside the
+  # namespace that died.
+  #
+  # So an existing wlan-scan-* on the host is the same card under the name a
+  # previous run gave it, and is accepted as such.
+  scan_if=$SCAN_IF
+  if [ ! -e "/sys/class/net/$scan_if" ]; then
+    for c in /sys/class/net/wlan-scan-*; do
+      [ -e "$c/phy80211" ] || continue
+      scan_if=$(basename "$c")
+      log "SCAN_IF=$SCAN_IF is absent; using $scan_if, which a previous attach renamed"
+      break
+    done
+  fi
+  if ! scan_mac=$(cat "/sys/class/net/$scan_if/address" 2>/dev/null); then
+    # WARNED, NOT FATAL, and that distinction cost a box.
+    #
+    # This was `die`, which aborted the whole script -- so one absent optional
+    # instrument took every radio and every wired port with it and left the
+    # container with nothing but its bridge. Measured the hard way on
+    # 2026-09-11. The sibling case a few lines below has always warned and
+    # carried on, and for the same reason: a missing adapter must cost only
+    # itself.
+    log "WARNING: SCAN_IF=$SCAN_IF is not an interface on this host, and no" \
+        "wlan-scan-* stands in for it; the container will have no listen-only radio"
+  elif [ ! -e "/sys/class/net/$scan_if/phy80211" ]; then
+    log "WARNING: SCAN_IF=$scan_if has no phy80211; it is not a wireless" \
+        "device and will not be handed over"
+  else
+    radio_specs="$radio_specs wlan-scan/$scan_mac"
+  fi
+fi
 for host_if in $(usb_net_devices); do
   mac=$(cat "/sys/class/net/$host_if/address" 2>/dev/null) || continue
   if [ -e "/sys/class/net/$host_if/phy80211" ]; then

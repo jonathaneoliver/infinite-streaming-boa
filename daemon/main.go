@@ -52,6 +52,14 @@ func main() {
 	var lan string
 	flag.StringVar(&lan, "lan", "lan0",
 		"downstream wired port(s) (USB adapters), comma- or space-separated")
+	// Listen-only radios: present, never given a hostapd config, scanned on the
+	// background timer so the contention figures cost no outage. Split the same
+	// way -wlan is. Empty by default, because a box without one behaves exactly
+	// as it did before -- it pays for its readings with the serving radios.
+	var scan string
+	flag.StringVar(&scan, "scan", "",
+		"listen-only radio(s): scanned for contention, never used to serve, "+
+			"comma- or space-separated")
 	flag.StringVar(&cfg.StatePath, "state", "/var/lib/infinite-streaming-boa/policies.json",
 		"where operator policy is persisted")
 	flag.IntVar(&tickMs, "tick", 1000, "telemetry poll interval in milliseconds")
@@ -70,6 +78,7 @@ func main() {
 
 	cfg.Tick = time.Duration(tickMs) * time.Millisecond
 	cfg.WlanPorts = boa.SplitPorts(wlan)
+	cfg.ScanPorts = boa.SplitPorts(scan)
 	cfg.LanPorts = boa.SplitPorts(lan)
 
 	// Shaping and packet capture both require privilege. Failing loudly here is

@@ -9,12 +9,21 @@ Wants=network-online.target
 [Service]
 Type=simple
 EnvironmentFile=/etc/default/infinite-streaming-boa
+# -scan is written as ONE WORD with the '=' attached, which is why it needs no
+# placeholder value the way BOA_LAN_PORT does. systemd replaces an empty ${VAR}
+# with nothing, so the space-separated form "-scan ${BOA_SCAN_PORT}" would hand
+# -scan the NEXT argument as its value; "-scan=" is a complete argument meaning
+# "no listen-only radio", which is the default on every box.
+#
+# A comment cannot go inside the continued ExecStart below: the backslash makes
+# those lines one value, and a '#' among them is parsed as part of the command.
 ExecStart=/usr/local/bin/boad \
   -addr ${BOA_ADDR} \
   -bridge ${BOA_BRIDGE} \
   -wan ${BOA_WAN_PORT} \
   -wlan ${BOA_WLAN_PORT} \
   -lan ${BOA_LAN_PORT} \
+  -scan=${BOA_SCAN_PORT} \
   -state ${BOA_STATE} \
   $BOA_EXTRA_ARGS
 Restart=always

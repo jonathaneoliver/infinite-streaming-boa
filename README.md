@@ -2168,6 +2168,18 @@ reflash for units, packages and kernel settings does not arise here.
 
 Step 1 and the `--setup-network` flag are the only parts you do once.
 
+**To give the container the host's own Wi-Fi card as an instrument**, name it
+when you attach. The USB adapters are discovered; this one is not, because it
+is the host's onboard card and the host may well be using it:
+
+```sh
+SCAN_IF=wlp5s0 sudo -E scripts/docker-attach.sh
+```
+
+It arrives as `wlan-scan-<last 4 of MAC>`, serves nothing, and is scanned every
+15 seconds so the contention figures cost no outage. See
+[A radio that only listens](#a-radio-that-only-listens).
+
 ### What this puts on your host
 
 Worth knowing before you start, and all of it is removable.
@@ -2300,6 +2312,7 @@ that the container does not build.
 | `AP_COUNTRY` | Regulatory domain. **The radio stays blocked until this is right** |
 | `AP_BAND`, `AP_CHANNEL` | `bg` (2.4GHz) or `a` (5GHz); 5GHz AP mode is limited to the non-DFS channels 36/40/44/48 and 149/153/157/161/165 |
 | `BOA_WAN_PORT` | The port cabled to your existing network. Conditioning is applied here |
+| `BOA_SCAN_PORT` | A radio to keep as an instrument rather than an access point. Empty by default. See [A radio that only listens](#a-radio-that-only-listens) |
 | `BOA_RESCUE_IP` | A fixed address on the bridge so the box is reachable even with no upstream DHCP |
 | `BOA_USB_MAX_CURRENT` | `1` lifts the Pi 5's 600mA USB cap to the full 1.6A — **only with a 5A PSU or powered hub** |
 | `BOA_USER`, `BOA_PASSWORD`, `BOA_SSH_PUBKEY` | Headless login — see below |
@@ -2385,6 +2398,65 @@ And do not reach for that field to *change* the power either: setting it does
 nothing on this adapter, measured across its entire legal range. The readout bug
 is documented upstream and being fixed; the control being inert is a separate
 finding and is measured here rather than reported.
+
+### A radio that only listens
+
+Set `BOA_SCAN_PORT` to an interface name and that radio stops being an access
+point and becomes an instrument. It is planned no channel, written no hostapd
+config, given no clients, and scanned every 15 seconds instead.
+
+**What it buys is a contention figure that costs nothing.** The mt7921u
+adapters refuse to scan while they are serving — `Operation not supported
+(-95)`, passive scans included — so on a box whose radios are all mt7921u,
+every "others" figure in the rack and every coloured channel in the plan is
+either stale or paid for by taking an access point down and dropping its
+clients. A radio that serves nobody has no access point to take down, so the
+same reading is free, and one radio's scan covers every other radio's channel.
+
+On the Pi the obvious choice is the onboard radio:
+
+```sh
+BOA_SCAN_PORT="wlan0"
+```
+
+It is the weaker access point of the two, and it scans while serving anyway, so
+naming it costs a 2.4GHz network and leaves the USB adapter to serve alone. On
+a container host the equivalent is the motherboard's own card, handed in by
+name because it is the one adapter here that is not discovered:
+
+```sh
+SCAN_IF=wlp5s0 sudo -E scripts/docker-attach.sh
+```
+
+That card is a poor access point — it is a self-managed regulatory device that
+loses its country through the namespace handover, which is why serving on it is
+[#279](https://github.com/jonathaneoliver/infinite-streaming-boa/issues/279) and
+deliberately not planned. All of that is about **transmitting**. A radio may
+receive in the world domain, where every 5GHz channel it cannot beacon on is
+still marked `PASSIVE-SCAN`, so the card's one real limitation does not apply
+to listening. One scan of it heard 15 access points across both bands, 12 of
+them advertising BSS Load.
+
+**It is a different state from a radio that is not serving, and the interface
+says so.** A wireless interface that is neither serving nor scanning is
+carrying clients nobody is conditioning, which is an error. A scanner is
+working correctly: it is drawn dotted rather than dashed, labelled `scanning`
+rather than `idle`, and offered no access-point controls, because every one of
+those acts through a hostapd it does not have.
+
+**What the box reports about it is the age of its reading, not the state of its
+link.** Measured on the container host: the AX200 sits at operstate `down`,
+exits zero and stays down when asked to come up, and scans anyway — 19 access
+points across both bands in 1.2 seconds, zero outage. So the interface being
+down says nothing, and a warning keyed on it would stand permanently over the
+one radio that is working. A reading that has stopped advancing is the honest
+signal, and it catches every reason a scan can stop rather than the one reason
+somebody predicted. A name here that matches no interface is an error in its
+own right.
+
+An interface name, and it has to match one. A USB adapter is named after itself
+(`wlan-usb-46c7`) and that is not knowable before the box boots, so the stable
+choices are the onboard radios.
 
 ### Logging in, and why sudo has no password
 

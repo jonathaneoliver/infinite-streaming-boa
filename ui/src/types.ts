@@ -649,7 +649,17 @@ export interface RadioInfo {
  * somebody plugs a cable in, and putting it on the 1 Hz stream would re-send an
  * unchanging inventory to every open browser once a second.
  */
-export type IfaceRole = 'wan' | 'bridge' | 'ap' | 'radio' | 'lan' | 'other';
+/**
+ * `scanner` is a radio that is present and deliberately not serving: an
+ * instrument, scanned on a timer so the contention figures cost no outage.
+ *
+ * It is a separate role from `radio` because `radio` means a fault. A wireless
+ * interface that is not serving and not a scanner is carrying clients nobody
+ * conditions, which earns a dashed link and a warning; a scanner has no
+ * clients to lose and is working correctly. Drawing them the same way reported
+ * the one radio doing its job as the one radio that had failed. See #288.
+ */
+export type IfaceRole = 'wan' | 'bridge' | 'ap' | 'scanner' | 'radio' | 'lan' | 'other';
 
 /** What a hostapd-served radio is doing right now. */
 export interface APStatus {
@@ -898,6 +908,13 @@ export interface ScanChannel {
    *  one, and reading an absent value as 0% would paint the busiest green. */
   util_pct?: number;
   util_from?: number;
+  /** The LOWEST of the readings behind util_pct, which is the highest of them.
+   *
+   *  Neighbours on one channel disagree by a lot — measured, five APs on
+   *  channel 2 reported 19% to 33% — because they sit in different rooms and
+   *  genuinely hear different amounts of the same medium. Quoting only the
+   *  maximum hides that as a number which looks precise. */
+  util_min_pct?: number;
   /** Clients the BSS Load elements on this channel reported. */
   stations?: number;
   recommended?: boolean;
@@ -913,6 +930,15 @@ export interface ScanSummary {
    *  The scanning radio is never in its own map. */
   ours?: Record<string, number>;
   best_channel?: number;
+  /** Every channel this scan LISTENED to, as against the ones it found
+   *  something on.
+   *
+   *  The difference decides what a green cell means. A channel absent from
+   *  `channels` is rated clear on the reasoning that the scan lists everything
+   *  it heard — which holds only for channels it actually visited. Present
+   *  here, "nothing heard" is a measurement; absent here, it is a gap, and the
+   *  tooltip says which. */
+  looked?: number[];
 }
 
 export interface ScanResult {

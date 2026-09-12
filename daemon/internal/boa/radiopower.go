@@ -1,6 +1,7 @@
 package boa
 
 import (
+	"context"
 	"fmt"
 	"math"
 	"os"
@@ -1577,6 +1578,45 @@ type ScanResult struct {
 // CHAN_SWITCH (see issue #154): nothing is announced to anyone, the access
 // point simply reappears somewhere else and clients rediscover it. Most
 // consumer routers change channel exactly this way.
+// scanTimeout bounds one `iw scan`, because an unbounded one took the whole
+// background poll down and said nothing.
+//
+// MEASURED on the container host 2026-09-11. The poll picked the listen-only
+// AX200, launched `iw dev wlan-scan-9e44 scan freq ...`, and that process never
+// exited. A SIGQUIT dump found the poll goroutine parked in
+// os/exec.(*Cmd).Output for two minutes:
+//
+//	goroutine 24 [syscall, 2 minutes]:
+//	  os/exec.(*Cmd).Output -> boa.scanBand -> boa.airScan -> boa.airScanOnce
+//
+// One hung child therefore wedged watchAir for the lifetime of the daemon:
+// every contention figure on the box stopped refreshing, the reapplyBSSLoad
+// that shares the loop stopped running too, and nothing anywhere said so. The
+// same scan by hand, and the same scan through the API, both returned in about
+// 1.2s -- so this is a driver that hangs occasionally rather than one that is
+// slow, and no amount of patience is the fix.
+//
+// Twenty seconds is roughly five times the slowest scan ever measured here
+// (4047ms unrestricted, 1298ms restricted), so it cannot cut a real scan
+// short; it exists only to turn "never returns" into an error somebody reads.
+const scanTimeout = 20 * time.Second
+
+// scanCmd runs one `iw scan` under scanTimeout and names a timeout for what it
+// is, rather than letting it look like any other scan failure.
+func scanCmd(iface string, args []string) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), scanTimeout)
+	defer cancel()
+	raw, err := exec.CommandContext(ctx, "iw", args...).Output()
+	if ctx.Err() != nil {
+		// The process was killed by the deadline, so whatever `iw` managed to
+		// write is a partial dump and must not be parsed as a whole one.
+		return nil, fmt.Errorf(
+			"scan on %s did not finish within %s and was killed; the driver "+
+				"accepted the request and never answered", iface, scanTimeout)
+	}
+	return raw, err
+}
+
 // ScanBand scans on behalf of a person who asked for it, and may take the
 // access point down to do so where the driver leaves no choice.
 func (e *Engine) ScanBand(iface string, apply bool) (ScanResult, error) {
@@ -1603,7 +1643,7 @@ func (e *Engine) scanBandFree(iface string) (ScanResult, error) {
 }
 
 func (e *Engine) scanBand(iface string, apply, allowOutage bool) (ScanResult, error) {
-	if err := e.radioReady(iface); err != nil {
+	if err := e.readyToScan(iface); err != nil {
 		return ScanResult{}, err
 	}
 	started := time.Now()
@@ -1644,7 +1684,7 @@ func (e *Engine) scanBand(iface string, apply, allowOutage bool) (ScanResult, er
 	// Restricted to the channels that can actually matter -- see scanFreqs for
 	// the measurement. A third of the time off channel, for the same answer.
 	scanArgs := append([]string{"dev", iface, "scan", "freq"}, scanFreqs()...)
-	raw, err := exec.Command("iw", scanArgs...).Output()
+	raw, err := scanCmd(iface, scanArgs)
 	disrupted := false
 	if err != nil {
 		// This driver will not scan while it is serving. Take the BSS down,
@@ -1668,6 +1708,19 @@ func (e *Engine) scanBand(iface string, apply, allowOutage bool) (ScanResult, er
 			// poll retried the same radio every 15s for ever, and never reached
 			// the one that scans for nothing. Observed on the box: four
 			// consecutive rounds all spent failing on wlan-usb.
+			//
+			// A SCANNER IS THE EXCEPTION, on both halves. It serves nothing, so
+			// "will not scan while serving" is not a diagnosis of anything --
+			// and it was printed over a scan that had simply TIMED OUT, giving
+			// "wlan-scan-9e44 will not scan while serving (scan did not finish
+			// within 20s)" on the container host 2026-09-11. Nor is the cost
+			// worth remembering: there is no access point to take down, so the
+			// answer would bar the poll from a radio that is free by
+			// construction and usually works on the next round -- which is
+			// exactly what happened, twelve seconds later.
+			if e.cfg.IsScanner(iface) {
+				return ScanResult{}, fmt.Errorf("scan on %s failed: %w", iface, err)
+			}
 			e.rememberScanCost(iface, true)
 			return ScanResult{}, fmt.Errorf(
 				"%s will not scan while serving (%w), and a background scan may "+
@@ -1684,7 +1737,7 @@ func (e *Engine) scanBand(iface string, apply, allowOutage bool) (ScanResult, er
 			defer e.reenableAP(iface)
 		}
 		_ = exec.Command("ip", "link", "set", iface, "up").Run()
-		raw, err = exec.Command("iw", scanArgs...).Output()
+		raw, err = scanCmd(iface, scanArgs)
 		if err != nil {
 			return ScanResult{}, fmt.Errorf(
 				"scan on %s failed even with the access point stopped: %w", iface, err)
@@ -1728,6 +1781,13 @@ func (e *Engine) scanBand(iface string, apply, allowOutage bool) (ScanResult, er
 			"and its clients were dropped -- either because this radio refuses " +
 			"to scan while serving, or because scanning knocked it off the air " +
 			"anyway. It has been brought back."
+	} else if e.cfg.IsScanner(iface) {
+		// A scanner has no access point to keep up, so "nobody was dropped --
+		// the cost was a few beacon gaps" describes a cost it did not pay. The
+		// point of this radio is that the reading is free, and the note is
+		// where that is visible.
+		res.Note += " This is the scanner: it serves no access point, so " +
+			"the scan cost nothing and dropped nobody."
 	} else {
 		res.Note += " This radio scans off-channel while still serving, so " +
 			"nobody was dropped -- the cost was a few beacon gaps."
@@ -1828,6 +1888,14 @@ func (e *Engine) scanBand(iface string, apply, allowOutage bool) (ScanResult, er
 	case res.OutageSec > 0:
 		e.logEvent(EventAction, iface, "", "%s scanned %s (%.0fs off the air) — %s — stayed on %d",
 			iface, band, res.OutageSec, found, res.Now)
+	case e.cfg.IsScanner(iface):
+		// A SEPARATE BRANCH, because both halves of the line below are wrong
+		// about a scanner. It is not "serving", and it "stayed on" no channel:
+		// it has none, so `band` is empty and `res.Now` is 0 -- which read as
+		// "scanned  while serving ... stayed on 0", with the gap where a band
+		// should be. Measured on the container host 2026-09-11.
+		e.logEvent(EventAction, iface, "", "%s scanned both bands — %s — it serves "+
+			"nothing, so nobody was dropped", iface, found)
 	default:
 		e.logEvent(EventAction, iface, "", "%s scanned %s while serving — %s — stayed on %d",
 			iface, band, found, res.Now)

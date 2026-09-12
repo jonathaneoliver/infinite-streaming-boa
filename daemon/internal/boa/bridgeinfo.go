@@ -32,9 +32,18 @@ const (
 	RoleWAN    = "wan"    // the port cabled to the existing network
 	RoleBridge = "bridge" // br-lan itself
 	RoleAP     = "ap"     // a radio hostapd is serving
-	RoleRadio  = "radio"  // a wireless interface that is not serving the AP
-	RoleLAN    = "lan"    // the downstream USB ethernet port
-	RoleOther  = "other"
+	// RoleScanner is a radio that is present and deliberately not serving: an
+	// instrument, scanned on a timer so the contention figures stay fresh.
+	//
+	// A FOURTH wireless role rather than a flag on RoleRadio, because RoleRadio
+	// used to carry two opposite meanings. A radio that ought to be serving and
+	// is not is a fault whose clients are unconditioned; a scanner is working
+	// correctly and has no clients to lose. Presentation has to tell them
+	// apart, and it switches on this constant. See #288.
+	RoleScanner = "scanner"
+	RoleRadio   = "radio" // a wireless interface that is not serving the AP
+	RoleLAN     = "lan"   // the downstream USB ethernet port
+	RoleOther   = "other"
 )
 
 // APStatus is what a hostapd-served radio is doing right now.
@@ -486,7 +495,14 @@ func (e *Engine) buildBridgeState() BridgeInfo {
 			in.Powered, in.PowerKnown = radioPowered(name)
 			in.Serving = e.cfg.IsWlan(name)
 			in.AirtimePerClient, in.AirtimeCapKnown = airSeen[name]
-			if hostapdAvailable(name) {
+			// A scanner is never promoted to RoleAP, even if hostapd answers
+			// for it. It can: a config left behind by an earlier plan, or a
+			// hostapd somebody started by hand, both leave a live control
+			// socket on an interface this box has been told is an instrument.
+			// Reading that socket would relabel the radio as an access point
+			// and take the row's controls with it -- offering channel moves
+			// and deauth on hardware whose whole job is to listen.
+			if hostapdAvailable(name) && in.Role != RoleScanner {
 				// Read DIRECTLY. This whole function now runs on a timer rather
 				// than on a request (see BridgeState), so a blocking hostapd
 				// call here costs a slower background rebuild and nothing else.
@@ -516,7 +532,6 @@ func (e *Engine) buildBridgeState() BridgeInfo {
 	sort.SliceStable(bi.Ifaces, func(i, j int) bool {
 		return roleOrder(bi.Ifaces[i].Role) < roleOrder(bi.Ifaces[j].Role)
 	})
-	bi.Notes = bridgeNotes(bi, e.cfg)
 	bi.Scans = e.lastScans()
 	// Each radio's contention, from whoever measured its channel. Built here
 	// rather than in the UI so the title bar and the band plan colours cannot
@@ -528,6 +543,15 @@ func (e *Engine) buildBridgeState() BridgeInfo {
 		}
 	}
 	bi.Air = airViews(bi.Scans, chanOf)
+	// AFTER Scans, and that ordering is load-bearing.
+	//
+	// bridgeNotes judges a scanner on the age of its last reading, which it
+	// reads out of bi.Scans. Computed above this line it saw a map that had not
+	// been filled in yet, so a box scanning happily every fifteen seconds
+	// reported "has taken no reading yet" for ever -- measured on the container
+	// host 2026-09-11, with the successful scans sitting in the activity log at
+	// the same moment.
+	bi.Notes = bridgeNotes(bi, e.cfg)
 	// What each radio has been told to CLAIM about its congestion, beside the
 	// floor of what it is really doing. Both, always: a control that can lie is
 	// only safe while the truth is on screen next to it.
@@ -561,8 +585,58 @@ func (e *Engine) buildBridgeState() BridgeInfo {
 // clients associate, get addresses, pass traffic, and appear nowhere.
 func bridgeNotes(bi BridgeInfo, cfg Config) []Notice {
 	var out []Notice
+	// A named scanner that is not on the box at all. Worth saying BEFORE the
+	// loop below, because that loop walks the interfaces that exist and this
+	// one does not: without a note here, a mistyped interface name produces a
+	// box with no instrument, no error, and contention figures that quietly
+	// fall back to whatever the serving radios can manage.
+	for _, s := range cfg.ScanPorts {
+		found := false
+		for _, in := range bi.Ifaces {
+			if in.Name == s {
+				found = true
+				break
+			}
+		}
+		if !found {
+			out = append(out, Notice{"error", fmt.Sprintf(
+				"%s is configured as the scanner but no such interface is on "+
+					"this box, so contention figures come from the serving radios "+
+					"and cost what they have always cost.", s)})
+		}
+	}
 	for _, in := range bi.Ifaces {
 		if !in.Wireless || in.Serving {
+			continue
+		}
+		// A scanner is not serving ON PURPOSE. "up but not serving" is true of
+		// it and reads as a fault, which is the whole confusion this role
+		// exists to end.
+		//
+		// What IS worth saying about it is that the figures have stopped
+		// moving -- and that is judged on the AGE OF ITS LAST READING, never
+		// on whether the interface is up.
+		//
+		// It was written as `!in.Up`, and that was a guess that measured
+		// false. On the container host 2026-09-11 the AX200 sat at operstate
+		// "down", refused to come up when asked, and scanned anyway: 19 access
+		// points in 1.2s, zero outage, both bands. The box would have carried
+		// a permanent warning about the one radio that was working -- which is
+		// precisely the failure this role was added to stop. Reading age also
+		// covers every other reason a scan can stop, including the ones nobody
+		// has thought of.
+		if in.Role == RoleScanner {
+			at := bi.Scans[in.Name].At
+			switch {
+			case at == 0:
+				out = append(out, Notice{"info", fmt.Sprintf(
+					"%s is the scanner and has taken no reading yet.", in.Name)})
+			case time.Since(time.UnixMilli(at)) > scanStaleAfter:
+				out = append(out, Notice{"warn", fmt.Sprintf(
+					"%s is the scanner but its last reading is %s old, so the "+
+						"contention figures are stale.", in.Name,
+					time.Since(time.UnixMilli(at)).Round(time.Minute))})
+			}
 			continue
 		}
 		if in.AP != nil && in.AP.Enabled {
@@ -588,12 +662,14 @@ func roleOrder(role string) int {
 		return 1
 	case RoleAP:
 		return 2
-	case RoleRadio:
+	case RoleScanner:
 		return 3
-	case RoleLAN:
+	case RoleRadio:
 		return 4
+	case RoleLAN:
+		return 5
 	}
-	return 5
+	return 6
 }
 
 func ifaceRole(name string, in IfaceInfo, cfg Config) string {
@@ -607,6 +683,13 @@ func ifaceRole(name string, in IfaceInfo, cfg Config) string {
 		if name == l {
 			return RoleLAN
 		}
+	}
+	// Before the generic wireless case, and it wins over it unconditionally.
+	// A scanner is identified by CONFIGURATION rather than by what it is doing,
+	// so a stale hostapd config or a radio left beaconing by something else
+	// cannot promote it back to an access point below.
+	if in.Wireless && cfg.IsScanner(name) {
+		return RoleScanner
 	}
 	if in.Wireless {
 		return RoleRadio

@@ -1092,6 +1092,34 @@ damages packets, never link state.
   nothing and is a complete answer. One such scan describes every radio's
   channel, so no radio is ever taken off the air to find out how busy its own
   channel is.
+- **A radio may be kept as an instrument rather than an access point.** Named in
+  the configuration and never inferred, such a radio is planned no channel,
+  written no hostapd config and given no clients; the box scans it on the same
+  timer instead. On hardware where every serving radio refuses to scan while
+  beaconing, this is what makes the contention figures free rather than stale:
+  one radio that serves nothing answers for the whole box, and the choice
+  between a stale figure and an outage disappears.
+
+  It is a **distinct state from a radio that is not serving**, and the interface
+  says so. A wireless interface that is neither serving nor a scanner is
+  carrying clients nobody is conditioning, which is an error; a scanner is
+  working correctly, and is drawn and labelled as scanning rather than as idle,
+  unwatched or down.
+
+  **What is reported about it is the age of its reading, never the state of its
+  link.** A radio of this kind may scan perfectly while its interface is down
+  and may refuse to come up at all, so the interface is not evidence of
+  anything; a reading that has stopped advancing is. A scanner whose figures
+  have gone stale is a warning, one that has taken no reading yet says so
+  plainly, and one named in the configuration while absent from the box is an
+  error. In each case nothing is refreshing the figures and every channel
+  colour is quietly going stale, which is the failure the arrangement exists to
+  avoid.
+
+  Access-point controls are not offered on it. Every one of them acts through
+  hostapd, which a scanner does not have and will never have, so they are
+  absent rather than disabled. Scanning it on demand remains available, and
+  unlike on a serving radio it costs nothing.
 - **A chosen channel is remembered, and a radio is put back on it.** The move
   itself is applied to the running access point and lasts only as long as that
   process, so a restart, a reboot, a USB re-enumeration or a driver reload

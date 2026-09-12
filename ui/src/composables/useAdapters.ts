@@ -63,7 +63,11 @@ const ADAPTER_COLOURS = ['#a78bfa', '#2dd4bf', '#f472b6', '#c084fc', '#22d3ee'];
 
 /** Interfaces the rack shows. The bridge and the WAN port are the fabric, not
  *  adapters -- they carry every client rather than any particular one. */
-const RACK_ROLES = ['ap', 'radio', 'lan'];
+// 'scanner' is in the rack for the same reason it is in the diagram: it is a
+// radio the box has, and a row is where its last reading and its age are
+// readable. What the role changes is the row's badge and its controls, not
+// whether the hardware is shown at all.
+const RACK_ROLES = ['ap', 'scanner', 'radio', 'lan'];
 
 const ifaces = ref<IfaceInfo[]>([]);
 const open = ref<Record<string, boolean>>(loadOpen());

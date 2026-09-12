@@ -587,15 +587,31 @@ function cellNote(radio: IfaceInfo, row: PlanRow, cell: PlanCell): string {
   font-weight: 700;
   opacity: 1;
 }
-/* Occupied by ANOTHER of our radios. Struck through and dimmed rather than
-   merely disabled, because a cell that is simply unclickable reads as a bug --
-   the operator presses it, nothing happens, and nothing says why. The tooltip
-   names which radio is there and what to do about it. */
+/* Occupied by ANOTHER of our radios. Struck through rather than merely
+   disabled, because a cell that is simply unclickable reads as a bug -- the
+   operator presses it, nothing happens, and nothing says why. The tooltip
+   names which radio is there and what to do about it.
+
+   IT KEEPS ITS QUALITY COLOUR, and the hatching is drawn in that colour.
+   Unavailable and busy are two different facts about a channel, and a plan is
+   read to compare channels: a cell that drops to grey the moment one of our own
+   radios sits on it takes its measurement off the page, so the operator can no
+   longer see whether moving the OTHER radio away would even be worth it.
+
+   currentColor is what makes that free. The quality rules above set `color`, so
+   the gradient picks the rating up without a rule per quality -- and an unrated
+   cell, whose colour is the default dim ink, hatches neutrally by the same
+   mechanism rather than needing a case of its own.
+
+   background-IMAGE, not background: the shorthand would drop the cell's own
+   `--panel-2` fill, and the hatch is meant to sit ON the cell rather than
+   replace it. The stripes are mixed down to a third so a 10px label stays
+   readable underneath them. */
 .cell.taken {
-  background: repeating-linear-gradient(
-    -45deg, var(--panel-2) 0 3px, var(--line-soft) 3px 6px);
-  color: var(--ink-faint);
-  border-color: var(--line);
+  background-image: repeating-linear-gradient(
+    -45deg,
+    transparent 0 3px,
+    color-mix(in srgb, currentColor 32%, transparent) 3px 6px);
   cursor: not-allowed;
 }
 .node.unwatched .name { fill: var(--warn); }

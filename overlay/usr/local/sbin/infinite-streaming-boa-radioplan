@@ -210,12 +210,52 @@ print("radioplan: %s was remembered on %s; the plan says %d, dropping the memory
 PY
 }
 
+# --- the listen-only radio, which is planned nothing --------------------------
+#
+# Read from the DAEMON's own configuration rather than from a second setting of
+# this script's own, so there is exactly one place a box says which radio is an
+# instrument. Two settings that have to agree is the failure this whole script
+# was written to remove: the header above records a second dongle serving
+# nothing until three things were edited to match.
+#
+# A radio named here is given no channel and no hostapd config, and is left out
+# of PLANNED -- so hostapd is never started for it and the daemon never counts
+# it as a radio that should be serving. It is not left DOWN: the daemon brings
+# it up to scan with, which is the one thing it is for.
+# The ENVIRONMENT first, then the file, because the two targets set it
+# differently and neither should need a copy of the other's mechanism. On the Pi
+# this script is run by select-radio at boot and on hotplug, with no unit
+# environment to inherit, so the value comes from the file systemd also reads.
+# In the container the entrypoint runs it directly and exports the variable.
+BOA_DEFAULTS=${BOA_DEFAULTS:-/etc/default/infinite-streaming-boa}
+SCAN_PORTS=${BOA_SCAN_PORT:-}
+if [ -z "$SCAN_PORTS" ] && [ -r "$BOA_DEFAULTS" ]; then
+  SCAN_PORTS=$(sed -n 's/^BOA_SCAN_PORT=//p' "$BOA_DEFAULTS")
+fi
+# Commas and spaces both separate, exactly as the daemon's -scan splits them.
+SCAN_PORTS=$(printf '%s' "$SCAN_PORTS" | tr ',' ' ')
+
+is_scanner() {   # $1=iface
+  for s in $SCAN_PORTS; do
+    [ "$1" = "$s" ] && return 0
+  done
+  return 1
+}
+
 # --- walk every radio --------------------------------------------------------
 WANT=""
 for link in /sys/class/net/*/phy80211; do
   [ -e "$link" ] || continue
   iface=$(basename "$(dirname "$link")")
   phy=$(basename "$(readlink "$link")")
+
+  # Before pick_channel, so a scanner never consumes a channel from the plan.
+  # Taking one would push a radio that IS serving onto a worse channel to avoid
+  # clashing with a radio that never transmits.
+  if is_scanner "$iface"; then
+    log "$iface ($phy): listen-only; no channel and no hostapd config"
+    continue
+  fi
 
   plan=$(pick_channel "$phy")
   if [ -z "$plan" ]; then

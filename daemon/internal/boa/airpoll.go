@@ -48,6 +48,20 @@ import "time"
 // scan takes 4047 ms, and this interval would cost 27% of the radio.
 const airScanEvery = 15 * time.Second
 
+// scanStaleAfter is when a radio's last reading stops describing the present
+// well enough to be worth drawing colours from, and the interface says so.
+//
+// Twelve missed rounds of a 15-second poll, which is long enough that a busy
+// box skipping a few -- a pattern running, a radio mid-restart -- never raises
+// it, and short enough that a scanner which has genuinely stopped is reported
+// while the operator is still in front of the box.
+//
+// This is what replaced a guess. The staleness warning was first written as
+// "the scanner's interface is down", which measured false: the AX200 scans
+// perfectly while down. Age is the honest signal, and it catches every reason
+// a scan can stop rather than the one reason somebody predicted.
+const scanStaleAfter = 12 * airScanEvery
+
 // watchAir refreshes the contention figures on a radio that can afford it.
 func (e *Engine) watchAir() {
 	for {
@@ -112,7 +126,12 @@ func (e *Engine) airScanOnce() {
 
 // airScan refreshes one radio's reading.
 func (e *Engine) airScan(iface string) {
-	if err := e.radioReady(iface); err != nil {
+	// readyToScan, not radioReady: a listen-only radio has no hostapd control
+	// socket, and radioReady's insistence on one made this return here without
+	// a word -- a configured scanner that never scanned, and figures that
+	// stayed stale for the one reason nothing was reporting. See #288.
+	if err := e.readyToScan(iface); err != nil {
+		e.noteScanBlocked(iface, err.Error())
 		return
 	}
 	// scanBandFree, never ScanBand: this refreshes a reading, and a background
@@ -121,14 +140,39 @@ func (e *Engine) airScan(iface string) {
 	//
 	// It also never moves a radio -- a background task that relocated an access
 	// point on its own would be the single most surprising thing this box does.
+	//
+	// The outcome goes through noteScanBlocked rather than straight to the log,
+	// for the failures that REPEAT. A serving radio that refuses is asked once
+	// and never again, because rememberScanCost takes it out of the running --
+	// but a scanner is picked every round regardless, since it is free by
+	// definition and there is no cost to remember. So a scanner whose driver
+	// hangs or errors would put a line in the activity log every fifteen
+	// seconds for ever and bury the events the view exists for. Edge-triggered,
+	// it says so once, and says so again when it recovers.
 	if _, err := e.scanBandFree(iface); err != nil {
-		e.logEvent(EventRadio, iface, "",
-			"background scan of %s failed, so its contention figures are stale: %v", iface, err)
+		e.noteScanBlocked(iface, err.Error())
+		return
 	}
+	e.noteScanBlocked(iface, "")
 }
 
-// freeScanner is a radio already known to scan without an outage, or empty.
+// freeScanner is a radio that can be scanned without an outage, or empty.
+//
+// A LISTEN-ONLY radio first, and without consulting scanFree at all. That map
+// answers "did scanning this radio take its access point down", and a scanner
+// has no access point for the question to be about: there is nothing to drop,
+// nothing to re-enable, and nothing to learn by trying. Every box that has one
+// therefore skips the probe-an-idle-radio dance below entirely.
+//
+// LinkExists is checked rather than assumed, because a configured scanner that
+// is not plugged in must fall through to the serving radios rather than make
+// the poll spend every round failing on an interface that is not there.
 func (e *Engine) freeScanner() string {
+	for _, s := range e.cfg.ScanPorts {
+		if e.cfg.Demo || LinkExists(s) {
+			return s
+		}
+	}
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 	for _, w := range e.cfg.WlanPorts {
@@ -137,6 +181,41 @@ func (e *Engine) freeScanner() string {
 		}
 	}
 	return ""
+}
+
+// noteScanBlocked reports that a radio cannot be scanned at all, on the edge.
+//
+// An empty reason clears it, which is what says the figures are live again.
+// Edge-triggered because the poll is a 15-second loop and the conditions here
+// -- an interface that is down, hardware that is not plugged in -- persist: a
+// line per round would be four a minute for ever. Reporting nothing at all is
+// the failure mode this replaces.
+// The message is the dedup key, so a driver that fails the same way every
+// round is reported once and a NEW failure is still reported.
+func (e *Engine) noteScanBlocked(iface, reason string) {
+	e.mu.Lock()
+	if e.scanBlocked == nil {
+		e.scanBlocked = map[string]string{}
+	}
+	was := e.scanBlocked[iface]
+	if reason == "" {
+		delete(e.scanBlocked, iface)
+	} else {
+		e.scanBlocked[iface] = reason
+	}
+	e.mu.Unlock()
+
+	if reason == was {
+		return
+	}
+	if reason != "" {
+		e.logEvent(EventWarning, iface, "",
+			"%s cannot be scanned, so its contention figures will go stale: %s",
+			iface, reason)
+		return
+	}
+	e.logEvent(EventAction, iface, "",
+		"%s can be scanned again; its contention figures are live", iface)
 }
 
 // scanCostKnown reports that this radio's scan cost has already been observed,

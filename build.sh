@@ -34,6 +34,7 @@ AP_CHANNEL="${AP_CHANNEL:-6}"
 # honours AP_BAND/AP_CHANNEL like anything else.
 AP_CHANNEL_24="${AP_CHANNEL_24:-6}"
 BOA_WAN_PORT="${BOA_WAN_PORT:-eth0}"
+BOA_SCAN_PORT="${BOA_SCAN_PORT:-}"
 BOA_RESCUE_IP="${BOA_RESCUE_IP:-192.168.99.1}"
 AP_HIDDEN="${AP_HIDDEN:-false}"
 AP_SSID_USB="${AP_SSID_USB:-}"
@@ -60,6 +61,19 @@ BOA_TIMEZONE="${BOA_TIMEZONE:-}"
   || die "BOA_RESCUE_IP must be a plain IPv4 address (got '$BOA_RESCUE_IP')"
 [[ "$BOA_WAN_PORT" =~ ^[a-zA-Z0-9_-]+$ ]] \
   || die "BOA_WAN_PORT must be an interface name like eth0 (got '$BOA_WAN_PORT')"
+# Only checked when set; empty means no listen-only radio, which is the default.
+# Shape only -- whether the name matches real hardware cannot be known here, and
+# the box reports a name that matches nothing rather than ignoring it.
+[ -z "$BOA_SCAN_PORT" ] || [[ "$BOA_SCAN_PORT" =~ ^[a-zA-Z0-9_,\ -]+$ ]] \
+  || die "BOA_SCAN_PORT must be interface name(s) like wlan0 (got '$BOA_SCAN_PORT')"
+# Naming the uplink as a radio to listen on. It is not a radio, and the daemon
+# would be told to raise and scan the one port the box is reachable through.
+# Caught here because on a headless box the symptom is no box.
+for s in ${BOA_SCAN_PORT//,/ }; do
+  [ "$s" != "$BOA_WAN_PORT" ] \
+    || die "BOA_SCAN_PORT names '$s', which is BOA_WAN_PORT -- the uplink is not
+  a radio, and scanning is not something to point at it"
+done
 [ -n "$BOA_PASSWORD" ] || [ -n "$BOA_SSH_PUBKEY" ] \
   || die "set BOA_PASSWORD or BOA_SSH_PUBKEY, or you cannot log in to the Pi"
 [[ "$BOA_SSH_PASSWORD_LOGIN" == "true" || "$BOA_SSH_PASSWORD_LOGIN" == "false" ]] \
@@ -193,7 +207,7 @@ docker run --rm --privileged \
   -e OUT_NAME="$OUT_NAME" \
   -e AP_SSID -e AP_SSID_USB -e AP_PASSWORD -e AP_COUNTRY -e AP_BAND -e AP_CHANNEL \
   -e AP_CHANNEL_24 \
-  -e AP_HIDDEN -e BOA_WAN_PORT -e BOA_RESCUE_IP \
+  -e AP_HIDDEN -e BOA_WAN_PORT -e BOA_SCAN_PORT -e BOA_RESCUE_IP \
   -e BOA_HOSTNAME -e BOA_USER -e BOA_PASSWORD -e BOA_SSH_PUBKEY \
   -e BOA_NTOPNG_PASSWORD -e BOA_SSH_PASSWORD_LOGIN \
   -e BOA_TIMEZONE \
@@ -215,6 +229,16 @@ else
   USB_SSID_NOTE=""
 fi
 
+# Worth its own line in the summary: a radio named here does NOT appear as an
+# access point on the box, and someone who set it and then went looking for two
+# SSIDs should be told that is the configuration working.
+SCAN_NOTE=""
+if [ -n "$BOA_SCAN_PORT" ]; then
+  SCAN_NOTE="
+  Listening:  ${BOA_SCAN_PORT} — an instrument, not an access point: no channel,
+              no hostapd, scanned every 15s so contention costs no outage"
+fi
+
 cat <<EOF
 
   Image:    dist/${OUT_NAME}
@@ -223,7 +247,7 @@ cat <<EOF
               USB adapter  ${BAND_LABEL} ch ${AP_CHANNEL}  (80MHz, 802.11ax)${USB_SSID_NOTE}
               onboard      2.4GHz ch ${AP_CHANNEL_24}  (20MHz, 802.11n)
             Either alone serves alone; on its own the onboard radio takes
-            ${BAND_LABEL} ch ${AP_CHANNEL} instead.
+            ${BAND_LABEL} ch ${AP_CHANNEL} instead.${SCAN_NOTE}
   Login:    ssh ${BOA_USER}@${BOA_HOSTNAME}.local
   Mode:     transparent bridge (${BOA_WAN_PORT} + wlan-usb + wlan0 + lan0 -> br-lan)
             clients keep their existing LAN addresses; the Pi is not a hop
