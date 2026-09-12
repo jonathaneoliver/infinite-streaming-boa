@@ -322,7 +322,7 @@ the file are replaced, devices not mentioned are left alone.">
     <BridgeView
       :active="true" :clients="snap?.clients"
       :series="series"
-      :port-series="portSeries" :ports="snap?.ports"
+      :port-series="portSeries" :ports="snap?.ports" :pairs="snap?.pairs"
       :radios="caps?.wlan_ifaces ?? []"
       :adapter-run="snap?.adapter_run ?? null"
     />

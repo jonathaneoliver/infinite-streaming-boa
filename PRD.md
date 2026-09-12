@@ -804,6 +804,32 @@ damages packets, never link state.
   negotiated rate made 421 Mbit/s a sliver on a 10 Gbit port. The ceiling is
   the measured peak with headroom, and the link speed is quoted as a number
   beside the chart where it cannot flatten the trace.
+- **Where the traffic went is drawn, not inferred.** Under the adapter
+  grouping the box also shows which adapter forwarded to which, as a Sankey
+  whose ribbon thickness is the rate. The volume charts cannot answer this and
+  no arrangement of them can: interface counters give each adapter's row and
+  column sums and never the matrix, so "is this client talking to the internet
+  or to the device beside it" needs a counter at the point the bridge makes the
+  decision. One diagram per direction, because a Sankey must be acyclic and
+  both directions in one figure puts every adapter on both sides with the
+  ribbons folding back over themselves.
+- **An adapter appears on both sides of a diagram, and that is not double
+  counting.** On the left it is traffic that arrived by that adapter and on the
+  right traffic that left by it — two different quantities that share a name.
+  The figure says so, because the drawing cannot.
+- **The ribbons are a rolling mean, and each figure says over how long.** A
+  pair's rate is one second's difference of a counter, and a bursty flow reads
+  as nothing at all in any given second — a figure that blinks in and out reads
+  as "no routing" when the answer is "some routing, unevenly". The two
+  directions are also scaled independently, so widths compare within a figure
+  and not between them, and the totals beside the headings are what carry the
+  comparison.
+- **Counting the matrix must not perturb the traffic**, on a box whose whole
+  purpose is not perturbing it. It is one counter rule per ordered adapter pair
+  with no verdict, so nothing about forwarding changes, and the cost was
+  measured rather than assumed before it was kept. Where the counters cannot be
+  read at all, the box says why instead of drawing an empty figure.
+
 - **A chart that has no traffic keeps its space.** The panels are a screenful,
   so removing an idle one and restoring it on the next packet moves everything
   below it — in a view whose whole purpose is watching a number move. An idle

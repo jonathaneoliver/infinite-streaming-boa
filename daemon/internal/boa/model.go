@@ -742,6 +742,14 @@ type Snapshot struct {
 	// itself reports as read_age_ms and which has been minutes while a radio
 	// was wedged.
 	Ports []PortFlow `json:"ports,omitempty"`
+	// Pairs is which bridge port forwarded to which, and how much.
+	//
+	// The per-port totals above cannot express it -- they are row and column
+	// sums and never the matrix -- so this is the only thing on the box that
+	// can say whether a client is talking to the internet or to the device
+	// beside it. Counted by nftables rules the daemon owns; see portpairs.go
+	// for the mechanism and for the measurement that says it is free.
+	Pairs []PortPair `json:"pairs,omitempty"`
 }
 
 // Notice is one message for the operator.
