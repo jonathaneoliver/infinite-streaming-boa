@@ -14,6 +14,262 @@ deliberate and documented so they are not mistaken for defects — see
 
 Nothing yet.
 
+## [0.3.0] — 2026-09-11
+
+**What the air is actually doing, measured rather than inferred — and a second
+place to run the box.**
+
+0.2.0 could make a client do things to its link. What it could not do was say
+what the medium cost while it happened, so a throughput figure that moved had
+no explanation attached to it: the same client, the same cap and the same
+channel could differ by a factor of two, and every instrument on the box
+reported a healthy radio. 0.3.0 fills that in. It reads the neighbours' own
+account of how busy the channel is, attributes airtime to individual clients,
+counts retries against a denominator that makes them mean something, watches
+the USB bus underneath the radio, and can dedicate a radio to listening so that
+none of those readings costs an outage.
+
+It also stops being a Raspberry Pi. The same binary and the same channel
+planner now run as a container on an ordinary x86_64 Linux host, and a new
+command-line tool drives either one.
+
+39 pull requests.
+
+### What the box can now tell you
+
+| Fact | Where it comes from | What it replaces |
+|---|---|---|
+| How busy this channel is, as a **measurement** | Neighbouring access points' BSS Load elements, aggregated as the maximum and shown as a range with a reporter count | A headcount of access points, which ranks channels wrong: one AP with no clients sat in 37% utilisation while one with ten sat in 8.6% |
+| What **this** radio spent on its own clients | Our own station airtime counters, verified against `iperf3` | Throughput, which says what crossed the link and not what it cost |
+| What **each client** spent | Per-station airtime, where the driver attributes it — asked by observing a dump rather than by driver name | Nothing. One client was measured holding 46% of a radio |
+| Whether a link is retrying | `tx retries` with the denominator `tx_failed` never had | A bare counter, which answers "since when" rather than "how is it doing" |
+| That the radio is off the air despite every other sign of health | The kernel's own USB error stream | Four instruments all reporting a healthy radio while nothing was transmitting |
+
+The last row is worth its own note, because it is the failure this release
+exists to make impossible. A dongle stopped transmitting; hostapd reported
+`state=ENABLED` with the right SSID on the right channel, the bridge was
+forwarding, the interface was `UP LOWER_UP`, and clients steered onto it simply
+vanished. A scan from the box's other dongle, ten centimetres away, found
+eleven networks and not this one. The kernel had been saying so 182 times
+(`mt7921u tx urb failed: -71`) and nothing was listening.
+
+**Channel choice now rests on this rather than on guesswork.** Measured on
+repaired power, one client, 70s per channel: ch149 gave 683 Mbit/s at 91.2%
+airtime against ch40's 536 Mbit/s at 74.6%, with identical PHY rates. The band
+plan is coloured from whichever scan covers each channel, and hovering a cell
+says which rule produced its colour and what was measured behind it.
+
+### A radio that only listens
+
+Every contention reading used to cost an access point. The mt7921u adapters
+refuse to scan while they are serving — `Operation not supported (-95)`, passive
+scans included — so on a box whose radios are all mt7921u, the choice was a
+stale figure or an outage. Name a radio in `BOA_SCAN_PORT` and it becomes an
+instrument instead: planned no channel, written no hostapd config, given no
+clients, and scanned on the background timer.
+
+It is a distinct state from a radio that is not serving, and the interface says
+so — drawn dotted rather than dashed, labelled `scanning` rather than `idle`,
+and offered none of the access-point controls, because every one of those acts
+through a hostapd it does not have.
+
+Measured on the container host with the motherboard's Intel AX200 as the
+scanner: 19 access points across both bands in 1.2 seconds, zero outage, and
+both serving radios carrying a contention figure taken by a radio that serves
+nobody. Before it, that box's air-readings map was **empty** — not stale,
+absent.
+
+Two things about that card are worth recording for anyone repeating it. It sits
+at operstate `down`, exits zero when asked to come up, stays down, and scans
+perfectly anyway — so the state of the interface is not evidence of anything.
+And its first scan after a container restart hangs, twice out of two attempts,
+which is why every scan is now bounded and a timeout names itself.
+
+### Two ways to run it
+
+Neither is the reference and neither is a port. The same `boad` binary and the
+same embedded interface serve both, and `radioplan` is copied into the container
+image unchanged, so a channel plan made on one cannot drift from a plan made on
+the other. What differs is only where the box gets a bridge, hostapd configs,
+hotplug handling and process supervision: the Pi takes them from the
+distribution, the container brings its own.
+
+| Unshaped, `iperf3` **to** the box | Raspberry Pi 5 | Linux container |
+|---|---|---|
+| Wired downlink, 2.5 GbE | 1.91 Gbit/s | 1.95 Gbit/s |
+| Wired uplink, 2.5 GbE | 2.35 Gbit/s | 2.35 Gbit/s |
+| One radio, 80 MHz 802.11ax | 495–683 Mbit/s | 454 Mbit/s |
+
+The wired figures agree to within 2% on two machines with different CPUs, which
+says the 2.5 GbE adapter rather than the target is the limit in both.
+
+**Enforcement has only ever been measured end to end on the container**, and
+that gap runs the other way: 86.0 / 38.1 Mbit/s against a 90/40 cap, and 57 /
+13.6 against a 60/20 cap over the air. The Pi's published figures are all
+ceilings taken against the box itself, which is the measurement that cannot show
+a cap working. Running that set on the Pi is the more valuable missing work of
+the two.
+
+Why the host's NIC has to be bridged, since it is the part that looks
+heavy-handed: a transparent bridge needs a layer-2 uplink carrying arbitrary
+source MACs. A macvlan cannot provide one — in bridge mode it filters ingress by
+destination MAC, and in passthru mode it consumes the lower device's frames and
+takes the host off the network. A bridge plus a veth is the only shape that
+gives the container real layer 2 and leaves the host on it. Verified: a client
+behind the container holds a lease from the operator's own router.
+
+### Driving it from a terminal
+
+`boactl` builds from `daemon/cmd/boactl` and imports the daemon's own types, so
+it cannot drift from what the box sends.
+
+```sh
+cd daemon && go build -o ~/.local/bin/boactl ./cmd/boactl
+boactl devices && boactl probe -ssh
+```
+
+`probe` **asserts** rather than printing numbers to be eyeballed, and exits
+non-zero when the box is not doing what it claims. The traps a hand-assembled
+`curl` or `ssh` has to remember — the absolute paths, the hexadecimal `tc` class
+ids, the templated unit names — are already in it. It does not cover the whole
+API; `boactl -h` lists what exists and #263 tracks the gap.
+
+### Upgrading from 0.2.0
+
+**A reflash is required. `deploy.sh` is not enough.** As with 0.2.0, the fast
+loop pushes the binary and its unit, and this release depends on things below
+that line: `scripts/customize.sh` and the overlay grew by about 340 lines and
+now write a new adapter-naming helper, a channel planner that honours a
+listen-only radio, avahi configuration, and `tcpdump` in the package list.
+
+**Adapter names change, and this is the migration that will surprise you.**
+0.2.0 named radios after the USB socket they were plugged into — `wlan-usb`,
+`wlan-usb2`. They are now named after the adapter itself, from the last four
+hex digits of its MAC: `wlan-usb-46c7`. Swap two dongles between sockets and
+the names follow the hardware rather than the port, which is the right
+behaviour for a measurement and the opposite of what 0.2.0 did.
+
+- **Policy survives**, because it is keyed by MAC and not by interface name.
+- **Anything that names an interface does not.** Scripts, saved commands and
+  notes referring to `wlan-usb` will find nothing. `BOA_WLAN_PORT` is rewritten
+  by the radio selector at boot, so it needs no hand edit.
+- **Export your configuration before reflashing**, as a reflash replaces the
+  whole filesystem including `/var/lib/infinite-streaming-boa/`:
+
+```sh
+./scripts/config.sh export > before.json     # keep this
+./build.sh                                   # then write the card with an imager
+./scripts/config.sh import before.json
+```
+
+**Three new `.env` variables**, all optional and all defaulting to previous
+behaviour:
+
+| Variable | Meaning |
+|---|---|
+| `BOA_SCAN_PORT` | A radio to keep as an instrument rather than an access point, by interface name. The Pi's onboard radio is the obvious choice |
+| `BOA_SCAN_IF` | The same thing for a container host, named as the **host** calls the card, because the handover happens before the container has a name for anything |
+| `AP_SSID_DOCKER` | The container's own SSID. Two boxes broadcasting one name is worse than useless: a client cannot tell them apart and a measurement belongs to whichever was louder |
+
+**One control was removed.** The 20 MHz conditioning profile is gone (#297).
+The band plan now marks which cell inside a block is the primary — the channel
+the radio actually beacons on — which is what that profile was being used to
+infer.
+
+### Added
+
+- **A container target.** `scripts/docker-deploy.sh <host>` builds the
+  interface and an amd64 binary locally and ships only the artefacts, so the
+  host needs neither Go nor node. The adapters are moved into the container's
+  own namespace outright: USB ethernet netdevs wholesale, and 802.11 phys with
+  `iw phy set netns`, because moving a radio's netdev alone leaves the wiphy
+  behind and nl80211 then refuses everything hostapd needs. (#285)
+- **`boactl`**, and the radio verbs behind it: `scan`, `channel`, `power`, `ap`,
+  `deauth-all`, `gather`, `evict`. All access-point-wide, none naming a client.
+  (#268, #269)
+- **A listen-only radio**, named in `BOA_SCAN_PORT` or handed to a container
+  with `BOA_SCAN_IF`. (#308)
+- **Contention on every radio's title bar** from one free scan, with both bands
+  kept so a 5GHz plan can be coloured without taking a 5GHz radio down. (#259)
+- **A BSS Load a client can act on**, advertised floored at the truth. Values
+  may only be raised above what is really happening: overstating load pushes
+  devices away, which is what a busy access point does anyway, while
+  understating it pulls them onto neighbours nobody here can see. (#270)
+- **Per-client airtime**, stacked under the adapter throughput charts. (#255)
+- **`tx retries` and a denominator**, so a clean link and a driver that does not
+  count are distinguishable. (#300)
+- **A capability-aware generation ladder**, and a conditioning row that states
+  what it costs. (#299)
+- **Several downstream wired ports**, rather than exactly one. (#275)
+- **A USB fault watch** reading the kernel's own error stream. (#276)
+- **A generated API reference** (`docs/API.md`) and a test asserting that every
+  field the wire carries is named somewhere in the interface — a field that is
+  computed and thrown away now fails the build. (#265)
+- **A script that reads a DRM stream's segments from the shape of its
+  traffic**, which is the only route to rungs for a service whose manifest
+  cannot be read. (#278)
+- **Steer refusals that say where the client wants to go**, read from the
+  management frames themselves. (#256)
+
+### Changed
+
+- **Adapters are named after the device, not the socket.** (#275)
+- **A steer waits 12 seconds for an answer**, not 5. The protocol suggests a
+  response should be immediate; measured clients take nine. (#257)
+- **mDNS publishes only what it should.** avahi ran with package defaults,
+  which advertised a `_workstation._tcp` service exposing the bridge MAC. (#273)
+- **A background scan may never cost an outage.** It attempts only the
+  non-disruptive path and records a refusal, since `-95` is a complete answer at
+  no cost. (#259)
+- **The 20 MHz conditioning profile was removed.** (#297)
+- **`docs/BACKLOG.md` is no longer where candidate work lives** — that is GitHub
+  issues. The file holds accepted constraints, so they are not rediscovered.
+  (#301)
+
+### Fixed
+
+- **A channel move between bands.** A move never set `hw_mode`, so asking a
+  5GHz radio for channel 6 set the channel, was acknowledged, and then failed
+  the `ENABLE` with "Unable to setup interface". (#280, #284)
+- **Four faults in how the box treats an operator's radio**, including every
+  channel move waiting four seconds for a recovery that could not happen.
+  (#283)
+- **Container uplink detection** picked the veth into the container rather than
+  the host's NIC. Found by deploying to the Ubuntu box and asking it what it had
+  detected. (#287)
+- **The adapter chart drew a straight line across time it never watched**,
+  which read as a transfer winding down rather than as a gap. (#274)
+- **An unbounded `iw scan` could wedge the contention poll silently.** One hung
+  child process stopped every figure on the box refreshing, for the life of the
+  daemon, with nothing reported. Scans are now bounded and a timeout names
+  itself. (#308)
+- **A missing `python3` was reported as a malformed profile**, sending the
+  reader to inspect a file that was fine. (#303)
+- **An ellipsis turned `802.11ax` into `802.11a`** — the one value in those rows
+  that degrades into a different true-looking value rather than a visibly
+  incomplete one. (#307)
+- **Client folds now carry the standing facts their header drops** as the window
+  narrows. (#305)
+- **The adapter facts strip no longer changes height under a screen reader.**
+  (#298)
+- **The band plan's heading named half the choice it offers**: a cell in the 40
+  or 80 row is a channel *and* a width together. (#253)
+
+### Known limitations
+
+- **Enforcement has never been measured end to end on the Pi.** (above)
+- **The listen-only radio has only ever run on the container host.** Its Pi path
+  is shared code that needs a reflash nobody has done.
+- **The channel colouring overstates how clear a channel is.** A channel the
+  scan produced no entry for is rated clear, which holds on 5GHz where an 80 MHz
+  neighbour is spread across its whole block, and fails on 2.4GHz where a
+  neighbour is recorded against its own channel only — so channels 2 to 4 read
+  clear beside a channel 1 at 34% busy with a neighbour at −19 dBm. The ±4
+  overlap window the data contract describes is not implemented.
+- **No 802.11k beacon report has ever come back.** #228 stays open.
+- **`boactl` does not cover the whole API.** #263 tracks the gap and what is
+  deliberately not planned.
+
 ## [0.2.0] — 2026-09-06
 
 **Wi-Fi control, so that every interaction between a client and a wireless
@@ -404,6 +660,7 @@ device under test and no cooperation from either end.
 - **A rotating (private) MAC strands a device's policy and its measured ladder.**
   Pin the address on any device you control before a long measurement.
 
-[Unreleased]: https://github.com/jonathaneoliver/infinite-streaming-boa/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/jonathaneoliver/infinite-streaming-boa/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/jonathaneoliver/infinite-streaming-boa/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/jonathaneoliver/infinite-streaming-boa/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/jonathaneoliver/infinite-streaming-boa/releases/tag/v0.1.0
