@@ -144,6 +144,26 @@ func reconcileRoles(cfg *Config) []string {
 	return dropped
 }
 
+// rateRaw is Engine.rate without the bits-per-second conversion: units per
+// second, for counters that are not bytes.
+//
+// Separate rather than a flag, because the two return different quantities and
+// a single function taking a boolean would put the units in the call site
+// where a reader has to remember which way round it goes. Packets per second
+// and megabits per second are not interchangeable and must not look it.
+func (e *Engine) rateRaw(key string, count uint64, now time.Time) float64 {
+	p, ok := e.prev[key]
+	e.prev[key] = counterSample{bytes: count, at: now}
+	if !ok || count < p.bytes {
+		return 0 // first sample, or a counter epoch
+	}
+	dt := now.Sub(p.at).Seconds()
+	if dt <= 0 {
+		return 0
+	}
+	return float64(count-p.bytes) / dt
+}
+
 // counterSample remembers one class's byte count so throughput can be derived
 // between polls. The kernel exposes totals, never rates.
 type counterSample struct {
@@ -420,6 +440,13 @@ type Engine struct {
 	// exists to avoid -- so the reason is stated when it changes and when it
 	// clears. Same shape as apLinkDown.
 	scanBlocked map[string]string
+
+	// pairPortsKey is the port set the nftables pair rules were last built
+	// for, so the common tick costs one string compare instead of a rebuild.
+	pairPortsKey string
+	// pairsBlocked is the last reason per-pair counting was unavailable, held
+	// so it is reported on the edge rather than every tick. See portpairs.go.
+	pairsBlocked string
 
 	// airSeen records, per radio, whether its LAST station dump carried the
 	// airtime lines -- the driver's answer to "can you attribute airtime to a
@@ -1322,6 +1349,19 @@ func (e *Engine) tick() {
 		}
 	}
 
+	// Per-pair forwarding, read BEFORE the lock and for two reasons, both of
+	// which cost a wedged box to learn.
+	//
+	// It spawns `nft`, and a process spawn has no business inside the tick's
+	// mutex -- the same objection the channel lookup above records. And it
+	// reports failures through notePairsBlocked, which TAKES e.mu: called from
+	// inside the locked section that is a non-reentrant mutex against itself,
+	// so the tick deadlocks and every HTTP handler blocks behind it. Measured
+	// 2026-09-12: boad went on listening on :80 and answered nothing, from the
+	// container's own address included, which is precisely what the comment
+	// above this lock warns about.
+	pairs := e.portPairs(now)
+
 	e.mu.Lock()
 	for i := range clients {
 		c := &clients[i]
@@ -1446,6 +1486,10 @@ func (e *Engine) tick() {
 		// tick, so the unattributed split comes from the same numbers the
 		// client rates beside it do rather than from a second sample.
 		Ports: e.portFlows(now, upC),
+		// Which port forwarded to which, which the per-port totals above
+		// cannot express: they are row and column sums, never the matrix.
+		// Computed before the lock; see the note there.
+		Pairs: pairs,
 	}
 	e.snap = snap
 	subs := make([]chan Snapshot, 0, len(e.subs))

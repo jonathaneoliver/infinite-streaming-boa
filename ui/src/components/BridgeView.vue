@@ -1,12 +1,13 @@
 <script setup lang="ts">
 import { computed, ref, watchEffect, type Ref } from 'vue';
 import { DEVELOPER } from '@/types';
-import type { Client, IfaceInfo, PatternView, PortFlow, Series } from '@/types';
+import type { Client, IfaceInfo, PatternView, PortFlow, PortPair, Series } from '@/types';
 import { useBridge } from '@/composables/useBridge';
 import InterfaceDiagram from '@/components/InterfaceDiagram.vue';
 import FabricStrip from '@/components/FabricStrip.vue';
 import AdapterRack from '@/components/AdapterRack.vue';
 import AdapterStack from '@/components/AdapterStack.vue';
+import FlowDiagram from '@/components/FlowDiagram.vue';
 import AdapterPatternPanel from '@/components/AdapterPatternPanel.vue';
 import ChannelPlan from '@/components/ChannelPlan.vue';
 import { setAdapterIfaces } from '@/composables/useAdapters';
@@ -42,6 +43,9 @@ const props = defineProps<{
   /** This tick's raw per-port flows, for the exact figures that are not drawn
    *  over time — the uplink's unattributed egress above all. */
   ports?: PortFlow[];
+  /** Which port forwarded to which, for the flow diagram. Not derivable from
+   *  `ports`: those are row and column sums, never the matrix. */
+  pairs?: PortPair[];
 }>();
 const activeRef = computed(() => props.active) as Ref<boolean>;
 
@@ -450,6 +454,16 @@ const pending = ref('');
           :iface="grouping === 'adapter' ? 'these adapters' : 'this box'"
           :series="totalSeries" :labels="totalLabels"
         />
+        <!-- WHERE it went, under HOW MUCH. The stack answers the volume
+             question and cannot answer the routing one; the Sankey is the same
+             numbers arranged to show the split, including the share that never
+             crossed the uplink. Only under the adapter grouping: per device
+             there is no flow to draw, because a device is an endpoint. -->
+        <FlowDiagram
+          v-if="grouping === 'adapter' && pairs"
+          :pairs="pairs" :wan-iface="wanIface"
+        />
+
         <!-- SAID, not implied, and only on the grouping it is true of.
              Per-client is the incomplete view by construction: a tc class only
              counts what its filter matched, so everything with no client
