@@ -609,6 +609,19 @@ telemetry updates never yank a control out from under the operator's cursor.
 > snapshot for the same reason a device's run is: so the editor can draw a
 > moving playhead without polling a second endpoint.
 
+**`ports`** `[]PortFlow` _(omitted when empty)_
+> Ports is what crossed each bridge port, from the kernel's own interface
+> counters rather than from the shaper's classes. See portflow.go.
+>
+> On the SNAPSHOT rather than on the bridge inventory, which is where the
+> interfaces otherwise live, because this is a time series and that is a
+> TTL-cached description of the hardware. The snapshot arrives once a
+> second on the same stream as the client throughput, so a port band and a
+> client band share one clock and one x-axis. Read from the bridge endpoint
+> instead, the trace would inherit that cache's age -- which the payload
+> itself reports as read_age_ms and which has been minutes while a radio
+> was wedged.
+
 ### BridgeInfo — GET /api/bridge
 
 BridgeInfo is the whole answer for the bridge view.
@@ -1729,6 +1742,58 @@ too unstable to hang configuration from.
 > output beside its input is how the two come to disagree -- the failure
 > putLadder's provenance reset exists to prevent -- so the shapes are
 > computed in desired() each tick and vanish the moment this is cleared.
+
+### PortFlow
+
+PortFlow is one bridge port's total throughput, both directions.
+
+**`iface`** `string`
+
+**`role`** `string`
+> Role is the same closed set IfaceInfo.Role uses, so the interface can
+> draw a WAN band differently from a radio without re-deriving which is
+> which. See the Role constants in bridgeinfo.go.
+
+**`down_mbps`** `float64`
+> DownMbps is traffic moving TOWARD THE CLIENTS and UpMbps away from them,
+> on every port, which is NOT the same as tx and rx.
+>
+> The mapping flips on the WAN, and this is the trap the whole type exists
+> to contain. On a radio or a wired downstream port, a packet heading for a
+> client is transmitted; on the WAN the same packet is received. Read both
+> off `tx` and the WAN band comes out inverted against every other band on
+> the chart -- a picture that looks entirely plausible and is backwards.
+
+**`up_mbps`** `float64`
+
+**`unattributed_up_mbps`** `float64` _(omitted when empty)_
+> UnattributedUpMbps is the part of this port's egress that no client
+> filter claimed: the box's own traffic, plus any device it is not
+> tracking. Set on the WAN only, and zero elsewhere.
+>
+> EXACT, not derived. It is the HTB default class read at the same point,
+> in the same units and on the same tick as the per-client classes beside
+> it -- `tc qdisc show dev wan0` reports `default 0x1`, so everything no
+> filter matched is accounted there and nowhere else. Measured on the
+> container host 2026-09-12: 112,693,736 bytes in that class against
+> 12,268,732 for the busiest client, so this is not a rounding term.
+>
+> THERE IS NO INBOUND EQUIVALENT AND NONE IS OFFERED. Downlink is shaped
+> on each client's own port, so `wan0` has no ingress classes to decompose
+> and the only honest inbound figure is the interface total. Subtracting
+> the client classes on the radios from it would mix counting points --
+> tc on a Wi-Fi port against an Ethernet interface counter, which do not
+> frame alike -- and produce a number that looks exact and is not. The
+> asymmetry is the measurement's, and it is left visible rather than
+> papered over.
+
+**`speed_mbps`** `int` _(omitted when empty)_
+> SpeedMbps is the port's negotiated link rate, 0 when it has none.
+>
+> Carried beside the throughput because it is the only thing that makes
+> the throughput mean anything: 400 Mbit/s is idle on a 2.5 GbE port and
+> saturation on a 100 Mbit one. It is what turns this from a trace into an
+> answer about a bottleneck.
 
 ### RadioEvent
 

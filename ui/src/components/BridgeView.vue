@@ -1,11 +1,12 @@
 <script setup lang="ts">
 import { computed, ref, watchEffect, type Ref } from 'vue';
 import { DEVELOPER } from '@/types';
-import type { Client, IfaceInfo, PatternView, Series } from '@/types';
+import type { Client, IfaceInfo, PatternView, PortFlow, Series } from '@/types';
 import { useBridge } from '@/composables/useBridge';
 import InterfaceDiagram from '@/components/InterfaceDiagram.vue';
 import FabricStrip from '@/components/FabricStrip.vue';
 import AdapterRack from '@/components/AdapterRack.vue';
+import AdapterStack from '@/components/AdapterStack.vue';
 import AdapterPatternPanel from '@/components/AdapterPatternPanel.vue';
 import ChannelPlan from '@/components/ChannelPlan.vue';
 import { setAdapterIfaces } from '@/composables/useAdapters';
@@ -34,8 +35,185 @@ const props = defineProps<{
   radios?: string[];
   /** The box's own pattern run, when one is playing. */
   adapterRun?: PatternView | null;
+  /** Per-PORT throughput, keyed by interface. Distinct from `series`, which is
+   *  keyed by MAC: one is what crossed a wire and the other is what a device
+   *  was given, and the first is not the sum of the second. */
+  portSeries?: Record<string, Series>;
+  /** This tick's raw per-port flows, for the exact figures that are not drawn
+   *  over time — the uplink's unattributed egress above all. */
+  ports?: PortFlow[];
 }>();
 const activeRef = computed(() => props.active) as Ref<boolean>;
+
+/*
+ * The box-wide total, and which identity its bands carry.
+ *
+ * BY PORT is the complete answer and the default. A `tc` class only counts
+ * what its filter matched, so the per-device grouping is missing everything
+ * with no client attribution -- measured on the container host, the WAN's
+ * unmatched class held 112 MB against 12 MB for the busiest client. By device
+ * answers "who is using this box", which is the question more often asked and
+ * the one whose total does not add up.
+ *
+ * Not persisted. It is a way of looking at the chart in front of you rather
+ * than a setting about the box, and the chart RANGE -- which is a setting -- is
+ * already in the shared prefs store where both groupings read it.
+ */
+const GROUPINGS = [
+  {
+    key: 'adapter' as const,
+    label: 'by adapter',
+    title: 'Every frame that crossed each adapter, from the kernel\'s own '
+      + 'interface counters. Includes the box\'s own traffic, devices it is not '
+      + 'tracking, broadcast and multicast — so this is the complete total. The '
+      + 'uplink is reported beside it rather than stacked into it.',
+  },
+  {
+    key: 'client' as const,
+    label: 'by device',
+    title: 'What the box attributed to each device, box-wide rather than per '
+      + 'adapter. Incomplete by construction: traffic with no client behind it '
+      + 'is absent, so this total is lower than the adapter total.',
+  },
+];
+const grouping = ref<'adapter' | 'client'>('adapter');
+
+/*
+ * THE WAN IS NOT A BAND, AND THIS IS NOT TIDINESS.
+ *
+ * A stack ADDS its bands, and the uplink is not additive with the ports beneath
+ * it: a packet from the internet to a Wi-Fi client is counted once crossing
+ * wan0 and again crossing the radio. Stacking both gave a download total of
+ * 874 Mbit/s for 412 of actual traffic -- a number that is not wrong about any
+ * port and is meaningless as a sum.
+ *
+ * The DOWNSTREAM ports are additive, because a packet reaches exactly one
+ * client and therefore crosses exactly one of them. So the stack is downstream
+ * demand, which is a real quantity, and the uplink is what that demand has to
+ * fit through -- reported beside the chart and as the axis ceiling rather than
+ * as another band.
+ *
+ * The exception, already noted where the counters are read: the bridge
+ * replicates every multicast frame to every port, so downstream can legitimately
+ * exceed the uplink rather than only because traffic terminated on the box.
+ */
+/*
+ * THE BANDS ARE THE ADAPTERS THE RACK BELOW LISTS, and the label says so.
+ *
+ * Once the uplink came out of the stack, what remained was exactly
+ * RACK_ROLES -- ap, scanner, radio, lan -- under a heading that reads
+ * "adapters". Calling the same four things ports up here and adapters down
+ * there would be two words for one set, on one screen.
+ *
+ * The wire type stays PortFlow, and that is not an inconsistency: it carries
+ * the WAN, which is a bridge port and not an adapter -- on the container it is
+ * a veth with no vendor, product or socket behind it. Port is the bridge role,
+ * adapter is the thing you plug in, and this chart bands the latter.
+ */
+const wanIface = computed(
+  () => bridge.info.value?.ifaces.find((i) => i.role === 'wan')?.name ?? '',
+);
+const downstreamPorts = computed(() => {
+  const out: Record<string, Series> = {};
+  for (const [iface, s] of Object.entries(props.portSeries ?? {})) {
+    if (iface !== wanIface.value) out[iface] = s;
+  }
+  return out;
+});
+/** The uplink's latest reading, as the figure the stack is measured against. */
+const wanNow = computed(() => {
+  const s = props.portSeries?.[wanIface.value];
+  if (!s || !s.down.length) return null;
+  return { down: s.down[s.down.length - 1], up: s.up[s.up.length - 1] };
+});
+
+/**
+ * The uplink's unattributed egress, straight from the wire.
+ *
+ * From the SNAPSHOT rather than from a series, because it is not drawn over
+ * time: one exact number beside the chart, where a second band would imply it
+ * is additive with the adapters below and it is not.
+ */
+const wanUnattributed = computed(
+  () => props.ports?.find((p) => p.role === 'wan')?.unattributed_up_mbps ?? 0,
+);
+
+/** The last value of a series, or 0. */
+const last = (a: number[] | undefined) => (a && a.length ? a[a.length - 1] : 0);
+
+/**
+ * TRAFFIC THAT DID NOT CROSS THE UPLINK, in aggregate.
+ *
+ * The adapters deliver more than the uplink brought in exactly when something
+ * local produced it: one client talking to another, or the box talking to a
+ * client. This box does that routinely and by design -- the bridge forwards
+ * between downstream ports, no hostapd config sets `ap_isolate`, and the
+ * interface, ntopng, glances and iperf3 all terminate on the bridge.
+ *
+ * DERIVED, AND APPROXIMATE, which is why it is marked with a tilde and is not
+ * a band. Two known error terms, both of which inflate it:
+ *
+ *   - The bridge replicates every multicast frame to every port, so the
+ *     downstream sum counts one arriving frame several times.
+ *   - It subtracts a Wi-Fi port's byte counter from an Ethernet one, and the
+ *     two do not count framing alike.
+ *
+ * So a small reading is noise and a large one is real. It is the aggregate
+ * only: which two adapters is not knowable from interface counters, which give
+ * row and column sums and never the matrix. Pairwise flows -- the Sankey -- need
+ * per-flow accounting the box does not have; conntrack in the container has
+ * byte accounting OFF, no procfs interface and zero tracked connections.
+ *
+ * Clamped at zero rather than going negative. Negative would mean the uplink
+ * carried more than the adapters delivered, which is inbound traffic that
+ * terminated on the box -- a real quantity, but one this subtraction cannot
+ * separate from its own error terms.
+ */
+const localFlow = computed(() => {
+  const wan = props.portSeries?.[wanIface.value];
+  if (!wan) return null;
+  let down = 0;
+  let up = 0;
+  for (const s of Object.values(downstreamPorts.value)) {
+    down += last(s.down);
+    up += last(s.up);
+  }
+  return {
+    down: Math.max(0, down - last(wan.down)),
+    up: Math.max(0, up - last(wan.up)),
+  };
+});
+/** Below this, the derivation's own error terms dominate. */
+const LOCAL_FLOOR_MBPS = 1;
+const localWorthShowing = computed(
+  () => !!localFlow.value
+    && (localFlow.value.down > LOCAL_FLOOR_MBPS || localFlow.value.up > LOCAL_FLOOR_MBPS),
+);
+
+const totalSeries = computed(() =>
+  grouping.value === 'adapter' ? downstreamPorts.value : props.series ?? {});
+// Ports are named by their own key, which IS the interface name, so the
+// fallback in the chart is already right and an empty map is honest.
+const totalLabels = computed(() => (grouping.value === 'adapter' ? {} : labels.value));
+const totalHas = computed(() => Object.keys(totalSeries.value).length > 0);
+
+/*
+ * The uplink's link rate, for the readout beside the chart.
+ *
+ * NOT for the axis. It was the axis floor first, and that failed on the box it
+ * was built on: the container's uplink is a veth reporting 10 Gbit/s, so 421
+ * Mbit/s of real traffic drew as a 4%-high sliver. The number is what carries
+ * the headroom -- "407 down of 10000" says the same thing in a form that
+ * cannot make the trace unreadable.
+ *
+ * From the bridge inventory rather than from the samples, because a port with
+ * no traffic still has a speed. Zero when it has no `speed` file, as every
+ * radio does: the figure that would answer "how fast is this radio" moves per
+ * frame and lives on the client instead.
+ */
+const wanSpeed = computed(
+  () => bridge.info.value?.ifaces.find((i) => i.role === 'wan')?.speed_mbps ?? 0,
+);
 const bridge = useBridge(activeRef);
 
 const wired = computed(
@@ -185,6 +363,108 @@ const pending = ref('');
         </template>
       </FabricStrip>
 
+      <!-- THE WHOLE BOX, ABOVE THE PER-ADAPTER DETAIL.
+           Deliberately before the rack rather than inside a fold. It answers a
+           question none of the folds can: whether the uplink is the limit. The
+           folds beneath are the detail under it, and the reading order matches
+           -- the constraint first, then what is using it.
+
+           It is banded by PORT, not by device, and that is not a re-grouping
+           of the same numbers. A `tc` class only sees what its filter matched,
+           so summing the per-client series to get a port total understates it:
+           measured on the container host, the WAN's unmatched default class
+           held 112 MB against 12 MB for the busiest client. Nine tenths of
+           what crossed that port belonged to no client and appears in no fold.
+
+           The WAN band carrying LESS than the sum of the ports beneath it is
+           the normal case and is itself a reading: the difference is traffic
+           that never left the box. It can also run the other way, because the
+           bridge replicates every multicast frame to every port, so the
+           downstream sum is not a conserved quantity. -->
+      <div v-if="totalHas" class="total">
+        <div class="total-head">
+          <h2 class="section-title">traffic</h2>
+          <!-- A CHOICE OF GROUPING, not two charts. The bands are the same
+               machinery over a different input, so the axis, the clock and the
+               window cannot disagree between them. -->
+          <!-- ONE WRAPPER THAT ALWAYS RENDERS, holding figures that do not.
+               Every figure here is adapter-grouping only, and the right-pushing
+               auto margin used to sit on the first of them — so under `by
+               device` there was nothing carrying it and the grouping buttons
+               slid left to meet the title. Reported from a screenshot: a
+               control must not move because of what is displayed beside it.
+               The margin now lives on this wrapper, which is present in both
+               groupings and merely empty in one. -->
+          <div class="total-figs">
+          <!-- The uplink, beside the stack rather than in it. See downstreamPorts:
+               it is not additive with the ports below, so it cannot be a band,
+               and a bottleneck is read by comparing these two numbers against
+               the axis the chart is drawn to. -->
+          <span v-if="grouping === 'adapter' && wanNow" class="total-wan num"
+                :title="`The uplink itself, ${wanIface}. Not stacked with the ports below: `
+                  + `a packet crossing the uplink crosses a downstream port too, so adding `
+                  + `them would count it twice. The stack is downstream demand; this is what `
+                  + `it has to fit through.`">
+            uplink {{ wanNow.down.toFixed(0) }} down · {{ wanNow.up.toFixed(0) }} up
+            <template v-if="wanSpeed">of {{ wanSpeed }}</template>
+          </span>
+          <!-- The two things the uplink figure alone does not tell you.
+
+               The first is EXACT: the shaper's default class on the WAN, so
+               it is the same counter, point and tick as the per-client
+               classes. Egress only -- there are no ingress classes there, and
+               an inbound figure would have to be invented.
+
+               The second is DERIVED and says so with a tilde. See localFlow
+               for its two error terms, both of which inflate it. -->
+          <span v-if="grouping === 'adapter' && wanUnattributed > 0" class="total-aside num"
+                :title="`Traffic leaving the uplink that no client filter claimed: this box's `
+                  + `own, plus any device it is not tracking. Exact — the shaper's default `
+                  + `class, read on the same tick as the per-client ones. Outbound only: `
+                  + `downlink is shaped on each client's own port, so the uplink has no `
+                  + `inbound classes to split.`">
+            box itself {{ wanUnattributed.toFixed(1) }} up
+          </span>
+          <span v-if="grouping === 'adapter' && localWorthShowing && localFlow" class="total-aside num"
+                :title="`Traffic the adapters carried that did not cross the uplink — one client `
+                  + `talking to another, or to this box. APPROXIMATE: the bridge replicates every `
+                  + `multicast frame to every port, and this subtracts a Wi-Fi byte counter from `
+                  + `an Ethernet one, both of which inflate it. Aggregate only — which two `
+                  + `adapters is not knowable from interface counters.`">
+            local ~{{ localFlow.down.toFixed(0) }} down · ~{{ localFlow.up.toFixed(0) }} up
+          </span>
+          </div>
+          <!-- LAST, and with no auto margin of its own, so the container's own
+               right edge fixes it. Nothing to its left can move it. -->
+          <span class="seg" role="group" aria-label="group the total by">
+            <button
+              v-for="g in GROUPINGS" :key="g.key"
+              class="ghost" :class="{ on: grouping === g.key }"
+              :title="g.title"
+              @click="grouping = g.key"
+            >{{ g.label }}</button>
+          </span>
+        </div>
+        <AdapterStack
+          mode="total"
+          :iface="grouping === 'adapter' ? 'these adapters' : 'this box'"
+          :series="totalSeries" :labels="totalLabels"
+        />
+        <!-- SAID, not implied, and only on the grouping it is true of.
+             Per-client is the incomplete view by construction: a tc class only
+             counts what its filter matched, so everything with no client
+             attribution is missing from it -- measured on the container host,
+             nine tenths of what crossed the WAN. Per-port is the complete one.
+             A reader comparing the two totals and finding them different
+             deserves to be told which is which rather than left to guess. -->
+        <p v-if="grouping === 'client'" class="total-note">
+          Per device counts only traffic the box attributed to a client. It is
+          not the adapter total: anything the box itself sent, and any device it
+          is not tracking, is missing from here. Group by adapter for everything
+          that crossed the wire.
+        </p>
+      </div>
+
       <AdapterRack
         :bridge="bridge" :on-adapter="onAdapter"
         :series="series" :labels="labels"
@@ -318,6 +598,75 @@ const pending = ref('');
 .soon-text em { font-style: normal; color: var(--ink-faint); }
 
 .counters { width: 100%; }
+
+/* The box-wide total. Sits above the rack with the same panel treatment the
+   folds have, so it reads as the level above them rather than as another
+   adapter. */
+.total { margin: 0 0 12px; }
+.total-head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+/* The rack's own heading style, repeated rather than shared -- which is this
+   codebase's existing pattern for it, see AdapterRack and ClientsView. This
+   section sits directly above the rack, so the two headings must not look like
+   different levels of the same page. */
+.section-title {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin: 0;
+  font-size: 13px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--ink);
+}
+/* The same segmented shape the outage control uses, so a choice of view looks
+   like the other choices on this page rather than like a new idiom. */
+.total .seg { display: inline-flex; gap: 0; }
+.total .seg button {
+  font-size: 10px;
+  padding: 1px 7px;
+  border-radius: 0;
+}
+.total .seg button:first-child { border-radius: var(--r) 0 0 var(--r); }
+.total .seg button:last-child { border-radius: 0 var(--r) var(--r) 0; }
+.total .seg button + button { border-left: none; }
+.total .seg button.on {
+  color: var(--bg);
+  background: var(--down);
+  border-color: var(--down);
+}
+/* Dialled back to a footnote: it is standing context for the view above, not
+   something needing attention. Same treatment the page footer gives its own
+   notes. */
+/* The figures, right-aligned as a group and pushed there by the wrapper rather
+   than by whichever of them happens to be rendering. See the template. */
+.total-figs {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-left: auto;
+}
+.total-wan {
+  font-size: 11px;
+  color: var(--ink-dim);
+}
+/* The decomposition beside the uplink. Fainter than the uplink figure itself,
+   because each is a part of it rather than a peer. */
+.total-aside {
+  font-size: 11px;
+  color: var(--ink-faint);
+}
+.total-note {
+  margin: 4px 0 0;
+  font-size: 11px;
+  color: var(--ink-faint);
+  max-width: 78ch;
+}
 
 /* Channel quality lives with the channel plan now, in the diagram: the cells
    it colours and the legend that reads them are both up there, so a copy of

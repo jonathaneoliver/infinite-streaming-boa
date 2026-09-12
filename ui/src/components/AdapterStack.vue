@@ -53,7 +53,17 @@ const props = withDefaults(defineProps<{
    * with a filler beside it, so both plots carry the same window over the same
    * pixels and a vertical line through the fold means one instant.
    */
-  mode?: 'throughput' | 'airtime';
+  /** 'total' bands EVERY key in the series and filters to no adapter, which
+   *  is what makes one box-wide chart out of the same machinery.
+   *
+   *  It deliberately says nothing about what a band IS. Hand it the port series
+   *  and the bands are interfaces; hand it the client series and they are
+   *  devices, box-wide rather than per-adapter. The grid, the shared clock, the
+   *  gap breaking and the axis are all properties of stacking a time series and
+   *  have nothing to do with band identity — so the grouping is a choice of
+   *  input, not a second component. Its own legend comment already says why two
+   *  copies would be the wrong answer. */
+  mode?: 'throughput' | 'airtime' | 'total';
   /**
    * Whether this radio's driver attributes airtime to individual stations.
    *
@@ -91,6 +101,10 @@ const props = withDefaults(defineProps<{
  * the window, and then ages out of it naturally.
  */
 const members = computed<string[]>(() => {
+  // 'total' takes every key: there is no adapter to filter to. The modes
+  // below ask which devices were ON this adapter, which is a question only a
+  // client series carrying a port per sample can answer.
+  if (props.mode === 'total') return Object.keys(props.series);
   const out: string[] = [];
   for (const mac of Object.keys(props.series)) {
     const s = props.series[mac];
@@ -98,6 +112,10 @@ const members = computed<string[]>(() => {
   }
   return out;
 });
+
+/** Whether a sample belongs to this stack. Always, box-wide. */
+const owns = (s: Series, i: number) =>
+  props.mode === 'total' || s.iface[i] === props.iface;
 
 /*
  * Padding and HEIGHT both come from the client charts, the height through the
@@ -191,8 +209,8 @@ const allTimes = computed<number[]>(() => {
       // Only samples this adapter actually carried. A device that roamed in
       // halfway through contributes to the second half of the stack and to
       // nothing before it -- the same truth the strip under its own card draws
-      // as a change of band.
-      if (s.iface[i] === props.iface) seen.add(s.t[i]);
+      // as a change of band. A port owns all of its own samples.
+      if (owns(s, i)) seen.add(s.t[i]);
     }
   }
   return [...seen].sort((a, b) => a - b);
@@ -285,7 +303,7 @@ function bandsFor(dir: 'down' | 'up' | 'air'): Band[] {
     let peak = 0;
     let any = false;
     for (let i = 0; i < s.t.length; i++) {
-      if (s.iface[i] !== props.iface) continue;
+      if (!owns(s, i)) continue;
       const g = at.get(s.t[i]);
       if (g === undefined) continue;
       const v = (dir === 'down' ? s.down[i] : dir === 'up' ? s.up[i] : s.air[i]) ?? 0;
@@ -293,7 +311,11 @@ function bandsFor(dir: 'down' | 'up' | 'air'): Band[] {
       if (v > peak) peak = v;
       any = true;
     }
-    if (!any) continue;
+    // A member that contributed nothing is not a band, EXCEPT box-wide. An
+    // idle uplink is the answer to "is the WAN the bottleneck", and the
+    // listen-only radio carries nothing by design; drop those and the chart
+    // quietly stops showing the ports that matter most.
+    if (!any && props.mode !== 'total') continue;
     out.push({
       mac,
       label: props.labels[mac] ?? mac,
@@ -420,6 +442,14 @@ const charts = computed(() => {
     // Per direction, never shared: uplink here is routinely a twentieth of
     // downlink, and one ceiling for both would flatten upload into the axis.
     // The two axes are what stop side-by-side from reading as same-scale.
+    //
+    // THE AXIS FOLLOWS THE DATA, and a link speed is not allowed to set it.
+    // Drawing the stack against the port's capacity was tried and is wrong
+    // wherever that capacity is large: on the container the uplink is a veth
+    // reporting 10 Gbit/s, so a real 421 Mbit/s of traffic was rendered as a
+    // 4%-high sliver. Headroom belongs in the readout beside the chart, where
+    // "of 10000" is harmless, rather than in an axis that has to stay
+    // readable at every scale.
     const max = niceMax(Math.max(peak * 1.15, 1));
     const dp = axisDecimals(max, PLOT_H.value);
     return {
@@ -537,6 +567,15 @@ const legend = computed(() => charts.value[0].bands);
         This radio's driver does not report per-client airtime, so there is
         nothing to stack — not an idle radio, no measurement. The onboard
         brcmfmac chip omits the counters entirely; the USB adapters carry them.
+      </p>
+      <!-- Box-wide says "no record" rather than "no traffic". A stack with
+           nothing in it here means no SAMPLES have arrived yet, where an empty
+           adapter genuinely means an idle radio. Two different facts, and the
+           reload case is the common one for the port grouping, which is live
+           only with no history to seed from. -->
+      <p v-else-if="empty && mode === 'total'" class="none">
+        Nothing recorded yet — the per-adapter trace is live only, so
+        it starts blank on a reload and fills at one point per second.
       </p>
       <p v-else-if="empty" class="none">
         {{ mode === 'airtime' ? 'No airtime recorded on' : 'No traffic on' }}

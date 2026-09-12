@@ -1436,6 +1436,16 @@ func (e *Engine) tick() {
 		},
 		Notices:    e.notices(ready, reason),
 		AdapterRun: e.player.View(BoxBinding),
+		// Every port's total, differenced on THIS tick's `now` -- the same
+		// clock the client throughput above was sampled on, which is what lets
+		// a port band and a client band be read against one x-axis.
+		//
+		// Inside the lock deliberately: portFlows reuses Engine.rate, and with
+		// it e.prev, which nothing outside the tick may touch. See portflow.go.
+		// upC is the WAN's per-class statistics, already read above on this
+		// tick, so the unattributed split comes from the same numbers the
+		// client rates beside it do rather than from a second sample.
+		Ports: e.portFlows(now, upC),
 	}
 	e.snap = snap
 	subs := make([]chan Snapshot, 0, len(e.subs))

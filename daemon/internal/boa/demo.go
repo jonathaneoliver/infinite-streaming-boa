@@ -420,6 +420,27 @@ func (e *Engine) demoTick() {
 			// frame here, so it changes the switch and not the log.
 			Verbose: e.verbose(),
 		},
+		// Per-port totals, synthesised so the port chart is developable without
+		// a box. Two properties matter and both are deliberate.
+		//
+		// THE WAN CARRIES LESS THAN THE PORTS BENEATH IT. On real hardware the
+		// difference is traffic that never left the box -- measured on the
+		// container host, nine tenths of what crossed the WAN belonged to no
+		// client -- plus multicast, which the bridge replicates to every port
+		// so the downstream sum is not a conserved quantity. A fixture where
+		// the numbers reconciled neatly would let a reader assume they should.
+		//
+		// AND THE WAN HAS A LINK SPEED WHILE THE RADIOS DO NOT. 1000 against
+		// traffic in the hundreds is the bottleneck question this chart exists
+		// to answer; a radio has no `speed` file at all, so its band must draw
+		// against no ceiling rather than a guessed one.
+		Ports: []PortFlow{
+			{Iface: e.cfg.WANPort, Role: RoleWAN, DownMbps: 412, UpMbps: 88, SpeedMbps: 1000},
+			{Iface: e.cfg.PrimaryWlan(), Role: RoleAP, DownMbps: 305, UpMbps: 41},
+			{Iface: "wlan1", Role: RoleAP, DownMbps: 96, UpMbps: 22},
+			{Iface: "wlan-scan-3ff2", Role: RoleScanner, DownMbps: 0, UpMbps: 0},
+			{Iface: firstOr(e.cfg.LanPorts, "lan0"), Role: RoleLAN, DownMbps: 61, UpMbps: 19, SpeedMbps: 1000},
+		},
 		Notices: []Notice{
 			{"error", "DEMO MODE - these clients are synthetic. No traffic is being conditioned."},
 			{"info", "Wi-Fi airtime is shared. Conditioning is additive on top of a variable " +

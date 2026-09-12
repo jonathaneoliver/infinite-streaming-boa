@@ -730,6 +730,18 @@ type Snapshot struct {
 	// snapshot for the same reason a device's run is: so the editor can draw a
 	// moving playhead without polling a second endpoint.
 	AdapterRun *PatternView `json:"adapter_run,omitempty"`
+	// Ports is what crossed each bridge port, from the kernel's own interface
+	// counters rather than from the shaper's classes. See portflow.go.
+	//
+	// On the SNAPSHOT rather than on the bridge inventory, which is where the
+	// interfaces otherwise live, because this is a time series and that is a
+	// TTL-cached description of the hardware. The snapshot arrives once a
+	// second on the same stream as the client throughput, so a port band and a
+	// client band share one clock and one x-axis. Read from the bridge endpoint
+	// instead, the trace would inherit that cache's age -- which the payload
+	// itself reports as read_age_ms and which has been minutes while a radio
+	// was wedged.
+	Ports []PortFlow `json:"ports,omitempty"`
 }
 
 // Notice is one message for the operator.

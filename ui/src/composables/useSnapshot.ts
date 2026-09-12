@@ -1,6 +1,6 @@
 import { ref, shallowRef, onUnmounted, watch } from 'vue';
 import { onStream, transport as streamTransport } from '@/composables/useStream';
-import type { Snapshot, Client, Series } from '@/types';
+import type { Snapshot, Client, Series, PortFlow } from '@/types';
 import { adapterChannel } from '@/composables/useAdapters';
 
 /**
@@ -30,6 +30,23 @@ export function useSnapshot() {
   // does not keep it: storing time series on an SD card is how a Pi appliance
   // wears out its storage, and any viewer can rebuild it in two minutes.
   const series = ref<Record<string, Series>>({});
+
+  /**
+   * The same shape as `series`, keyed by INTERFACE rather than by MAC.
+   *
+   * Separate rather than merged, because the two answer different questions and
+   * a merged map would key one thing by two kinds of identity. A client series
+   * is what one device was given; a port series is everything that crossed a
+   * wire, the box's own traffic and untracked devices included. Summing the
+   * former never yields the latter — on the container host the WAN's unmatched
+   * class held nine tenths of the bytes.
+   *
+   * Live only, and deliberately: there is no history endpoint for ports, so a
+   * reload starts this blank while the client charts seed themselves. Building
+   * the server side of that is the follow-on; drawing a seeded client band
+   * beside an unseeded port band on one x-axis would be the worse outcome.
+   */
+  const portSeries = ref<Record<string, Series>>({});
 
   // What one seeded point covers, so the chart can say "6s avg" on a long range
   // rather than implying every range is raw 1 Hz data.
@@ -75,11 +92,40 @@ export function useSnapshot() {
     series.value = next;
   }
 
+  /**
+   * One point per port, on the SAME `now` the client loop uses.
+   *
+   * Only `t`, `down` and `up` carry meaning here. The rest of Series exists
+   * for a client -- a cap, a PHY rate, the airtime it cost, the port it sat on
+   * -- and none of it is a property of a wire, so those stay at zero rather
+   * than being filled with something plausible. The chart reads the three it
+   * needs and nothing else.
+   */
+  function recordPorts(ports: PortFlow[], now: number) {
+    const next = { ...portSeries.value };
+    for (const p of ports) {
+      const s = next[p.iface] ??
+        { t: [], down: [], up: [], cap: [], phyDown: [], phyUp: [], air: [], iface: [], chan: [] };
+      next[p.iface] = {
+        ...s,
+        t: [...s.t, now].slice(-HISTORY),
+        down: [...s.down, p.down_mbps].slice(-HISTORY),
+        up: [...s.up, p.up_mbps].slice(-HISTORY),
+      };
+    }
+    portSeries.value = next;
+  }
+
   function apply(s: Snapshot) {
     snap.value = s;
     connected.value = true;
     error.value = null;
     record(s.clients ?? []);
+    // ONE clock for both. Date.now() is read again inside record(), so this
+    // can be a few milliseconds later -- immaterial against a 1 Hz tick, and
+    // the alternative is threading a timestamp through two call sites for a
+    // difference no chart can draw.
+    recordPorts(s.ports ?? [], Date.now());
   }
 
   /**
@@ -236,5 +282,5 @@ export function useSnapshot() {
     stopPolling();
   });
 
-  return { snap, connected, transport, error, series, bucketMs, setRange };
+  return { snap, connected, transport, error, series, portSeries, bucketMs, setRange };
 }
