@@ -631,6 +631,19 @@ telemetry updates never yank a control out from under the operator's cursor.
 > beside it. Counted by nftables rules the daemon owns; see portpairs.go
 > for the mechanism and for the measurement that says it is free.
 
+**`client_pairs`** `[]ClientPair` _(omitted when empty)_
+> ClientPairs is which device talked to which, and how much.
+>
+> The port matrix above cannot say it. Several devices share an adapter,
+> so two phones on one radio talking to two machines on one switch are a
+> single ribbon there. Counted in one nftables rule feeding a dynamic set
+> keyed on the MAC pair -- constant work per frame whatever the device
+> count, which a rule per pair would not be. See clientpairs.go.
+>
+> `from` and `to` are a client's MAC, or one of two sentinels: everything
+> past this box is reached through the upstream router and so shares its
+> address, and discovery chatter is addressed to nobody in particular.
+
 ### BridgeInfo — GET /api/bridge
 
 BridgeInfo is the whole answer for the bridge view.
@@ -1373,6 +1386,23 @@ client is associated but has not finished DHCP.
 > from Policy.Pattern deliberately: that is the timeline as authored, this
 > is a playhead moving along it, and a UI that confused the two would edit
 > the wrong object.
+
+### ClientPair
+
+ClientPair is one ordered device pair's forwarding rate.
+
+**`from`** `string`
+> From and To are the source and destination, each either a client's MAC
+> or one of the two sentinels above. Resolving a MAC to a name is left to
+> the caller, which already holds the roster.
+
+**`to`** `string`
+
+**`mbps`** `float64`
+> Mbps and Packets are derived exactly as PortPair's are, and Packets is
+> not redundant for the same reason -- see that type.
+
+**`packets`** `float64`
 
 ### Counters
 

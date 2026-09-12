@@ -176,6 +176,13 @@ func (e *Engine) portPairs(now time.Time) []PortPair {
 			return nil
 		}
 		e.pairPortsKey = key
+		// THE REBUILD ABOVE FLUSHES THE WHOLE TABLE, which takes the device
+		// matrix's chain with it -- it lives in this table, see pairSetChain.
+		// Clearing the flag has clientPairs rebuild its own chain later in
+		// THIS tick, because it runs after this in the tick and reads the flag.
+		// Without it a port hotplug silently ended device counting: a figure
+		// that goes blank and says nothing.
+		e.pairSetReady = false
 	}
 
 	raw, err := exec.Command("nft", "-j", "list", "table", "bridge", pairTable).Output()
@@ -189,6 +196,24 @@ func (e *Engine) portPairs(now time.Time) []PortPair {
 		return nil
 	}
 	e.notePairsBlocked("")
+
+	// ARE THE RULES STILL THERE. The rebuild above only runs when the PORT SET
+	// changes, so a table emptied by anything else -- a person with nft, or
+	// another tool -- was never noticed: every pair read zero for ever while
+	// the daemon reported nothing wrong. Measured on the box with `nft flush
+	// table bridge boaflow`. Forcing the key to differ rebuilds on the next
+	// tick, which is the same path a hotplug takes.
+	rules := 0
+	for _, n := range rs.Nftables {
+		if n.Rule != nil {
+			rules++
+		}
+	}
+	if rules == 0 {
+		e.pairPortsKey = ""
+		e.notePairsBlocked("the pair counter rules are gone from the kernel; rebuilding them")
+		return nil
+	}
 
 	out := make([]PortPair, 0, len(ports)*(len(ports)-1))
 	for _, n := range rs.Nftables {

@@ -1,7 +1,10 @@
 <script setup lang="ts">
 import { computed, ref, watchEffect, type Ref } from 'vue';
 import { DEVELOPER } from '@/types';
-import type { Client, IfaceInfo, PatternView, PortFlow, PortPair, Series } from '@/types';
+import { CLIENT_PAIR_NOTES, CLIENT_PAIR_PARTIES, NO_PAIRS } from '@/types';
+import type {
+  Client, ClientPair, IfaceInfo, PatternView, PortFlow, PortPair, Series,
+} from '@/types';
 import { useBridge } from '@/composables/useBridge';
 import InterfaceDiagram from '@/components/InterfaceDiagram.vue';
 import FabricStrip from '@/components/FabricStrip.vue';
@@ -46,6 +49,10 @@ const props = defineProps<{
   /** Which port forwarded to which, for the flow diagram. Not derivable from
    *  `ports`: those are row and column sums, never the matrix. */
   pairs?: PortPair[];
+  /** Which DEVICE talked to which. Not derivable from `pairs` either: several
+   *  devices share an adapter, so their conversations collapse into one ribbon
+   *  there. */
+  clientPairs?: ClientPair[];
 }>();
 const activeRef = computed(() => props.active) as Ref<boolean>;
 
@@ -257,6 +264,136 @@ const labels = computed(() => {
   return out;
 });
 
+/**
+ * Display names for the two flow figures.
+ *
+ * The adapter figure needs only one: a port is already named by its own key,
+ * and the uplink is called that because "is it the bottleneck" is a question
+ * about the role rather than about `wan0`. The interface name is still in the
+ * tooltip, so the label does not hide it.
+ *
+ * The device figure needs all of them: a key there is a MAC, which names
+ * nothing on a chart, plus the two counterparties that are not devices at all.
+ * `labels` above already covers devices that have since left, which matters
+ * here for the same reason it matters there — a ten-second mean can outlive an
+ * association.
+ */
+/**
+ * The device matrix, EMPTY RATHER THAN ABSENT when nothing is moving.
+ *
+ * The field is omitted from the payload when no pair's counters moved, so the
+ * prop goes undefined on an idle network — and a plain `v-if` on it removed
+ * 414px of page and put it back on the next packet. Measured on the box: seven
+ * samples with the figure idle, then one with it gone.
+ *
+ * ONE SHARED EMPTY ARRAY, not `?? []` at the call site. A fresh literal per
+ * render is a new identity, which retriggers the diagram's sampling watch on
+ * every render rather than once per tick and would weight its rolling mean by
+ * how often the component happened to redraw.
+ */
+const devicePairs = computed(() => props.clientPairs ?? NO_PAIRS);
+
+/**
+ * The rack's own top-to-bottom order, handed to the flow figure.
+ *
+ * Straight from the port list, which the daemon builds uplink first, then the
+ * radios, then the wired ports -- the same order the rack and the legend above
+ * use. Without it the figure sorted alphabetically and put the wired ports
+ * above the radios, which is nowhere else's order on this page.
+ */
+const adapterOrder = computed(() => (props.ports ?? []).map((p) => p.iface));
+
+/*
+ * WHETHER THE FLOW FIGURES ARE OPEN, remembered across reloads.
+ *
+ * The FIGURES, not the section around them. Folding the whole of `traffic` was
+ * the first attempt and it was wrong: the grouping buttons in that header
+ * drive the stacked chart as well, so collapsing the section either hid a
+ * control that still had work to do or left one behind with nothing to act on.
+ * The Sankey is the part that costs 400px and answers the narrower question,
+ * so the Sankey is the part that folds.
+ *
+ * Its own key rather than a field in the chart preferences, because it is not
+ * a chart setting -- nothing about it changes what a chart SAYS -- and not the
+ * rack's open-fold map either, which is keyed by adapter name and would be
+ * taking a reserved word in someone else's namespace.
+ *
+ * Open by default: a reader who has never touched it should see that routing
+ * is measured here at all. Closing it is the deliberate act.
+ *
+ * Wrapped, because localStorage throws in a private window and returns
+ * nonsense after a hand edit. A view that refused to render because a
+ * preference would not parse would be a poor trade.
+ */
+const FLOWS_KEY = 'boa.flows.open';
+const flowsOpen = ref(true);
+try {
+  const held = localStorage.getItem(FLOWS_KEY);
+  if (held !== null) flowsOpen.value = held === '1';
+} catch { /* no stored preference is the same as the default */ }
+watchEffect(() => {
+  try {
+    localStorage.setItem(FLOWS_KEY, flowsOpen.value ? '1' : '0');
+  } catch { /* a preference that cannot be saved is still worth honouring now */ }
+});
+
+/*
+ * WHETHER THE TRAFFIC SECTION IS OPEN, remembered across reloads.
+ *
+ * Its own key rather than a field in the chart preferences, because it is not
+ * a chart setting -- nothing about it changes what a chart SAYS -- and not the
+ * rack's open-fold map either, which is keyed by adapter name and would be
+ * taking a reserved word in someone else's namespace.
+ *
+ * Open by default. It answers the question none of the folds beneath it can,
+ * so a reader who has never touched it should see it; closing it is the
+ * deliberate act.
+ *
+ * Wrapped, because localStorage throws in a private window and returns
+ * nonsense after a hand edit. A box whose traffic view refused to render
+ * because a preference would not parse would be a poor trade.
+ */
+const TRAFFIC_KEY = 'boa.traffic.open';
+const trafficOpen = ref(true);
+try {
+  const held = localStorage.getItem(TRAFFIC_KEY);
+  if (held !== null) trafficOpen.value = held === '1';
+} catch { /* no stored preference is the same as the default */ }
+watchEffect(() => {
+  try {
+    localStorage.setItem(TRAFFIC_KEY, trafficOpen.value ? '1' : '0');
+  } catch { /* a preference that cannot be saved is still worth honouring now */ }
+});
+
+const portPartyLabels = computed<Record<string, string>>(
+  () => (wanIface.value ? { [wanIface.value]: 'uplink' } : {}),
+);
+/**
+ * WHICH ADAPTER EACH DEVICE IS ON, as the device figure's second label line.
+ *
+ * A join on the roster rather than a measurement, and the distinction matters:
+ * this is where the device SITS NOW, while the ribbon beside it is a
+ * ten-second mean, so a device that has just roamed is named against its new
+ * adapter for traffic some of which crossed the old one. That is the same
+ * approximation the rack makes and it is why this is a label rather than a
+ * column in the figure -- as a column it would look like a counted path.
+ *
+ * The sentinels get no adapter. `beyond the box` is reached through the uplink
+ * but is not on it, and broadcast leaves by every port at once, so naming one
+ * would be wrong rather than merely incomplete.
+ */
+const clientAdapters = computed(() => {
+  const out: Record<string, string> = {};
+  for (const c of props.clients ?? []) {
+    if (c.port) out[c.mac] = c.port;
+  }
+  return out;
+});
+
+const clientPartyLabels = computed<Record<string, string>>(
+  () => ({ ...labels.value, ...CLIENT_PAIR_PARTIES }),
+);
+
 const onAdapter = computed(() => {
   const out: Record<string, { mac: string; label: string }[]> = {};
   for (const c of props.clients ?? []) {
@@ -385,8 +522,18 @@ const pending = ref('');
            that never left the box. It can also run the other way, because the
            bridge replicates every multicast frame to every port, so the
            downstream sum is not a conserved quantity. -->
-      <div v-if="totalHas" class="total">
+      <div v-if="totalHas" class="total" :class="{ closed: !trafficOpen }">
         <div class="total-head">
+          <!-- THE SUMMARY ROW SURVIVES THE FOLD, which is the point of folding
+               here rather than hiding the section outright: the uplink's rate
+               against its link speed is the one number worth a permanent place,
+               and it is one line. What collapses is four charts. -->
+          <button
+            class="caret" :aria-expanded="trafficOpen"
+            :title="trafficOpen ? 'Collapse the traffic charts'
+              : 'Show what crossed every adapter'"
+            @click="trafficOpen = !trafficOpen"
+          >{{ trafficOpen ? '▾' : '▸' }}</button>
           <h2 class="section-title">traffic</h2>
           <!-- A CHOICE OF GROUPING, not two charts. The bands are the same
                machinery over a different input, so the axis, the clock and the
@@ -440,7 +587,7 @@ const pending = ref('');
           </div>
           <!-- LAST, and with no auto margin of its own, so the container's own
                right edge fixes it. Nothing to its left can move it. -->
-          <span class="seg" role="group" aria-label="group the total by">
+          <span v-if="trafficOpen" class="seg" role="group" aria-label="group the total by">
             <button
               v-for="g in GROUPINGS" :key="g.key"
               class="ghost" :class="{ on: grouping === g.key }"
@@ -457,26 +604,52 @@ const pending = ref('');
         <!-- WHERE it went, under HOW MUCH. The stack answers the volume
              question and cannot answer the routing one; the Sankey is the same
              numbers arranged to show the split, including the share that never
-             crossed the uplink. Only under the adapter grouping: per device
-             there is no flow to draw, because a device is an endpoint. -->
+             crossed the uplink.
+
+             FOLDABLE, with the caret on a row of its own rather than in the
+             section header above -- that header belongs to the stacked chart
+             too, so a control there would read as folding both. -->
+        <div class="flows-head">
+          <button
+            class="caret" :aria-expanded="flowsOpen"
+            :title="flowsOpen ? 'Hide the routing figures'
+              : 'Show which ' + (grouping === 'adapter' ? 'adapter' : 'device')
+                + ' sent to which'"
+            @click="flowsOpen = !flowsOpen"
+          >{{ flowsOpen ? '▾' : '▸' }}</button>
+          <span class="flows-title">traffic routing</span>
+        </div>
         <FlowDiagram
-          v-if="grouping === 'adapter' && pairs"
-          :pairs="pairs" :wan-iface="wanIface"
+          v-if="flowsOpen && grouping === 'adapter' && pairs"
+          :pairs="pairs" :uplink="wanIface" :labels="portPartyLabels"
+          :order="adapterOrder"
+        />
+        <!-- THE SAME FIGURE OVER THE DEVICE MATRIX, which is what makes the
+             grouping toggle mean something here rather than only above. The
+             far side is not an interface but the sentinel standing for
+             everything past this box: a MAC pair cannot tell the upstream
+             router from a device the box has not identified, so it does not
+             pretend to. -->
+        <!-- GUARDED ON THE ADAPTER MATRIX, not on the device one. Both are
+             counted in the same nftables table and fail together, so `pairs`
+             present means the counting works — while `clientPairs` absent
+             means only that nothing moved this tick, which is a reading and
+             not an outage. Guarding on the latter made an idle network look
+             like a missing feature, and moved the page doing it. -->
+        <FlowDiagram
+          v-if="flowsOpen && grouping === 'client' && pairs"
+          :pairs="devicePairs" uplink="beyond-the-box"
+          :labels="clientPartyLabels" :sublabels="clientAdapters"
+          :notes="CLIENT_PAIR_NOTES"
         />
 
-        <!-- SAID, not implied, and only on the grouping it is true of.
-             Per-client is the incomplete view by construction: a tc class only
-             counts what its filter matched, so everything with no client
-             attribution is missing from it -- measured on the container host,
-             nine tenths of what crossed the WAN. Per-port is the complete one.
-             A reader comparing the two totals and finding them different
-             deserves to be told which is which rather than left to guess. -->
-        <p v-if="grouping === 'client'" class="total-note">
-          Per device counts only traffic the box attributed to a client. It is
-          not the adapter total: anything the box itself sent, and any device it
-          is not tracking, is missing from here. Group by adapter for everything
-          that crossed the wire.
-        </p>
+        <!-- THE INCOMPLETENESS IS STILL SAID, on the control that selects
+             this view rather than in a paragraph under it. The `by device`
+             button's own title carries it: a tc class counts only what its
+             filter matched, so everything with no client behind it is missing
+             -- measured on the container host, nine tenths of what crossed the
+             uplink. Two statements of one fact was one too many, and the
+             paragraph was the copy that cost page. -->
       </div>
 
       <AdapterRack
@@ -657,6 +830,34 @@ const pending = ref('');
 /* Dialled back to a footnote: it is standing context for the view above, not
    something needing attention. Same treatment the page footer gives its own
    notes. */
+/* The routing figures' own header row. Quieter than the section title above
+   it, because it names a part of that section rather than a new one. */
+.flows-head {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  margin: 10px 0 0;
+}
+.flows-head .caret { padding: 3px 4px 3px 0; }
+.flows-title {
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink-dim);
+}
+/* The rack's caret, repeated for the same reason .section-title is: this
+   codebase keeps a scoped copy rather than a shared one. */
+.caret {
+  background: none;
+  border: 0;
+  color: var(--ink-faint);
+  cursor: pointer;
+  font-size: 13px;
+  line-height: 1;
+  padding: 3px 8px;
+}
+.caret:hover { color: var(--ink); }
+
 /* The figures, right-aligned as a group and pushed there by the wrapper rather
    than by whichever of them happens to be rendering. See the template. */
 .total-figs {
@@ -674,12 +875,6 @@ const pending = ref('');
 .total-aside {
   font-size: 11px;
   color: var(--ink-faint);
-}
-.total-note {
-  margin: 4px 0 0;
-  font-size: 11px;
-  color: var(--ink-faint);
-  max-width: 78ch;
 }
 
 /* Channel quality lives with the channel plan now, in the diagram: the cells

@@ -824,6 +824,28 @@ damages packets, never link state.
   directions are also scaled independently, so widths compare within a figure
   and not between them, and the totals beside the headings are what carry the
   comparison.
+- **The same figure is drawn by device, not only by adapter.** Grouping the
+  traffic view by device redraws the flow diagram over the device matrix, so a
+  ribbon names the machines rather than the wires they happened to use. The
+  adapter matrix cannot say it: several devices share an adapter, so two phones
+  on one radio talking to two machines on one switch are a single ribbon there.
+- **Everything past the box is one counterparty, and it says so.** Anything
+  beyond the box is reached through the upstream router, so every frame to or
+  from the internet carries that router's address on one side — and so does a
+  device on the bridge the box has not identified. Those two are not
+  distinguishable from an address pair, so they are drawn as one party rather
+  than guessed apart. Discovery chatter, which every device emits and nobody
+  sent anywhere, is separated from both.
+- **A device keeps its own colour and never loses its address.** The colour
+  comes from the MAC, as it does on every other chart, so a device is not one
+  colour here and another on its own card. The address is shown beside the name
+  rather than replaced by it.
+- **The counting heals rather than going quiet.** Anything that empties the
+  box's counter table takes the rules with it and leaves the counters, which
+  reads as a silent network instead of a broken counter. The box checks its own
+  rules are still installed each time it reads them and puts them back, and
+  says so when it does.
+
 - **Counting the matrix must not perturb the traffic**, on a box whose whole
   purpose is not perturbing it. It is one counter rule per ordered adapter pair
   with no verdict, so nothing about forwarding changes, and the cost was

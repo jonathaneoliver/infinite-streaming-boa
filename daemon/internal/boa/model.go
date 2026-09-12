@@ -750,6 +750,18 @@ type Snapshot struct {
 	// beside it. Counted by nftables rules the daemon owns; see portpairs.go
 	// for the mechanism and for the measurement that says it is free.
 	Pairs []PortPair `json:"pairs,omitempty"`
+	// ClientPairs is which device talked to which, and how much.
+	//
+	// The port matrix above cannot say it. Several devices share an adapter,
+	// so two phones on one radio talking to two machines on one switch are a
+	// single ribbon there. Counted in one nftables rule feeding a dynamic set
+	// keyed on the MAC pair -- constant work per frame whatever the device
+	// count, which a rule per pair would not be. See clientpairs.go.
+	//
+	// `from` and `to` are a client's MAC, or one of two sentinels: everything
+	// past this box is reached through the upstream router and so shares its
+	// address, and discovery chatter is addressed to nobody in particular.
+	ClientPairs []ClientPair `json:"client_pairs,omitempty"`
 }
 
 // Notice is one message for the operator.
