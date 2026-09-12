@@ -8,7 +8,7 @@ import ClientsView from '@/components/ClientsView.vue';
 import BridgeView from '@/components/BridgeView.vue';
 import EventLog from '@/components/EventLog.vue';
 
-const { snap, connected, transport, series, bucketMs, setRange } = useSnapshot();
+const { snap, connected, transport, series, portSeries, bucketMs, setRange } = useSnapshot();
 
 /**
  * Start or stop one of the box's own services.
@@ -322,6 +322,7 @@ the file are replaced, devices not mentioned are left alone.">
     <BridgeView
       :active="true" :clients="snap?.clients"
       :series="series"
+      :port-series="portSeries" :ports="snap?.ports"
       :radios="caps?.wlan_ifaces ?? []"
       :adapter-run="snap?.adapter_run ?? null"
     />

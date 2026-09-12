@@ -1132,6 +1132,13 @@ export interface Snapshot {
    *  reason a device's is: so the adapter editor draws a moving playhead
    *  without polling a second endpoint. */
   adapter_run?: PatternView | null;
+  /** What crossed each bridge port this tick.
+   *
+   *  On the snapshot rather than on the bridge inventory, because this is a
+   *  time series and that is a TTL-cached description of the hardware: the
+   *  snapshot arrives once a second on the same stream as the client
+   *  throughput, so a port band and a client band share one clock. */
+  ports?: PortFlow[];
 }
 
 export const CLEAN: Shape = {
@@ -1204,6 +1211,47 @@ export const PRESETS: Preset[] = [
     up: { ...CLEAN, rate_mbps: 5, delay_ms: 20, jitter_ms: 10, loss_pct: 5, loss_burst: 20 },
   },
 ];
+
+/**
+ * One bridge port's total throughput, from the kernel's own interface counters
+ * rather than from the shaper's classes.
+ *
+ * The distinction is the point. A `tc` class only sees what its filter matched,
+ * so summing the per-client series to get a port total understates it — on the
+ * container host the WAN's unmatched default class held 112 MB against 12 MB
+ * for the busiest client. These counters have no attribution step to go wrong:
+ * every frame, including the box's own traffic, untracked devices, broadcast
+ * and multicast.
+ */
+export interface PortFlow {
+  iface: string;
+  /** The same closed set as IfaceInfo.role, so a WAN band can be drawn
+   *  differently from a radio without re-deriving which is which. */
+  role: IfaceRole;
+  /** TOWARD THE CLIENTS, on every port — which is not the same as tx.
+   *
+   *  The daemon flips the mapping on the WAN, where a packet heading for a
+   *  client is received rather than transmitted. Do not "correct" it here: read
+   *  both off the same counter and the WAN band comes out inverted against
+   *  every other band, which looks plausible and is backwards. */
+  down_mbps: number;
+  up_mbps: number;
+  /** The part of this port's egress that no client filter claimed: the box's
+   *  own traffic, plus any device it is not tracking. The WAN only.
+   *
+   *  EXACT rather than derived — the HTB default class, read at the same point
+   *  and on the same tick as the per-client classes. There is no inbound twin
+   *  and none should be invented: downlink is shaped on each client's own port,
+   *  so the WAN has no ingress classes to decompose. */
+  unattributed_up_mbps?: number;
+  /** The port's negotiated link rate, absent when it has none.
+   *
+   *  It is what makes the throughput mean anything — 400 Mbit/s is idle on a
+   *  2.5 GbE port and saturation on a 100 Mbit one — and it is the whole of the
+   *  bottleneck question. A radio has no `speed` file, so its band draws
+   *  against no ceiling rather than a guessed one. */
+  speed_mbps?: number;
+}
 
 /**
  * Throughput history for one client, in Mbps.

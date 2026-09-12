@@ -774,6 +774,41 @@ damages packets, never link state.
   nowhere in the device list. Discovering the hardware rather than the
   configuration is what lets the interface say this instead of leaving it to be
   inferred from a device list that is quietly short.
+- **The whole box is charted, not just the devices on it.** A view above the
+  rack stacks what crossed every adapter, read from the kernel's interface
+  counters rather than from the shaper's classes. The distinction is the point:
+  a class counts only what its filter matched, so the per-device totals omit
+  the box's own traffic and every device it is not tracking — measured on the
+  container host, nine tenths of what crossed the uplink. This is the view that
+  answers whether the uplink is the bottleneck, which is otherwise unanswerable
+  on a transparent bridge: the box is not a hop, so it appears in no client's
+  own picture of the network.
+- **The uplink sits beside the stack rather than in it.** A packet crossing the
+  uplink crosses a downstream adapter too, so stacking both counts it twice —
+  measured at 874 Mbit/s for 412 of real traffic. The stack is downstream
+  demand and the uplink is what that demand has to fit through, read against
+  each other and against the uplink's negotiated speed, which is quoted beside
+  it because 400 Mbit/s is idle on one port and saturation on another.
+- **It groups by adapter or by device, and says which one is incomplete.** The
+  same bands over a different input, so the axis, the clock and the window
+  cannot disagree between them. Per device is the partial view by construction
+  and is labelled as such; per adapter is everything that crossed the wire.
+- **The box's own traffic is shown where it is exact and marked where it is
+  not.** What left the uplink unclaimed by any client filter is the shaper's
+  default class, read on the same tick as the per-client ones. Traffic the
+  adapters carried that never crossed the uplink is a subtraction between two
+  differently-framed counters, so it is approximate and carries a tilde. There
+  is no inbound equivalent of the first and none is invented: downlink is
+  shaped on each client's own port, so the uplink has no ingress classes.
+- **The axis follows the traffic, not the link speed.** A stack floored at the
+  negotiated rate made 421 Mbit/s a sliver on a 10 Gbit port. The ceiling is
+  the measured peak with headroom, and the link speed is quoted as a number
+  beside the chart where it cannot flatten the trace.
+- **A chart that has no traffic keeps its space.** The panels are a screenful,
+  so removing an idle one and restoring it on the next packet moves everything
+  below it — in a view whose whole purpose is watching a number move. An idle
+  figure holds its height and says it is idle, which a gap cannot say.
+
 - The rack offers **box-wide radio controls**, chiefly a broadcast
   deauthentication. Each states on screen that it affects **every client on
   that radio**, and how many that currently is. It also warns that a client
