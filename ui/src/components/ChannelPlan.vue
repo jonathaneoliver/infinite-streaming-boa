@@ -592,29 +592,27 @@ function cellNote(radio: IfaceInfo, row: PlanRow, cell: PlanCell): string {
    operator presses it, nothing happens, and nothing says why. The tooltip
    names which radio is there and what to do about it.
 
-   IT KEEPS ITS QUALITY COLOUR, and the strike is drawn in that same colour.
+   IT KEEPS ITS QUALITY COLOUR, and the hatching is drawn in that colour.
    Unavailable and busy are two different facts about a channel, and a plan is
    read to compare channels: a cell that drops to grey the moment one of our own
    radios sits on it takes its measurement off the page, so the operator can no
    longer see whether moving the OTHER radio away would even be worth it.
-   text-decoration inherits currentColor, so the strike follows the rating for
-   free and the two facts cost one cell between them.
 
-   This comment claimed a strike-through for some time while the rule set only a
-   hatch and overrode `color` and `border-color` -- so the description was right
-   and the code was not. */
+   currentColor is what makes that free. The quality rules above set `color`, so
+   the gradient picks the rating up without a rule per quality -- and an unrated
+   cell, whose colour is the default dim ink, hatches neutrally by the same
+   mechanism rather than needing a case of its own.
+
+   background-IMAGE, not background: the shorthand would drop the cell's own
+   `--panel-2` fill, and the hatch is meant to sit ON the cell rather than
+   replace it. The stripes are mixed down to a third so a 10px label stays
+   readable underneath them. */
 .cell.taken {
-  text-decoration: line-through;
-  text-decoration-thickness: 2px;
+  background-image: repeating-linear-gradient(
+    -45deg,
+    transparent 0 3px,
+    color-mix(in srgb, currentColor 32%, transparent) 3px 6px);
   cursor: not-allowed;
-}
-/* Only where there is no measurement to keep. An unrated taken cell still needs
-   to read as unavailable, and with the colour rules above left alone there is
-   nothing else saying so. */
-.cell.taken.q-unknown {
-  background: repeating-linear-gradient(
-    -45deg, var(--panel-2) 0 3px, var(--line-soft) 3px 6px);
-  color: var(--ink-faint);
 }
 .node.unwatched .name { fill: var(--warn); }
 </style>
