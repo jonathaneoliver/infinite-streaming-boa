@@ -155,6 +155,10 @@ delay, jitter and loss lanes unused in this run.
   throughput per direction on each folded row.
 - **Keeps five minutes of history server-side**, so a browser refresh does not
   start from a blank chart.
+- **Shows the whole box, and where its traffic actually went** — every adapter's
+  throughput from the kernel's own counters, plus which adapter or device sent to
+  which. See [the whole box, and where its traffic
+  went](#the-whole-box-and-where-its-traffic-went).
 - **Ships ntopng** on `:3000`, watching the bridge, with per-device deep links
   from each card for traffic breakdown and nDPI-labelled flows. **Pi image
   only** — the container omits it, and the interface says why.
@@ -505,6 +509,31 @@ The toolbar above the device list applies to every chart at once:
 - **Mean over** — 10s / 30s / 60s, the window behind the smoothed line. Compare
   an `iperf3` whole-run figure against this, not against the live trace.
 - **Series** — which of live, mean and PHY are drawn.
+
+### The whole box, and where its traffic went
+
+![The traffic panel: stacked download and upload for the whole box above a pair
+of Sankey diagrams showing which device sent to which, with a 152 Mbit/s ribbon
+running between two of them](docs/images/traffic-routing.png)
+
+Above: the same second, twice. The stacked charts are every adapter's
+throughput, read from the kernel's interface counters rather than from the
+shaper's classes — so they include the box's own traffic and any device it is
+not tracking, which the per-device numbers cannot. The two figures beneath are
+the routing: who sent to whom, one ribbon per counted pair, thickness by rate.
+
+The fat ribbon is the point. A MacBook on Wi-Fi is sending 152 Mbit/s to a Mac
+Mini on a wired port, and neither end of it is the uplink — that traffic never
+left the box. Nothing else here can say that: interface counters give each
+adapter's row and column sums and never the matrix, so "is this client talking
+to the internet or to the device beside it" needs a counter at the point the
+bridge decides. Toggle **by adapter** / **by device** to read it as wires or as
+machines; each device carries its adapter on a second line.
+
+Both directions share one scale, so an upload a twentieth of its download is
+drawn a twentieth as thick. Rates are a ten-second mean, because a single second
+of a bursty flow routinely reads as nothing at all, and the thinnest ribbons are
+drawn thicker than they are — the figure says so where that applies.
 
 ### walkabout
 
