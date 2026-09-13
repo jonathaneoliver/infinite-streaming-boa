@@ -382,16 +382,111 @@ func (e *Engine) scanReady(iface string) error {
 	// The attempt stays because a radio that CAN come up scans better up, and
 	// nothing else on this box will raise it: there is no hostapd here, and
 	// NetworkManager was told to leave the device alone on the way in.
-	if !linkIsUp(iface) {
+	//
+	// The flag it checks is IFF_UP and not operstate -- see linkAdminUp. With
+	// the operstate test here this raised the link on EVERY scan, because an
+	// unassociated station's operstate never reads "up", so the one case that
+	// mattered was indistinguishable from the ninety-nine that did not.
+	if !linkAdminUp(iface) {
 		_ = exec.Command("ip", "link", "set", iface, "up").Run()
 	}
 	return nil
+}
+
+// raiseScanners brings every listen-only radio up at startup, so its driver
+// settles before anything asks it for a sweep.
+//
+// THIS IS WHAT MADE THE FIRST SCAN AFTER A CONTAINER RECREATE FAIL, every
+// time. Nothing raised the scanner: hostapd does not serve it, NetworkManager
+// was told to leave it alone, and the only `ip link set up` on the box was the
+// one inside scanReady -- which runs when the first scan is already being
+// attempted. MEASURED on the container host 2026-09-13, probing once a second
+// from the moment the container started:
+//
+//	+0s          No such device (-19)      not in the namespace yet
+//	+2s .. +19s  Network is down (-100)    in the namespace, never raised
+//	+20s, +22s   Device or resource busy   raised at last, driver scanning
+//	+24s         19 BSSes in 1277ms
+//
+// The poll sleeps fifteen seconds before its first scan, so that attempt
+// landed at +15s squarely in the dead window, reported a failure, and the box
+// showed "no sweep yet" with a warning in the activity log until the next tick
+// at +30s. Raising the link here moves the whole settling period -- about two
+// seconds once IFF_UP is set -- into the fifteen the poll waits anyway.
+//
+// Best effort and unconditional: `ip link set up` on an interface that is
+// already up is a no-op, and a scanner that is configured but not plugged in
+// is not an error here. freeScanner already handles the absent one.
+func (e *Engine) raiseScanners() {
+	if e.cfg.Demo {
+		return
+	}
+	for _, s := range e.cfg.ScanPorts {
+		if s == "" || !LinkExists(s) || linkAdminUp(s) {
+			continue
+		}
+		if err := exec.Command("ip", "link", "set", s, "up").Run(); err != nil {
+			e.logEvent(EventWarning, s, "",
+				"could not raise the listen-only radio %s, so its first sweep "+
+					"may fail: %v", s, err)
+			continue
+		}
+		e.logEvent(EventAction, s, "",
+			"%s raised for scanning; its driver has until the first sweep to "+
+				"settle", s)
+		// AND THE FIRST SWEEP IS ASKED FOR NOW, not at the first poll tick.
+		//
+		// watchAir sleeps fifteen seconds before its first scan, so a box that
+		// has just come up shows "no sweep yet" for a quarter of a minute with
+		// the instrument sitting there working. The scan itself walks the
+		// settling window through scanRetryDelays -- the measurement is on
+		// that ladder -- so this is the same call the poll makes, made
+		// earlier, not a warm-up with different rules.
+		//
+		// Its own goroutine: the retries can sleep for eleven seconds and
+		// nothing else about starting the box may wait on a radio.
+		go e.airScan(s)
+	}
 }
 
 // linkIsUp reads operstate, the same source readIface uses for IfaceInfo.Up,
 // so the gate and the rack cannot disagree about whether a radio is up.
 func linkIsUp(name string) bool {
 	return strings.TrimSpace(readSysfs("/sys/class/net/"+name+"/operstate")) == "up"
+}
+
+// linkAdminUp reads IFF_UP, which is the flag a scan actually needs.
+//
+// operstate is the wrong question for a listen-only radio and reads "down" for
+// ever. MEASURED on the container host 2026-09-13, on the AX200 mid-sweep:
+//
+//	flags       0x1003          IFF_UP set
+//	operstate   down
+//	ip link     <NO-CARRIER,BROADCAST,MULTICAST,UP> state DOWN mode DORMANT
+//
+// A managed station that is not associated has no carrier, so the kernel
+// reports it down while `iw scan` works perfectly -- which is the fact
+// scanStaleAfter was written to stop guessing about. Admin-up is the state
+// that separates "will not scan" from "reads down and scans anyway": with
+// IFF_UP clear the same scan fails with "Network is down (-100)" in 45ms.
+//
+// Bit 0 of the flags word, which sysfs prints as hex with a 0x prefix.
+func linkAdminUp(name string) bool {
+	return iffUp(readSysfs("/sys/class/net/" + name + "/flags"))
+}
+
+// iffUp reads bit 0 of a sysfs flags word, which sysfs prints as hex with a
+// 0x prefix. Separate from the read so it can be tested without a /sys tree.
+//
+// An unreadable or unparseable value is NOT up: on this box the only caller
+// raises the link when this says no, and raising an interface that is already
+// up is a no-op, so the harmless answer is the one that acts.
+func iffUp(raw string) bool {
+	v, err := strconv.ParseUint(strings.TrimPrefix(strings.TrimSpace(raw), "0x"), 16, 64)
+	if err != nil {
+		return false
+	}
+	return v&0x1 != 0
 }
 
 // --- airtime survey ------------------------------------------------------

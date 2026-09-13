@@ -1272,6 +1272,32 @@ damages packets, never link state.
   hostapd, which a scanner does not have and will never have, so they are
   absent rather than disabled. Scanning it on demand remains available, and
   unlike on a serving radio it costs nothing.
+
+  **The box raises it and sweeps it as it starts, rather than waiting for the
+  refresh timer.** Nothing else on the box will raise a listen-only radio:
+  hostapd does not serve it and the host's network manager is told to leave it
+  alone, so until the first scan asked for it the interface sat unraised and
+  that first scan was the one that failed. A radio needs a few seconds after
+  being raised before it will answer, which is time the box has anyway while it
+  starts, so the raise happens first and the sweep is asked for immediately
+  after. A box that has just come up shows a reading in seconds rather than
+  reporting a failure and a stale figure for the first half minute.
+
+  **A refusal that will pass is waited out rather than reported.** A radio
+  coming up refuses a scan for reasons that are gone within seconds — the
+  device not yet in place, the interface not yet up, the driver's own first
+  scan still running, or a person pressing scan while the timer is mid-sweep —
+  and each of those read as a broken instrument in the activity log. Those are
+  retried over a few seconds, and only a refusal that survives them is
+  reported. A driver that accepts a scan and never answers is NOT retried: that
+  failure has already cost the caller its patience, and asking again would hold
+  the refresh timer for the best part of a minute.
+
+  **When a scan is refused, the box says what the driver said.** The refusal
+  carries the driver's own words, because the alternative is a number: the
+  first scan after every restart was reported as "exit status 151", which is
+  arithmetic on an error code the box had been given in plain words and thrown
+  away.
 - **A chosen channel is remembered, and a radio is put back on it.** The move
   itself is applied to the running access point and lasts only as long as that
   process, so a restart, a reboot, a USB re-enumeration or a driver reload

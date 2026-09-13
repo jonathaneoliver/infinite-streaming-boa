@@ -2,6 +2,7 @@ package boa
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math"
 	"os"
@@ -1614,9 +1615,106 @@ type ScanResult struct {
 // short; it exists only to turn "never returns" into an error somebody reads.
 const scanTimeout = 20 * time.Second
 
-// scanCmd runs one `iw scan` under scanTimeout and names a timeout for what it
-// is, rather than letting it look like any other scan failure.
+// scanRetryDelays is how a transient refusal is waited out, and it is short.
+//
+// MEASURED on the container host 2026-09-13, taking the listen-only AX200 down
+// and straight back up, probing every 250ms:
+//
+//	admin-down            Network is down (-100), in 45ms
+//	+0.2s .. +1.6s        Device or resource busy (-16), in 45ms each
+//	+2.0s                 19 BSSes in 1262ms
+//
+// The busy window is the DRIVER'S OWN scan, which iwlwifi runs the moment the
+// interface comes up. So a scan asked for in the first two seconds of a
+// radio's life is refused for a reason that has already gone away by the time
+// anybody reads the refusal, and the next poll tick is fifteen seconds later.
+//
+// The ladder also has to cover a COLD radio, which is a longer window. Probing
+// once a second from the moment the container started, with the link now
+// raised at startup (see raiseScanners):
+//
+//	+0.0s          No such device (-19)              not in the namespace yet
+//	+1.1s ..+4.4s  Network is down (-100)            in it, flags 0x1002
+//	+5.5s          No buffer space available (-105)  raised, refused after 2.8s
+//	+9.3s          14 BSSes in 1272ms
+//
+// Four retries put attempts at roughly +0.0, +0.8, +2.3, +5.3 and +11.3
+// seconds from the first, so the last one lands the far side of that window
+// and the first sweep is asked for at startup rather than fifteen seconds in.
+//
+// They cost nothing in the normal case, because a scan that works never
+// reaches them. They also absorb the other collision this radio has: two scans
+// at once, one from the poll and one from a person pressing scan, the same -16.
+var scanRetryDelays = []time.Duration{
+	750 * time.Millisecond,
+	1500 * time.Millisecond,
+	3 * time.Second,
+	6 * time.Second,
+}
+
+// transientScanErrno is the set of refusals worth waiting out, by errno.
+//
+// `iw` exits with 256-|errno|, so these are the 240, 237, 156 and 151 that
+// were showing up in the activity log as bare exit statuses.
+//
+// EOPNOTSUPP is deliberately absent. "Operation not supported (-95)" is how a
+// serving radio says it will not scan while beaconing, which is a COMPLETE
+// answer that scanBandFree records and acts on -- retrying it would spend five
+// seconds re-asking a settled question. See scanBandFree.
+var transientScanErrno = map[int]string{
+	16:  "EBUSY: a scan is already running on this radio",
+	19:  "ENODEV: the radio is not in this namespace yet",
+	100: "ENETDOWN: the interface is not up",
+	105: "ENOBUFS: the driver could not queue the request",
+}
+
+// transientScan reports whether err is one of those. The map's values are not
+// read: `iw`'s own stderr line says it better, and scanErr puts that on the
+// error. They are there so the next person to see a bare 240 in a log knows
+// what it was.
+func transientScan(err error) bool {
+	var ee *exec.ExitError
+	if !errors.As(err, &ee) {
+		return false
+	}
+	// A process killed by a signal reports -1, which lands outside the map
+	// rather than aliasing an errno.
+	_, ok := transientScanErrno[256-ee.ExitCode()]
+	return ok
+}
+
+// scanCmd runs one `iw scan` under scanTimeout, waits out a transient refusal,
+// and names both a timeout and the driver's own complaint for what they are
+// rather than letting either look like any other scan failure.
 func scanCmd(iface string, args []string) ([]byte, error) {
+	// A TIMEOUT IS NOT RETRIED, deliberately. It is the one failure here that
+	// has already cost twenty seconds, and this loop runs on the poll's
+	// goroutine: a hung radio retried twice would hold the poll for the best
+	// part of a minute, which is the wedge scanTimeout was added to prevent.
+	// The next tick is fifteen seconds away and asks again for free.
+	for attempt := 0; ; attempt++ {
+		raw, err := scanOnce(iface, args)
+		if err == nil {
+			return raw, nil
+		}
+		if !transientScan(err) || attempt >= len(scanRetryDelays) {
+			return nil, err
+		}
+		// No log line per attempt on purpose: the caller reports the failure
+		// that SURVIVES the retries, and one line each would put four in the
+		// activity log for a radio that then scanned perfectly.
+		time.Sleep(scanRetryDelays[attempt])
+	}
+}
+
+// scanOnce is a single bounded attempt, carrying what `iw` said on stderr.
+//
+// WITHOUT THE STDERR this returned "exit status 151", which is what the
+// activity log showed for the first scan after every container recreate. The
+// number is 256-105, so the box had been told ENOBUFS and was passing on the
+// arithmetic. `iw` writes "command failed: <strerror> (-<errno>)" to stderr,
+// which names the fault and is thrown away by Output().
+func scanOnce(iface string, args []string) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), scanTimeout)
 	defer cancel()
 	raw, err := exec.CommandContext(ctx, "iw", args...).Output()
@@ -1627,7 +1725,28 @@ func scanCmd(iface string, args []string) ([]byte, error) {
 			"scan on %s did not finish within %s and was killed; the driver "+
 				"accepted the request and never answered", iface, scanTimeout)
 	}
-	return raw, err
+	if err != nil {
+		return nil, scanErr(iface, err)
+	}
+	return raw, nil
+}
+
+// scanErr puts `iw`'s own words on the error, keeping the ExitError inside it
+// so transientScan can still read the exit code through errors.As.
+func scanErr(iface string, err error) error {
+	var ee *exec.ExitError
+	if !errors.As(err, &ee) {
+		return err
+	}
+	said := strings.TrimSpace(string(ee.Stderr))
+	if said == "" {
+		return err
+	}
+	// One line: `iw` says "command failed: ..." and nothing else that helps.
+	if i := strings.IndexByte(said, '\n'); i >= 0 {
+		said = said[:i]
+	}
+	return fmt.Errorf("scan on %s: %s (%w)", iface, said, err)
 }
 
 // ScanBand scans on behalf of a person who asked for it, and may take the
