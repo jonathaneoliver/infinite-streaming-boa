@@ -1,6 +1,6 @@
 import { ref, watch } from 'vue';
 import { SUSTAINED_SEC } from '@/types';
-import type { ChartPrefs } from '@/types';
+import type { ChartPrefs, SortMode } from '@/types';
 
 /*
  * The chart settings, shared by everything that draws a chart.
@@ -55,6 +55,38 @@ function load(): ChartPrefs {
  * it forgets what you were doing.
  */
 export const chartPrefs = ref<ChartPrefs>(load());
+
+/*
+ * THE ORDER THE CLIENT LIST IS DRAWN IN, shared for the same reason the prefs
+ * above are.
+ *
+ * It is not a chart setting -- nothing about it changes what a chart says --
+ * but it sits in the same toolbar, and that toolbar moved above the traffic
+ * section so it is reachable from the adapter charts too. Two components then
+ * need it: the bar that sets it and the list that obeys it, which no longer
+ * contains the bar. A prop threaded between two components that do not
+ * otherwise talk is a longer wire than this state deserves.
+ */
+const SORT_KEY = 'boa.sort';
+
+function loadSort(): SortMode {
+  try {
+    const v = localStorage.getItem(SORT_KEY);
+    return v === 'name' || v === 'traffic' ? v : 'busy';
+  } catch {
+    return 'busy';
+  }
+}
+
+export const sortMode = ref<SortMode>(loadSort());
+
+watch(sortMode, (v) => {
+  try {
+    localStorage.setItem(SORT_KEY, v);
+  } catch {
+    // Private windows and blocked storage must not break the page.
+  }
+});
 
 watch(
   chartPrefs,

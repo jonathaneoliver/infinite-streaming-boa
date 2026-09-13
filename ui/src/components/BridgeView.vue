@@ -14,6 +14,7 @@ import FlowDiagram from '@/components/FlowDiagram.vue';
 import AdapterPatternPanel from '@/components/AdapterPatternPanel.vue';
 import ChannelPlan from '@/components/ChannelPlan.vue';
 import { setAdapterIfaces } from '@/composables/useAdapters';
+import { chartPrefs } from '@/composables/useChartPrefs';
 
 /*
  * The box: its fabric, and a rack of the adapters that carry clients.
@@ -25,6 +26,36 @@ import { setAdapterIfaces } from '@/composables/useAdapters';
  * blunter way of saying the same thing, and it cost every question that spans
  * both halves.
  */
+
+/*
+ * THE DIRECTION SWITCHES, for the readouts in the traffic header.
+ *
+ * The toolbar's `show down` / `show up` pair reads as page-wide, and the charts
+ * under this heading now obey it -- but the figures beside the heading printed
+ * both directions regardless, so hiding upload left "uplink 412 down / 9 up"
+ * over a stack drawing download alone. A number is as much a reading as a
+ * ribbon; a switch that governs one governs both.
+ *
+ * Read straight from the store rather than taken as props: these figures sit in
+ * the same component as the charts they annotate, and a copy could disagree.
+ */
+const showDown = computed(() => chartPrefs.value.showDown);
+const showUp = computed(() => chartPrefs.value.showUp);
+
+/**
+ * "412 down · 9 up", carrying only the directions on show.
+ *
+ * Built here rather than with a `v-if` per half in the template: `<template>`
+ * boundaries swallow the whitespace either side of them, and the first attempt
+ * printed "0 upof 10000" -- the figure running into the link speed behind it.
+ * One string with its own separator cannot lose a space.
+ */
+function dirFigure(v: { down: number; up: number }, tilde = ''): string {
+  const parts: string[] = [];
+  if (showDown.value) parts.push(`${tilde}${v.down.toFixed(0)} down`);
+  if (showUp.value) parts.push(`${tilde}${v.up.toFixed(0)} up`);
+  return parts.join(' · ');
+}
 
 const props = defineProps<{
   active: boolean;
@@ -75,14 +106,25 @@ const GROUPINGS = [
     key: 'adapter' as const,
     label: 'by adapter',
     title: 'Every frame that crossed each adapter, from the kernel\'s own '
-      + 'interface counters. Includes the box\'s own traffic, devices it is not '
+      + 'interface counters. Includes the box\'s own traffic, clients it is not '
       + 'tracking, broadcast and multicast — so this is the complete total. The '
       + 'uplink is reported beside it rather than stacked into it.',
   },
   {
     key: 'client' as const,
-    label: 'by device',
-    title: 'What the box attributed to each device, box-wide rather than per '
+    // CLIENT, not device, and the tooltip below is why the two could not
+    // differ: its caveat is "traffic with no CLIENT behind it", so a label
+    // saying device made the control and its own explanation use different
+    // nouns for one thing.
+    //
+    // It is also the word this interface already used nearly twice as often in
+    // visible text, the word the wire uses, the word the rack row directly
+    // beneath says ("no clients", "its clients"), and the split enterprise
+    // Wi-Fi makes -- UniFi, Meraki and Aruba keep "devices" for their OWN
+    // hardware and "clients" for what attaches to it, which is exactly the
+    // distinction this pair of buttons draws.
+    label: 'by client',
+    title: 'What the box attributed to each client, box-wide rather than per '
       + 'adapter. Incomplete by construction: traffic with no client behind it '
       + 'is absent, so this total is lower than the adapter total.',
   },
@@ -196,9 +238,14 @@ const localFlow = computed(() => {
 });
 /** Below this, the derivation's own error terms dominate. */
 const LOCAL_FLOOR_MBPS = 1;
+/* Over the floor IN A DIRECTION THAT IS BEING SHOWN. Testing both while
+   printing one puts "local ~0 down" on the row whenever the only thing above
+   the floor is the half that is hidden -- a figure claiming there is local
+   traffic and then reporting none. */
 const localWorthShowing = computed(
   () => !!localFlow.value
-    && (localFlow.value.down > LOCAL_FLOOR_MBPS || localFlow.value.up > LOCAL_FLOOR_MBPS),
+    && ((showDown.value && localFlow.value.down > LOCAL_FLOOR_MBPS)
+      || (showUp.value && localFlow.value.up > LOCAL_FLOOR_MBPS)),
 );
 
 const totalSeries = computed(() =>
@@ -350,9 +397,9 @@ const portPartyLabels = computed<Record<string, string>>(
  * approximation the rack makes and it is why this is a label rather than a
  * column in the figure -- as a column it would look like a counted path.
  *
- * The sentinels get no adapter. `beyond the box` is reached through the uplink
- * but is not on it, and broadcast leaves by every port at once, so naming one
- * would be wrong rather than merely incomplete.
+ * The sentinels get no adapter. `WAN` is reached through the uplink but is not
+ * on it, and broadcast leaves by every port at once, so naming one would be
+ * wrong rather than merely incomplete.
  */
 const clientAdapters = computed(() => {
   const out: Record<string, string> = {};
@@ -529,7 +576,7 @@ const pending = ref('');
                   + `a packet crossing the uplink crosses a downstream port too, so adding `
                   + `them would count it twice. The stack is downstream demand; this is what `
                   + `it has to fit through.`">
-            uplink {{ wanNow.down.toFixed(0) }} down · {{ wanNow.up.toFixed(0) }} up
+            uplink {{ dirFigure(wanNow) }}
             <template v-if="wanSpeed">of {{ wanSpeed }}</template>
           </span>
           <!-- The two things the uplink figure alone does not tell you.
@@ -541,9 +588,12 @@ const pending = ref('');
 
                The second is DERIVED and says so with a tilde. See localFlow
                for its two error terms, both of which inflate it. -->
-          <span v-if="grouping === 'adapter' && wanUnattributed > 0" class="total-aside num"
+          <!-- HIDDEN WITH UPLOAD, not narrowed: this figure is outbound only --
+               the uplink has no inbound classes to split -- so with upload
+               turned off there is no version of it left to print. -->
+          <span v-if="grouping === 'adapter' && wanUnattributed > 0 && showUp" class="total-aside num"
                 :title="`Traffic leaving the uplink that no client filter claimed: this box's `
-                  + `own, plus any device it is not tracking. Exact — the shaper's default `
+                  + `own, plus any client it is not tracking. Exact — the shaper's default `
                   + `class, read on the same tick as the per-client ones. Outbound only: `
                   + `downlink is shaped on each client's own port, so the uplink has no `
                   + `inbound classes to split.`">
@@ -555,7 +605,7 @@ const pending = ref('');
                   + `multicast frame to every port, and this subtracts a Wi-Fi byte counter from `
                   + `an Ethernet one, both of which inflate it. Aggregate only — which two `
                   + `adapters is not knowable from interface counters.`">
-            local ~{{ localFlow.down.toFixed(0) }} down · ~{{ localFlow.up.toFixed(0) }} up
+            local {{ dirFigure(localFlow, '~') }}
           </span>
           </div>
           <!-- LAST, and with no auto margin of its own, so the container's own
@@ -586,7 +636,7 @@ const pending = ref('');
           <button
             class="caret" :aria-expanded="flowsOpen"
             :title="flowsOpen ? 'Hide the routing figures'
-              : 'Show which ' + (grouping === 'adapter' ? 'adapter' : 'device')
+              : 'Show which ' + (grouping === 'adapter' ? 'adapter' : 'client')
                 + ' sent to which'"
             @click="flowsOpen = !flowsOpen"
           >{{ flowsOpen ? '▾' : '▸' }}</button>
@@ -611,7 +661,7 @@ const pending = ref('');
              like a missing feature, and moved the page doing it. -->
         <FlowDiagram
           v-if="flowsOpen && grouping === 'client' && pairs"
-          :pairs="devicePairs" uplink="beyond-the-box"
+          :pairs="devicePairs" uplink="wan"
           :labels="clientPartyLabels" :sublabels="clientAdapters"
           :notes="CLIENT_PAIR_NOTES"
         />

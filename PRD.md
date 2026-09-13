@@ -903,6 +903,29 @@ damages packets, never link state.
   below it — in a view whose whole purpose is watching a number move. An idle
   figure holds its height and says it is idle, which a gap cannot say.
 
+- **One bar governs every chart on the page, these included.** The chart
+  settings are page-wide because the reason to change one is comparison, and
+  that reason does not stop at the device list: the range, the axis, the
+  height, the mean window and which directions are drawn reach the whole-box
+  charts and the routing figures as well as the cards. A setting a chart
+  ignores is worse than one it does not offer, because the control says
+  otherwise. Where a setting has no meaning for a figure it is not faked: a
+  Sankey has no time axis to range and no axis to pin, and a port total has no
+  cap or PHY rate to draw against, so those fall back rather than inventing an
+  equivalent.
+- **Hiding a direction gives its width to the other one.** Turning off upload
+  is a request for screen, so the remaining figure takes the whole row rather
+  than keeping half of it beside an empty panel. The figures beside the
+  headings follow the same switch as the drawings, and one that exists in only
+  one direction — the box's own traffic, which is counted outbound only —
+  disappears with it. Turning both off leaves the last one standing in these
+  sections, because a section that vanishes moves everything below it.
+- **On a Sankey, height is accuracy rather than size.** Thickness is the only
+  channel a ribbon has and it has a floor, since a line thinner than a pixel or
+  two cannot be seen; at the taller setting a flow worth a hundredth of the
+  total is drawn honestly instead of at the floor, and node labels have the room
+  to carry their second line. The box says which ribbons are at the floor.
+
 - The rack offers **box-wide radio controls**, chiefly a broadcast
   deauthentication. Each states on screen that it affects **every client on
   that radio**, and how many that currently is. It also warns that a client

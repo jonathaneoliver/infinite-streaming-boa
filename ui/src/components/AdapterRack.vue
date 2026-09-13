@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue';
-import type { BSSLoadState, IfaceInfo, Series } from '@/types';
+import type { BSSLoadState, IfaceInfo, ScanAP, Series } from '@/types';
 import { DEVELOPER } from '@/types';
 import { rackAdapters, isOpen, toggleAdapter } from '@/composables/useAdapters';
 import AdapterStack from '@/components/AdapterStack.vue';
@@ -144,6 +144,153 @@ const OUTAGES = [5, 10, 30, 60];
 const outage = defineModel<Record<string, number>>('outage', { default: () => ({}) });
 
 const busy = computed(() => props.bridge.busy.value);
+
+/**
+ * THE SURVEY A LISTEN-ONLY RADIO PRODUCES, which is the one thing its fold had
+ * nothing of.
+ *
+ * That fold used to be 648px of which 572 were two charts that can never hold
+ * anything. A scanner is given no hostapd config, so it is not a bridge port
+ * and cannot forward a frame -- the throughput chart is structurally empty, not
+ * merely quiet. Its airtime chart is derived from per-client station dumps, and
+ * a scanner has no stations. Both said "nothing seen in the last 5m", which
+ * invites a reader to wait for something that cannot arrive.
+ *
+ * Meanwhile the scan itself was reported only in the activity log and in the
+ * colours of other radios' band plans. It is served per interface in the
+ * inventory and was simply never drawn here.
+ *
+ * Read from `scanSummaries`, the DAEMON's own memory of the scan, not from the
+ * `scans` map a manual scan fills: the summary survives a page reload, which a
+ * measurement someone else took on the same box has to.
+ */
+const survey = (name: string) => props.bridge.scanSummaries.value[name];
+
+/**
+ * The busiest and quietest channels this scan MEASURED.
+ *
+ * Measured, and the distinction is the whole reason this is not a one-liner. A
+ * channel with no `util_from` was not quiet; nobody reported on it. Ranking
+ * those as quietest would nominate whichever channel the scan understood least,
+ * which is the same error the band-plan colouring documents at length.
+ */
+const surveyRange = (name: string) => {
+  const measured = (survey(name)?.channels ?? [])
+    .filter((c) => (c.util_from ?? 0) > 0 && c.util_pct !== undefined);
+  if (!measured.length) return null;
+  const byUtil = [...measured].sort((a, b) => (a.util_pct ?? 0) - (b.util_pct ?? 0));
+  return {
+    measured: measured.length,
+    quietest: byUtil[0],
+    busiest: byUtil[byUtil.length - 1],
+  };
+};
+
+/** What the scan heard in total, across every channel it listed. */
+const surveyHeard = (name: string) => {
+  const ch = survey(name)?.channels ?? [];
+  return {
+    channels: ch.length,
+    looked: (survey(name)?.looked ?? []).length,
+    aps: ch.reduce((a, c) => a + (c.aps ?? 0), 0),
+    stations: ch.reduce((a, c) => a + (c.stations ?? 0), 0),
+  };
+};
+
+/** `ch 36 at 67%`, or empty when nothing on this sweep was measured. */
+const surveyBusiest = (name: string) => {
+  const r = surveyRange(name);
+  return r ? `ch ${r.busiest.channel} at ${Math.round(r.busiest.util_pct ?? 0)}%` : '';
+};
+const surveyQuietest = (name: string) => {
+  const r = surveyRange(name);
+  return r ? `ch ${r.quietest.channel} at ${Math.round(r.quietest.util_pct ?? 0)}%` : '';
+};
+/** How many swept channels carried a real airtime reading rather than a
+ *  headcount. 0 means the whole sweep is a headcount, which is worth saying. */
+const surveyMeasured = (name: string) => surveyRange(name)?.measured ?? 0;
+
+/**
+ * The neighbours this radio heard, and how many it heard in total.
+ *
+ * Strongest first, as the daemon ordered them. Not re-sorted here: a list that
+ * reorders itself while being read is the complaint the flow diagram's fixed
+ * ordering exists to answer, and signal is the ordering that matches what the
+ * operator is looking for anyway.
+ */
+const neighbours = (name: string) => survey(name)?.neighbours ?? [];
+const heardCount = (name: string) => survey(name)?.heard ?? 0;
+
+/**
+ * A neighbour's own reported airtime, as a percentage.
+ *
+ * CONVERTED HERE AND NOWHERE EARLIER. The wire carries 0-255 and the daemon
+ * keeps it that way on purpose, because converting twice is the failure
+ * docs/DATA-CONTRACT.md is written to prevent: 60 is 23.5%, not 60%. Empty
+ * when the element was absent, which is not the same as an idle channel
+ * reading zero -- hence util_known rather than a zero check.
+ */
+const apUtil = (a: ScanAP) =>
+  (a.util_known && a.util_raw !== undefined
+    ? `${Math.round((a.util_raw / 255) * 100)}%`
+    : '');
+
+/**
+ * WHAT THE SWEEP FOUND ON EACH OF OUR OWN ACCESS POINTS' CHANNELS.
+ *
+ * The join nothing else makes. `ours` gives how loudly the scanner hears one of
+ * our radios, which is already a reading available nowhere else -- a radio
+ * cannot hear itself. On its own it answers "is that antenna working"; joined to
+ * the channel row for the channel that radio is actually on, it answers the
+ * question an operator has: is the channel I put this AP on a good one, and
+ * what is it sharing it with.
+ *
+ * Both halves were already here and were never brought together. The rack row
+ * for each AP carries its own contention figures, but those come from whichever
+ * scan measured them and say nothing about what ELSE occupies that channel;
+ * this says how many neighbours cover it, which is the number that makes an
+ * empty-looking 5GHz channel turn out to be full.
+ *
+ * COVERING, not aps: an 80MHz neighbour fills four 20MHz channels and competes
+ * across all of them, so a channel with no access point primary on it can still
+ * be fully occupied. That is the common case on 5GHz.
+ */
+const ourAPsHeard = (name: string) => {
+  const sum = survey(name);
+  if (!sum) return [];
+  const chans = sum.channels ?? [];
+  return Object.entries(sum.ours ?? {}).map(([iface, dbm]) => {
+    const radio = rackAdapters.value.find((o) => o.name === iface);
+    const ch = radio?.ap?.channel;
+    const row = ch ? chans.find((c) => c.channel === ch) : undefined;
+    return {
+      iface,
+      dbm,
+      channel: ch ?? 0,
+      // Empty rather than zero where nobody reported: a channel nobody
+      // measured is not an idle one, and the band plan's colouring rests on
+      // exactly this distinction.
+      util: row && (row.util_from ?? 0) > 0 && row.util_pct !== undefined
+        ? `${Math.round(row.util_pct)}%` : '',
+      covering: row?.covering ?? row?.aps ?? 0,
+      swept: ch ? (sum.looked ?? []).includes(ch) : false,
+    };
+  });
+};
+
+/** `80MHz` on ch 36, or just the width where it is the primary's own. */
+const apWidthLabel = (a: ScanAP) =>
+  `${a.width_mhz ?? 20}MHz${a.centre ? ` · centre ${a.centre}` : ''}`;
+
+/** How old the reading is, in the same words the rest of the rack uses. */
+const surveyAge = (name: string) => {
+  const at = survey(name)?.at;
+  if (!at) return '';
+  const sec = Math.max(0, Math.round((Date.now() - at) / 1000));
+  if (sec < 60) return `${sec}s ago`;
+  if (sec < 3600) return `${Math.round(sec / 60)}m ago`;
+  return `${Math.round(sec / 3600)}h ago`;
+};
 
 /** How many names fit before the row starts wrapping. Past this they are
  *  summarised, with the full list in the tooltip. */
@@ -296,6 +443,15 @@ function evictTo(r: IfaceInfo): IfaceInfo | undefined {
  * what the token leaves out, and they are what says how the link will behave.
  */
 function summary(r: IfaceInfo): string {
+  // A SCANNER'S LINK STATE IS NOT NEWS, and printing it is worse than silent.
+  // Measured on this box: `ip link set up` exits 0 and the AX200 stays `down`
+  // while scanning perfectly -- 19 access points in 1.2s. So `down` here is
+  // both the normal case and a word that reads as a fault. What changes about
+  // a scanner is when it last swept, so that is what the row says.
+  if (r.role === 'scanner') {
+    const age = surveyAge(r.name);
+    return age ? `swept ${age}` : 'no sweep yet';
+  }
   if (!r.ap) return r.speed_mbps ? `${r.speed_mbps} Mb/s` : (r.up ? 'up' : 'down');
   // The mode is rendered beside this rather than joined into it, so the
   // ellipsis this string may take cannot reach the generation name.
@@ -618,7 +774,26 @@ function degraded(i: IfaceInfo): boolean {
              would invite the reader to wonder what had failed to be measured
              about a cable. -->
         <span class="air" :title="r.wireless ? airTitle(r) : ''">
-          <template v-if="r.wireless">
+          <!-- A SCANNER FILLS THIS CELL WITH WHAT IT MEASURES, not with five
+               em-dashes.
+               All five figures to the right are about an access point and its
+               clients: a negotiated PHY rate needs a station to negotiate
+               with, `ours` is how well the box hears its own beacon, and `air`
+               is airtime attributed per client. A radio that serves nothing
+               has none of them, ever -- so the row read `PHY — ours — loudest
+               — air — others —`, five blanks in the column that is supposed to
+               say how contested the air is, on the one radio whose entire job
+               is measuring that.
+               What it does have is the sweep: how many neighbours it heard and
+               the busiest channel it found. Same column, same question, a
+               source it actually has. -->
+          <template v-if="r.role === 'scanner'">
+            <span class="k">heard</span
+            ><span class="v num">{{ heardCount(r.name) || '—' }}</span>
+            <span class="k">busiest</span
+            ><span class="v num">{{ surveyBusiest(r.name) || '—' }}</span>
+          </template>
+          <template v-else-if="r.wireless">
           <!-- PHY leads, because it is the only one of these four that is about
                the LINK rather than about the channel, and it is the number an
                operator checks first. Em dash when no client is associated:
@@ -671,6 +846,12 @@ function degraded(i: IfaceInfo): boolean {
             +{{ on(r).length - NAMES_SHOWN }}
           </span>
         </span>
+        <!-- EMPTY, not "no clients", for a radio that cannot have any. The
+             cell stays for the grid -- removing it slides every later cell one
+             track left, which this file records breaking the row once already
+             -- but "no clients" on an instrument invites the reader to wonder
+             why none have joined it. -->
+        <span v-else-if="r.role === 'scanner'" class="who-none"></span>
         <span v-else class="who-none">no clients</span>
 
         <div class="tail">
@@ -918,7 +1099,17 @@ Clients ARE told it has gone, unlike a power cut.`
           <div v-if="r.radio?.bus === 'usb'"><span class="k">USB port</span>
             <span class="v num">{{ r.radio.socket || '—' }}</span></div>
           <div><span class="k">MAC</span><span class="v num">{{ r.mac }}</span></div>
-          <div><span class="k">bridge port</span><span class="v num">{{ r.master || 'not bridged' }}</span></div>
+          <!-- BRIDGE, not "bridge port", and the old label was wrong on every
+               row rather than only on the scanner. The field holds the BRIDGE's
+               name -- measured: wan0, both radios and both wired ports all
+               report master='br-lan' -- so "bridge port: br-lan" parsed as
+               "the bridge port is br-lan", when br-lan is the bridge and the
+               interface itself is the port.
+               "not a member" rather than "not bridged" for the same reason the
+               key changed: a key asking WHICH bridge should be answered by a
+               name or by the absence of one, and "not bridged" answered a
+               different question than the one the label asked. -->
+          <div><span class="k">bridge</span><span class="v num">{{ r.master || 'not a member' }}</span></div>
           <!-- ALWAYS RENDERED, em-dash when there is no access point, rather
                than hidden behind v-if="r.ap".
 
@@ -929,14 +1120,157 @@ Clients ARE told it has gone, unlike a power cut.`
 
                A dash is also the better answer on its own terms: a field that
                vanishes cannot be told apart from a field that is broken, and
-               this strip already says "not bridged" rather than hiding the
-               bridge port for the same reason. -->
-          <div><span class="k">SSID</span><span class="v">{{ r.ap?.ssid || '—' }}</span></div>
-          <div><span class="k">BSSID</span><span class="v num">{{ r.ap?.bssid || '—' }}</span></div>
-          <div><span class="k">country</span><span class="v num">{{ r.ap?.country || '—' }}</span></div>
-          <div><span class="k">beacon / DTIM</span>
-            <span class="v num">{{ r.ap ? `${r.ap.beacon_int_ms} ms / ${r.ap.dtim_period}` : '—' }}</span></div>
+               this strip already says "not a member" rather than hiding the
+               bridge for the same reason. -->
+          <!-- FOUR AP FIELDS, and a scanner has none of them by construction
+               rather than by circumstance. The em-dash above is the right
+               answer for a radio whose access point is momentarily down; it is
+               the wrong one for a radio that will never have an SSID, where
+               four permanent dashes read as four things broken. A scanner gets
+               the age of its reading in their place -- the one fact about it
+               that changes. -->
+          <template v-if="r.role !== 'scanner'">
+            <div><span class="k">SSID</span><span class="v">{{ r.ap?.ssid || '—' }}</span></div>
+            <div><span class="k">BSSID</span><span class="v num">{{ r.ap?.bssid || '—' }}</span></div>
+            <div><span class="k">country</span><span class="v num">{{ r.ap?.country || '—' }}</span></div>
+            <div><span class="k">beacon / DTIM</span>
+              <span class="v num">{{ r.ap ? `${r.ap.beacon_int_ms} ms / ${r.ap.dtim_period}` : '—' }}</span></div>
+          </template>
+          <div v-else><span class="k">last swept</span>
+            <span class="v num">{{ surveyAge(r.name) || 'not yet' }}</span></div>
         </div>
+
+        <!-- WHAT THIS RADIO IS FOR, where its throughput chart used to be. -->
+        <template v-if="r.role === 'scanner'">
+          <div v-if="survey(r.name)" class="survey">
+            <div class="survey-head">
+              <span class="survey-title">last sweep</span>
+              <span class="survey-sub num">{{ surveyAge(r.name) }}</span>
+            </div>
+            <div class="facts">
+              <div><span class="k">heard</span>
+                <span class="v num">{{ surveyHeard(r.name).aps }} AP<template
+                  v-if="surveyHeard(r.name).aps !== 1">s</template>,
+                  {{ surveyHeard(r.name).stations }} client<template
+                  v-if="surveyHeard(r.name).stations !== 1">s</template></span></div>
+              <!-- LOOKED AT against FOUND ON, because the difference decides
+                   what an empty channel means: visited and silent is a
+                   measurement, never visited is a gap. The band plan's colours
+                   rest on exactly this distinction. -->
+              <div><span class="k">channels</span>
+                <span class="v num">{{ surveyHeard(r.name).channels }} of
+                  {{ surveyHeard(r.name).looked }} swept carried something</span></div>
+              <template v-if="surveyMeasured(r.name)">
+                <div><span class="k">busiest</span>
+                  <span class="v num">{{ surveyBusiest(r.name) }}</span></div>
+                <div><span class="k">quietest</span>
+                  <span class="v num">{{ surveyQuietest(r.name) }}</span></div>
+                <!-- HOW MANY of the swept channels carried a real airtime
+                     reading, rather than only a headcount. A colour resting on
+                     evidence and one resting on a guess must not look alike,
+                     which is the rule the plan itself follows. -->
+                <div><span class="k">measured airtime</span>
+                  <span class="v num">{{ surveyMeasured(r.name) }} channel<template
+                    v-if="surveyMeasured(r.name) !== 1">s</template></span></div>
+              </template>
+            </div>
+            <p v-if="!surveyMeasured(r.name)" class="survey-note">
+              No neighbour on any swept channel advertised its airtime, so this
+              sweep is a headcount. A channel nobody measured is not an idle
+              one.
+            </p>
+            <!-- OUR OWN ACCESS POINTS, as this radio hears them and on the
+                 channels the same sweep measured.
+                 The dBm is the only reading of our own beacons taken from
+                 outside them -- a radio cannot hear itself -- and the channel
+                 figures beside it turn that from "the antenna works" into "and
+                 the channel you put it on looks like this". -->
+            <div v-if="ourAPsHeard(r.name).length" class="neigh">
+              <div class="survey-head">
+                <span class="survey-title">our access points</span>
+                <span class="survey-sub num">heard from outside</span>
+              </div>
+              <div class="neigh-scroll">
+                <table class="neigh-table">
+                  <thead>
+                    <tr>
+                      <th>radio</th><th>ch</th><th class="r">heard at</th>
+                      <th class="r">channel airtime</th><th class="r">neighbours covering</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr v-for="o in ourAPsHeard(r.name)" :key="o.iface">
+                      <td><span class="ssid">{{ o.iface }}</span></td>
+                      <td class="num">{{ o.channel || '—' }}</td>
+                      <td class="num r">{{ o.dbm }} dBm</td>
+                      <!-- Three states, not two. A figure where neighbours
+                           reported one; "not measured" where the channel was
+                           swept and nobody advertised; an em-dash where the
+                           sweep never visited it. Collapsing the last two
+                           would rate an unvisited channel as quiet. -->
+                      <td class="num r">{{ o.util || (o.swept ? 'not measured' : '—') }}</td>
+                      <td class="num r">{{ o.channel ? o.covering : '—' }}</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            <!-- WHO IS ACTUALLY THERE, which the per-channel rollup above can
+                 only total. "Channel 36 is 35% busy" and "channel 36 has one
+                 80MHz neighbour at -42 dBm reporting 12 clients" are different
+                 answers, and only the second tells an operator what to do
+                 about it.
+
+                 WIDTH IS THE COLUMN THAT EARNS ITS PLACE. An 80MHz neighbour
+                 fills four 20MHz channels and competes across all of them, so
+                 a channel that looks empty by headcount can be fully occupied
+                 -- which is the common case on 5GHz and the reason the band
+                 plan counts coverage separately. -->
+            <div v-if="neighbours(r.name).length" class="neigh">
+              <div class="survey-head">
+                <span class="survey-title">neighbours</span>
+                <span class="survey-sub num">{{ heardCount(r.name) }} heard<template
+                  v-if="heardCount(r.name) > neighbours(r.name).length">,
+                  {{ neighbours(r.name).length }} strongest shown</template></span>
+              </div>
+              <div class="neigh-scroll">
+                <table class="neigh-table">
+                  <thead>
+                    <tr>
+                      <th>network</th><th>ch</th><th>occupies</th>
+                      <th class="r">signal</th><th class="r">its clients</th>
+                      <th class="r">its airtime</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr v-for="a in neighbours(r.name)" :key="a.bssid">
+                      <td>
+                        <!-- A HIDDEN SSID IS NAMED AS ONE, not left blank: an
+                             empty cell reads as a parse failure, and the BSSID
+                             below it is the identity either way. -->
+                        <span class="ssid">{{ a.ssid || '(hidden)' }}</span>
+                        <span class="bssid num">{{ a.bssid }}</span>
+                      </td>
+                      <td class="num">{{ a.channel }}</td>
+                      <td class="num">{{ apWidthLabel(a) }}</td>
+                      <td class="num r">{{ a.signal_dbm }} dBm</td>
+                      <!-- Em-dash, not 0: a neighbour that advertises no BSS
+                           Load has told us nothing, and zero clients is a
+                           different claim. -->
+                      <td class="num r">{{ a.stations ?? '—' }}</td>
+                      <td class="num r">{{ apUtil(a) || '—' }}</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+          <p v-else class="notice inline">
+            {{ r.name }} has taken no reading yet. It sweeps both bands every
+            15 seconds once it is up; <em>scan</em> below forces one now.
+          </p>
+        </template>
 
         <!-- WHAT IT IS CARRYING, with the facts rather than with the
              controls: this is status, and CHANNEL AND WIDTH still leads the
@@ -952,8 +1286,13 @@ Clients ARE told it has gone, unlike a power cut.`
              traffic you had just been watching. What a radio carried is asked
              about most often right after it stopped carrying it. With nothing
              in the window the component says so in words. -->
+        <!-- NOT FOR A SCANNER. It is not a bridge port -- no hostapd config
+             means no `bridge=` line -- so it can never forward a frame and this
+             chart can never be anything but zero with a message under it saying
+             nothing has been seen. That is an invitation to wait for something
+             structurally impossible. -->
         <AdapterStack
-          v-if="series"
+          v-if="series && r.role !== 'scanner'"
           :iface="r.name" :series="series" :labels="labels ?? {}"
         />
 
@@ -969,8 +1308,12 @@ Clients ARE told it has gone, unlike a power cut.`
              is a problem for everyone else on the radio.
 
              Only for a radio. A wired port has no airtime to divide. -->
+        <!-- Nor for a scanner: airtime here is attributed PER CLIENT from
+             station dumps, and a radio serving no access point has no stations
+             to attribute it to. What a scanner does measure about airtime is
+             the channel survey above, which is a different quantity. -->
         <AdapterStack
-          v-if="series && r.wireless"
+          v-if="series && r.wireless && r.role !== 'scanner'"
           mode="airtime"
           :iface="r.name" :series="series" :labels="labels ?? {}"
           :airtime-known="r.airtime_cap_known"
@@ -1008,13 +1351,17 @@ Clients ARE told it has gone, unlike a power cut.`
                which "off" button belongs to which heading. -->
           <section class="group">
             <h4 class="first">Channel and width</h4>
+            <!-- NO "SCAN AND MOVE TO THE QUIETEST" HERE ANY MORE.
+                 It surveyed from this radio -- taking its access point down
+                 and back up, dropping its clients -- and then moved it to
+                 whatever that single sweep called quietest. Two consequential
+                 actions behind one press, decided by one reading.
+                 Nothing became unreachable by removing it: the plan above
+                 moves the radio to a channel you pick, and a dedicated
+                 listen-only radio surveys continuously at no cost to anyone.
+                 The one-press survey-then-act is what went, which was the part
+                 that acted on a measurement nobody had seen yet. -->
             <slot name="plan" :radio="r" :others="otherRadios(r)" />
-            <div class="action-row">
-              <button class="accent" :disabled="busy"
-                :title="`Survey ${r.name}'s band and move it to the quietest channel found. Takes the radio down and back up.`"
-                @click="bridge.scanBand(r.name, true)"
-              >scan and move to the quietest</button>
-            </div>
           </section>
 
           <!-- The timed outage goes behind developer=1 with the power switch
@@ -1365,6 +1712,65 @@ Clients ARE told it has gone, unlike a power cut.`
   padding: 3px 8px;
 }
 .caret:hover { color: var(--ink); }
+/* The survey block: the same facts grid as the strip above it, with a quiet
+   heading so it reads as part of the fold rather than as a new section. */
+.survey { margin: 10px 0 0; }
+.survey-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+.survey-title {
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink-dim);
+}
+.survey-sub { font-size: 11px; color: var(--ink-faint); }
+.survey-note {
+  margin: 6px 0 0;
+  font-size: 11px;
+  color: var(--ink-faint);
+  max-width: 78ch;
+}
+
+/* The neighbour table. Scrolls in its own container rather than widening the
+   fold: a dense site is dozens of rows and six columns, and the rack must not
+   start scrolling sideways because one radio can hear a lot. */
+.neigh { margin: 12px 0 0; }
+.neigh-scroll { overflow-x: auto; max-height: 320px; overflow-y: auto; }
+.neigh-table {
+  border-collapse: collapse;
+  font-size: 11px;
+  width: 100%;
+}
+.neigh-table th {
+  text-align: left;
+  font-weight: 500;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+  padding: 0 10px 4px 0;
+  position: sticky;
+  top: 0;
+  background: var(--panel);
+}
+.neigh-table td {
+  padding: 3px 10px 3px 0;
+  color: var(--ink-dim);
+  border-top: 1px solid var(--line-soft);
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+.neigh-table .r { text-align: right; }
+.neigh-table .ssid { color: var(--ink); }
+.neigh-table .bssid {
+  display: block;
+  color: var(--ink-faint);
+  font-size: 10px;
+}
+
 /* A GENERATION LABEL MUST NEVER BE THE THING THAT GETS CLIPPED.
    Every other value here degrades honestly under `text-overflow`, because a cut
    number or a cut address is visibly incomplete. The 802.11 family names do

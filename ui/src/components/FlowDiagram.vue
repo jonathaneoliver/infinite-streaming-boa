@@ -3,6 +3,7 @@ import { computed, onBeforeUnmount, ref, watch } from 'vue';
 import { sankey, sankeyLinkHorizontal, sankeyJustify } from 'd3-sankey';
 import type { ClientPair, PortPair } from '@/types';
 import { clientColour } from '@/composables/useClientColours';
+import { chartPrefs } from '@/composables/useChartPrefs';
 
 /**
  * WHICH PORT FORWARDED TO WHICH, as a Sankey: ribbon thickness is the rate.
@@ -94,10 +95,10 @@ const props = defineProps<{
   /**
    * What a party MEANS, for its tooltip, where the key does not say it.
    *
-   * A device's key is its MAC and showing that is useful. A sentinel's key is
-   * a slug, and `beyond the box (beyond-the-box)` tells a reader nothing they
-   * could not see -- while the question it actually raises, whether this is
-   * just the WAN port, deserves an answer in the place they hover.
+   * A client's key is its MAC and showing that is useful. A sentinel's key is
+   * a slug, and `WAN (wan)` tells a reader nothing they could not see -- while
+   * the question it actually raises, whether that means only the WAN port,
+   * deserves an answer in the place they hover.
    */
   notes?: Record<string, string>;
   /** Rates below this are not drawn. Background chatter touches every pair at
@@ -127,7 +128,21 @@ const FLOOR = computed(() => props.floor ?? 0.05);
  * measurement -- a consumer wanting the raw tick should not have to undo a
  * smoothing decision made for a drawing.
  */
-const WINDOW_MS = 10_000;
+/*
+ * FROM THE TOOLBAR'S `mean over`, which is the same quantity under a different
+ * name. That control offers 10, 30 and 60 seconds as the trailing window
+ * behind a smoothed line; this figure's rolling mean is exactly that window,
+ * and it was hardcoded at the control's own default while the control sat
+ * above it doing nothing to it.
+ *
+ * The other settings in that bar mostly do not apply and are not faked.
+ * `range` is a time axis and this figure has none. `y-axis` needs an axis:
+ * thickness here is proportional to rate with no scale to pin. `series`
+ * chooses between a live trace, a mean and a PHY rule, and this draws none of
+ * those. What does apply is this window, the direction switches, and height --
+ * see DIRECTIONS and H.
+ */
+const WINDOW_MS = computed(() => chartPrefs.value.sustainedSec * 1000);
 
 interface Sample { at: number; pairs: readonly Flow[] }
 const samples = ref<Sample[]>([]);
@@ -139,7 +154,7 @@ watch(() => props.pairs, (p) => {
   if (!p) return;
   const now = Date.now();
   samples.value = [...samples.value, { at: now, pairs: p }]
-    .filter((sm) => now - sm.at <= WINDOW_MS);
+    .filter((sm) => now - sm.at <= WINDOW_MS.value);
 }, { immediate: true });
 
 /**
@@ -184,13 +199,27 @@ const smoothed = computed<PortPair[]>(() => {
  * AdapterStack had already learned this and says so -- one SVG unit has to be
  * one CSS pixel, or type does not render at the size it is set in.
  */
-const H = 200;
+/*
+ * TALL DOUBLES IT, and on a Sankey that changes what is TRUE of the drawing
+ * rather than merely how big it is.
+ *
+ * Thickness is the only channel here, and it is bounded below: a ribbon under
+ * MIN_RIBBON is drawn at MIN_RIBBON and flagged "thinnest not to scale". At
+ * 200px a flow worth 1% of the total is 2px and gets floored; at 400px it is
+ * 4px and is drawn honestly. The label spacing check has the same property --
+ * it needs 16px between node centres before it will draw an adapter's name
+ * under a device's, so doubling the height brings those second lines back.
+ *
+ * So `tall` on this figure buys accuracy and detail, not size. It is the one
+ * chart here where the height control is worth reaching for deliberately.
+ */
+const H = computed(() => (chartPrefs.value.tallCharts ? 400 : 200));
 /*
  * THE BOTTOM PAD HOLDS A SECOND LABEL LINE, and at 10 it did not.
  *
  * A label is centred on its node, with the adapter hanging 11px beneath the
- * name. The layout's lowest node can sit at `H - PAD.b`, so its second line
- * landed at roughly `H - PAD.b + 14` and its descenders below that -- past the
+ * name. The layout's lowest node can sit at `H.value - PAD.b`, so its second line
+ * landed at roughly `H.value - PAD.b + 14` and its descenders below that -- past the
  * bottom of the viewBox, where the SVG simply cuts them off. Reported from a
  * screenshot of `wlan-usb-46c7` sheared in half under `MacBook-Pro 1.3`, and
  * measured at the time as a 1px overflow, which is the same bug on a quieter
@@ -264,7 +293,28 @@ onBeforeUnmount(() => ro.disconnect());
  * first paint depend on which fired first. The floor keeps the ribbons
  * drawable when the window is narrow.
  */
-const CW = computed(() => Math.max(300, Math.floor((W.value - GAP) / 2)));
+const CW = computed(() => (DIRECTIONS.value.length > 1
+  ? Math.max(300, Math.floor((W.value - GAP) / 2))
+  // ONE FIGURE TAKES THE WHOLE ROW. Half the width with nothing beside it
+  // would leave the ribbons in the left half of an empty panel.
+  : Math.max(300, W.value)));
+
+/*
+ * WHICH DIRECTIONS ARE DRAWN, from the toolbar's `show down` / `show up`.
+ *
+ * That pair governs every chart on the page and this figure ignored it, so
+ * hiding upload narrowed the client cards and left this pair untouched.
+ *
+ * Never empty: turning both off leaves the client cards with nothing, which is
+ * their business, but here it would collapse the section to a heading. The
+ * last one standing is drawn.
+ */
+const DIRECTIONS = computed<('down' | 'up')[]>(() => {
+  const p = chartPrefs.value;
+  if (p.showDown && !p.showUp) return ['down'];
+  if (p.showUp && !p.showDown) return ['up'];
+  return ['down', 'up'];
+});
 
 interface Node { name: string; key: string; label: string }
 interface Link { source: number; target: number; value: number; packets: number }
@@ -400,7 +450,7 @@ const gutter = computed(() => {
  * touched, because that is the part a library should be doing.
  */
 const sides = computed(() => {
-  const graphs = (['down', 'up'] as const).map((dir) => {
+  const graphs = DIRECTIONS.value.map((dir) => {
     const g = graphFor(dir);
     return { dir, g, total: g.links.reduce((a, l) => a + l.value, 0) };
   });
@@ -433,7 +483,7 @@ const sides = computed(() => {
       // reasoning, and what it costs, is at the comparator in graphFor.
       .iterations(0)
       .extent([[gutter.value, PAD.t],
-        [Math.max(gutter.value + 60, CW.value - gutter.value), H - PAD.b]]);
+        [Math.max(gutter.value + 60, CW.value - gutter.value), H.value - PAD.b]]);
     // The layout MUTATES what it is handed, so it gets a copy. Passing the
     // reactive arrays would have it write x/y coordinates back into the props
     // and retrigger the computed that produced them.
@@ -458,14 +508,21 @@ const sides = computed(() => {
      * where there is room to say what it means.
      *
      * One function did both, and adding the sentinel note to it put a sentence
-     * on each end of every ribbon: `beyond the box — the upstream router, and
-     * any device here the box has not identified. Nearly all of this crossed
-     * the WAN port, but not by definition → Jonathans-Mac-mini (d0:11:...)`.
-     * Caught by reading the deployed tooltips rather than by looking at the
-     * figure, where nothing appeared wrong at all.
+     * on each end of every ribbon -- at the time, `beyond the box — the
+     * upstream router, and any device here the box has not identified …  →
+     * Jonathans-Mac-mini (d0:11:...)`, quoted as it was then because the
+     * sentinel has since been renamed. Caught by reading the deployed tooltips
+     * rather than by looking at the figure, where nothing appeared wrong.
      */
+    // CASE-INSENSITIVE, because the key is shown only when it adds something.
+    // The WAN sentinel is keyed `wan` and labelled `WAN`, which an exact
+    // comparison treated as different and rendered as `WAN (wan)` -- exactly
+    // the noise this parenthesis exists to avoid on an adapter whose key is
+    // already its name.
     const endName = (n: unknown) =>
-      (label(n) === key(n) ? label(n) : `${label(n)} (${key(n)})`);
+      (label(n).toLowerCase() === key(n).toLowerCase()
+        ? label(n)
+        : `${label(n)} (${key(n)})`);
     const nodeTitle = (n: unknown) => {
       const note = props.notes?.[key(n)];
       // The note REPLACES the key rather than joining it: it exists precisely
@@ -709,7 +766,7 @@ const pkt = (v: number) => (v >= 1000 ? `${(v / 1000).toFixed(1)}k` : v.toFixed(
        It also fixes the measuring trap this file already documents. Behind a
        v-if there was no element for the ResizeObserver on first render, so the
        width stayed at its initial guess until something forced a remeasure. -->
-  <div ref="box" class="flows">
+  <div ref="box" class="flows" :class="{ solo: sides.length === 1 }">
     <figure v-for="s in sides" :key="s.dir" class="flow">
       <div class="head">
         <span class="dir">{{ s.title }}</span>
@@ -816,6 +873,12 @@ drawn, so they are shown thicker than they are. Their rates are on the labels.">
   gap: 12px;
   margin: 0 0 12px;
 }
+/* ONE DIRECTION TAKES THE WHOLE ROW, and the track has to widen with it.
+   CW already goes full width when only one figure is drawn, but the drawing
+   still sat in a half-width track, and `max-width: 100%` below then squashed a
+   1613px viewBox into 790px -- which is the very scaling bug that rule exists
+   to prevent, reintroduced by the layout instead of by the attribute. */
+.flows.solo { grid-template-columns: 1fr; }
 .flow { margin: 0; }
 .head { display: flex; align-items: baseline; gap: 8px; margin-bottom: 2px; }
 .dir {

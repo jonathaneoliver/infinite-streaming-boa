@@ -891,6 +891,29 @@ export interface ScanAP {
   signal_dbm: number;
   /** Served by this box — excluded from the competition count. */
   ours?: boolean;
+  /** How much spectrum this neighbour OCCUPIES, from its VHT operation width
+   *  or failing that its HT secondary offset. 20 when it advertises neither,
+   *  which is what an AP with no such element is.
+   *
+   *  This is the field that turns a headcount into a reading: one 80MHz
+   *  neighbour fills four 20MHz channels and competes across all of them, so
+   *  it is a different problem from four 20MHz neighbours sharing one. */
+  width_mhz?: number;
+  /** The channel at the middle of that width, for the 80 and 160MHz cases
+   *  where it is not the primary. Absent at 20 and 40MHz. */
+  centre?: number;
+  /** Channel utilisation this neighbour reports for ITSELF, 0–255 as the wire
+   *  carries it.
+   *
+   *  NOT A PERCENTAGE, and converting it early is the exact error
+   *  docs/DATA-CONTRACT.md exists to prevent: 60 here is 23.5%, not 60%. The
+   *  daemon keeps the wire's units deliberately, so the conversion happens
+   *  once, at the point of display. Zero also means "element absent", which is
+   *  why util_known exists — a genuinely idle channel reads 0 too. */
+  util_raw?: number;
+  util_known?: boolean;
+  /** Clients this neighbour reports in its own BSS Load element. */
+  stations?: number;
 }
 
 export interface ScanChannel {
@@ -939,6 +962,13 @@ export interface ScanSummary {
    *  here, "nothing heard" is a measurement; absent here, it is a gap, and the
    *  tooltip says which. */
   looked?: number[];
+  /** Each access point this sweep HEARD, strongest first, with what it says
+   *  about itself. Our own radios are not in here — they are in `ours`. */
+  neighbours?: ScanAP[];
+  /** How many neighbours the sweep found, which is not always how many are in
+   *  `neighbours`: a dense site presents hundreds of BSSIDs and the list is
+   *  capped. A truncated list has to say it is truncated. */
+  heard?: number;
 }
 
 export interface ScanResult {
@@ -1304,11 +1334,17 @@ export interface ClientPair {
  * NOT A MAC BETWEEN THEM, deliberately: they must not collide with a real
  * address, and a reader seeing one in a payload should not mistake it for one.
  *
- * `beyond-the-box` is the honest answer rather than a vague one. Everything
- * past this box is reached through the upstream router, so every frame to or
- * from the internet carries that router's address on one side — and so does a
- * device on the bridge the box has not identified. A MAC pair cannot separate
- * those two, so they are not separated.
+ * `wan` NAMES THE COMMON CASE, and this comment used to argue for a vaguer
+ * name on a premise that was wrong. Everything past this box is reached
+ * through the upstream router, so every frame to or from the internet carries
+ * that router's address on one side — and so does a device on the bridge the
+ * box has not identified. The old name covered both by committing to neither.
+ *
+ * The premise was that a MAC pair cannot separate those two. It can: the
+ * daemon's WANSideMACs reads the bridge forwarding database for every MAC
+ * learned on the WAN port, and the client list already uses it. Until this
+ * bucket is split by it, `wan` is the case it is nearly always describing, and
+ * the tooltip below says what else is in there.
  */
 /**
  * The empty pair list, shared.
@@ -1320,29 +1356,31 @@ export interface ClientPair {
 export const NO_PAIRS: readonly never[] = Object.freeze([]);
 
 export const CLIENT_PAIR_PARTIES: Record<string, string> = {
-  'beyond-the-box': 'beyond the box',
+  wan: 'WAN',
   broadcast: 'broadcast',
 };
 
 /**
- * What each sentinel covers, for the tooltip. Answers the question the short
- * label invites: is this just the WAN port?
+ * What each sentinel covers, for the tooltip. The labels are short by design
+ * and the tooltip carries what they gloss over.
  *
- * ALMOST, AND NOT QUITE, which is the reason for the vaguer name. The upstream
- * router is reached through the WAN port, so nearly all of this did cross it
- * — measured on the container host, this bucket and the WAN port's own
- * counters agreed to 0.01 Mbit/s. But a device on the bridge the box has not
- * identified lands here too, and its traffic never goes near the WAN port.
- * Naming this node `wan0` would claim a port the traffic may not have crossed,
- * and would imply it is the same measurement as the uplink node in the adapter
- * figure, which is a port counter rather than a bucket of addresses.
+ * WAN IS THE COMMON CASE AND NOT THE WHOLE CASE, which is why the tooltip says
+ * so. Everything past the box is reached through the upstream router, so
+ * nearly all of this did cross the WAN port — measured on the container host,
+ * this bucket and that port's own counters agreed to 0.01 Mbit/s. A device on
+ * the bridge the box has not identified also lands here, and its traffic never
+ * goes near the WAN port.
+ *
+ * It is also not the same measurement as the `uplink` node in the adapter
+ * figure, which is a port counter rather than a bucket of addresses, and the
+ * two can differ for exactly the reason above.
  */
 export const CLIENT_PAIR_NOTES: Record<string, string> = {
-  'beyond-the-box':
-    'the upstream router, and any device here the box has not identified. '
-    + 'Nearly all of this crossed the WAN port, but not by definition',
+  wan: 'anything past this box, reached through the upstream router — plus, '
+    + 'rarely, a device here the box has not identified. Nearly all of it '
+    + 'crossed the WAN port, though not by definition',
   broadcast:
-    'sent to every device at once — ARP, mDNS and the like, addressed to nobody '
+    'sent to every client at once — ARP, mDNS and the like, addressed to nobody '
     + 'in particular',
 };
 

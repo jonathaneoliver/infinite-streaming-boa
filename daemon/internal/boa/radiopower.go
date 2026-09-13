@@ -1459,6 +1459,19 @@ func sameBlock(a, b int) bool {
 	return ca.Center80 == cb.Center80
 }
 
+// scanNeighbourCap bounds the neighbour list a remembered sweep carries.
+//
+// The inventory is fetched on demand and TTL-cached rather than pushed every
+// tick, so this is not a per-second cost -- but it is unbounded input. A
+// residential sweep here heard 16; an office floor presents hundreds of
+// BSSIDs, most of them one mesh node's worth of SSIDs at -85 dBm, and none of
+// them is what is competing with your radio. 48 strongest is well past any
+// useful reading and keeps the payload a few kilobytes.
+//
+// The count of what was actually heard is kept beside the list, so a truncated
+// list is visibly truncated.
+const scanNeighbourCap = 48
+
 // --- scanning -------------------------------------------------------------
 
 // ScanAP is one access point the scan found.
@@ -1986,9 +1999,27 @@ func (e *Engine) rememberScan(iface string, res ScanResult) {
 			ours[w] = a.SignalDBm
 		}
 	}
+	// The neighbours, strongest first and capped. See ScanSummary.Neighbours
+	// for why they are kept at all, and scanNeighbourCap for the bound.
+	neighbours := make([]ScanAP, 0, len(res.APs))
+	for _, a := range res.APs {
+		if a.Ours {
+			continue // already in Ours, and deliberately not counted twice
+		}
+		neighbours = append(neighbours, a)
+	}
+	heard := len(neighbours)
+	sort.Slice(neighbours, func(i, j int) bool {
+		return neighbours[i].SignalDBm > neighbours[j].SignalDBm
+	})
+	if len(neighbours) > scanNeighbourCap {
+		neighbours = neighbours[:scanNeighbourCap]
+	}
+
 	sum := ScanSummary{
 		At: time.Now().UnixMilli(), Band: res.Band,
 		Channels: res.Channels, Best: res.Best, Ours: ours,
+		Neighbours: neighbours, Heard: heard,
 		// What was LISTENED to, not what was heard. See ScanSummary.Looked.
 		Looked: scanChannels(),
 	}

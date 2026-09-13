@@ -14,40 +14,41 @@
  */
 import { RANGES, SORT_MODES, SUSTAINED_CHOICES, type SortMode, type YMode }
   from '@/types';
+import { chartPrefs, sortMode } from '@/composables/useChartPrefs';
+import type { ChartPrefs } from '@/types';
 
+/*
+ * ONE PROP AND NO EVENTS, where there were thirteen and eleven.
+ *
+ * Every one of them proxied state that is already module-level: chartPrefs,
+ * and now sortMode beside it. The bar read a copy through props and wrote back
+ * through events that the host turned straight into a store write -- twenty-two
+ * bindings whose only job was to carry a value to the component that owns the
+ * store anyway.
+ *
+ * Collapsing that is what lets this bar be MOUNTED ANYWHERE, which is the
+ * point: it configures every chart on the page, so it now sits above the
+ * traffic section rather than inside the client list, where the adapter charts
+ * could not reach it. A component with twenty-two bindings is one that gets
+ * mounted where its wiring already exists; a component with one prop goes
+ * where the reader needs it.
+ *
+ * bucketMs stays a prop because it is not a preference. It is a measurement of
+ * the data -- how wide one plotted point is -- and it comes from the snapshot
+ * stream, which this component has no business subscribing to.
+ */
 const props = defineProps<{
-  rangeSec: number;
-  yMode: YMode;
-  yManual: number;
   /** Width of one plotted point, in ms. Above the live tick it is an average. */
   bucketMs: number;
-  showLive: boolean;
-  showSustained: boolean;
-  showPhy: boolean;
-  /** How the device list below is ordered. */
-  sortMode: SortMode;
-  /** Expanded charts drawn at double height. */
-  tallCharts: boolean;
-  /** Trailing window for the sustained mean, in seconds. */
-  sustainedSec: number;
-  /** Which directions are drawn at all. */
-  showDown: boolean;
-  showUp: boolean;
 }>();
 
-const emit = defineEmits<{
-  (e: 'range', sec: number): void;
-  (e: 'y-mode', m: YMode): void;
-  (e: 'y-manual', v: number): void;
-  (e: 'show-live', v: boolean): void;
-  (e: 'show-sustained', v: boolean): void;
-  (e: 'show-phy', v: boolean): void;
-  (e: 'sort-mode', m: SortMode): void;
-  (e: 'tall-charts', v: boolean): void;
-  (e: 'sustained-sec', v: number): void;
-  (e: 'show-down', v: boolean): void;
-  (e: 'show-up', v: boolean): void;
-}>();
+/** The store this bar edits. Written directly; see the note above. */
+const prefs = chartPrefs;
+
+/** One field at a time, replacing the object so watchers on it still fire. */
+function set(patch: Partial<ChartPrefs>) {
+  chartPrefs.value = { ...chartPrefs.value, ...patch };
+}
 
 /**
  * The legend keys the two SERIES, not the two directions.
@@ -90,14 +91,14 @@ const SERIES = [
 type SeriesKey = 'live' | 'sustained' | 'phy';
 
 function toggle(key: SeriesKey) {
-  if (key === 'live') emit('show-live', !props.showLive);
-  else if (key === 'phy') emit('show-phy', !props.showPhy);
-  else emit('show-sustained', !props.showSustained);
+  if (key === 'live') set({ showLive: !prefs.value.showLive });
+  else if (key === 'phy') set({ showPhy: !prefs.value.showPhy });
+  else set({ showSustained: !prefs.value.showSustained });
 }
 const on = (key: SeriesKey) =>
-  key === 'live' ? props.showLive : key === 'phy' ? props.showPhy : props.showSustained;
+  key === 'live' ? prefs.value.showLive : key === 'phy' ? prefs.value.showPhy : prefs.value.showSustained;
 const seriesLabel = (key: SeriesKey) =>
-  key === 'sustained' ? `${props.sustainedSec}s mean` : key === 'phy' ? 'PHY' : 'live';
+  key === 'sustained' ? `${prefs.value.sustainedSec}s mean` : key === 'phy' ? 'PHY' : 'live';
 
 const MODES: { v: YMode; label: string; title: string }[] = [
   { v: 'auto', label: 'auto', title: 'Scale to the traffic, including the cap' },
@@ -114,7 +115,7 @@ const MODES: { v: YMode; label: string; title: string }[] = [
 
 function onManual(e: Event) {
   const v = Number((e.target as HTMLInputElement).value);
-  if (Number.isFinite(v) && v > 0) emit('y-manual', v);
+  if (Number.isFinite(v) && v > 0) set({ yManual: v });
 }
 </script>
 
@@ -128,7 +129,7 @@ function onManual(e: Event) {
         v-for="m in SORT_MODES" :key="m.v"
         class="seg-btn" :class="{ on: sortMode === m.v }"
         :title="m.title"
-        @click="emit('sort-mode', m.v)"
+        @click="(sortMode = m.v)"
       >{{ m.label }}</button>
     </div>
 
@@ -136,9 +137,9 @@ function onManual(e: Event) {
     <div class="seg" role="group" aria-label="Chart time range">
       <button
         v-for="r in RANGES" :key="r.v"
-        class="seg-btn" :class="{ on: rangeSec === r.v }"
-        :aria-pressed="rangeSec === r.v"
-        @click="emit('range', r.v)"
+        class="seg-btn" :class="{ on: prefs.rangeSec === r.v }"
+        :aria-pressed="prefs.rangeSec === r.v"
+        @click="set({ rangeSec: r.v })"
       >{{ r.label }}</button>
     </div>
 
@@ -146,15 +147,15 @@ function onManual(e: Event) {
     <div class="seg" role="group" aria-label="Y-axis scaling">
       <button
         v-for="m in MODES" :key="m.v"
-        class="seg-btn" :class="{ on: yMode === m.v }"
-        :aria-pressed="yMode === m.v" :title="m.title"
-        @click="emit('y-mode', m.v)"
+        class="seg-btn" :class="{ on: prefs.yMode === m.v }"
+        :aria-pressed="prefs.yMode === m.v" :title="m.title"
+        @click="set({ yMode: m.v })"
       >{{ m.label }}</button>
     </div>
 
-    <label v-if="yMode === 'manual'" class="manual">
+    <label v-if="prefs.yMode === 'manual'" class="manual">
       <input
-        class="num" type="number" min="0.1" step="0.5" :value="yManual"
+        class="num" type="number" min="0.1" step="0.5" :value="prefs.yManual"
         aria-label="Y-axis maximum in Mbps"
         @change="onManual"
       />
@@ -163,10 +164,10 @@ function onManual(e: Event) {
 
     <span class="lbl">height</span>
     <button
-      class="seg-btn lone" :class="{ on: tallCharts }"
-      :aria-pressed="tallCharts"
+      class="seg-btn lone" :class="{ on: prefs.tallCharts }"
+      :aria-pressed="prefs.tallCharts"
       title="Double the height of the expanded charts. More vertical resolution to separate close rungs; fewer devices on screen at once."
-      @click="emit('tall-charts', !tallCharts)"
+      @click="set({ tallCharts: !prefs.tallCharts })"
     >tall</button>
 
     <!-- Which directions to draw. Page-level like everything else in this bar:
@@ -176,14 +177,14 @@ function onManual(e: Event) {
     <span class="lbl">show</span>
     <div class="seg" role="group" aria-label="Directions shown">
       <button
-        class="seg-btn" :class="{ on: showDown }" :aria-pressed="showDown"
+        class="seg-btn" :class="{ on: prefs.showDown }" :aria-pressed="prefs.showDown"
         title="Draw the downlink: traffic to the device, and what most testing here is about."
-        @click="emit('show-down', !showDown)"
+        @click="set({ showDown: !prefs.showDown })"
       >down</button>
       <button
-        class="seg-btn" :class="{ on: showUp }" :aria-pressed="showUp"
+        class="seg-btn" :class="{ on: prefs.showUp }" :aria-pressed="prefs.showUp"
         title="Draw the uplink: traffic from the device. Hiding it gives every card its width back."
-        @click="emit('show-up', !showUp)"
+        @click="set({ showUp: !prefs.showUp })"
       >up</button>
     </div>
 
@@ -191,9 +192,9 @@ function onManual(e: Event) {
     <div class="seg" role="group" aria-label="Window for the sustained mean">
       <button
         v-for="c in SUSTAINED_CHOICES" :key="c.v"
-        class="seg-btn" :class="{ on: sustainedSec === c.v }"
-        :aria-pressed="sustainedSec === c.v" :title="c.title"
-        @click="emit('sustained-sec', c.v)"
+        class="seg-btn" :class="{ on: prefs.sustainedSec === c.v }"
+        :aria-pressed="prefs.sustainedSec === c.v" :title="c.title"
+        @click="set({ sustainedSec: c.v })"
       >{{ c.label }}</button>
     </div>
 
@@ -232,13 +233,48 @@ function onManual(e: Event) {
 </template>
 
 <style scoped>
+/*
+ * STICKY, because a control that configures every chart below it was only
+ * reachable from the top of them.
+ *
+ * It sets range, y-axis, height, series and the mean window for the whole
+ * page. With a handful of devices it was always on screen; with a rack of
+ * adapters and a page of clients it is a long scroll away from whatever chart
+ * made you want to change it, and the change you want is usually prompted by
+ * the chart you are looking at.
+ *
+ * BOUNDED BY ITS OWN SECTION, which is the behaviour to want rather than a
+ * limitation to work around: sticky confines an element to its parent's box,
+ * so this rides down the client list and stops at the end of it instead of
+ * following the reader into the event log. It controls those charts, so it is
+ * present for exactly as long as they are.
+ *
+ * The background was already opaque, which sticky requires -- a translucent
+ * bar would have the traces scrolling through the numbers. The shadow is what
+ * says it is floating rather than misplaced.
+ */
 .toolbar {
+  position: sticky;
+  top: 0;
+  /* Above the charts and their SVGs. The only other z-indexes in the
+     interface are inside the pattern editor's own stacking context and go no
+     higher than 7. */
+  z-index: 20;
   display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
   padding: 8px 12px;
   margin-bottom: 10px;
   background: var(--panel);
   border: 1px solid var(--line);
   border-radius: var(--r);
+  box-shadow: 0 6px 16px -8px rgb(0 0 0 / 0.55);
+}
+
+/* A SHORT VIEWPORT GETS IT BACK IN THE FLOW. The bar wraps to two or three
+   rows when the window is narrow, and a sticky element that tall on a short
+   window takes a third of the screen permanently -- which costs more chart
+   than the scroll it saves. */
+@media (max-height: 560px) {
+  .toolbar { position: static; box-shadow: none; }
 }
 .lbl {
   font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase;
