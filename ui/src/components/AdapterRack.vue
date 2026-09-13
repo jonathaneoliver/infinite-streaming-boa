@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue';
-import type { BSSLoadState, IfaceInfo, Series } from '@/types';
+import type { BSSLoadState, IfaceInfo, ScanAP, Series } from '@/types';
 import { DEVELOPER } from '@/types';
 import { rackAdapters, isOpen, toggleAdapter } from '@/composables/useAdapters';
 import AdapterStack from '@/components/AdapterStack.vue';
@@ -209,6 +209,35 @@ const surveyQuietest = (name: string) => {
 /** How many swept channels carried a real airtime reading rather than a
  *  headcount. 0 means the whole sweep is a headcount, which is worth saying. */
 const surveyMeasured = (name: string) => surveyRange(name)?.measured ?? 0;
+
+/**
+ * The neighbours this radio heard, and how many it heard in total.
+ *
+ * Strongest first, as the daemon ordered them. Not re-sorted here: a list that
+ * reorders itself while being read is the complaint the flow diagram's fixed
+ * ordering exists to answer, and signal is the ordering that matches what the
+ * operator is looking for anyway.
+ */
+const neighbours = (name: string) => survey(name)?.neighbours ?? [];
+const heardCount = (name: string) => survey(name)?.heard ?? 0;
+
+/**
+ * A neighbour's own reported airtime, as a percentage.
+ *
+ * CONVERTED HERE AND NOWHERE EARLIER. The wire carries 0-255 and the daemon
+ * keeps it that way on purpose, because converting twice is the failure
+ * docs/DATA-CONTRACT.md is written to prevent: 60 is 23.5%, not 60%. Empty
+ * when the element was absent, which is not the same as an idle channel
+ * reading zero -- hence util_known rather than a zero check.
+ */
+const apUtil = (a: ScanAP) =>
+  (a.util_known && a.util_raw !== undefined
+    ? `${Math.round((a.util_raw / 255) * 100)}%`
+    : '');
+
+/** `80MHz` on ch 36, or just the width where it is the primary's own. */
+const apWidthLabel = (a: ScanAP) =>
+  `${a.width_mhz ?? 20}MHz${a.centre ? ` · centre ${a.centre}` : ''}`;
 
 /** How old the reading is, in the same words the rest of the rack uses. */
 const surveyAge = (name: string) => {
@@ -1073,6 +1102,56 @@ Clients ARE told it has gone, unlike a power cut.`
                 <span class="v num">{{ dbm }} dBm</span>
               </div>
             </div>
+
+            <!-- WHO IS ACTUALLY THERE, which the per-channel rollup above can
+                 only total. "Channel 36 is 35% busy" and "channel 36 has one
+                 80MHz neighbour at -42 dBm reporting 12 clients" are different
+                 answers, and only the second tells an operator what to do
+                 about it.
+
+                 WIDTH IS THE COLUMN THAT EARNS ITS PLACE. An 80MHz neighbour
+                 fills four 20MHz channels and competes across all of them, so
+                 a channel that looks empty by headcount can be fully occupied
+                 -- which is the common case on 5GHz and the reason the band
+                 plan counts coverage separately. -->
+            <div v-if="neighbours(r.name).length" class="neigh">
+              <div class="survey-head">
+                <span class="survey-title">neighbours</span>
+                <span class="survey-sub num">{{ heardCount(r.name) }} heard<template
+                  v-if="heardCount(r.name) > neighbours(r.name).length">,
+                  {{ neighbours(r.name).length }} strongest shown</template></span>
+              </div>
+              <div class="neigh-scroll">
+                <table class="neigh-table">
+                  <thead>
+                    <tr>
+                      <th>network</th><th>ch</th><th>occupies</th>
+                      <th class="r">signal</th><th class="r">its clients</th>
+                      <th class="r">its airtime</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr v-for="a in neighbours(r.name)" :key="a.bssid">
+                      <td>
+                        <!-- A HIDDEN SSID IS NAMED AS ONE, not left blank: an
+                             empty cell reads as a parse failure, and the BSSID
+                             below it is the identity either way. -->
+                        <span class="ssid">{{ a.ssid || '(hidden)' }}</span>
+                        <span class="bssid num">{{ a.bssid }}</span>
+                      </td>
+                      <td class="num">{{ a.channel }}</td>
+                      <td class="num">{{ apWidthLabel(a) }}</td>
+                      <td class="num r">{{ a.signal_dbm }} dBm</td>
+                      <!-- Em-dash, not 0: a neighbour that advertises no BSS
+                           Load has told us nothing, and zero clients is a
+                           different claim. -->
+                      <td class="num r">{{ a.stations ?? '—' }}</td>
+                      <td class="num r">{{ apUtil(a) || '—' }}</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
           </div>
           <p v-else class="notice inline">
             {{ r.name }} has taken no reading yet. It sweeps both bands every
@@ -1537,6 +1616,42 @@ Clients ARE told it has gone, unlike a power cut.`
   font-size: 11px;
   color: var(--ink-faint);
   max-width: 78ch;
+}
+
+/* The neighbour table. Scrolls in its own container rather than widening the
+   fold: a dense site is dozens of rows and six columns, and the rack must not
+   start scrolling sideways because one radio can hear a lot. */
+.neigh { margin: 12px 0 0; }
+.neigh-scroll { overflow-x: auto; max-height: 320px; overflow-y: auto; }
+.neigh-table {
+  border-collapse: collapse;
+  font-size: 11px;
+  width: 100%;
+}
+.neigh-table th {
+  text-align: left;
+  font-weight: 500;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+  padding: 0 10px 4px 0;
+  position: sticky;
+  top: 0;
+  background: var(--panel);
+}
+.neigh-table td {
+  padding: 3px 10px 3px 0;
+  color: var(--ink-dim);
+  border-top: 1px solid var(--line-soft);
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+.neigh-table .r { text-align: right; }
+.neigh-table .ssid { color: var(--ink); }
+.neigh-table .bssid {
+  display: block;
+  color: var(--ink-faint);
+  font-size: 10px;
 }
 
 /* A GENERATION LABEL MUST NEVER BE THE THING THAT GETS CLIPPED.

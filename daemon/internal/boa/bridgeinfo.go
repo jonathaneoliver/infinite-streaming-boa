@@ -298,6 +298,28 @@ type ScanSummary struct {
 	// Ours is each of our OTHER radios as this scan heard it, keyed by
 	// interface, in dBm. The scanning radio is never in its own map.
 	Ours map[string]float64 `json:"ours,omitempty"`
+	// Neighbours is each access point this scan HEARD, strongest first, with
+	// what it says about itself.
+	//
+	// Kept because it was already parsed and then thrown away. rememberScan
+	// used to reduce a sweep to its per-channel rollup and discard res.APs,
+	// so the width and BSS Load of every neighbour -- parsed from its VHT and
+	// HT elements on every sweep, once every 15 seconds -- existed for the
+	// length of one function call. The rollup answers "how busy is channel
+	// 36"; this answers "busy with WHAT", which is the question an operator
+	// actually acts on: one 80MHz neighbour covering four channels is a
+	// different problem from four 20MHz ones.
+	//
+	// OUR OWN ACCESS POINTS ARE NOT IN HERE. They are in Ours above, which
+	// exists precisely to keep them out of the neighbour count, and carrying
+	// them twice would make the two disagree the first time one of them was
+	// filtered differently.
+	Neighbours []ScanAP `json:"neighbours,omitempty"`
+	// Heard is how many neighbours the sweep found, which is not always how
+	// many are in Neighbours: a dense site can present hundreds of BSSIDs and
+	// the list is capped. Reported so a truncated list says it is truncated
+	// rather than quietly reading as the whole picture.
+	Heard int `json:"heard,omitempty"`
 	// Looked is every channel this scan actually LISTENED to, as against the
 	// channels it found something on.
 	//

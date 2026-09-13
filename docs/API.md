@@ -2086,6 +2086,46 @@ Rung is one rendition's delivered bitrate.
 > Reported rather than dropped, so the operator can see which number to
 > distrust instead of being handed a uniformly confident list.
 
+### ScanAP
+
+ScanAP is one access point the scan found.
+
+**`bssid`** `string`
+
+**`ssid`** `string` _(omitted when empty)_
+
+**`freq_mhz`** `int`
+
+**`channel`** `int`
+
+**`signal_dbm`** `float64`
+
+**`ours`** `bool` _(omitted when empty)_
+> Ours marks an AP served by this box, so a channel does not look busy
+> because of the very radio asking the question.
+
+**`util_raw`** `int` _(omitted when empty)_
+> UtilRaw is the BSS Load channel utilisation, 0-255, AS REPORTED. Kept in
+> the wire's own units rather than converted to a percentage here, because
+> the conversion is the exact kind of thing docs/DATA-CONTRACT.md exists to
+> stop happening twice: 60 is 23.5%, not 60%. Zero means the element was
+> absent -- see UtilKnown, since a genuinely idle channel also reads 0.
+
+**`util_known`** `bool` _(omitted when empty)_
+
+**`stations`** `int` _(omitted when empty)_
+> Stations is the BSS Load station count for this BSS.
+
+**`width_mhz`** `int` _(omitted when empty)_
+> WidthMHz is how much spectrum this neighbour actually occupies, derived
+> from its VHT operation width or, failing that, its HT secondary channel
+> offset. 20 when it says nothing, which is what an AP with neither element
+> is.
+
+**`centre`** `int` _(omitted when empty)_
+> Centre is the channel index at the middle of that width, for the 80/160MHz
+> cases where it is not the primary. Zero at 20/40MHz.
+
 ### ScanChannel
 
 ScanChannel is the per-channel summary the recommendation is made from.
@@ -2149,6 +2189,30 @@ timestamp, and a scan from an hour ago describes an hour-old room.
 **`ours`** `map[string]float64` _(omitted when empty)_
 > Ours is each of our OTHER radios as this scan heard it, keyed by
 > interface, in dBm. The scanning radio is never in its own map.
+
+**`neighbours`** `[]ScanAP` _(omitted when empty)_
+> Neighbours is each access point this scan HEARD, strongest first, with
+> what it says about itself.
+>
+> Kept because it was already parsed and then thrown away. rememberScan
+> used to reduce a sweep to its per-channel rollup and discard res.APs,
+> so the width and BSS Load of every neighbour -- parsed from its VHT and
+> HT elements on every sweep, once every 15 seconds -- existed for the
+> length of one function call. The rollup answers "how busy is channel
+> 36"; this answers "busy with WHAT", which is the question an operator
+> actually acts on: one 80MHz neighbour covering four channels is a
+> different problem from four 20MHz ones.
+>
+> OUR OWN ACCESS POINTS ARE NOT IN HERE. They are in Ours above, which
+> exists precisely to keep them out of the neighbour count, and carrying
+> them twice would make the two disagree the first time one of them was
+> filtered differently.
+
+**`heard`** `int` _(omitted when empty)_
+> Heard is how many neighbours the sweep found, which is not always how
+> many are in Neighbours: a dense site can present hundreds of BSSIDs and
+> the list is capped. Reported so a truncated list says it is truncated
+> rather than quietly reading as the whole picture.
 
 **`looked`** `[]int` _(omitted when empty)_
 > Looked is every channel this scan actually LISTENED to, as against the

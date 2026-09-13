@@ -891,6 +891,29 @@ export interface ScanAP {
   signal_dbm: number;
   /** Served by this box — excluded from the competition count. */
   ours?: boolean;
+  /** How much spectrum this neighbour OCCUPIES, from its VHT operation width
+   *  or failing that its HT secondary offset. 20 when it advertises neither,
+   *  which is what an AP with no such element is.
+   *
+   *  This is the field that turns a headcount into a reading: one 80MHz
+   *  neighbour fills four 20MHz channels and competes across all of them, so
+   *  it is a different problem from four 20MHz neighbours sharing one. */
+  width_mhz?: number;
+  /** The channel at the middle of that width, for the 80 and 160MHz cases
+   *  where it is not the primary. Absent at 20 and 40MHz. */
+  centre?: number;
+  /** Channel utilisation this neighbour reports for ITSELF, 0–255 as the wire
+   *  carries it.
+   *
+   *  NOT A PERCENTAGE, and converting it early is the exact error
+   *  docs/DATA-CONTRACT.md exists to prevent: 60 here is 23.5%, not 60%. The
+   *  daemon keeps the wire's units deliberately, so the conversion happens
+   *  once, at the point of display. Zero also means "element absent", which is
+   *  why util_known exists — a genuinely idle channel reads 0 too. */
+  util_raw?: number;
+  util_known?: boolean;
+  /** Clients this neighbour reports in its own BSS Load element. */
+  stations?: number;
 }
 
 export interface ScanChannel {
@@ -939,6 +962,13 @@ export interface ScanSummary {
    *  here, "nothing heard" is a measurement; absent here, it is a gap, and the
    *  tooltip says which. */
   looked?: number[];
+  /** Each access point this sweep HEARD, strongest first, with what it says
+   *  about itself. Our own radios are not in here — they are in `ours`. */
+  neighbours?: ScanAP[];
+  /** How many neighbours the sweep found, which is not always how many are in
+   *  `neighbours`: a dense site presents hundreds of BSSIDs and the list is
+   *  capped. A truncated list has to say it is truncated. */
+  heard?: number;
 }
 
 export interface ScanResult {
