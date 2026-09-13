@@ -361,9 +361,9 @@ const portPartyLabels = computed<Record<string, string>>(
  * approximation the rack makes and it is why this is a label rather than a
  * column in the figure -- as a column it would look like a counted path.
  *
- * The sentinels get no adapter. `beyond the box` is reached through the uplink
- * but is not on it, and broadcast leaves by every port at once, so naming one
- * would be wrong rather than merely incomplete.
+ * The sentinels get no adapter. `WAN` is reached through the uplink but is not
+ * on it, and broadcast leaves by every port at once, so naming one would be
+ * wrong rather than merely incomplete.
  */
 const clientAdapters = computed(() => {
   const out: Record<string, string> = {};
@@ -622,7 +622,7 @@ const pending = ref('');
              like a missing feature, and moved the page doing it. -->
         <FlowDiagram
           v-if="flowsOpen && grouping === 'client' && pairs"
-          :pairs="devicePairs" uplink="beyond-the-box"
+          :pairs="devicePairs" uplink="wan"
           :labels="clientPartyLabels" :sublabels="clientAdapters"
           :notes="CLIENT_PAIR_NOTES"
         />

@@ -94,10 +94,10 @@ const props = defineProps<{
   /**
    * What a party MEANS, for its tooltip, where the key does not say it.
    *
-   * A device's key is its MAC and showing that is useful. A sentinel's key is
-   * a slug, and `beyond the box (beyond-the-box)` tells a reader nothing they
-   * could not see -- while the question it actually raises, whether this is
-   * just the WAN port, deserves an answer in the place they hover.
+   * A client's key is its MAC and showing that is useful. A sentinel's key is
+   * a slug, and `WAN (wan)` tells a reader nothing they could not see -- while
+   * the question it actually raises, whether that means only the WAN port,
+   * deserves an answer in the place they hover.
    */
   notes?: Record<string, string>;
   /** Rates below this are not drawn. Background chatter touches every pair at
@@ -458,14 +458,21 @@ const sides = computed(() => {
      * where there is room to say what it means.
      *
      * One function did both, and adding the sentinel note to it put a sentence
-     * on each end of every ribbon: `beyond the box — the upstream router, and
-     * any device here the box has not identified. Nearly all of this crossed
-     * the WAN port, but not by definition → Jonathans-Mac-mini (d0:11:...)`.
-     * Caught by reading the deployed tooltips rather than by looking at the
-     * figure, where nothing appeared wrong at all.
+     * on each end of every ribbon -- at the time, `beyond the box — the
+     * upstream router, and any device here the box has not identified …  →
+     * Jonathans-Mac-mini (d0:11:...)`, quoted as it was then because the
+     * sentinel has since been renamed. Caught by reading the deployed tooltips
+     * rather than by looking at the figure, where nothing appeared wrong.
      */
+    // CASE-INSENSITIVE, because the key is shown only when it adds something.
+    // The WAN sentinel is keyed `wan` and labelled `WAN`, which an exact
+    // comparison treated as different and rendered as `WAN (wan)` -- exactly
+    // the noise this parenthesis exists to avoid on an adapter whose key is
+    // already its name.
     const endName = (n: unknown) =>
-      (label(n) === key(n) ? label(n) : `${label(n)} (${key(n)})`);
+      (label(n).toLowerCase() === key(n).toLowerCase()
+        ? label(n)
+        : `${label(n)} (${key(n)})`);
     const nodeTitle = (n: unknown) => {
       const note = props.notes?.[key(n)];
       // The note REPLACES the key rather than joining it: it exists precisely

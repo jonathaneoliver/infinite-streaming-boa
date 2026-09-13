@@ -60,7 +60,7 @@ import (
  * box is reached through the upstream router, so every frame to or from the
  * internet carries that router's MAC on one side. Those are not separate
  * counterparties and are not drawn as such: a MAC that is not a tracked client
- * is reported as `beyondBox`, which covers the router and any device on the
+ * is reported as `wanSide`, which covers the router and any device on the
  * bridge the box has not identified. The distinction between those two is not
  * knowable from a MAC pair alone, and inventing it would be worse than saying
  * so. A multicast or broadcast destination is separated out, because otherwise
@@ -72,9 +72,25 @@ import (
 // they must not collide with a device, and a reader seeing one in a payload
 // should not mistake it for an address.
 const (
-	// beyondBox is any MAC that is not a tracked client: the upstream router,
-	// and anything on the bridge the box has not identified.
-	beyondBox = "beyond-the-box"
+	// wanSide is any MAC that is not a tracked client.
+	//
+	// MOSTLY, BUT NOT ONLY, THE FAR SIDE OF THE WAN PORT, and the name takes
+	// the common case deliberately. Everything past this box is reached
+	// through the upstream router, so nearly every frame in this bucket did
+	// cross the uplink -- measured on the container host, the bucket and the
+	// WAN port's own counters agreed to 0.01 Mbit/s. What else lands here is a
+	// device on the bridge the box has not identified, whose traffic never
+	// goes near the WAN port at all.
+	//
+	// That second case is a KNOWN OVERCLAIM rather than an oversight. The
+	// discriminator exists: WANSideMACs reads the bridge forwarding database
+	// and returns every MAC learned on the WAN port, and the client list
+	// already uses it. Splitting this bucket by it -- WAN against an
+	// `untracked` third party -- is the honest version and is deliberately not
+	// done yet; this name was chosen over the vaguer `beyond-the-box` on the
+	// grounds that a reader recognises WAN immediately and the rare case is
+	// documented here rather than hidden behind a phrase.
+	wanSide = "wan"
 	// groupMAC is a multicast or broadcast destination -- ARP, mDNS, the
 	// discovery chatter every device emits to no one in particular.
 	groupMAC = "broadcast"
@@ -271,7 +287,7 @@ func (e *Engine) clientPairs(now time.Time, known map[string]bool) []ClientPair 
 
 	// Rates are accumulated per RESOLVED pair, not per MAC pair, because many
 	// MAC pairs collapse onto one: every conversation with the internet becomes
-	// the same client against beyondBox. Summing before differencing would be
+	// the same client against wanSide. Summing before differencing would be
 	// wrong -- the differencing is per counter -- so each element is
 	// differenced on its own key and the rates are added afterwards.
 	acc := make(map[string]*ClientPair)
@@ -334,5 +350,5 @@ func resolveParty(mac string, known map[string]bool, dest bool) string {
 	if dest && isGroupMAC(mac) {
 		return groupMAC
 	}
-	return beyondBox
+	return wanSide
 }
