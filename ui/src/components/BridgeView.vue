@@ -75,14 +75,25 @@ const GROUPINGS = [
     key: 'adapter' as const,
     label: 'by adapter',
     title: 'Every frame that crossed each adapter, from the kernel\'s own '
-      + 'interface counters. Includes the box\'s own traffic, devices it is not '
+      + 'interface counters. Includes the box\'s own traffic, clients it is not '
       + 'tracking, broadcast and multicast — so this is the complete total. The '
       + 'uplink is reported beside it rather than stacked into it.',
   },
   {
     key: 'client' as const,
-    label: 'by device',
-    title: 'What the box attributed to each device, box-wide rather than per '
+    // CLIENT, not device, and the tooltip below is why the two could not
+    // differ: its caveat is "traffic with no CLIENT behind it", so a label
+    // saying device made the control and its own explanation use different
+    // nouns for one thing.
+    //
+    // It is also the word this interface already used nearly twice as often in
+    // visible text, the word the wire uses, the word the rack row directly
+    // beneath says ("no clients", "its clients"), and the split enterprise
+    // Wi-Fi makes -- UniFi, Meraki and Aruba keep "devices" for their OWN
+    // hardware and "clients" for what attaches to it, which is exactly the
+    // distinction this pair of buttons draws.
+    label: 'by client',
+    title: 'What the box attributed to each client, box-wide rather than per '
       + 'adapter. Incomplete by construction: traffic with no client behind it '
       + 'is absent, so this total is lower than the adapter total.',
   },
@@ -543,7 +554,7 @@ const pending = ref('');
                for its two error terms, both of which inflate it. -->
           <span v-if="grouping === 'adapter' && wanUnattributed > 0" class="total-aside num"
                 :title="`Traffic leaving the uplink that no client filter claimed: this box's `
-                  + `own, plus any device it is not tracking. Exact — the shaper's default `
+                  + `own, plus any client it is not tracking. Exact — the shaper's default `
                   + `class, read on the same tick as the per-client ones. Outbound only: `
                   + `downlink is shaped on each client's own port, so the uplink has no `
                   + `inbound classes to split.`">
@@ -586,7 +597,7 @@ const pending = ref('');
           <button
             class="caret" :aria-expanded="flowsOpen"
             :title="flowsOpen ? 'Hide the routing figures'
-              : 'Show which ' + (grouping === 'adapter' ? 'adapter' : 'device')
+              : 'Show which ' + (grouping === 'adapter' ? 'adapter' : 'client')
                 + ' sent to which'"
             @click="flowsOpen = !flowsOpen"
           >{{ flowsOpen ? '▾' : '▸' }}</button>

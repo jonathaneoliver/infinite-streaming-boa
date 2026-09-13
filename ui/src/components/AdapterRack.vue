@@ -1272,13 +1272,17 @@ Clients ARE told it has gone, unlike a power cut.`
                which "off" button belongs to which heading. -->
           <section class="group">
             <h4 class="first">Channel and width</h4>
+            <!-- NO "SCAN AND MOVE TO THE QUIETEST" HERE ANY MORE.
+                 It surveyed from this radio -- taking its access point down
+                 and back up, dropping its clients -- and then moved it to
+                 whatever that single sweep called quietest. Two consequential
+                 actions behind one press, decided by one reading.
+                 Nothing became unreachable by removing it: the plan above
+                 moves the radio to a channel you pick, and a dedicated
+                 listen-only radio surveys continuously at no cost to anyone.
+                 The one-press survey-then-act is what went, which was the part
+                 that acted on a measurement nobody had seen yet. -->
             <slot name="plan" :radio="r" :others="otherRadios(r)" />
-            <div class="action-row">
-              <button class="accent" :disabled="busy"
-                :title="`Survey ${r.name}'s band and move it to the quietest channel found. Takes the radio down and back up.`"
-                @click="bridge.scanBand(r.name, true)"
-              >scan and move to the quietest</button>
-            </div>
           </section>
 
           <!-- The timed outage goes behind developer=1 with the power switch
