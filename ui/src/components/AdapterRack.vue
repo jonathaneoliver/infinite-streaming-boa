@@ -400,6 +400,15 @@ function evictTo(r: IfaceInfo): IfaceInfo | undefined {
  * what the token leaves out, and they are what says how the link will behave.
  */
 function summary(r: IfaceInfo): string {
+  // A SCANNER'S LINK STATE IS NOT NEWS, and printing it is worse than silent.
+  // Measured on this box: `ip link set up` exits 0 and the AX200 stays `down`
+  // while scanning perfectly -- 19 access points in 1.2s. So `down` here is
+  // both the normal case and a word that reads as a fault. What changes about
+  // a scanner is when it last swept, so that is what the row says.
+  if (r.role === 'scanner') {
+    const age = surveyAge(r.name);
+    return age ? `swept ${age}` : 'no sweep yet';
+  }
   if (!r.ap) return r.speed_mbps ? `${r.speed_mbps} Mb/s` : (r.up ? 'up' : 'down');
   // The mode is rendered beside this rather than joined into it, so the
   // ellipsis this string may take cannot reach the generation name.
@@ -722,7 +731,26 @@ function degraded(i: IfaceInfo): boolean {
              would invite the reader to wonder what had failed to be measured
              about a cable. -->
         <span class="air" :title="r.wireless ? airTitle(r) : ''">
-          <template v-if="r.wireless">
+          <!-- A SCANNER FILLS THIS CELL WITH WHAT IT MEASURES, not with five
+               em-dashes.
+               All five figures to the right are about an access point and its
+               clients: a negotiated PHY rate needs a station to negotiate
+               with, `ours` is how well the box hears its own beacon, and `air`
+               is airtime attributed per client. A radio that serves nothing
+               has none of them, ever -- so the row read `PHY — ours — loudest
+               — air — others —`, five blanks in the column that is supposed to
+               say how contested the air is, on the one radio whose entire job
+               is measuring that.
+               What it does have is the sweep: how many neighbours it heard and
+               the busiest channel it found. Same column, same question, a
+               source it actually has. -->
+          <template v-if="r.role === 'scanner'">
+            <span class="k">heard</span
+            ><span class="v num">{{ heardCount(r.name) || '—' }}</span>
+            <span class="k">busiest</span
+            ><span class="v num">{{ surveyBusiest(r.name) || '—' }}</span>
+          </template>
+          <template v-else-if="r.wireless">
           <!-- PHY leads, because it is the only one of these four that is about
                the LINK rather than about the channel, and it is the number an
                operator checks first. Em dash when no client is associated:
@@ -775,6 +803,12 @@ function degraded(i: IfaceInfo): boolean {
             +{{ on(r).length - NAMES_SHOWN }}
           </span>
         </span>
+        <!-- EMPTY, not "no clients", for a radio that cannot have any. The
+             cell stays for the grid -- removing it slides every later cell one
+             track left, which this file records breaking the row once already
+             -- but "no clients" on an instrument invites the reader to wonder
+             why none have joined it. -->
+        <span v-else-if="r.role === 'scanner'" class="who-none"></span>
         <span v-else class="who-none">no clients</span>
 
         <div class="tail">
