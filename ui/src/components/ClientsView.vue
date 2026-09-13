@@ -1,14 +1,13 @@
 <script setup lang="ts">
 import { computed, inject, ref, watch } from 'vue';
 import type {
-  Capabilities, ChartPrefs, Client, Pattern, RssiModel, Series, Shape, Snapshot, SortMode, YMode,
+  Capabilities, Client, Pattern, RssiModel, Series, Shape, Snapshot,
 } from '@/types';
 import { SUSTAINED_SEC, sortClients } from '@/types';
-import { chartPrefs } from '@/composables/useChartPrefs';
+import { chartPrefs, sortMode } from '@/composables/useChartPrefs';
 import { chartNow, holdClock } from '@/composables/useChartClock';
 import type { useDevice } from '@/composables/useDevice';
 import ClientCard from '@/components/ClientCard.vue';
-import ChartToolbar from '@/components/ChartToolbar.vue';
 
 /*
  * The device list: what every client is getting, and every control that
@@ -42,23 +41,10 @@ const emit = defineEmits<{ (e: 'range', sec: number): void }>();
  */
 const dev = inject('dev') as ReturnType<typeof useDevice>;
 
-/*
- * The order the list is drawn in.
- *
- * Stored beside the chart preferences because it is the same kind of thing: a
- * view setting that should survive a reload rather than resetting every time
- * the page is opened to check on something.
- */
-const SORT_KEY = 'boa.sort';
-function loadSort(): SortMode {
-  try {
-    const v = localStorage.getItem(SORT_KEY);
-    return v === 'name' || v === 'traffic' ? v : 'busy';
-  } catch {
-    return 'busy';
-  }
-}
-const sortMode = ref<SortMode>(loadSort());
+/* The order the list is drawn in comes from the chart preferences now. The
+ * toolbar that sets it moved above the traffic section, so it is reachable
+ * from the adapter charts it also governs -- which means this component obeys
+ * that setting without owning it. See useChartPrefs. */
 
 /*
  * Whether devices that are not currently connected are listed.
@@ -86,13 +72,6 @@ watch(showOffline, (v) => {
     localStorage.setItem(OFFLINE_KEY, String(v));
   } catch {
     /* as above */
-  }
-});
-watch(sortMode, (v) => {
-  try {
-    localStorage.setItem(SORT_KEY, v);
-  } catch {
-    /* private windows and blocked storage must not break the page */
   }
 });
 
@@ -206,26 +185,6 @@ const now = chartNow;
       >{{ anyExpanded ? 'fold all' : 'expand all' }}</button>
     </div>
 
-    <ChartToolbar
-      v-if="clients.length"
-      :range-sec="chart.rangeSec" :y-mode="chart.yMode" :y-manual="chart.yManual"
-      :bucket-ms="bucketMs" :sort-mode="sortMode"
-      @sort-mode="(v: SortMode) => (sortMode = v)"
-      :show-live="chart.showLive" :show-sustained="chart.showSustained"
-      :show-phy="chart.showPhy"
-      :tall-charts="chart.tallCharts" :sustained-sec="chart.sustainedSec"
-      :show-down="chart.showDown" :show-up="chart.showUp"
-      @show-down="(v: boolean) => (chart = { ...chart, showDown: v })"
-      @show-up="(v: boolean) => (chart = { ...chart, showUp: v })"
-      @sustained-sec="(v: number) => (chart = { ...chart, sustainedSec: v })"
-      @tall-charts="(v: boolean) => (chart = { ...chart, tallCharts: v })"
-      @range="(v: number) => (chart = { ...chart, rangeSec: v })"
-      @y-mode="(v: YMode) => (chart = { ...chart, yMode: v })"
-      @y-manual="(v: number) => (chart = { ...chart, yManual: v })"
-      @show-live="(v: boolean) => (chart = { ...chart, showLive: v })"
-      @show-sustained="(v: boolean) => (chart = { ...chart, showSustained: v })"
-      @show-phy="(v: boolean) => (chart = { ...chart, showPhy: v })"
-    />
 
     <!-- Addressable, so the adapter rack above can jump down to a named device
          the same way a device row jumps up to its adapter. Keyed by MAC like

@@ -6,6 +6,7 @@ import { ntopngUrl, glancesUrl } from '@/types';
 import { exportConfig, importConfig } from '@/composables/useConfig';
 import ClientsView from '@/components/ClientsView.vue';
 import BridgeView from '@/components/BridgeView.vue';
+import ChartToolbar from '@/components/ChartToolbar.vue';
 import EventLog from '@/components/EventLog.vue';
 
 const { snap, connected, transport, series, portSeries, bucketMs, setRange } = useSnapshot();
@@ -319,6 +320,18 @@ the file are replaced, devices not mentioned are left alone.">
          never the answer. The adapters are folded because their detail is
          occasional and their summary is not. The devices are open, because
          they are what the page is for. -->
+    <!-- ABOVE EVERYTHING IT GOVERNS, which is the whole point of it being
+         here rather than in the client list where it used to live.
+         It sets range, y-axis, height, series and the mean window for every
+         chart on the page -- the adapter charts in the traffic section and the
+         rack as well as the client cards. Mounted inside the client list it
+         was below the adapter charts it configured, so changing the range
+         while looking at a radio meant scrolling past everything to reach it.
+         It is sticky, and sticky is bounded by the parent: from here that
+         parent is the page, so the bar is reachable from every chart it
+         affects. -->
+    <ChartToolbar v-if="snap" :bucket-ms="bucketMs" />
+
     <BridgeView
       :active="true" :clients="snap?.clients"
       :series="series"
