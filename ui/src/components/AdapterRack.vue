@@ -145,6 +145,81 @@ const outage = defineModel<Record<string, number>>('outage', { default: () => ({
 
 const busy = computed(() => props.bridge.busy.value);
 
+/**
+ * THE SURVEY A LISTEN-ONLY RADIO PRODUCES, which is the one thing its fold had
+ * nothing of.
+ *
+ * That fold used to be 648px of which 572 were two charts that can never hold
+ * anything. A scanner is given no hostapd config, so it is not a bridge port
+ * and cannot forward a frame -- the throughput chart is structurally empty, not
+ * merely quiet. Its airtime chart is derived from per-client station dumps, and
+ * a scanner has no stations. Both said "nothing seen in the last 5m", which
+ * invites a reader to wait for something that cannot arrive.
+ *
+ * Meanwhile the scan itself was reported only in the activity log and in the
+ * colours of other radios' band plans. It is served per interface in the
+ * inventory and was simply never drawn here.
+ *
+ * Read from `scanSummaries`, the DAEMON's own memory of the scan, not from the
+ * `scans` map a manual scan fills: the summary survives a page reload, which a
+ * measurement someone else took on the same box has to.
+ */
+const survey = (name: string) => props.bridge.scanSummaries.value[name];
+
+/**
+ * The busiest and quietest channels this scan MEASURED.
+ *
+ * Measured, and the distinction is the whole reason this is not a one-liner. A
+ * channel with no `util_from` was not quiet; nobody reported on it. Ranking
+ * those as quietest would nominate whichever channel the scan understood least,
+ * which is the same error the band-plan colouring documents at length.
+ */
+const surveyRange = (name: string) => {
+  const measured = (survey(name)?.channels ?? [])
+    .filter((c) => (c.util_from ?? 0) > 0 && c.util_pct !== undefined);
+  if (!measured.length) return null;
+  const byUtil = [...measured].sort((a, b) => (a.util_pct ?? 0) - (b.util_pct ?? 0));
+  return {
+    measured: measured.length,
+    quietest: byUtil[0],
+    busiest: byUtil[byUtil.length - 1],
+  };
+};
+
+/** What the scan heard in total, across every channel it listed. */
+const surveyHeard = (name: string) => {
+  const ch = survey(name)?.channels ?? [];
+  return {
+    channels: ch.length,
+    looked: (survey(name)?.looked ?? []).length,
+    aps: ch.reduce((a, c) => a + (c.aps ?? 0), 0),
+    stations: ch.reduce((a, c) => a + (c.stations ?? 0), 0),
+  };
+};
+
+/** `ch 36 at 67%`, or empty when nothing on this sweep was measured. */
+const surveyBusiest = (name: string) => {
+  const r = surveyRange(name);
+  return r ? `ch ${r.busiest.channel} at ${Math.round(r.busiest.util_pct ?? 0)}%` : '';
+};
+const surveyQuietest = (name: string) => {
+  const r = surveyRange(name);
+  return r ? `ch ${r.quietest.channel} at ${Math.round(r.quietest.util_pct ?? 0)}%` : '';
+};
+/** How many swept channels carried a real airtime reading rather than a
+ *  headcount. 0 means the whole sweep is a headcount, which is worth saying. */
+const surveyMeasured = (name: string) => surveyRange(name)?.measured ?? 0;
+
+/** How old the reading is, in the same words the rest of the rack uses. */
+const surveyAge = (name: string) => {
+  const at = survey(name)?.at;
+  if (!at) return '';
+  const sec = Math.max(0, Math.round((Date.now() - at) / 1000));
+  if (sec < 60) return `${sec}s ago`;
+  if (sec < 3600) return `${Math.round(sec / 60)}m ago`;
+  return `${Math.round(sec / 3600)}h ago`;
+};
+
 /** How many names fit before the row starts wrapping. Past this they are
  *  summarised, with the full list in the tooltip. */
 const NAMES_SHOWN = 3;
@@ -931,12 +1006,79 @@ Clients ARE told it has gone, unlike a power cut.`
                vanishes cannot be told apart from a field that is broken, and
                this strip already says "not bridged" rather than hiding the
                bridge port for the same reason. -->
-          <div><span class="k">SSID</span><span class="v">{{ r.ap?.ssid || '—' }}</span></div>
-          <div><span class="k">BSSID</span><span class="v num">{{ r.ap?.bssid || '—' }}</span></div>
-          <div><span class="k">country</span><span class="v num">{{ r.ap?.country || '—' }}</span></div>
-          <div><span class="k">beacon / DTIM</span>
-            <span class="v num">{{ r.ap ? `${r.ap.beacon_int_ms} ms / ${r.ap.dtim_period}` : '—' }}</span></div>
+          <!-- FOUR AP FIELDS, and a scanner has none of them by construction
+               rather than by circumstance. The em-dash above is the right
+               answer for a radio whose access point is momentarily down; it is
+               the wrong one for a radio that will never have an SSID, where
+               four permanent dashes read as four things broken. A scanner gets
+               the age of its reading in their place -- the one fact about it
+               that changes. -->
+          <template v-if="r.role !== 'scanner'">
+            <div><span class="k">SSID</span><span class="v">{{ r.ap?.ssid || '—' }}</span></div>
+            <div><span class="k">BSSID</span><span class="v num">{{ r.ap?.bssid || '—' }}</span></div>
+            <div><span class="k">country</span><span class="v num">{{ r.ap?.country || '—' }}</span></div>
+            <div><span class="k">beacon / DTIM</span>
+              <span class="v num">{{ r.ap ? `${r.ap.beacon_int_ms} ms / ${r.ap.dtim_period}` : '—' }}</span></div>
+          </template>
+          <div v-else><span class="k">last swept</span>
+            <span class="v num">{{ surveyAge(r.name) || 'not yet' }}</span></div>
         </div>
+
+        <!-- WHAT THIS RADIO IS FOR, where its throughput chart used to be. -->
+        <template v-if="r.role === 'scanner'">
+          <div v-if="survey(r.name)" class="survey">
+            <div class="survey-head">
+              <span class="survey-title">last sweep</span>
+              <span class="survey-sub num">{{ surveyAge(r.name) }}</span>
+            </div>
+            <div class="facts">
+              <div><span class="k">heard</span>
+                <span class="v num">{{ surveyHeard(r.name).aps }} AP<template
+                  v-if="surveyHeard(r.name).aps !== 1">s</template>,
+                  {{ surveyHeard(r.name).stations }} client<template
+                  v-if="surveyHeard(r.name).stations !== 1">s</template></span></div>
+              <!-- LOOKED AT against FOUND ON, because the difference decides
+                   what an empty channel means: visited and silent is a
+                   measurement, never visited is a gap. The band plan's colours
+                   rest on exactly this distinction. -->
+              <div><span class="k">channels</span>
+                <span class="v num">{{ surveyHeard(r.name).channels }} of
+                  {{ surveyHeard(r.name).looked }} swept carried something</span></div>
+              <template v-if="surveyMeasured(r.name)">
+                <div><span class="k">busiest</span>
+                  <span class="v num">{{ surveyBusiest(r.name) }}</span></div>
+                <div><span class="k">quietest</span>
+                  <span class="v num">{{ surveyQuietest(r.name) }}</span></div>
+                <!-- HOW MANY of the swept channels carried a real airtime
+                     reading, rather than only a headcount. A colour resting on
+                     evidence and one resting on a guess must not look alike,
+                     which is the rule the plan itself follows. -->
+                <div><span class="k">measured airtime</span>
+                  <span class="v num">{{ surveyMeasured(r.name) }} channel<template
+                    v-if="surveyMeasured(r.name) !== 1">s</template></span></div>
+              </template>
+            </div>
+            <p v-if="!surveyMeasured(r.name)" class="survey-note">
+              No neighbour on any swept channel advertised its airtime, so this
+              sweep is a headcount. A channel nobody measured is not an idle
+              one.
+            </p>
+            <!-- The other radios as this one heard them, which is the only
+                 place on the box where that appears: a radio cannot hear
+                 itself, so this is the one reading of our own beacons taken
+                 from outside them. -->
+            <div v-if="Object.keys(survey(r.name)?.ours ?? {}).length" class="facts">
+              <div v-for="(dbm, iface) in survey(r.name)?.ours ?? {}" :key="iface">
+                <span class="k">{{ iface }}</span>
+                <span class="v num">{{ dbm }} dBm</span>
+              </div>
+            </div>
+          </div>
+          <p v-else class="notice inline">
+            {{ r.name }} has taken no reading yet. It sweeps both bands every
+            15 seconds once it is up; <em>scan</em> below forces one now.
+          </p>
+        </template>
 
         <!-- WHAT IT IS CARRYING, with the facts rather than with the
              controls: this is status, and CHANNEL AND WIDTH still leads the
@@ -952,8 +1094,13 @@ Clients ARE told it has gone, unlike a power cut.`
              traffic you had just been watching. What a radio carried is asked
              about most often right after it stopped carrying it. With nothing
              in the window the component says so in words. -->
+        <!-- NOT FOR A SCANNER. It is not a bridge port -- no hostapd config
+             means no `bridge=` line -- so it can never forward a frame and this
+             chart can never be anything but zero with a message under it saying
+             nothing has been seen. That is an invitation to wait for something
+             structurally impossible. -->
         <AdapterStack
-          v-if="series"
+          v-if="series && r.role !== 'scanner'"
           :iface="r.name" :series="series" :labels="labels ?? {}"
         />
 
@@ -969,8 +1116,12 @@ Clients ARE told it has gone, unlike a power cut.`
              is a problem for everyone else on the radio.
 
              Only for a radio. A wired port has no airtime to divide. -->
+        <!-- Nor for a scanner: airtime here is attributed PER CLIENT from
+             station dumps, and a radio serving no access point has no stations
+             to attribute it to. What a scanner does measure about airtime is
+             the channel survey above, which is a different quantity. -->
         <AdapterStack
-          v-if="series && r.wireless"
+          v-if="series && r.wireless && r.role !== 'scanner'"
           mode="airtime"
           :iface="r.name" :series="series" :labels="labels ?? {}"
           :airtime-known="r.airtime_cap_known"
@@ -1365,6 +1516,29 @@ Clients ARE told it has gone, unlike a power cut.`
   padding: 3px 8px;
 }
 .caret:hover { color: var(--ink); }
+/* The survey block: the same facts grid as the strip above it, with a quiet
+   heading so it reads as part of the fold rather than as a new section. */
+.survey { margin: 10px 0 0; }
+.survey-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+.survey-title {
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink-dim);
+}
+.survey-sub { font-size: 11px; color: var(--ink-faint); }
+.survey-note {
+  margin: 6px 0 0;
+  font-size: 11px;
+  color: var(--ink-faint);
+  max-width: 78ch;
+}
+
 /* A GENERATION LABEL MUST NEVER BE THE THING THAT GETS CLIPPED.
    Every other value here degrades honestly under `text-overflow`, because a cut
    number or a cut address is visibly incomplete. The 802.11 family names do
