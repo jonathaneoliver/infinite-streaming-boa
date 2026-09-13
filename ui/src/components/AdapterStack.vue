@@ -174,6 +174,53 @@ onBeforeUnmount(() => ro.disconnect());
 const plotW = computed(() => Math.max(40, chartW.value - PAD.l - PAD.r));
 
 const windowMs = computed(() => chartPrefs.value.rangeSec * 1000);
+
+/*
+ * WHICH DIRECTIONS THIS DRAWS, from the toolbar rather than always both.
+ *
+ * The bar's `show down` / `show up` pair governs every chart on the page and
+ * this one ignored it, so hiding upload put the client cards to one column and
+ * left the whole-box pair untouched -- two charts disagreeing about a switch
+ * that reads as global.
+ *
+ * Never empty. Turning both off in the toolbar is possible and leaves the
+ * client cards with nothing, which is their business; here it would collapse
+ * the section to a heading and a legend, so the last one standing is drawn.
+ * A section that vanishes is the failure this file already records fixing
+ * twice.
+ */
+const DIRECTIONS = computed<('down' | 'up')[]>(() => {
+  const p = chartPrefs.value;
+  if (p.showDown && !p.showUp) return ['down'];
+  if (p.showUp && !p.showDown) return ['up'];
+  return ['down', 'up'];
+});
+
+/*
+ * THE CEILING, honouring the toolbar's y-axis where the mode means something
+ * for a stack and falling back to auto where it does not.
+ *
+ * `auto` and `manual` both apply -- the toolbar labels the second one "fixed".
+ * One follows the data, the other pins every chart to one number so two of
+ * them can be compared by eye, which is the whole reason that control exists.
+ *
+ * `cap` and `phy` DO NOT, and they fall back rather than inventing an
+ * equivalent. A cap is per client and a stack is a port total, so there is no
+ * cap to draw against. A PHY rate is per client too, and the tempting
+ * substitute -- the port's link speed -- is exactly what this chart had and
+ * removed: on the container the uplink is a veth reporting 10 Gbit/s, so a
+ * real 421 Mbit/s drew as a 4%-high sliver. Headroom belongs in the readout
+ * beside the chart, not in an axis that has to stay readable at every scale.
+ */
+function ceilingFor(peak: number): number {
+  const p = chartPrefs.value;
+  if (p.yMode === 'manual' && p.yManual > 0) return p.yManual;
+  // Floored at 1 Mbit/s before the ladder rounds it. Without a floor an idle
+  // radio scales its axis to whatever trickle of ARP and mDNS chatter is on
+  // it, and a few kbit/s of background noise draws as a full-height mountain
+  // range -- a chart that invents traffic out of nothing.
+  return niceMax(Math.max(peak * 1.15, 1));
+}
 const span = computed(() => spanLabel(windowMs.value));
 
 interface Band {
@@ -430,7 +477,7 @@ const charts = computed(() => {
       now: tot.length ? tot[tot.length - 1] : 0,
     }];
   }
-  return (['down', 'up'] as const).map((dir) => {
+  return DIRECTIONS.value.map((dir) => {
     const bands = bandsFor(dir);
     const tot = totals(bands);
     const peak = tot.length ? Math.max(...tot) : 0;
@@ -450,7 +497,7 @@ const charts = computed(() => {
     // 4%-high sliver. Headroom belongs in the readout beside the chart, where
     // "of 10000" is harmless, rather than in an axis that has to stay
     // readable at every scale.
-    const max = niceMax(Math.max(peak * 1.15, 1));
+    const max = ceilingFor(peak);
     const dp = axisDecimals(max, PLOT_H.value);
     return {
       dir,

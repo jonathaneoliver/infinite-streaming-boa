@@ -3,6 +3,7 @@ import { computed, onBeforeUnmount, ref, watch } from 'vue';
 import { sankey, sankeyLinkHorizontal, sankeyJustify } from 'd3-sankey';
 import type { ClientPair, PortPair } from '@/types';
 import { clientColour } from '@/composables/useClientColours';
+import { chartPrefs } from '@/composables/useChartPrefs';
 
 /**
  * WHICH PORT FORWARDED TO WHICH, as a Sankey: ribbon thickness is the rate.
@@ -127,7 +128,21 @@ const FLOOR = computed(() => props.floor ?? 0.05);
  * measurement -- a consumer wanting the raw tick should not have to undo a
  * smoothing decision made for a drawing.
  */
-const WINDOW_MS = 10_000;
+/*
+ * FROM THE TOOLBAR'S `mean over`, which is the same quantity under a different
+ * name. That control offers 10, 30 and 60 seconds as the trailing window
+ * behind a smoothed line; this figure's rolling mean is exactly that window,
+ * and it was hardcoded at the control's own default while the control sat
+ * above it doing nothing to it.
+ *
+ * The other settings in that bar mostly do not apply and are not faked.
+ * `range` is a time axis and this figure has none. `y-axis` needs an axis:
+ * thickness here is proportional to rate with no scale to pin. `series`
+ * chooses between a live trace, a mean and a PHY rule, and this draws none of
+ * those. What does apply is this window, the direction switches, and height --
+ * see DIRECTIONS and H.
+ */
+const WINDOW_MS = computed(() => chartPrefs.value.sustainedSec * 1000);
 
 interface Sample { at: number; pairs: readonly Flow[] }
 const samples = ref<Sample[]>([]);
@@ -139,7 +154,7 @@ watch(() => props.pairs, (p) => {
   if (!p) return;
   const now = Date.now();
   samples.value = [...samples.value, { at: now, pairs: p }]
-    .filter((sm) => now - sm.at <= WINDOW_MS);
+    .filter((sm) => now - sm.at <= WINDOW_MS.value);
 }, { immediate: true });
 
 /**
@@ -184,13 +199,27 @@ const smoothed = computed<PortPair[]>(() => {
  * AdapterStack had already learned this and says so -- one SVG unit has to be
  * one CSS pixel, or type does not render at the size it is set in.
  */
-const H = 200;
+/*
+ * TALL DOUBLES IT, and on a Sankey that changes what is TRUE of the drawing
+ * rather than merely how big it is.
+ *
+ * Thickness is the only channel here, and it is bounded below: a ribbon under
+ * MIN_RIBBON is drawn at MIN_RIBBON and flagged "thinnest not to scale". At
+ * 200px a flow worth 1% of the total is 2px and gets floored; at 400px it is
+ * 4px and is drawn honestly. The label spacing check has the same property --
+ * it needs 16px between node centres before it will draw an adapter's name
+ * under a device's, so doubling the height brings those second lines back.
+ *
+ * So `tall` on this figure buys accuracy and detail, not size. It is the one
+ * chart here where the height control is worth reaching for deliberately.
+ */
+const H = computed(() => (chartPrefs.value.tallCharts ? 400 : 200));
 /*
  * THE BOTTOM PAD HOLDS A SECOND LABEL LINE, and at 10 it did not.
  *
  * A label is centred on its node, with the adapter hanging 11px beneath the
- * name. The layout's lowest node can sit at `H - PAD.b`, so its second line
- * landed at roughly `H - PAD.b + 14` and its descenders below that -- past the
+ * name. The layout's lowest node can sit at `H.value - PAD.b`, so its second line
+ * landed at roughly `H.value - PAD.b + 14` and its descenders below that -- past the
  * bottom of the viewBox, where the SVG simply cuts them off. Reported from a
  * screenshot of `wlan-usb-46c7` sheared in half under `MacBook-Pro 1.3`, and
  * measured at the time as a 1px overflow, which is the same bug on a quieter
@@ -264,7 +293,28 @@ onBeforeUnmount(() => ro.disconnect());
  * first paint depend on which fired first. The floor keeps the ribbons
  * drawable when the window is narrow.
  */
-const CW = computed(() => Math.max(300, Math.floor((W.value - GAP) / 2)));
+const CW = computed(() => (DIRECTIONS.value.length > 1
+  ? Math.max(300, Math.floor((W.value - GAP) / 2))
+  // ONE FIGURE TAKES THE WHOLE ROW. Half the width with nothing beside it
+  // would leave the ribbons in the left half of an empty panel.
+  : Math.max(300, W.value)));
+
+/*
+ * WHICH DIRECTIONS ARE DRAWN, from the toolbar's `show down` / `show up`.
+ *
+ * That pair governs every chart on the page and this figure ignored it, so
+ * hiding upload narrowed the client cards and left this pair untouched.
+ *
+ * Never empty: turning both off leaves the client cards with nothing, which is
+ * their business, but here it would collapse the section to a heading. The
+ * last one standing is drawn.
+ */
+const DIRECTIONS = computed<('down' | 'up')[]>(() => {
+  const p = chartPrefs.value;
+  if (p.showDown && !p.showUp) return ['down'];
+  if (p.showUp && !p.showDown) return ['up'];
+  return ['down', 'up'];
+});
 
 interface Node { name: string; key: string; label: string }
 interface Link { source: number; target: number; value: number; packets: number }
@@ -400,7 +450,7 @@ const gutter = computed(() => {
  * touched, because that is the part a library should be doing.
  */
 const sides = computed(() => {
-  const graphs = (['down', 'up'] as const).map((dir) => {
+  const graphs = DIRECTIONS.value.map((dir) => {
     const g = graphFor(dir);
     return { dir, g, total: g.links.reduce((a, l) => a + l.value, 0) };
   });
@@ -433,7 +483,7 @@ const sides = computed(() => {
       // reasoning, and what it costs, is at the comparator in graphFor.
       .iterations(0)
       .extent([[gutter.value, PAD.t],
-        [Math.max(gutter.value + 60, CW.value - gutter.value), H - PAD.b]]);
+        [Math.max(gutter.value + 60, CW.value - gutter.value), H.value - PAD.b]]);
     // The layout MUTATES what it is handed, so it gets a copy. Passing the
     // reactive arrays would have it write x/y coordinates back into the props
     // and retrigger the computed that produced them.
