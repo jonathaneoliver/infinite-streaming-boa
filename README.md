@@ -105,6 +105,70 @@ downlink throughput; the dashed `cap` line is what boa is enforcing. The
 lane editor underneath is the pattern itself: 23 keyframes on a rate lane, with
 delay, jitter and loss lanes unused in this run.
 
+## Quickstart
+
+Two targets, and neither is the reference — see
+[Two ways to run it](#two-ways-to-run-it) for which to pick. Both read the same
+`.env`.
+
+**A Linux host you already have** (x86_64, two USB adapters, nothing to flash):
+
+```sh
+cp .env.example .env      # set AP_SSID_DOCKER, AP_PASSWORD, AP_COUNTRY
+scripts/docker-deploy.sh <host> --setup-network
+```
+
+Then open `http://<host>:8080/`. Later deploys drop `--setup-network` and take
+about a minute. The full walkthrough, including what it installs on the host and
+how to undo it, is
+[Run it as a container](#run-it-as-a-container-on-a-linux-host).
+
+**A Raspberry Pi 5 from an image** (self-contained, disposable, carries ntopng
+and glances):
+
+```sh
+cp .env.example .env      # set AP_SSID, AP_PASSWORD, AP_COUNTRY
+./build.sh                # ~5 min first time, then cached
+```
+
+Write the `.img` from `dist/` to a card with
+[Raspberry Pi Imager](https://www.raspberrypi.com/software/) or
+[balenaEtcher](https://etcher.balena.io/) — there is deliberately no flashing
+helper here, and [Build an image](#build-an-image) says why. Boot it and open
+`http://infinite-streaming-boa.local/`.
+
+Both need `docker` on the machine you build from, including on Linux;
+[Requirements for the build and control host](#requirements-for-the-build-and-control-host)
+has the toolchain floors. If the box is up but you cannot reach it, that has its
+own section: [Reaching the box](#reaching-the-box).
+
+## Contents
+
+- [What it does](#what-it-does) — the feature list
+- [Who this is for](#who-this-is-for-and-why-the-wi-fi-control-matters), and why the Wi-Fi control matters
+- [Saving and restoring a configuration](#saving-and-restoring-a-configuration)
+- [The controls, one by one](#the-controls-one-by-one) — presets, distance, radio impairment, the charts
+- [How this compares to what already exists](#how-this-compares-to-what-already-exists) — including why a proxy is a different instrument
+
+**Running it**
+
+- [Two ways to run it](#two-ways-to-run-it) — the Pi and the container, on equal terms
+- [Hardware](#hardware) — parts, RAM, host requirements, and what the radios cannot do
+- [Build an image](#build-an-image) · [Run it as a container](#run-it-as-a-container-on-a-linux-host)
+- [Reaching the box](#reaching-the-box) · [Configuration](#configuration) · [Security](#security)
+
+**What it can and cannot measure**
+
+- [Access point performance](#access-point-performance) — the ceiling a cap sits under
+- [Wired downstream performance](#wired-downstream-performance) · [Power](#power)
+- [How the conditioning works](#how-the-conditioning-works) — the shaping model
+- [What it is not, and what the radios will not do](#what-it-is-not-and-what-the-radios-will-not-do)
+- [Things that will mislead you if nobody says them](#things-that-will-mislead-you-if-nobody-says-them)
+
+**Working on it**
+
+- [Layout](#layout) · [Development](#development) · [How this was built](#how-this-was-built) · [Licence](#licence)
+
 ## What it does
 
 - **Conditions each client independently** — rate, latency, jitter and loss, per
@@ -167,9 +231,13 @@ delay, jitter and loss lanes unused in this run.
   and per-process load, for when a throughput number is wrong because the Pi is
   throttling rather than because the policy says so. **Pi image only**, on the
   same terms.
-- **Ships an iperf3 server** on `:5201`, so the ceiling a cap has to sit under
-  can be measured without installing anything on the device under test. It
-  measures the link **unshaped** — see below.
+- **Ships an iperf3 server** on `:5201`, so a link can be measured without
+  installing anything on the device under test. **Only one direction of that
+  test is unshaped, and which one is not obvious:** a client's *upload* to the
+  box terminates at the bridge and never reaches the WAN port where uplink
+  shaping lives, so it reports the link. The *download* leaves by the client's
+  own port, which is exactly where downlink shaping sits, so it reports the cap
+  being enforced. See [Measuring it yourself](#measuring-it-yourself).
 
 ## Who this is for, and why the Wi-Fi control matters
 
@@ -1200,9 +1268,16 @@ isolated the bus from the radio.
 ## Access point performance
 
 The AP's ceiling bounds the top of a measured ladder, so it decides which
-renditions can be tested at all. Measured with `iperf3` **to the box**, which
-means the link **unshaped** — the ceiling a cap must sit under, never evidence
-that a cap is working.
+renditions can be tested at all. Measured with `iperf3` **to the box, with no
+policy in force** — the ceiling a cap must sit under, never evidence that a cap
+is working.
+
+The "no policy in force" is load-bearing and was once written here as "to the
+box means unshaped", which is wrong in one direction. Repeat any of these with a
+**downlink** cap set and the same test returns the cap rather than the ceiling,
+because downlink shaping sits on the client's own port and traffic from the box
+crosses it. Uplink is the direction that stays unshaped. See
+[Measuring it yourself](#measuring-it-yourself).
 
 **Every figure in this section was measured on the Pi**, on the parts listed
 above. The radio is the limit in almost all of them, so they carry over to the
