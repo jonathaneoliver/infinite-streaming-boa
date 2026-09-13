@@ -1320,8 +1320,13 @@ BOA_WAN_PORT=${BOA_WAN_PORT}
 BOA_WLAN_PORT=wlan0
 # A placeholder, not a real interface: no adapter is called this, and the
 # daemon simply finds no such port until select-radio writes a real one. NOT
-# left empty -- systemd drops an empty ${VAR} entirely, so "-lan ${BOA_LAN_PORT}"
-# would hand -lan the NEXT argument as its value.
+# left empty -- systemd drops an empty \${VAR} entirely, so "-lan
+# \${BOA_LAN_PORT}" would hand -lan the NEXT argument as its value.
+#
+# Both of those are ESCAPED because this heredoc is unquoted: it has to expand
+# BOA_WAN_PORT just above. Unescaped, the comment expanded, VAR is unbound, and
+# `set -u` killed the build -- which is why no image could be built between
+# 2026-09-11 and this fix. The comment two entries below had it right.
 BOA_LAN_PORT=lan-usb-none
 # The listen-only radio, or empty. Named here and NOT derived: a radio that
 # silently stopped serving because something inferred it was an instrument is a
