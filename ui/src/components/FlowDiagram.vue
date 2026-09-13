@@ -766,7 +766,7 @@ const pkt = (v: number) => (v >= 1000 ? `${(v / 1000).toFixed(1)}k` : v.toFixed(
        It also fixes the measuring trap this file already documents. Behind a
        v-if there was no element for the ResizeObserver on first render, so the
        width stayed at its initial guess until something forced a remeasure. -->
-  <div ref="box" class="flows">
+  <div ref="box" class="flows" :class="{ solo: sides.length === 1 }">
     <figure v-for="s in sides" :key="s.dir" class="flow">
       <div class="head">
         <span class="dir">{{ s.title }}</span>
@@ -873,6 +873,12 @@ drawn, so they are shown thicker than they are. Their rates are on the labels.">
   gap: 12px;
   margin: 0 0 12px;
 }
+/* ONE DIRECTION TAKES THE WHOLE ROW, and the track has to widen with it.
+   CW already goes full width when only one figure is drawn, but the drawing
+   still sat in a half-width track, and `max-width: 100%` below then squashed a
+   1613px viewBox into 790px -- which is the very scaling bug that rule exists
+   to prevent, reintroduced by the layout instead of by the attribute. */
+.flows.solo { grid-template-columns: 1fr; }
 .flow { margin: 0; }
 .head { display: flex; align-items: baseline; gap: 8px; margin-bottom: 2px; }
 .dir {

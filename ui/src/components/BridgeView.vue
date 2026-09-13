@@ -14,6 +14,7 @@ import FlowDiagram from '@/components/FlowDiagram.vue';
 import AdapterPatternPanel from '@/components/AdapterPatternPanel.vue';
 import ChannelPlan from '@/components/ChannelPlan.vue';
 import { setAdapterIfaces } from '@/composables/useAdapters';
+import { chartPrefs } from '@/composables/useChartPrefs';
 
 /*
  * The box: its fabric, and a rack of the adapters that carry clients.
@@ -25,6 +26,36 @@ import { setAdapterIfaces } from '@/composables/useAdapters';
  * blunter way of saying the same thing, and it cost every question that spans
  * both halves.
  */
+
+/*
+ * THE DIRECTION SWITCHES, for the readouts in the traffic header.
+ *
+ * The toolbar's `show down` / `show up` pair reads as page-wide, and the charts
+ * under this heading now obey it -- but the figures beside the heading printed
+ * both directions regardless, so hiding upload left "uplink 412 down / 9 up"
+ * over a stack drawing download alone. A number is as much a reading as a
+ * ribbon; a switch that governs one governs both.
+ *
+ * Read straight from the store rather than taken as props: these figures sit in
+ * the same component as the charts they annotate, and a copy could disagree.
+ */
+const showDown = computed(() => chartPrefs.value.showDown);
+const showUp = computed(() => chartPrefs.value.showUp);
+
+/**
+ * "412 down · 9 up", carrying only the directions on show.
+ *
+ * Built here rather than with a `v-if` per half in the template: `<template>`
+ * boundaries swallow the whitespace either side of them, and the first attempt
+ * printed "0 upof 10000" -- the figure running into the link speed behind it.
+ * One string with its own separator cannot lose a space.
+ */
+function dirFigure(v: { down: number; up: number }, tilde = ''): string {
+  const parts: string[] = [];
+  if (showDown.value) parts.push(`${tilde}${v.down.toFixed(0)} down`);
+  if (showUp.value) parts.push(`${tilde}${v.up.toFixed(0)} up`);
+  return parts.join(' · ');
+}
 
 const props = defineProps<{
   active: boolean;
@@ -207,9 +238,14 @@ const localFlow = computed(() => {
 });
 /** Below this, the derivation's own error terms dominate. */
 const LOCAL_FLOOR_MBPS = 1;
+/* Over the floor IN A DIRECTION THAT IS BEING SHOWN. Testing both while
+   printing one puts "local ~0 down" on the row whenever the only thing above
+   the floor is the half that is hidden -- a figure claiming there is local
+   traffic and then reporting none. */
 const localWorthShowing = computed(
   () => !!localFlow.value
-    && (localFlow.value.down > LOCAL_FLOOR_MBPS || localFlow.value.up > LOCAL_FLOOR_MBPS),
+    && ((showDown.value && localFlow.value.down > LOCAL_FLOOR_MBPS)
+      || (showUp.value && localFlow.value.up > LOCAL_FLOOR_MBPS)),
 );
 
 const totalSeries = computed(() =>
@@ -540,7 +576,7 @@ const pending = ref('');
                   + `a packet crossing the uplink crosses a downstream port too, so adding `
                   + `them would count it twice. The stack is downstream demand; this is what `
                   + `it has to fit through.`">
-            uplink {{ wanNow.down.toFixed(0) }} down · {{ wanNow.up.toFixed(0) }} up
+            uplink {{ dirFigure(wanNow) }}
             <template v-if="wanSpeed">of {{ wanSpeed }}</template>
           </span>
           <!-- The two things the uplink figure alone does not tell you.
@@ -552,7 +588,10 @@ const pending = ref('');
 
                The second is DERIVED and says so with a tilde. See localFlow
                for its two error terms, both of which inflate it. -->
-          <span v-if="grouping === 'adapter' && wanUnattributed > 0" class="total-aside num"
+          <!-- HIDDEN WITH UPLOAD, not narrowed: this figure is outbound only --
+               the uplink has no inbound classes to split -- so with upload
+               turned off there is no version of it left to print. -->
+          <span v-if="grouping === 'adapter' && wanUnattributed > 0 && showUp" class="total-aside num"
                 :title="`Traffic leaving the uplink that no client filter claimed: this box's `
                   + `own, plus any client it is not tracking. Exact — the shaper's default `
                   + `class, read on the same tick as the per-client ones. Outbound only: `
@@ -566,7 +605,7 @@ const pending = ref('');
                   + `multicast frame to every port, and this subtracts a Wi-Fi byte counter from `
                   + `an Ethernet one, both of which inflate it. Aggregate only — which two `
                   + `adapters is not knowable from interface counters.`">
-            local ~{{ localFlow.down.toFixed(0) }} down · ~{{ localFlow.up.toFixed(0) }} up
+            local {{ dirFigure(localFlow, '~') }}
           </span>
           </div>
           <!-- LAST, and with no auto margin of its own, so the container's own

@@ -546,7 +546,14 @@ const legend = computed(() => charts.value[0].bands);
 
 <template>
   <div class="stack">
-    <div class="pair" :class="{ quiet: empty || cannotMeasure, single: mode === 'airtime' }">
+    <div
+      class="pair"
+      :class="{
+        quiet: empty || cannotMeasure,
+        single: mode === 'airtime',
+        solo: DIRECTIONS.length === 1,
+      }"
+    >
       <div
         v-for="(c, i) in charts" :key="c.dir" class="one"
         :ref="(el) => { if (i === 0) col = el as HTMLElement }"
@@ -687,6 +694,12 @@ const legend = computed(() => charts.value[0].bands);
   margin-right: -10px;
 }
 @media (max-width: 860px) { .pair { grid-template-columns: 1fr; } }
+/* ONE DIRECTION TAKES THE WHOLE ROW. With a single chart in a two-track grid
+   the plot keeps the left half and the right half is an empty panel the height
+   of a chart -- which reads as a second chart that failed to draw rather than
+   as one that was turned off. The plot width is measured from the first column,
+   so widening the track widens the chart and its time axis with it. */
+.pair.solo { grid-template-columns: 1fr; }
 /* Airtime is one chart, not a pair: the radio's time is a single resource and
    transmit and receive both spend it, so splitting by direction would divide a
    quantity that is not divisible that way.
@@ -708,6 +721,11 @@ const legend = computed(() => charts.value[0].bands);
    empty panel the height of a chart. The airtime plot is full width there too,
    which is still the download plot's width, so the axes stay aligned. */
 @media (max-width: 860px) { .pair.single .filler { display: none; } }
+/* And the same reason with one direction: there is no second track for the
+   filler to reserve, so it would stack under the airtime plot as an empty
+   panel. Airtime is then full width, which is still the throughput plot's
+   width, so a vertical line through both still means one instant. */
+.pair.solo .filler { display: none; }
 /* Drawn, but plainly not carrying anything. An empty pane at full strength
    reads as a radio carrying nothing -- the exact misreading the message above
    exists to prevent -- so the frame recedes and the words lead. */
