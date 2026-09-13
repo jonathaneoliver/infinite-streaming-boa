@@ -235,6 +235,49 @@ const apUtil = (a: ScanAP) =>
     ? `${Math.round((a.util_raw / 255) * 100)}%`
     : '');
 
+/**
+ * WHAT THE SWEEP FOUND ON EACH OF OUR OWN ACCESS POINTS' CHANNELS.
+ *
+ * The join nothing else makes. `ours` gives how loudly the scanner hears one of
+ * our radios, which is already a reading available nowhere else -- a radio
+ * cannot hear itself. On its own it answers "is that antenna working"; joined to
+ * the channel row for the channel that radio is actually on, it answers the
+ * question an operator has: is the channel I put this AP on a good one, and
+ * what is it sharing it with.
+ *
+ * Both halves were already here and were never brought together. The rack row
+ * for each AP carries its own contention figures, but those come from whichever
+ * scan measured them and say nothing about what ELSE occupies that channel;
+ * this says how many neighbours cover it, which is the number that makes an
+ * empty-looking 5GHz channel turn out to be full.
+ *
+ * COVERING, not aps: an 80MHz neighbour fills four 20MHz channels and competes
+ * across all of them, so a channel with no access point primary on it can still
+ * be fully occupied. That is the common case on 5GHz.
+ */
+const ourAPsHeard = (name: string) => {
+  const sum = survey(name);
+  if (!sum) return [];
+  const chans = sum.channels ?? [];
+  return Object.entries(sum.ours ?? {}).map(([iface, dbm]) => {
+    const radio = rackAdapters.value.find((o) => o.name === iface);
+    const ch = radio?.ap?.channel;
+    const row = ch ? chans.find((c) => c.channel === ch) : undefined;
+    return {
+      iface,
+      dbm,
+      channel: ch ?? 0,
+      // Empty rather than zero where nobody reported: a channel nobody
+      // measured is not an idle one, and the band plan's colouring rests on
+      // exactly this distinction.
+      util: row && (row.util_from ?? 0) > 0 && row.util_pct !== undefined
+        ? `${Math.round(row.util_pct)}%` : '',
+      covering: row?.covering ?? row?.aps ?? 0,
+      swept: ch ? (sum.looked ?? []).includes(ch) : false,
+    };
+  });
+};
+
 /** `80MHz` on ch 36, or just the width where it is the primary's own. */
 const apWidthLabel = (a: ScanAP) =>
   `${a.width_mhz ?? 20}MHz${a.centre ? ` · centre ${a.centre}` : ''}`;
@@ -1126,14 +1169,40 @@ Clients ARE told it has gone, unlike a power cut.`
               sweep is a headcount. A channel nobody measured is not an idle
               one.
             </p>
-            <!-- The other radios as this one heard them, which is the only
-                 place on the box where that appears: a radio cannot hear
-                 itself, so this is the one reading of our own beacons taken
-                 from outside them. -->
-            <div v-if="Object.keys(survey(r.name)?.ours ?? {}).length" class="facts">
-              <div v-for="(dbm, iface) in survey(r.name)?.ours ?? {}" :key="iface">
-                <span class="k">{{ iface }}</span>
-                <span class="v num">{{ dbm }} dBm</span>
+            <!-- OUR OWN ACCESS POINTS, as this radio hears them and on the
+                 channels the same sweep measured.
+                 The dBm is the only reading of our own beacons taken from
+                 outside them -- a radio cannot hear itself -- and the channel
+                 figures beside it turn that from "the antenna works" into "and
+                 the channel you put it on looks like this". -->
+            <div v-if="ourAPsHeard(r.name).length" class="neigh">
+              <div class="survey-head">
+                <span class="survey-title">our access points</span>
+                <span class="survey-sub num">heard from outside</span>
+              </div>
+              <div class="neigh-scroll">
+                <table class="neigh-table">
+                  <thead>
+                    <tr>
+                      <th>radio</th><th>ch</th><th class="r">heard at</th>
+                      <th class="r">channel airtime</th><th class="r">neighbours covering</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr v-for="o in ourAPsHeard(r.name)" :key="o.iface">
+                      <td><span class="ssid">{{ o.iface }}</span></td>
+                      <td class="num">{{ o.channel || '—' }}</td>
+                      <td class="num r">{{ o.dbm }} dBm</td>
+                      <!-- Three states, not two. A figure where neighbours
+                           reported one; "not measured" where the channel was
+                           swept and nobody advertised; an em-dash where the
+                           sweep never visited it. Collapsing the last two
+                           would rate an unvisited channel as quiet. -->
+                      <td class="num r">{{ o.util || (o.swept ? 'not measured' : '—') }}</td>
+                      <td class="num r">{{ o.channel ? o.covering : '—' }}</td>
+                    </tr>
+                  </tbody>
+                </table>
               </div>
             </div>
 
