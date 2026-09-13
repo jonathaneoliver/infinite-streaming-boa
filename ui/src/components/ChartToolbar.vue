@@ -232,13 +232,48 @@ function onManual(e: Event) {
 </template>
 
 <style scoped>
+/*
+ * STICKY, because a control that configures every chart below it was only
+ * reachable from the top of them.
+ *
+ * It sets range, y-axis, height, series and the mean window for the whole
+ * page. With a handful of devices it was always on screen; with a rack of
+ * adapters and a page of clients it is a long scroll away from whatever chart
+ * made you want to change it, and the change you want is usually prompted by
+ * the chart you are looking at.
+ *
+ * BOUNDED BY ITS OWN SECTION, which is the behaviour to want rather than a
+ * limitation to work around: sticky confines an element to its parent's box,
+ * so this rides down the client list and stops at the end of it instead of
+ * following the reader into the event log. It controls those charts, so it is
+ * present for exactly as long as they are.
+ *
+ * The background was already opaque, which sticky requires -- a translucent
+ * bar would have the traces scrolling through the numbers. The shadow is what
+ * says it is floating rather than misplaced.
+ */
 .toolbar {
+  position: sticky;
+  top: 0;
+  /* Above the charts and their SVGs. The only other z-indexes in the
+     interface are inside the pattern editor's own stacking context and go no
+     higher than 7. */
+  z-index: 20;
   display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
   padding: 8px 12px;
   margin-bottom: 10px;
   background: var(--panel);
   border: 1px solid var(--line);
   border-radius: var(--r);
+  box-shadow: 0 6px 16px -8px rgb(0 0 0 / 0.55);
+}
+
+/* A SHORT VIEWPORT GETS IT BACK IN THE FLOW. The bar wraps to two or three
+   rows when the window is narrow, and a sticky element that tall on a short
+   window takes a third of the screen permanently -- which costs more chart
+   than the scroll it saves. */
+@media (max-height: 560px) {
+  .toolbar { position: static; box-shadow: none; }
 }
 .lbl {
   font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase;
