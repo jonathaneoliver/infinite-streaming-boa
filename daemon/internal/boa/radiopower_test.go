@@ -1,6 +1,9 @@
 package boa
 
 import (
+	"errors"
+	"fmt"
+	"os/exec"
 	"strings"
 	"testing"
 )
@@ -476,5 +479,93 @@ func TestAnEightyMHzNeighbourOccupiesFourChannels(t *testing.T) {
 	if seen[36].APs != 1 || seen[40].APs != 0 {
 		t.Errorf("primary lost: ch36 aps=%d, ch40 aps=%d, want 1 and 0",
 			seen[36].APs, seen[40].APs)
+	}
+}
+
+// --- the listen-only radio's first scan -----------------------------------
+
+// TestIffUpReadsTheFlagAScanNeeds pins the distinction that made the first
+// scan after every container recreate fail: a listen-only radio reads
+// operstate "down" for its whole life and scans perfectly, so the state that
+// separates "will not scan" from "reads down and scans anyway" is IFF_UP.
+//
+// The values are the ones measured on the container host 2026-09-13: 0x1002
+// with the link admin-down, 0x1003 with it up and mid-sweep.
+func TestIffUpReadsTheFlagAScanNeeds(t *testing.T) {
+	for _, c := range []struct {
+		raw  string
+		want bool
+		why  string
+	}{
+		{"0x1003\n", true, "measured on the AX200 while it was scanning"},
+		{"0x1002\n", false, "measured on the AX200 with the link admin-down"},
+		{"0x1003", true, "no trailing newline"},
+		{"0x1", true, "IFF_UP alone"},
+		{"0x1000", false, "IFF_LOWER_UP without IFF_UP is not up"},
+		{"", false, "sysfs unreadable reads as not up, so the caller raises it"},
+		{"nonsense", false, "unparseable reads as not up"},
+	} {
+		if got := iffUp(c.raw); got != c.want {
+			t.Errorf("iffUp(%q) = %v, want %v (%s)", c.raw, got, c.want, c.why)
+		}
+	}
+}
+
+// TestTransientScanWaitsOutTheDriverAndNotTheAnswer covers the classification
+// the retry ladder turns on, using real exit statuses from a real child
+// process rather than a hand-built ExitError.
+//
+// The point of the negative case is the important one: -95 is how a serving
+// radio says it will not scan while beaconing, which scanBandFree RECORDS and
+// acts on. Retrying it would spend five seconds re-asking a settled question.
+func TestTransientScanWaitsOutTheDriverAndNotTheAnswer(t *testing.T) {
+	for _, c := range []struct {
+		code int
+		want bool
+		why  string
+	}{
+		{240, true, "-16 EBUSY: the driver's own scan, gone within 2s"},
+		{237, true, "-19 ENODEV: not in the namespace yet"},
+		{156, true, "-100 ENETDOWN: the interface is not up yet"},
+		{151, true, "-105 ENOBUFS: the request could not be queued"},
+		{161, false, "-95 EOPNOTSUPP: a complete answer, not a transient one"},
+		{1, false, "a usage error is not worth retrying"},
+	} {
+		err := exec.Command("sh", "-c", fmt.Sprintf("exit %d", c.code)).Run()
+		if err == nil {
+			t.Fatalf("exit %d: expected an error from the child", c.code)
+		}
+		if got := transientScan(err); got != c.want {
+			t.Errorf("transientScan(exit %d) = %v, want %v (%s)",
+				c.code, got, c.want, c.why)
+		}
+	}
+	if transientScan(errors.New("not a child process at all")) {
+		t.Error("a plain error is not a transient scan failure")
+	}
+}
+
+// TestScanErrCarriesWhatIwSaid pins the other half: the activity log showed
+// "exit status 151" for this, because Output() discards the stderr line where
+// `iw` names the fault. The ExitError has to survive inside the wrapped error
+// or the retry ladder stops recognising anything.
+func TestScanErrCarriesWhatIwSaid(t *testing.T) {
+	// Output(), not Run(): ExitError.Stderr is only filled in by Output(), so
+	// Run() here would test a path the daemon does not take and the assertion
+	// below would fail for the wrong reason. scanOnce uses Output().
+	_, err := exec.Command("sh", "-c",
+		"echo 'command failed: Device or resource busy (-16)' >&2; exit 240").Output()
+	if err == nil {
+		t.Fatal("expected an error from the child")
+	}
+	wrapped := scanErr("wlan-scan-9e44", err)
+	if !strings.Contains(wrapped.Error(), "Device or resource busy (-16)") {
+		t.Errorf("the error does not say what iw said: %v", wrapped)
+	}
+	if !strings.Contains(wrapped.Error(), "wlan-scan-9e44") {
+		t.Errorf("the error does not name the radio: %v", wrapped)
+	}
+	if !transientScan(wrapped) {
+		t.Error("wrapping lost the exit code, so the retry ladder would not fire")
 	}
 }
