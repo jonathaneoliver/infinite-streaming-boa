@@ -1099,7 +1099,17 @@ Clients ARE told it has gone, unlike a power cut.`
           <div v-if="r.radio?.bus === 'usb'"><span class="k">USB port</span>
             <span class="v num">{{ r.radio.socket || '—' }}</span></div>
           <div><span class="k">MAC</span><span class="v num">{{ r.mac }}</span></div>
-          <div><span class="k">bridge port</span><span class="v num">{{ r.master || 'not bridged' }}</span></div>
+          <!-- BRIDGE, not "bridge port", and the old label was wrong on every
+               row rather than only on the scanner. The field holds the BRIDGE's
+               name -- measured: wan0, both radios and both wired ports all
+               report master='br-lan' -- so "bridge port: br-lan" parsed as
+               "the bridge port is br-lan", when br-lan is the bridge and the
+               interface itself is the port.
+               "not a member" rather than "not bridged" for the same reason the
+               key changed: a key asking WHICH bridge should be answered by a
+               name or by the absence of one, and "not bridged" answered a
+               different question than the one the label asked. -->
+          <div><span class="k">bridge</span><span class="v num">{{ r.master || 'not a member' }}</span></div>
           <!-- ALWAYS RENDERED, em-dash when there is no access point, rather
                than hidden behind v-if="r.ap".
 
@@ -1110,8 +1120,8 @@ Clients ARE told it has gone, unlike a power cut.`
 
                A dash is also the better answer on its own terms: a field that
                vanishes cannot be told apart from a field that is broken, and
-               this strip already says "not bridged" rather than hiding the
-               bridge port for the same reason. -->
+               this strip already says "not a member" rather than hiding the
+               bridge for the same reason. -->
           <!-- FOUR AP FIELDS, and a scanner has none of them by construction
                rather than by circumstance. The em-dash above is the right
                answer for a radio whose access point is momentarily down; it is
