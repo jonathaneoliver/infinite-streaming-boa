@@ -184,8 +184,23 @@ const smoothed = computed<PortPair[]>(() => {
  * AdapterStack had already learned this and says so -- one SVG unit has to be
  * one CSS pixel, or type does not render at the size it is set in.
  */
-const H = 190;
-const PAD = { t: 10, b: 10 };
+const H = 200;
+/*
+ * THE BOTTOM PAD HOLDS A SECOND LABEL LINE, and at 10 it did not.
+ *
+ * A label is centred on its node, with the adapter hanging 11px beneath the
+ * name. The layout's lowest node can sit at `H - PAD.b`, so its second line
+ * landed at roughly `H - PAD.b + 14` and its descenders below that -- past the
+ * bottom of the viewBox, where the SVG simply cuts them off. Reported from a
+ * screenshot of `wlan-usb-46c7` sheared in half under `MacBook-Pro 1.3`, and
+ * measured at the time as a 1px overflow, which is the same bug on a quieter
+ * second: how far it clips depends only on where the lowest node happens to be.
+ *
+ * 20 for the pad and 200 for the height, together. Raising the pad alone would
+ * have taken 10px off the drawing area and made every ribbon thinner to fix a
+ * text problem; raising both leaves the extent exactly 170px as before.
+ */
+const PAD = { t: 10, b: 20 };
 /*
  * Room for the end labels, which sit outside the node columns.
  *
