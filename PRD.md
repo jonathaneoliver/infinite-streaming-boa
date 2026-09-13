@@ -270,6 +270,52 @@ card, the daemon itself eating a core. It says nothing about clients. Optional
 on the same terms: the image builds without it, the UI hides the link, and it is
 likewise absent from the container image.
 
+**Why neither is in the container image**, which this document previously
+asserted as a decision without recording what the decision rested on. The
+reasons differ per service, and only one of them is about the container being a
+container.
+
+ntopng is the one process on the box that can **perturb what the box
+measures**. It inspects every frame crossing the bridge, so it works hardest
+exactly when a measurement is running: sampled at 7% of a core idle and 71%
+under load. On the Pi that is a dedicated machine and the operator has a switch
+for it. On a container host the CPU is shared with whatever else that machine is
+doing, so the same process sits between the measurement and an already noisier
+baseline. Its two headline features are also **already recorded as not
+working** — it writes no host timeseries, so the per-device charts it feeds have
+nothing behind them, and its live capture export corrupts above about
+20 Mbit/s, with packet capture gated behind an edition the box does not use. So
+the 400 MB it costs buys little that currently functions.
+
+Notably NOT a reason: the build. ntopng had to be compiled from source for the
+Pi because upstream dropped arm64 packages after buster, which is the whole
+purpose of `scripts/package-ntopng.sh`. The container is x86-64 Debian, where
+upstream ships packages, so it is *easier* there than on the Pi. If the two
+defects above are fixed, that is the point to reconsider — and it should then
+default to **stopped**, so it cannot silently be in the middle of a run.
+
+glances is a firmer no, and for a reason that does not go away. Its whole
+subject is the health of one machine: CPU, memory, temperature, disk and the
+process list. In the container those readings are a mixture of the host's and
+the container's, which is worse than either being simply wrong. Measured on the
+running container:
+
+| glances would report | inside the container | on the host |
+|---|---|---|
+| Processes | 13 | 796 |
+| MemTotal | 32,189,896 kB | 32,189,896 kB |
+| Thermal zones | readable, the host's | the host's |
+
+So memory and temperature are the **host's** figures while the process list is
+the **container's** — a panel that reads as the appliance's health while
+describing neither machine completely. The distinction matters because the
+question glances exists to answer is "is something other than my policy
+explaining this number", and the usual culprits are a process eating a core and
+a thermal limit. Here the first is invisible and the second belongs to a
+machine that, on this target, is **still itself and not the appliance**. The
+honest place to run it is the host, directly, where every figure is about the
+same computer.
+
 None of :80, :3000 or :61208 authenticates. The box is a bench appliance for a
 network you already control, and anyone who can reach it can re-shape any
 device on it — and, through glances, read its whole process list; put it on a
