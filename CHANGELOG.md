@@ -14,6 +14,163 @@ deliberate and documented so they are not mistaken for defects — see
 
 Nothing yet.
 
+## [0.4.0] — 2026-09-14
+
+**The box can now say where the traffic actually went — and it stops lying about
+its own hardware.**
+
+A transparent bridge appears in no client's own view of the network, so the two
+questions anyone asks of it first — *is the uplink the bottleneck*, and *is this
+client talking to the internet or to the machine beside it* — had no answer on
+screen. 0.3.0 could chart each conditioned client and nothing else, and measured
+on the WAN port of a running box that is not most of the traffic: the default
+class carried 112,693,736 bytes while the busiest client's class carried
+12,268,732. Nine tenths of what crossed that port belonged to no client at all,
+so summing the client series understated the port by an order of magnitude.
+
+0.4.0 counts at three new places — every bridge port, every adapter pair, every
+device pair — and draws the result as a flow diagram. The second theme is the
+box being honest about itself: the listen-only radio reports what it actually
+measures instead of five blanks where a client's figures would go, and an
+adapter attached below USB 3 says so on its own row rather than capping every
+measurement on the box while every other number looks healthy.
+
+**If you build images, take this release whatever you think of the features:
+0.3.0 cannot build one.** An unescaped comment in `scripts/customize.sh`
+aborted every build under `set -u` from the day 0.3.0 was tagged.
+
+15 pull requests.
+
+### Where the traffic actually went
+
+![The traffic panel: stacked download and upload for the whole box, above a
+pair of Sankey diagrams naming which device sent to which, with a 152 Mbit/s
+ribbon running between two of them](docs/images/traffic-routing.png)
+
+The same second, twice. Above, every adapter's throughput. Below, where it
+went: one ribbon per counted pair, thickness by rate, both directions on one
+scale. The fat ribbon is the point — a MacBook on Wi-Fi sending 152 Mbit/s to a
+Mac Mini on a wired port, and neither end of it is the uplink, so that traffic
+never left the box. Nothing in 0.3.0 could say that.
+
+- **The whole box, not just the devices on it** (#311). Per-port kernel
+  interface counters, read on the same tick that already samples the client
+  classes, so a port band and a client band share an x-axis. Interface counters
+  have no attribution step to go wrong: every frame counts, including the box's
+  own traffic, untracked devices, broadcast and multicast.
+- **Which adapter forwarded to which** (#314), and **which device talked to
+  which** (#313), both drawn as a flow diagram. The adapter matrix answers
+  "this radio forwarded to that wired port"; with several devices per adapter
+  that is a hint rather than an answer, so the device matrix names the pair.
+  The existing `by adapter` / `by client` toggle drives the diagram, which until
+  now it did not touch.
+
+### The listening radio earns its place
+
+- **It says what it measures** (#320). Its fold held two empty charts and its
+  row five blanks, because both were built for a radio that carries clients —
+  and it carries none by design. It now shows its survey instead: what it heard
+  and when, the busiest and quietest channel, a table of neighbouring networks
+  with channel, the channels each one occupies, signal, clients and airtime, and
+  a second table of our own access points as the scanner hears them.
+- **Its first scan works** (#321). After every container recreate the first
+  sweep failed, twice out of two, and had been written off as a flaky driver.
+  Nothing raised the interface: a scanner has no hostapd and NetworkManager is
+  told to leave it alone, so the only `ip link set up` ran at the moment the
+  first scan was already being attempted. Probed once a second: `ENODEV` at
+  +0s, `ENETDOWN` +2s to +19s, `EBUSY` +20s, working at +24s. After the fix,
+  three cold starts gave first sweeps at +7.9s, +7.8s and +3.7s.
+- **VERIFIED ON THE PI**, which 0.3.0's notes could not claim — that release
+  shipped this as shared code exercised only on the container host. Measured
+  2026-09-14 with `BOA_SCAN_PORT="wlan0"`, the onboard brcmfmac radio: raised
+  for scanning at 11:24:50 and its first sweep returned at 11:24:51, one second
+  later, heard 16 access points across both bands and kept 15 neighbours.
+
+### It tells you when its own bus is the problem
+
+- **An adapter below USB 3 rates warns on its own row, in red** (#325) — wired
+  ports included, since those are USB devices too. This is the fault that looks
+  like nothing: the interface reported a 1000 Mbit/s ethernet link and a
+  961 Mbit/s negotiated Wi-Fi rate while four adapters behind a USB 2 hub held
+  the Wi-Fi downlink to 92 Mbit/s where a USB 3 port gave 632, and the bridged
+  path to 87 against 203. Every cap above roughly 90 Mbit/s was silently
+  unenforceable.
+- **The advice matches the board.** The box reports how many USB 3 **ports** it
+  has, counted through `maxchild` rather than by counting root hubs — this Pi's
+  four hubs are two USB 3 sockets, not four — so it never sends you looking for
+  a socket the board does not have, and on a board with none it says plainly
+  that only different hardware will help. `boactl probe` fails on the fault.
+
+### Changed
+
+- **`by device` → `by client`**, which is what a router calls them (#320).
+- **One toolbar governs every chart** (#320), rather than a set of controls per
+  chart.
+- **The scan line in the activity log is shorter, quieter and more accurate**
+  (#326). It leads with airtime, the only figure in it that predicted
+  congestion here; a background poll round now speaks only when a band's
+  busiest channel changes, when the recommendation changes, or when that
+  channel's airtime moves a wide margin; and it names the bands it actually
+  swept rather than the band its radio sits on, which on this box meant it said
+  "2.4GHz" for ever while quoting 5GHz channels in the same sentence. Measured
+  on a serving radio, sixteen lines per four minutes became one.
+
+### Fixed
+
+- **No image could be built at all** between 0.3.0 and this release (#322).
+- **The adapter line under a device name was cut off** (#317).
+- **A caret on the traffic heading that folded nothing** (#316).
+- **The README named `SCAN_IF` where the documented variable is `BOA_SCAN_IF`**,
+  which reads as a third variable beside `BOA_SCAN_PORT` when you meet all
+  three on one page.
+
+### Upgrading from 0.3.0
+
+**`deploy.sh` is enough.** No new `.env` variables, no package changes, and the
+only change below the binary is the build fix — so an existing box takes this
+in ten seconds. A reflash is needed only for a fresh card, and if you tried to
+build one from 0.3.0 it failed; this is the fix.
+
+To give the Pi a listen-only radio, which is the feature most worth turning on
+here, name the onboard radio and reflash — it is an image-time setting:
+
+```sh
+BOA_SCAN_PORT="wlan0"
+```
+
+It costs the 2.4GHz network and leaves the USB adapters serving alone. On a
+container host the equivalent is `BOA_SCAN_IF`, named as the **host** calls the
+card.
+
+### Known limitations
+
+- **A genuinely USB 2 adapter carries a standing underspeed warning.** sysfs
+  cannot tell it from a USB 3 adapter on a bad cable: `version` reports the
+  bcdUSB of the *connection*, not of the hardware, so the same adapter reads
+  3.20 at 5000 Mbit/s and 2.10 at 480. The rule is therefore the negotiated
+  rate alone.
+- **A listen-only radio logs more scan lines than a serving one.** It is free to
+  scan, so the poll picks it every round, and the airtime-jump rule then fires
+  on real 2.4GHz swings: measured on the Pi, ch1 moved 35% → 65% → 34% inside a
+  minute and each step was reported. Every line is honest; the band may want
+  widening for 2.4GHz.
+- **Enforcement has never been measured end to end on the Pi.** The figures for
+  a cap being enforced through the box (86.0 and 38.1 Mbit/s against a 90/40
+  cap) are the container host's.
+- **No client tested here has returned an 802.11k beacon report.** The path
+  ships and the **measure** button exercises it, but participation is up to the
+  device's firmware. #228 was closed as completed rather than working: the
+  mechanism it proposed does not survive contact with real clients, and the
+  question it asked is answered instead by hostapd's management-frame
+  interface (#254), which surfaces the candidate list a refusal already carries.
+- **The channel colouring overstates how clear a channel is.** A channel the
+  scan produced no entry for is rated clear, which holds on 5GHz where an 80 MHz
+  neighbour is spread across its whole block, and fails on 2.4GHz where a
+  neighbour is recorded against its own channel only. The ±4 overlap window the
+  data contract describes is not implemented.
+- **`boactl` does not cover the whole API.** #263 tracks the gap and what is
+  deliberately not planned.
+
 ## [0.3.0] — 2026-09-11
 
 **The box no longer has to be a Raspberry Pi — and it can now tell you what the
