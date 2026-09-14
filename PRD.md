@@ -1386,6 +1386,14 @@ damages packets, never link state.
   measurement at all. A recommendation that cannot be checked against the
   evidence behind it is one that has to be taken on trust.
 
+  **Airtime leads the line, and the line is short.** It is the only one of those
+  figures that predicted congestion here — an access point with no clients sat
+  in 37% utilisation while one with ten sat in 8.6% — so it comes first and the
+  headcounts follow it. The log is a ring read at a glance and this event runs
+  on a timer, so nothing in the line restates what another part of it already
+  says: a scan that moved the radio reports the move, one that cost an outage
+  reports the outage, and one that did neither says only what it heard.
+
 ### 6.7 Measuring
 
 - An **iperf3 server** runs on the box, so a device can be measured without a

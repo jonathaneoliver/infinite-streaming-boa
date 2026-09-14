@@ -569,3 +569,59 @@ func TestScanErrCarriesWhatIwSaid(t *testing.T) {
 		t.Error("wrapping lost the exit code, so the retry ladder would not fire")
 	}
 }
+
+// TestScanFindingsLeadsWithAirtimeAndStaysShort pins the activity log's scan
+// line, which had no test and grew to 160 characters:
+//
+//	wlan0 scanned 2.4GHz while serving — 13 AP(s) on 11 channel(s), 47
+//	client(s); busiest ch 1 at 32% airtime, quietest ch 149 at 4% (10 of 11
+//	channels measured) — stayed on 6
+//
+// Two things are asserted rather than the exact string, because the wording
+// should stay free to change and the length should not: airtime comes FIRST,
+// since it is the only figure here that predicted congestion on this box, and
+// the whole findings clause fits in a glance.
+func TestScanFindingsLeadsWithAirtimeAndStaysShort(t *testing.T) {
+	res := ScanResult{Channels: []ScanChannel{
+		{Channel: 1, APs: 6, Stations: 30, UtilPct: 32, UtilFrom: 2},
+		{Channel: 6, APs: 4, Stations: 12, UtilPct: 18, UtilFrom: 1},
+		{Channel: 149, APs: 3, Stations: 5, UtilPct: 4, UtilFrom: 1},
+		// Heard, nobody advertising BSS Load: the reason for the ratio.
+		{Channel: 11, APs: 0, Stations: 0},
+	}}
+	got := scanFindings(res)
+	if !strings.HasPrefix(got, "air 32% ch1") {
+		t.Errorf("does not lead with the busiest channel's airtime: %q", got)
+	}
+	for _, want := range []string{"4% ch149", "3 of 4 measured", "13 APs/47 clients"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("missing %q: %q", want, got)
+		}
+	}
+	if len(got) > 70 {
+		t.Errorf("findings are %d chars, and the line they sit in adds ~40: %q",
+			len(got), got)
+	}
+}
+
+// TestScanFindingsQuotesNoRangeItDoesNotHave covers the two shapes that read as
+// a bug rather than as a measurement: one channel measured, which has no range
+// to quote, and nothing measured at all, where the headcount is all there is
+// and the line must say so instead of implying airtime was seen.
+func TestScanFindingsQuotesNoRangeItDoesNotHave(t *testing.T) {
+	one := scanFindings(ScanResult{Channels: []ScanChannel{
+		{Channel: 40, APs: 2, Stations: 3, UtilPct: 58, UtilFrom: 1},
+	}})
+	if one != "air 58% ch40, 2 APs/3 clients" {
+		t.Errorf("single measured channel = %q", one)
+	}
+	none := scanFindings(ScanResult{Channels: []ScanChannel{
+		{Channel: 36, APs: 5, Stations: 9},
+	}})
+	if none != "5 APs/9 clients, none reporting airtime" {
+		t.Errorf("nothing measured = %q", none)
+	}
+	if empty := scanFindings(ScanResult{}); empty != "nothing heard" {
+		t.Errorf("empty scan = %q", empty)
+	}
+}

@@ -2029,8 +2029,13 @@ func (e *Engine) scanBand(iface string, apply, allowOutage bool) (ScanResult, er
 		e.logEvent(EventAction, iface, "", "%s scanned both bands — %s — it serves "+
 			"nothing, so nobody was dropped", iface, found)
 	default:
-		e.logEvent(EventAction, iface, "", "%s scanned %s while serving — %s — stayed on %d",
-			iface, band, found, res.Now)
+		// NO "stayed on %d" HERE, unlike the branches above. A move has its own
+		// branch and an outage has another, so this branch is the one where
+		// nothing happened to the radio -- and "stayed on 6" spent eleven
+		// characters saying so a second time, on the line that runs on a timer
+		// and therefore fills the log. The channel it is on is on its row.
+		e.logEvent(EventAction, iface, "", "%s scanned %s while serving — %s",
+			iface, band, found)
 	}
 	e.syncRadioState(iface)
 	e.rememberScan(iface, res)
@@ -2045,13 +2050,21 @@ func (e *Engine) scanBand(iface string, apply, allowOutage bool) (ScanResult, er
 //
 // The log used to carry a headcount and nothing else -- "(29 APs)" -- which is
 // the one number that turned out not to predict congestion: on this box an AP
-// with no clients sat in 37% utilisation while one with ten sat in 8.6%. So the
-// line now leads with airtime where a neighbour measured it, names the busiest
-// channel and the quietest, and says which of the two it is quoting.
+// with no clients sat in 37% utilisation while one with ten sat in 8.6%. So
+// this LEADS WITH AIRTIME, names the busiest channel and the quietest, and
+// says how many channels the figure rests on.
 //
-// Deliberately one line. The log is a ring of a few hundred events read at a
-// glance; a scan that spilled a row per channel would push the rest of the
-// session out of it.
+// Deliberately one line, and a SHORT one. The log is a ring of a few hundred
+// events read at a glance, and the long form of this line --
+//
+//	13 AP(s) on 11 channel(s), 47 client(s); busiest ch 1 at 32% airtime,
+//	quietest ch 149 at 4% (10 of 11 channels measured)
+//
+// put the weakest numbers first and the decision-relevant one last, at 160
+// characters for the whole event. Every unit and label that survives is one a
+// reader cannot infer: "32%" needs "air" to say what is 32%, and "10 of 11
+// measured" is the confidence behind it. What went is the phrasing around
+// them.
 func scanFindings(res ScanResult) string {
 	if len(res.Channels) == 0 {
 		return "nothing heard"
@@ -2076,25 +2089,24 @@ func scanFindings(res ScanResult) string {
 	for _, c := range res.Channels {
 		aps += c.APs
 	}
-	out := fmt.Sprintf("%d AP(s) on %d channel(s)", aps, len(res.Channels))
-	if measured == 0 {
+	counts := fmt.Sprintf("%d APs/%d clients", aps, stations)
+	if measured == 0 || busiest == nil {
 		// Said plainly, because a recommendation made without it rests on a
 		// headcount and the reader should know that is all it rests on.
-		return out + ", none reporting airtime"
+		return counts + ", none reporting airtime"
 	}
-	out += fmt.Sprintf(", %d client(s)", stations)
-	if busiest != nil {
-		out += fmt.Sprintf("; busiest ch %d at %.0f%% airtime",
-			busiest.Channel, busiest.UtilPct)
+	out := fmt.Sprintf("air %.0f%% ch%d", busiest.UtilPct, busiest.Channel)
+	// One channel measured, or every measured channel equally busy, has no
+	// range to quote -- and "32% ch1 to 32% ch1" reads as a bug.
+	if quietest != nil && quietest.Channel != busiest.Channel {
+		out += fmt.Sprintf(" to %.0f%% ch%d", quietest.UtilPct, quietest.Channel)
 	}
-	if quietest != nil && busiest != nil && quietest.Channel != busiest.Channel {
-		out += fmt.Sprintf(", quietest ch %d at %.0f%%",
-			quietest.Channel, quietest.UtilPct)
-	}
+	// Only when it is not the whole scan. "11 of 11 measured" is noise on the
+	// common case, and its absence is the same claim.
 	if measured < len(res.Channels) {
-		out += fmt.Sprintf(" (%d of %d channels measured)", measured, len(res.Channels))
+		out += fmt.Sprintf(" (%d of %d measured)", measured, len(res.Channels))
 	}
-	return out
+	return out + ", " + counts
 }
 
 // rememberScan keeps the per-channel conclusions of a scan, so the interface
