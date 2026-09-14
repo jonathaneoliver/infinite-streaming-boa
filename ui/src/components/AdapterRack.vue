@@ -751,6 +751,30 @@ function degraded(i: IfaceInfo): boolean {
         <span class="sum">
           <span v-if="r.ap?.mode" class="gen">{{ r.ap.mode }}</span>
           <span class="rest">{{ summary(r) }}</span>
+          <!-- ON THE ROW, because a fault behind a caret is very nearly as
+               invisible as one not shown at all -- and invisibility is the
+               whole complaint this answers. It was inside the fold first and
+               that was wrong: an adapter attached at a seventh of its rate
+               caps every measurement the box makes, and nobody opens a fold to
+               check hardware that reports a healthy link speed.
+
+               IN THIS CELL rather than the badge slot to the right, for two
+               reasons. The badge is `v-if="r.wireless"` and this fault lands
+               on wired adapters too -- lan-usb-6518 is a USB device. And the
+               row is a fixed-column grid whose own comments record a cell
+               being added sliding every later column; `.sum` is always
+               present, so a child inside it adds no track.
+
+               `flex: 0 0 auto` so it is never the thing the ellipsis eats:
+               the summary beside it can truncate, a fault may not. -->
+          <span
+            v-if="r.radio?.usb_underspeed" class="usb-bad"
+            :title="`${r.name} is attached to the USB bus at `
+              + `${r.radio.link_mbps} Mbit/s but declares USB ${r.radio.usb_version} `
+              + `— it is capable of 5000. Throughput is capped far below the link `
+              + `and PHY rates this row shows. Check the USB-C to USB-A cable and `
+              + `use a USB 3 port.`"
+          >USB {{ r.radio.link_mbps }}<span class="u">Mb/s</span></span>
         </span>
 
         <!-- Contention, in the fixed column the old survey-derived `air` badge
@@ -1112,7 +1136,7 @@ Clients ARE told it has gone, unlike a power cut.`
                and flagging it would be noise on hardware that is behaving. -->
           <div v-if="r.radio?.bus === 'usb' && r.radio.link_mbps">
             <span class="k">USB link</span>
-            <span class="v num" :class="{ warn: r.radio.usb_underspeed }"
+            <span class="v num" :class="{ bad: r.radio.usb_underspeed }"
                   :title="r.radio.usb_underspeed
                     ? `Attached at ${r.radio.link_mbps} Mbit/s but declares USB `
                       + `${r.radio.usb_version} — capable of 5000. Throughput is capped `
@@ -1821,6 +1845,18 @@ Clients ARE told it has gone, unlike a power cut.`
 .sum .gen { flex: 0 0 auto; }
 .sum .gen + .rest::before { content: '\00b7'; margin-right: 6px; }
 .sum .rest { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+/* A HARDWARE FAULT ON THE ROW, in --bad rather than --warn. The amber slot to
+   the right is for states that are recoverable and often deliberate -- an AP
+   taken down, a radio listening. An adapter wired through a USB 2 cable is
+   neither: it is wrong, it stays wrong until somebody moves a plug, and it
+   silently caps every figure on this row. Red says that; amber would file it
+   alongside "scanning". */
+.sum .usb-bad {
+  flex: 0 0 auto;
+  color: var(--bad);
+  font-weight: 600;
+}
+.sum .usb-bad .u { color: inherit; font-weight: 400; opacity: 0.75; margin-left: 1px; }
 /* The contention triple. Keys are faint and small so the numbers lead: the
    labels are read once and the figures are read every time. Tabular numerals so
    the column does not jitter as values change. */
@@ -2001,10 +2037,11 @@ Clients ARE told it has gone, unlike a power cut.`
 /* Hex, MACs and counts, so digits keep their column as they change rather than
    sliding the rest of the value sideways on every update. */
 .facts .v.num { font-variant-numeric: tabular-nums; }
-/* A fact that is a FAULT rather than a reading. Only the value turns, never
-   the key: the key still names what is being reported, and colouring both
-   would read as the whole row being broken. */
-.facts .v.warn { color: var(--warn); font-weight: 600; }
+/* A fact that is a FAULT rather than a reading, in the same red as the row
+   marker so the two read as one finding. Only the value turns, never the key:
+   the key still names what is being reported, and colouring both would read as
+   the whole fact being broken. */
+.facts .v.bad { color: var(--bad); font-weight: 600; }
 /* Units at the weight of a label rather than a figure, so 480 reads as the
    number and Mb/s as its unit instead of competing with it. */
 .facts .v .u { color: var(--ink-faint); font-weight: 400; margin-left: 2px; }
