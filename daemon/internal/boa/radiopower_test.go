@@ -625,3 +625,43 @@ func TestScanFindingsQuotesNoRangeItDoesNotHave(t *testing.T) {
 		t.Errorf("empty scan = %q", empty)
 	}
 }
+
+// TestTheLineNamesWhatWasSweptNotWhereTheRadioSits pins the label.
+//
+// MEASURED 2026-09-14: wlan0 serves on ch6 and its sweeps returned ch1, 6, 11,
+// 36, 40, 44 and 48, so the line read "scanned 2.4GHz" while quoting ch36 and
+// ch149 in the same sentence -- and could never say otherwise while that radio
+// stayed on ch6. It is the only radio the poll ever picks, so the box appeared
+// never to look at 5GHz at all, while in fact every 5GHz figure on screen
+// comes from these sweeps.
+func TestTheLineNamesWhatWasSweptNotWhereTheRadioSits(t *testing.T) {
+	ch := func(n ...int) []ScanChannel {
+		var out []ScanChannel
+		for _, c := range n {
+			out = append(out, ScanChannel{Channel: c})
+		}
+		return out
+	}
+	for _, c := range []struct {
+		why  string
+		res  ScanResult
+		want string
+	}{
+		{"the real wlan0 sweep, from a radio whose own band is 2.4GHz",
+			ScanResult{Band: "2.4GHz", Channels: ch(1, 6, 11, 36, 40, 44, 48)},
+			"both bands"},
+		{"a 2.4GHz-only sweep", ScanResult{Band: "2.4GHz", Channels: ch(1, 6, 11)},
+			"2.4GHz"},
+		{"a 5GHz-only sweep", ScanResult{Band: "5GHz", Channels: ch(36, 149)},
+			"5GHz"},
+		{"nothing heard falls back to where the radio is",
+			ScanResult{Band: "5GHz"}, "5GHz"},
+		{"a scanner that heard nothing has no band of its own, and the line " +
+			"must not carry a gap where one belongs",
+			ScanResult{}, "the air"},
+	} {
+		if got := scannedBands(c.res); got != c.want {
+			t.Errorf("%s: scannedBands = %q, want %q", c.why, got, c.want)
+		}
+	}
+}

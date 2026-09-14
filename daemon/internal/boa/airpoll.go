@@ -221,20 +221,28 @@ func (e *Engine) noteScanBlocked(iface, reason string) {
 // scanMark is the part of a scan an operator would act on, kept so the next
 // one can be compared against it.
 //
-// NOT the airtime figure by itself. It drifts constantly and every sample is
-// honest -- measured on the box within 90 seconds, ch1 read 32, 30, 44, 33, 33,
-// 37 and 37 percent -- so a line per change would be the sampler this replaces.
-// What is actionable is WHICH channel is busiest and WHERE the box would move
-// the radio; those change rarely, and when they do it is news.
+// PER BAND, and that is not tidiness. Ranking a 2.4GHz channel against a 5GHz
+// one manufactures news out of nothing: the free scanner here sweeps both, so
+// the single busiest channel in a sweep flips between them as their levels
+// cross. MEASURED 2026-09-14 over 130 seconds, three lines, and two of them
+// were exactly that -- ch1 at 36%, then ch36 at 67%, then ch1 at 36% again.
+// Neither band had done anything an operator would act on. Per band, each one
+// is judged against its own history and the crossings disappear.
+//
+// NOT the airtime figure by itself either. It drifts and every sample is
+// honest -- measured on the box within 90 seconds, ch1 read 32, 30, 44, 33,
+// 33, 37 and 37 percent -- so a line per change would be the sampler this
+// replaces. What is actionable is WHICH channel is busiest in a band, and
+// WHERE the box would move the radio.
 type scanMark struct {
-	busiest int // the channel carrying the most measured airtime
-	best    int // where a channel move would put this radio
-	util    int // that busiest channel's airtime, to catch a regime change
+	busiest24, util24 int // busiest measured 2.4GHz channel, and its airtime
+	busiest5, util5   int // the same for 5GHz
+	best              int // where a channel move would put this radio
 }
 
-// scanUtilJump is how far the busiest channel's airtime must move, with the
-// same channel still busiest and the same recommendation standing, before it is
-// news rather than drift.
+// scanUtilJump is how far a band's busiest channel's airtime must move, with
+// the same channel still busiest and the same recommendation standing, before
+// it is news rather than drift.
 //
 // TWENTY-FIVE POINTS is well outside the observed drift above (the widest gap
 // in those seven readings is 14) and inside the change that matters: a channel
@@ -242,32 +250,62 @@ type scanMark struct {
 // place, which is worth a line even though nothing else about it changed.
 const scanUtilJump = 25
 
+// steadyUtil reports two airtime readings close enough to be the same weather.
+// Both differences rather than an abs(), which this package does not have.
+func steadyUtil(a, b int) bool {
+	return b-a < scanUtilJump && a-b < scanUtilJump
+}
+
 // worthLogging reports whether a background scan found anything an operator
 // would act on, and records what it found either way.
 //
 // The FIRST scan of a radio always logs. Silence has to mean "nothing
 // changed", and it cannot mean that until something has been said once --
 // otherwise a box whose poll never ran looks exactly like a box whose air is
-// steady, which is the bug that noteScanBlocked exists to avoid on the failure
-// side.
+// steady, which is the bug noteScanBlocked exists to avoid on the failure side.
 func (e *Engine) worthLogging(iface string, res ScanResult) bool {
 	now := scanMark{best: res.Best}
 	for i := range res.Channels {
 		c := &res.Channels[i]
-		if c.UtilFrom > 0 && (now.busiest == 0 || int(c.UtilPct) > now.util) {
-			now.busiest, now.util = c.Channel, int(c.UtilPct)
+		if c.UtilFrom == 0 {
+			continue
+		}
+		// Strictly greater, over channels summariseScan has already sorted, so
+		// the LOWEST channel wins a tie and wins it the same way every round.
+		// An 80MHz neighbour gives its whole block one identical figure -- ch36,
+		// 40, 44 and 48 all read 22% on this box -- and "whichever came first"
+		// out of a map would have flapped between them for ever.
+		util := int(c.UtilPct)
+		if c.Channel <= 14 {
+			if now.busiest24 == 0 || util > now.util24 {
+				now.busiest24, now.util24 = c.Channel, util
+			}
+			continue
+		}
+		if now.busiest5 == 0 || util > now.util5 {
+			now.busiest5, now.util5 = c.Channel, util
 		}
 	}
+
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	if e.scanLogged == nil {
 		e.scanLogged = map[string]scanMark{}
 	}
 	was, seen := e.scanLogged[iface]
-	// Both differences rather than an abs(): the same test, and no helper the
-	// package does not already have.
-	if seen && was.busiest == now.busiest && was.best == now.best &&
-		now.util-was.util < scanUtilJump && was.util-now.util < scanUtilJump {
+	// A band this sweep did not reach INHERITS what was last known about it,
+	// rather than reading as "it changed to nothing". Coverage varies round to
+	// round -- two consecutive wlan0 scans returned 7 and 11 channels -- and
+	// that is variation in what was heard, not in the air.
+	if now.busiest24 == 0 {
+		now.busiest24, now.util24 = was.busiest24, was.util24
+	}
+	if now.busiest5 == 0 {
+		now.busiest5, now.util5 = was.busiest5, was.util5
+	}
+	if seen && was.best == now.best &&
+		was.busiest24 == now.busiest24 && steadyUtil(was.util24, now.util24) &&
+		was.busiest5 == now.busiest5 && steadyUtil(was.util5, now.util5) {
 		return false
 	}
 	e.scanLogged[iface] = now

@@ -2035,23 +2035,29 @@ func (e *Engine) scanBand(iface string, apply, allowOutage, background bool) (Sc
 	// answer is the same as last time.
 	changed := e.worthLogging(iface, res)
 	quiet := background && !res.Applied && res.OutageSec == 0 && !changed
+	// What was SWEPT, not where the radio sits. See scannedBands.
+	swept := scannedBands(res)
 	switch {
 	case quiet:
 		// Silent on purpose: the poll re-measured steady air. See above.
 	case res.Applied:
 		e.logEvent(EventRadio, iface, "", "%s scanned %s — %s — and moved %d → %d",
-			iface, band, found, res.Was, res.Now)
+			iface, swept, found, res.Was, res.Now)
 	case res.OutageSec > 0:
 		e.logEvent(EventAction, iface, "", "%s scanned %s (%.0fs off the air) — %s — stayed on %d",
-			iface, band, res.OutageSec, found, res.Now)
+			iface, swept, res.OutageSec, found, res.Now)
 	case e.cfg.IsScanner(iface):
-		// A SEPARATE BRANCH, because both halves of the line below are wrong
-		// about a scanner. It is not "serving", and it "stayed on" no channel:
-		// it has none, so `band` is empty and `res.Now` is 0 -- which read as
-		// "scanned  while serving ... stayed on 0", with the gap where a band
-		// should be. Measured on the container host 2026-09-11.
-		e.logEvent(EventAction, iface, "", "%s scanned both bands — %s — it serves "+
-			"nothing, so nobody was dropped", iface, found)
+		// A SEPARATE BRANCH, because the line below is wrong about a scanner
+		// twice over. It is not "serving", and it "stayed on" no channel: it
+		// has none, so `res.Now` is 0 and the line read "... stayed on 0".
+		// Measured on the container host 2026-09-11.
+		//
+		// The BAND half of that bug is fixed for every branch now. This line
+		// said "both bands" because a scanner has no channel to derive one
+		// from -- a fixed claim about a sweep that varies; scannedBands answers
+		// it from what actually came back.
+		e.logEvent(EventAction, iface, "", "%s scanned %s — %s — it serves "+
+			"nothing, so nobody was dropped", iface, swept, found)
 	default:
 		// NO "stayed on %d" HERE, unlike the branches above. A move has its own
 		// branch and an outage has another, so this branch is the one where
@@ -2059,7 +2065,7 @@ func (e *Engine) scanBand(iface string, apply, allowOutage, background bool) (Sc
 		// characters saying so a second time, on the line that runs on a timer
 		// and therefore fills the log. The channel it is on is on its row.
 		e.logEvent(EventAction, iface, "", "%s scanned %s while serving — %s",
-			iface, band, found)
+			iface, swept, found)
 	}
 	e.syncRadioState(iface)
 	e.rememberScan(iface, res)
@@ -2068,6 +2074,47 @@ func (e *Engine) scanBand(iface string, apply, allowOutage, background bool) (Sc
 	// thing that can take the radio down.
 	e.rememberScanCost(iface, res.OutageSec > 0)
 	return res, nil
+}
+
+// scannedBands names the bands a scan actually COVERED, for the log line.
+//
+// Not res.Band, which is the band the RADIO is on -- the thing a channel move
+// is chosen within, and rightly so, since a radio can only move inside its own
+// band. The two differ on the only radio this box scans for free. MEASURED
+// 2026-09-14: wlan0 serves on ch6 and one of its sweeps returned ch1, 6, 11,
+// 36, 40, 44 and 48, so every poll line read "scanned 2.4GHz" while quoting
+// ch36 and ch149 in the same sentence. It could never say 5GHz while that
+// radio stays on ch6, which is the only radio the poll ever picks -- so the
+// box appeared never to look at the band its clients are actually on, while
+// in fact every 5GHz figure on screen comes from exactly these sweeps.
+//
+// Derived from the channels rather than declared, because which bands a sweep
+// reaches varies round to round: two consecutive wlan0 scans returned 7 and 11
+// channels. A fixed claim would be wrong on one of them.
+func scannedBands(res ScanResult) string {
+	got24, got5 := false, false
+	for _, c := range res.Channels {
+		if c.Channel <= 14 {
+			got24 = true
+		} else {
+			got5 = true
+		}
+	}
+	switch {
+	case got24 && got5:
+		return "both bands"
+	case got5:
+		return "5GHz"
+	case got24:
+		return "2.4GHz"
+	case res.Band != "":
+		// Nothing heard. The radio's own band is then the honest answer to
+		// "where did you look", and it is all there is to go on.
+		return res.Band
+	}
+	// A scanner heard nothing and has no band of its own. "scanned  — nothing
+	// heard", with the gap where a band should be, is what this avoids.
+	return "the air"
 }
 
 // scanFindings phrases what a scan actually measured, for the activity log.

@@ -124,3 +124,102 @@ func TestUnmeasuredAirIsAlsoOnlySaidOnce(t *testing.T) {
 		t.Error("an unmeasured scan repeated itself into the log")
 	}
 }
+
+// TestABandCrossingIsNotNews is the flood that survived the first gate.
+//
+// MEASURED on the box 2026-09-14, three lines in 130 seconds, and two of them
+// were one band's busiest channel overtaking the other's: ch1 at 36%, then
+// ch36 at 67%, then ch1 at 36% again. Nothing an operator acts on had changed
+// in either band -- 2.4GHz was ch1 throughout and 5GHz was the ch36 block
+// throughout -- so ranking them against each other was manufacturing the news.
+func TestABandCrossingIsNotNews(t *testing.T) {
+	// Both bands in every reading, which is what a wlan0 sweep returns. Only
+	// the 5GHz level moves, and it crosses ch1's on the way.
+	at := func(util5 int) ScanResult {
+		return ScanResult{Best: 11, Channels: []ScanChannel{
+			{Channel: 1, UtilPct: 36, UtilFrom: 2},
+			{Channel: 36, UtilPct: float64(util5), UtilFrom: 4},
+		}}
+	}
+	e := &Engine{}
+	if !e.worthLogging("wlan0", at(30)) {
+		t.Fatal("the first scan was suppressed")
+	}
+	// 30 -> 45 -> 30: ch36 overtakes ch1 and falls back, and in a single
+	// busiest-channel-in-the-sweep world each step was a line.
+	if e.worthLogging("wlan0", at(45)) {
+		t.Error("logged a 5GHz level crossing 2.4GHz's, which is not a change " +
+			"in either band")
+	}
+	if e.worthLogging("wlan0", at(30)) {
+		t.Error("logged the crossing back again")
+	}
+}
+
+// Each band still speaks for itself: a change in 5GHz must not be swallowed
+// because 2.4GHz is quiet and unchanged. This is the half that a "judge only
+// the scanning radio's own band" rule would have broken -- the free scanner
+// here lives on 2.4GHz and 5GHz is where every client is.
+func TestEachBandIsJudgedOnItsOwnHistory(t *testing.T) {
+	with := func(ch5 int, util5 int) ScanResult {
+		return ScanResult{Best: 11, Channels: []ScanChannel{
+			{Channel: 1, UtilPct: 36, UtilFrom: 2},
+			{Channel: ch5, UtilPct: float64(util5), UtilFrom: 4},
+		}}
+	}
+	e := &Engine{}
+	e.worthLogging("wlan0", with(36, 20)) // settle
+	if !e.worthLogging("wlan0", with(149, 20)) {
+		t.Error("the busiest 5GHz channel moved and nothing was said")
+	}
+	e2 := &Engine{}
+	e2.worthLogging("wlan0", with(36, 20))
+	if !e2.worthLogging("wlan0", with(36, 20+scanUtilJump)) {
+		t.Error("5GHz airtime jumped a full band and nothing was said")
+	}
+}
+
+// A band a sweep did not reach INHERITS what was last known about it. Coverage
+// varies round to round -- two consecutive wlan0 scans on the box returned 7
+// and 11 channels -- and a band dropping out of one sweep is variation in what
+// was heard, not a change in the air.
+func TestABandMissingFromASweepIsNotAChange(t *testing.T) {
+	both := ScanResult{Best: 11, Channels: []ScanChannel{
+		{Channel: 1, UtilPct: 36, UtilFrom: 2},
+		{Channel: 36, UtilPct: 22, UtilFrom: 4},
+	}}
+	only24 := ScanResult{Best: 11, Channels: []ScanChannel{
+		{Channel: 1, UtilPct: 36, UtilFrom: 2},
+	}}
+	e := &Engine{}
+	e.worthLogging("wlan0", both)
+	if e.worthLogging("wlan0", only24) {
+		t.Error("a sweep that heard no 5GHz logged as though 5GHz had changed")
+	}
+	// And the inherited mark is still the one compared against when it returns.
+	if e.worthLogging("wlan0", both) {
+		t.Error("5GHz came back unchanged and was reported as news")
+	}
+}
+
+// An 80MHz neighbour gives its whole block one identical figure, so the
+// busiest channel in a band is a tie -- and a tie has to break the same way
+// every round or it flaps for ever. Measured on the box: ch36, 40, 44 and 48
+// all read 22%.
+func TestATiedBlockPicksTheSameChannelEveryTime(t *testing.T) {
+	block := func() ScanResult {
+		r := ScanResult{Best: 11}
+		for _, ch := range []int{36, 40, 44, 48} {
+			r.Channels = append(r.Channels, ScanChannel{
+				Channel: ch, UtilPct: 22, UtilFrom: 4})
+		}
+		return r
+	}
+	e := &Engine{}
+	e.worthLogging("wlan0", block())
+	for i := 0; i < 3; i++ {
+		if e.worthLogging("wlan0", block()) {
+			t.Fatalf("round %d logged an identical tied block", i+2)
+		}
+	}
+}
