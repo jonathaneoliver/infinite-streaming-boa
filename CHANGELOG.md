@@ -43,6 +43,16 @@ aborted every build under `set -u` from the day 0.3.0 was tagged.
 
 ### Where the traffic actually went
 
+![The traffic panel: stacked download and upload for the whole box, above a
+pair of Sankey diagrams naming which device sent to which, with a 152 Mbit/s
+ribbon running between two of them](docs/images/traffic-routing.png)
+
+The same second, twice. Above, every adapter's throughput. Below, where it
+went: one ribbon per counted pair, thickness by rate, both directions on one
+scale. The fat ribbon is the point — a MacBook on Wi-Fi sending 152 Mbit/s to a
+Mac Mini on a wired port, and neither end of it is the uplink, so that traffic
+never left the box. Nothing in 0.3.0 could say that.
+
 - **The whole box, not just the devices on it** (#311). Per-port kernel
   interface counters, read on the same tick that already samples the client
   classes, so a port band and a client band share an x-axis. Interface counters

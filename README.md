@@ -601,8 +601,9 @@ Mini on a wired port, and neither end of it is the uplink — that traffic never
 left the box. Nothing else here can say that: interface counters give each
 adapter's row and column sums and never the matrix, so "is this client talking
 to the internet or to the device beside it" needs a counter at the point the
-bridge decides. Toggle **by adapter** / **by device** to read it as wires or as
-machines; each device carries its adapter on a second line.
+bridge decides. Toggle **by adapter** / **by client** to read it as wires or as
+machines; each client carries its adapter on a second line. (The screenshot
+above predates that rename and still shows the control as `by device`.)
 
 Both directions share one scale, so an upload a twentieth of its download is
 drawn a twentieth as thick. Rates are a ten-second mean, because a single second
