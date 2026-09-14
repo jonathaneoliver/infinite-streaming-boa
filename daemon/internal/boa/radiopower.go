@@ -1752,7 +1752,7 @@ func scanErr(iface string, err error) error {
 // ScanBand scans on behalf of a person who asked for it, and may take the
 // access point down to do so where the driver leaves no choice.
 func (e *Engine) ScanBand(iface string, apply bool) (ScanResult, error) {
-	return e.scanBand(iface, apply, true)
+	return e.scanBand(iface, apply, true, false)
 }
 
 // scanBandFree scans ONLY if it costs nothing, and gives up otherwise.
@@ -1771,10 +1771,13 @@ func (e *Engine) ScanBand(iface string, apply bool) (ScanResult, error) {
 // dropped, because the guard held, but nothing was bought either: wlan0 scans
 // both bands for free and one of its scans answers for every radio on the box.
 func (e *Engine) scanBandFree(iface string) (ScanResult, error) {
-	return e.scanBand(iface, false, false)
+	return e.scanBand(iface, false, false, true)
 }
 
-func (e *Engine) scanBand(iface string, apply, allowOutage bool) (ScanResult, error) {
+// scanBand takes the reading. `background` marks the poll's own call, whose
+// line is raised only when the finding changes -- see the log switch at the
+// end, and worthLogging for what counts as a change.
+func (e *Engine) scanBand(iface string, apply, allowOutage, background bool) (ScanResult, error) {
 	if err := e.readyToScan(iface); err != nil {
 		return ScanResult{}, err
 	}
@@ -2013,24 +2016,56 @@ func (e *Engine) scanBand(iface string, apply, allowOutage bool) (ScanResult, er
 	// log records the evidence a channel recommendation was made on rather than
 	// only the recommendation.
 	found := scanFindings(res)
+	// EVERY BRANCH BELOW IS AN EVENT; the poll's successful round is a
+	// MEASUREMENT, and conflating the two put seven identical lines into a
+	// fifteen-event log. At 15 seconds a round that logs is 240 lines an hour,
+	// which buries the joins, refusals and moves this view exists for. What
+	// the air is doing right now is already on the adapter's row and in the
+	// channel plan, drawn from this very reading with its age attached; what
+	// belongs in a log is the change.
+	//
+	// worthLogging both decides and records, and is called unconditionally so
+	// the mark it keeps is the last LOGGED finding whoever logged it -- an
+	// operator's scan otherwise leaves no mark, and the next poll reports an
+	// unchanged air as news.
+	//
+	// Three things are never gated. A move and an outage are events by
+	// definition, whoever caused them. And an operator-requested scan always
+	// speaks: somebody pressed a button and is owed the answer, even when the
+	// answer is the same as last time.
+	changed := e.worthLogging(iface, res)
+	quiet := background && !res.Applied && res.OutageSec == 0 && !changed
+	// What was SWEPT, not where the radio sits. See scannedBands.
+	swept := scannedBands(res)
 	switch {
+	case quiet:
+		// Silent on purpose: the poll re-measured steady air. See above.
 	case res.Applied:
 		e.logEvent(EventRadio, iface, "", "%s scanned %s — %s — and moved %d → %d",
-			iface, band, found, res.Was, res.Now)
+			iface, swept, found, res.Was, res.Now)
 	case res.OutageSec > 0:
 		e.logEvent(EventAction, iface, "", "%s scanned %s (%.0fs off the air) — %s — stayed on %d",
-			iface, band, res.OutageSec, found, res.Now)
+			iface, swept, res.OutageSec, found, res.Now)
 	case e.cfg.IsScanner(iface):
-		// A SEPARATE BRANCH, because both halves of the line below are wrong
-		// about a scanner. It is not "serving", and it "stayed on" no channel:
-		// it has none, so `band` is empty and `res.Now` is 0 -- which read as
-		// "scanned  while serving ... stayed on 0", with the gap where a band
-		// should be. Measured on the container host 2026-09-11.
-		e.logEvent(EventAction, iface, "", "%s scanned both bands — %s — it serves "+
-			"nothing, so nobody was dropped", iface, found)
+		// A SEPARATE BRANCH, because the line below is wrong about a scanner
+		// twice over. It is not "serving", and it "stayed on" no channel: it
+		// has none, so `res.Now` is 0 and the line read "... stayed on 0".
+		// Measured on the container host 2026-09-11.
+		//
+		// The BAND half of that bug is fixed for every branch now. This line
+		// said "both bands" because a scanner has no channel to derive one
+		// from -- a fixed claim about a sweep that varies; scannedBands answers
+		// it from what actually came back.
+		e.logEvent(EventAction, iface, "", "%s scanned %s — %s — it serves "+
+			"nothing, so nobody was dropped", iface, swept, found)
 	default:
-		e.logEvent(EventAction, iface, "", "%s scanned %s while serving — %s — stayed on %d",
-			iface, band, found, res.Now)
+		// NO "stayed on %d" HERE, unlike the branches above. A move has its own
+		// branch and an outage has another, so this branch is the one where
+		// nothing happened to the radio -- and "stayed on 6" spent eleven
+		// characters saying so a second time, on the line that runs on a timer
+		// and therefore fills the log. The channel it is on is on its row.
+		e.logEvent(EventAction, iface, "", "%s scanned %s while serving — %s",
+			iface, swept, found)
 	}
 	e.syncRadioState(iface)
 	e.rememberScan(iface, res)
@@ -2041,17 +2076,66 @@ func (e *Engine) scanBand(iface string, apply, allowOutage bool) (ScanResult, er
 	return res, nil
 }
 
+// scannedBands names the bands a scan actually COVERED, for the log line.
+//
+// Not res.Band, which is the band the RADIO is on -- the thing a channel move
+// is chosen within, and rightly so, since a radio can only move inside its own
+// band. The two differ on the only radio this box scans for free. MEASURED
+// 2026-09-14: wlan0 serves on ch6 and one of its sweeps returned ch1, 6, 11,
+// 36, 40, 44 and 48, so every poll line read "scanned 2.4GHz" while quoting
+// ch36 and ch149 in the same sentence. It could never say 5GHz while that
+// radio stays on ch6, which is the only radio the poll ever picks -- so the
+// box appeared never to look at the band its clients are actually on, while
+// in fact every 5GHz figure on screen comes from exactly these sweeps.
+//
+// Derived from the channels rather than declared, because which bands a sweep
+// reaches varies round to round: two consecutive wlan0 scans returned 7 and 11
+// channels. A fixed claim would be wrong on one of them.
+func scannedBands(res ScanResult) string {
+	got24, got5 := false, false
+	for _, c := range res.Channels {
+		if c.Channel <= 14 {
+			got24 = true
+		} else {
+			got5 = true
+		}
+	}
+	switch {
+	case got24 && got5:
+		return "both bands"
+	case got5:
+		return "5GHz"
+	case got24:
+		return "2.4GHz"
+	case res.Band != "":
+		// Nothing heard. The radio's own band is then the honest answer to
+		// "where did you look", and it is all there is to go on.
+		return res.Band
+	}
+	// A scanner heard nothing and has no band of its own. "scanned  — nothing
+	// heard", with the gap where a band should be, is what this avoids.
+	return "the air"
+}
+
 // scanFindings phrases what a scan actually measured, for the activity log.
 //
 // The log used to carry a headcount and nothing else -- "(29 APs)" -- which is
 // the one number that turned out not to predict congestion: on this box an AP
-// with no clients sat in 37% utilisation while one with ten sat in 8.6%. So the
-// line now leads with airtime where a neighbour measured it, names the busiest
-// channel and the quietest, and says which of the two it is quoting.
+// with no clients sat in 37% utilisation while one with ten sat in 8.6%. So
+// this LEADS WITH AIRTIME, names the busiest channel and the quietest, and
+// says how many channels the figure rests on.
 //
-// Deliberately one line. The log is a ring of a few hundred events read at a
-// glance; a scan that spilled a row per channel would push the rest of the
-// session out of it.
+// Deliberately one line, and a SHORT one. The log is a ring of a few hundred
+// events read at a glance, and the long form of this line --
+//
+//	13 AP(s) on 11 channel(s), 47 client(s); busiest ch 1 at 32% airtime,
+//	quietest ch 149 at 4% (10 of 11 channels measured)
+//
+// put the weakest numbers first and the decision-relevant one last, at 160
+// characters for the whole event. Every unit and label that survives is one a
+// reader cannot infer: "32%" needs "air" to say what is 32%, and "10 of 11
+// measured" is the confidence behind it. What went is the phrasing around
+// them.
 func scanFindings(res ScanResult) string {
 	if len(res.Channels) == 0 {
 		return "nothing heard"
@@ -2076,25 +2160,24 @@ func scanFindings(res ScanResult) string {
 	for _, c := range res.Channels {
 		aps += c.APs
 	}
-	out := fmt.Sprintf("%d AP(s) on %d channel(s)", aps, len(res.Channels))
-	if measured == 0 {
+	counts := fmt.Sprintf("%d APs/%d clients", aps, stations)
+	if measured == 0 || busiest == nil {
 		// Said plainly, because a recommendation made without it rests on a
 		// headcount and the reader should know that is all it rests on.
-		return out + ", none reporting airtime"
+		return counts + ", none reporting airtime"
 	}
-	out += fmt.Sprintf(", %d client(s)", stations)
-	if busiest != nil {
-		out += fmt.Sprintf("; busiest ch %d at %.0f%% airtime",
-			busiest.Channel, busiest.UtilPct)
+	out := fmt.Sprintf("air %.0f%% ch%d", busiest.UtilPct, busiest.Channel)
+	// One channel measured, or every measured channel equally busy, has no
+	// range to quote -- and "32% ch1 to 32% ch1" reads as a bug.
+	if quietest != nil && quietest.Channel != busiest.Channel {
+		out += fmt.Sprintf(" to %.0f%% ch%d", quietest.UtilPct, quietest.Channel)
 	}
-	if quietest != nil && busiest != nil && quietest.Channel != busiest.Channel {
-		out += fmt.Sprintf(", quietest ch %d at %.0f%%",
-			quietest.Channel, quietest.UtilPct)
-	}
+	// Only when it is not the whole scan. "11 of 11 measured" is noise on the
+	// common case, and its absence is the same claim.
 	if measured < len(res.Channels) {
-		out += fmt.Sprintf(" (%d of %d channels measured)", measured, len(res.Channels))
+		out += fmt.Sprintf(" (%d of %d measured)", measured, len(res.Channels))
 	}
-	return out
+	return out + ", " + counts
 }
 
 // rememberScan keeps the per-channel conclusions of a scan, so the interface

@@ -441,6 +441,18 @@ type Engine struct {
 	// clears. Same shape as apLinkDown.
 	scanBlocked map[string]string
 
+	// scanLogged is what the last LOGGED background scan of each radio found,
+	// so the poll's line is raised on the edge rather than every round.
+	//
+	// The poll runs every 15 seconds, and a successful scan used to log every
+	// time: measured on the box, seven of the fifteen events in the log were
+	// the same radio re-measuring the same air, 240 lines an hour. The log
+	// answers what CHANGED -- what the air is doing right now is on the
+	// adapter's own row and in the channel plan, both from this same reading
+	// with its age attached. Same shape, and the same reasoning, as
+	// scanBlocked beside it.
+	scanLogged map[string]scanMark
+
 	// pairPortsKey is the port set the nftables pair rules were last built
 	// for, so the common tick costs one string compare instead of a rebuild.
 	pairPortsKey string

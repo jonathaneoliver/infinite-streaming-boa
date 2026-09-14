@@ -1393,11 +1393,40 @@ damages packets, never link state.
   be fully occupied — the common case on 5GHz, and invisible to a headcount.
   The primary is kept as a separate figure, because that is where the beacons
   and management traffic actually are.
+- **A scan says which bands it swept, not which band its radio sits on.** The
+  two differ on the radio that matters: the only one here that scans for free
+  serves on 2.4GHz and sweeps both bands, so the line said "2.4GHz" while
+  quoting 5GHz channels in the same sentence and could never have said anything
+  else. Every 5GHz contention figure on screen comes from those sweeps, and the
+  log now says so.
 - **What a scan found is recorded in the activity log**, not just what it
   recommended: how many access points and clients were heard, the busiest and
   quietest channels with their measured airtime, and how many channels carried a
   measurement at all. A recommendation that cannot be checked against the
   evidence behind it is one that has to be taken on trust.
+
+  **A background scan is logged on the edge, not every round.** The poll runs
+  every 15 seconds, so a line per successful round is 240 an hour and buries the
+  joins, refusals and moves the log exists for — measured on the box, seven of
+  the fifteen events in it were one radio re-measuring the same air. A poll
+  round speaks when a band's busiest channel changes, when the channel it would
+  recommend changes, or when that channel's airtime moves by a wide margin, and
+  always the first time after a start, so silence means "steady" rather than
+  "never ran". **Per band**, because the free scanner sweeps both and ranking a
+  2.4GHz channel against a 5GHz one manufactures news out of two levels
+  crossing — while each band judged on its own history still reports a change
+  in the band the clients are actually on. What the air is doing right now is on the adapter's own row and
+  in the channel plan, from the same reading with its age attached. **A scan
+  somebody asked for always reports**, as does any scan that moved a radio or
+  cost an outage.
+
+  **Airtime leads the line, and the line is short.** It is the only one of those
+  figures that predicted congestion here — an access point with no clients sat
+  in 37% utilisation while one with ten sat in 8.6% — so it comes first and the
+  headcounts follow it. The log is a ring read at a glance and this event runs
+  on a timer, so nothing in the line restates what another part of it already
+  says: a scan that moved the radio reports the move, one that cost an outage
+  reports the outage, and one that did neither says only what it heard.
 
 ### 6.7 Measuring
 
