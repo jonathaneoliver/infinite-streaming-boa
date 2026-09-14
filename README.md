@@ -561,8 +561,14 @@ then passive, then the client's scan table — because a client need not support
 all three and hostapd refuses to transmit a mode the device has not advertised.
 
 **No client tested here has returned a report.** The path ships and is exercised
-by the button; whether any given device participates is up to its firmware. See
-[#228](https://github.com/jonathaneoliver/infinite-streaming-boa/issues/228).
+by the button; whether any given device participates is up to its firmware.
+[#228](https://github.com/jonathaneoliver/infinite-streaming-boa/issues/228) is
+closed, and closed as completed rather than as working: the mechanism it
+proposed does not survive contact with real clients, and the question it asked
+— what can this client actually hear — is answered instead by hostapd's
+management-frame interface
+([#254](https://github.com/jonathaneoliver/infinite-streaming-boa/issues/254)),
+which surfaces the candidate list a refusal already carries.
 
 ### Reading the charts
 
@@ -2466,6 +2472,7 @@ that the container does not build.
 | `AP_BAND`, `AP_CHANNEL` | `bg` (2.4GHz) or `a` (5GHz); 5GHz AP mode is limited to the non-DFS channels 36/40/44/48 and 149/153/157/161/165 |
 | `BOA_WAN_PORT` | The port cabled to your existing network. Conditioning is applied here |
 | `BOA_SCAN_PORT` | A radio to keep as an instrument rather than an access point. Empty by default. See [A radio that only listens](#a-radio-that-only-listens) |
+| `BOA_SCAN_IF` | The same, for a **container host**, named as the host calls the card — the handover happens before the container has a name for anything. `docker-deploy.sh` renders it into the `SCAN_IF` that `docker-attach.sh` reads |
 | `BOA_RESCUE_IP` | A fixed address on the bridge so the box is reachable even with no upstream DHCP |
 | `BOA_USB_MAX_CURRENT` | `1` lifts the Pi 5's 600mA USB cap to the full 1.6A — **only with a 5A PSU or powered hub** |
 | `BOA_USER`, `BOA_PASSWORD`, `BOA_SSH_PUBKEY` | Headless login — see below |
@@ -2578,8 +2585,17 @@ a container host the equivalent is the motherboard's own card, handed in by
 name because it is the one adapter here that is not discovered:
 
 ```sh
-SCAN_IF=wlp5s0 sudo -E scripts/docker-attach.sh
+BOA_SCAN_IF=wlp5s0                                # in .env
+SCAN_IF=wlp5s0 sudo -E scripts/docker-attach.sh   # or attaching by hand
 ```
+
+Three names for what reads as one setting, and they are not interchangeable.
+`BOA_SCAN_PORT` is the Pi's, and names an interface the box itself will have.
+`BOA_SCAN_IF` is the container host's, and names the card as the **host** calls
+it, because the handover happens before the container has a name for anything.
+`SCAN_IF` is what `docker-attach.sh` reads, and `docker-deploy.sh` renders it
+from `BOA_SCAN_IF` — so it is the one to set only when running the attach
+script by hand.
 
 That card is a poor access point — it is a self-managed regulatory device that
 loses its country through the namespace handover, which is why serving on it is
