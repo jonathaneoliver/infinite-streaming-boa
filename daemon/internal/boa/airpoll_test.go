@@ -52,3 +52,75 @@ func TestFreeScannerIsEmptyBeforeAnythingIsKnown(t *testing.T) {
 		t.Errorf("freeScanner = %q on a box that has scanned nothing", got)
 	}
 }
+
+// scan builds the reading the poll would get: one busiest measured channel, a
+// recommendation, and a second measured channel so there is a range.
+func scan(busiest, util, best int) ScanResult {
+	return ScanResult{Best: best, Channels: []ScanChannel{
+		{Channel: busiest, APs: 6, Stations: 30, UtilPct: float64(util), UtilFrom: 2},
+		{Channel: 11, APs: 4, Stations: 12, UtilPct: 3, UtilFrom: 1},
+	}}
+}
+
+// TestSteadyAirIsMeasuredOnceAndNotLoggedAgain is the whole point of the gate.
+//
+// MEASURED on the box before it existed: seven of the fifteen events in the
+// activity log were wlan0 re-measuring the same air, one every ~16s. The seven
+// airtime figures were 32, 30, 44, 33, 33, 37 and 37 percent -- every one
+// honest, none of them news -- so those are the readings fed in here.
+func TestSteadyAirIsMeasuredOnceAndNotLoggedAgain(t *testing.T) {
+	e := &Engine{}
+	if !e.worthLogging("wlan0", scan(1, 32, 11)) {
+		t.Fatal("the FIRST scan was suppressed; silence would then mean both " +
+			"\"steady\" and \"never ran\"")
+	}
+	for _, util := range []int{30, 44, 33, 33, 37, 37} {
+		if e.worthLogging("wlan0", scan(1, util, 11)) {
+			t.Errorf("ch1 at %d%% was logged: same busiest channel, same "+
+				"recommendation, drift of %d points", util, util-32)
+		}
+	}
+}
+
+// The three changes that ARE news, each from a settled state.
+func TestScanLogsWhatAnOperatorWouldActOn(t *testing.T) {
+	for _, c := range []struct {
+		why  string
+		then ScanResult
+	}{
+		{"the busiest channel moved", scan(6, 32, 11)},
+		{"the recommendation moved", scan(1, 32, 1)},
+		{"the air changed regime", scan(1, 32+scanUtilJump, 11)},
+	} {
+		e := &Engine{}
+		e.worthLogging("wlan0", scan(1, 32, 11)) // settle
+		if !e.worthLogging("wlan0", c.then) {
+			t.Errorf("suppressed a line when %s", c.why)
+		}
+	}
+}
+
+// Per radio, not per box. Two radios are two subjects, and one going quiet must
+// not silence the other's first word.
+func TestScanLoggingIsRememberedPerRadio(t *testing.T) {
+	e := &Engine{}
+	if !e.worthLogging("wlan0", scan(1, 32, 11)) {
+		t.Fatal("first scan of wlan0 suppressed")
+	}
+	if !e.worthLogging("wlan-scan-9e44", scan(1, 32, 11)) {
+		t.Error("the scanner's first scan was suppressed by wlan0's mark")
+	}
+}
+
+// A scan nobody could measure still says so once, and then stops. The headcount
+// is all such a scan has, and repeating it every 15 seconds is the same flood.
+func TestUnmeasuredAirIsAlsoOnlySaidOnce(t *testing.T) {
+	none := ScanResult{Channels: []ScanChannel{{Channel: 36, APs: 5, Stations: 9}}}
+	e := &Engine{}
+	if !e.worthLogging("wlan0", none) {
+		t.Fatal("the first unmeasured scan was suppressed")
+	}
+	if e.worthLogging("wlan0", none) {
+		t.Error("an unmeasured scan repeated itself into the log")
+	}
+}

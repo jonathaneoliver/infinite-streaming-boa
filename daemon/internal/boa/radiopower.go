@@ -1752,7 +1752,7 @@ func scanErr(iface string, err error) error {
 // ScanBand scans on behalf of a person who asked for it, and may take the
 // access point down to do so where the driver leaves no choice.
 func (e *Engine) ScanBand(iface string, apply bool) (ScanResult, error) {
-	return e.scanBand(iface, apply, true)
+	return e.scanBand(iface, apply, true, false)
 }
 
 // scanBandFree scans ONLY if it costs nothing, and gives up otherwise.
@@ -1771,10 +1771,13 @@ func (e *Engine) ScanBand(iface string, apply bool) (ScanResult, error) {
 // dropped, because the guard held, but nothing was bought either: wlan0 scans
 // both bands for free and one of its scans answers for every radio on the box.
 func (e *Engine) scanBandFree(iface string) (ScanResult, error) {
-	return e.scanBand(iface, false, false)
+	return e.scanBand(iface, false, false, true)
 }
 
-func (e *Engine) scanBand(iface string, apply, allowOutage bool) (ScanResult, error) {
+// scanBand takes the reading. `background` marks the poll's own call, whose
+// line is raised only when the finding changes -- see the log switch at the
+// end, and worthLogging for what counts as a change.
+func (e *Engine) scanBand(iface string, apply, allowOutage, background bool) (ScanResult, error) {
 	if err := e.readyToScan(iface); err != nil {
 		return ScanResult{}, err
 	}
@@ -2013,7 +2016,28 @@ func (e *Engine) scanBand(iface string, apply, allowOutage bool) (ScanResult, er
 	// log records the evidence a channel recommendation was made on rather than
 	// only the recommendation.
 	found := scanFindings(res)
+	// EVERY BRANCH BELOW IS AN EVENT; the poll's successful round is a
+	// MEASUREMENT, and conflating the two put seven identical lines into a
+	// fifteen-event log. At 15 seconds a round that logs is 240 lines an hour,
+	// which buries the joins, refusals and moves this view exists for. What
+	// the air is doing right now is already on the adapter's row and in the
+	// channel plan, drawn from this very reading with its age attached; what
+	// belongs in a log is the change.
+	//
+	// worthLogging both decides and records, and is called unconditionally so
+	// the mark it keeps is the last LOGGED finding whoever logged it -- an
+	// operator's scan otherwise leaves no mark, and the next poll reports an
+	// unchanged air as news.
+	//
+	// Three things are never gated. A move and an outage are events by
+	// definition, whoever caused them. And an operator-requested scan always
+	// speaks: somebody pressed a button and is owed the answer, even when the
+	// answer is the same as last time.
+	changed := e.worthLogging(iface, res)
+	quiet := background && !res.Applied && res.OutageSec == 0 && !changed
 	switch {
+	case quiet:
+		// Silent on purpose: the poll re-measured steady air. See above.
 	case res.Applied:
 		e.logEvent(EventRadio, iface, "", "%s scanned %s — %s — and moved %d → %d",
 			iface, band, found, res.Was, res.Now)

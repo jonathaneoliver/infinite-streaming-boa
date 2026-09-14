@@ -218,6 +218,62 @@ func (e *Engine) noteScanBlocked(iface, reason string) {
 		"%s can be scanned again; its contention figures are live", iface)
 }
 
+// scanMark is the part of a scan an operator would act on, kept so the next
+// one can be compared against it.
+//
+// NOT the airtime figure by itself. It drifts constantly and every sample is
+// honest -- measured on the box within 90 seconds, ch1 read 32, 30, 44, 33, 33,
+// 37 and 37 percent -- so a line per change would be the sampler this replaces.
+// What is actionable is WHICH channel is busiest and WHERE the box would move
+// the radio; those change rarely, and when they do it is news.
+type scanMark struct {
+	busiest int // the channel carrying the most measured airtime
+	best    int // where a channel move would put this radio
+	util    int // that busiest channel's airtime, to catch a regime change
+}
+
+// scanUtilJump is how far the busiest channel's airtime must move, with the
+// same channel still busiest and the same recommendation standing, before it is
+// news rather than drift.
+//
+// TWENTY-FIVE POINTS is well outside the observed drift above (the widest gap
+// in those seven readings is 14) and inside the change that matters: a channel
+// going from a fifth occupied to two thirds is the air becoming a different
+// place, which is worth a line even though nothing else about it changed.
+const scanUtilJump = 25
+
+// worthLogging reports whether a background scan found anything an operator
+// would act on, and records what it found either way.
+//
+// The FIRST scan of a radio always logs. Silence has to mean "nothing
+// changed", and it cannot mean that until something has been said once --
+// otherwise a box whose poll never ran looks exactly like a box whose air is
+// steady, which is the bug that noteScanBlocked exists to avoid on the failure
+// side.
+func (e *Engine) worthLogging(iface string, res ScanResult) bool {
+	now := scanMark{best: res.Best}
+	for i := range res.Channels {
+		c := &res.Channels[i]
+		if c.UtilFrom > 0 && (now.busiest == 0 || int(c.UtilPct) > now.util) {
+			now.busiest, now.util = c.Channel, int(c.UtilPct)
+		}
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.scanLogged == nil {
+		e.scanLogged = map[string]scanMark{}
+	}
+	was, seen := e.scanLogged[iface]
+	// Both differences rather than an abs(): the same test, and no helper the
+	// package does not already have.
+	if seen && was.busiest == now.busiest && was.best == now.best &&
+		now.util-was.util < scanUtilJump && was.util-now.util < scanUtilJump {
+		return false
+	}
+	e.scanLogged[iface] = now
+	return true
+}
+
 // scanCostKnown reports that this radio's scan cost has already been observed,
 // so there is nothing left to learn by probing it again.
 func (e *Engine) scanCostKnown(iface string) bool {

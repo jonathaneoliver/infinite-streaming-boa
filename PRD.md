@@ -1386,6 +1386,18 @@ damages packets, never link state.
   measurement at all. A recommendation that cannot be checked against the
   evidence behind it is one that has to be taken on trust.
 
+  **A background scan is logged on the edge, not every round.** The poll runs
+  every 15 seconds, so a line per successful round is 240 an hour and buries the
+  joins, refusals and moves the log exists for — measured on the box, seven of
+  the fifteen events in it were one radio re-measuring the same air. A poll
+  round speaks when the busiest channel changes, when the channel it would
+  recommend changes, or when that channel's airtime moves by a wide margin, and
+  always the first time after a start, so silence means "steady" rather than
+  "never ran". What the air is doing right now is on the adapter's own row and
+  in the channel plan, from the same reading with its age attached. **A scan
+  somebody asked for always reports**, as does any scan that moved a radio or
+  cost an outage.
+
   **Airtime leads the line, and the line is short.** It is the only one of those
   figures that predicted congestion here — an access point with no clients sat
   in 37% utilisation while one with ten sat in 8.6% — so it comes first and the
