@@ -719,8 +719,58 @@ function bssFloorTitle(r: IfaceInfo, what: 'util' | 'stations'): string {
   );
 }
 
+/**
+ * A USB adapter not attached at USB 3 rates.
+ *
+ * The DAEMON's rule, read off the payload, rather than the identical
+ * comparison this used to do here. Two copies of one rule is how the row and
+ * the fold come to disagree, and the daemon's is the one `boactl probe` fails
+ * on -- see USBUnderspeed in collect.go for why it does not consult the
+ * device's own declared version.
+ */
 function degraded(i: IfaceInfo): boolean {
-  return i.radio?.bus === 'usb' && !!i.radio.link_mbps && i.radio.link_mbps < 5000;
+  return !!i.radio?.usb_underspeed;
+}
+
+/**
+ * What to DO about an underspeed adapter, which depends on the box rather than
+ * on the adapter: with faster ports free the answer is to move it, and with
+ * none it is that this board cannot go faster.
+ *
+ * Three cases, because the wrong one wastes somebody's time. "Use a USB 3
+ * port" on a board with none sends them hunting a socket that does not exist,
+ * and a promised port count that does not match the sockets on the case is
+ * worse than no number -- this Pi has two, not the four its root buses suggest.
+ */
+function usbRemedy(i: IfaceInfo): string {
+  const fastest = props.bridge.info.value?.usb_fastest_mbps ?? 0;
+  const ports = props.bridge.info.value?.usb_fast_ports ?? 0;
+  if (!fastest) {
+    return 'This box did not report what its USB ports can do, so check the '
+      + 'socket, the cable and any hub by hand.';
+  }
+  if (fastest <= (i.radio?.link_mbps ?? 0)) {
+    return `No port on this box runs faster than ${fastest} Mb/s, so that is the `
+      + 'ceiling here \u2014 only a Pi with USB 3 ports gets past it.';
+  }
+  return `This box has ${ports} port(s) at ${fastest} Mb/s. Check it is in one of `
+    + 'those rather than a slower socket or a hub; if it already is, reseat it '
+    + 'and try the USB-C cable the other way up.';
+}
+
+/** The row and the fold say the same thing about the bus, in one place. */
+function usbTitle(i: IfaceInfo): string {
+  const r = i.radio;
+  if (!r) return '';
+  if (!degraded(i)) {
+    return `Negotiated ${r.link_mbps} Mb/s on the USB bus; the connection reports `
+      + `USB ${r.usb_version || '?'}.\n\nThat version is the CONNECTION's, not the `
+      + 'hardware\u2019s: the same adapter reads 3.20 in a SuperSpeed port and '
+      + '2.10 behind a USB 2 hub.';
+  }
+  return `${i.name} is attached to the USB bus at ${r.link_mbps} Mb/s, below `
+    + 'USB 3\u2019s 5000. Every link speed and PHY rate here stays healthy while '
+    + `the throughput behind them is capped at a fraction.\n\n${usbRemedy(i)}`;
 }
 </script>
 
@@ -751,6 +801,30 @@ function degraded(i: IfaceInfo): boolean {
         <span class="sum">
           <span v-if="r.ap?.mode" class="gen">{{ r.ap.mode }}</span>
           <span class="rest">{{ summary(r) }}</span>
+          <!-- ON THE ROW, because a fault behind a caret is very nearly as
+               invisible as one not shown at all -- and invisibility is the
+               whole complaint this answers. It was inside the fold first and
+               that was wrong: an adapter attached at a seventh of its rate
+               caps every measurement the box makes, and nobody opens a fold to
+               check hardware that reports a healthy link speed.
+
+               IN THIS CELL rather than the badge slot to the right, for two
+               reasons. The badge is `v-if="r.wireless"` and this fault lands
+               on wired adapters too -- lan-usb-6518 is a USB device. And the
+               row is a fixed-column grid whose own comments record a cell
+               being added sliding every later column; `.sum` is always
+               present, so a child inside it adds no track.
+
+               `flex: 0 0 auto` so it is never the thing the ellipsis eats:
+               the summary beside it can truncate, a fault may not. -->
+          <span v-if="degraded(r)" class="usb-bad" :title="usbTitle(r)">
+            <!-- The glyph carries the meaning for a reader who does not already
+                 know that 480 is slow; the figure carries it for one who does.
+                 Red alone would not: this row also dims a powered-off
+                 adapter. -->
+            <span aria-hidden="true">⚠</span>
+            USB {{ r.radio?.link_mbps }}<span class="u">Mb/s</span>
+          </span>
         </span>
 
         <!-- Contention, in the fixed column the old survey-derived `air` badge
@@ -1098,6 +1172,26 @@ Clients ARE told it has gone, unlike a power cut.`
                reflow the grid the way the AP fields could. -->
           <div v-if="r.radio?.bus === 'usb'"><span class="k">USB port</span>
             <span class="v num">{{ r.radio.socket || '—' }}</span></div>
+          <!-- HOW FAST THE ADAPTER IS ATTACHED, which nothing else on this
+               page shows and which silently caps everything the box measures.
+               MEASURED 2026-09-14: four adapters declaring USB 3.20 and
+               negotiating 480 held the Wi-Fi downlink to 92 Mbit/s where a
+               USB 3 port gave 632, and the bridged path to 87 where it gave
+               203 -- all while this interface reported a 1000 Mbit/s link and
+               a 961 Mbit/s PHY rate. Any cap above about 90 Mbit/s was
+               unenforceable and read as working.
+
+               Warned on for ANY attachment below USB 3, including a
+               genuinely USB 2 adapter. The first version compared against the
+               device's own declared version and could never fire: sysfs
+               `version` reports the bcdUSB of the CONNECTION, so a device at
+               480 always claims USB 2. See USBUnderspeed in collect.go. -->
+          <div v-if="r.radio?.bus === 'usb' && r.radio.link_mbps">
+            <span class="k">USB link</span>
+            <span class="v num" :class="{ bad: degraded(r) }" :title="usbTitle(r)">
+              {{ r.radio.link_mbps }}<span class="u">Mb/s</span>
+              <template v-if="degraded(r)"> · below USB 3</template>
+            </span></div>
           <div><span class="k">MAC</span><span class="v num">{{ r.mac }}</span></div>
           <!-- BRIDGE, not "bridge port", and the old label was wrong on every
                row rather than only on the scanner. The field holds the BRIDGE's
@@ -1321,11 +1415,10 @@ Clients ARE told it has gone, unlike a power cut.`
         />
 
         <p v-if="degraded(r)" class="notice bad inline">
-          This adapter negotiated USB 2 speed ({{ r.radio?.link_mbps }} Mb/s)<template
-            v-if="r.radio?.usb_version"> while declaring USB {{ r.radio.usb_version }}</template>.
-          It still reports its full channel width and PHY rate while delivering roughly
-          a sixth of the throughput, so nothing else here will look wrong — reseat it
-          in a SuperSpeed port.
+          This adapter is attached to the USB bus at {{ r.radio?.link_mbps }} Mb/s,
+          below USB 3’s 5000. It still reports its full channel width and PHY
+          rate while delivering a fraction of the throughput, so nothing else here
+          will look wrong. {{ usbRemedy(r) }}
         </p>
 
         <template v-if="r.ap">
@@ -1796,6 +1889,18 @@ Clients ARE told it has gone, unlike a power cut.`
 .sum .gen { flex: 0 0 auto; }
 .sum .gen + .rest::before { content: '\00b7'; margin-right: 6px; }
 .sum .rest { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+/* A HARDWARE FAULT ON THE ROW, in --bad rather than --warn. The amber slot to
+   the right is for states that are recoverable and often deliberate -- an AP
+   taken down, a radio listening. An adapter wired through a USB 2 cable is
+   neither: it is wrong, it stays wrong until somebody moves a plug, and it
+   silently caps every figure on this row. Red says that; amber would file it
+   alongside "scanning". */
+.sum .usb-bad {
+  flex: 0 0 auto;
+  color: var(--bad);
+  font-weight: 600;
+}
+.sum .usb-bad .u { color: inherit; font-weight: 400; opacity: 0.75; margin-left: 1px; }
 /* The contention triple. Keys are faint and small so the numbers lead: the
    labels are read once and the figures are read every time. Tabular numerals so
    the column does not jitter as values change. */
@@ -1976,6 +2081,14 @@ Clients ARE told it has gone, unlike a power cut.`
 /* Hex, MACs and counts, so digits keep their column as they change rather than
    sliding the rest of the value sideways on every update. */
 .facts .v.num { font-variant-numeric: tabular-nums; }
+/* A fact that is a FAULT rather than a reading, in the same red as the row
+   marker so the two read as one finding. Only the value turns, never the key:
+   the key still names what is being reported, and colouring both would read as
+   the whole fact being broken. */
+.facts .v.bad { color: var(--bad); font-weight: 600; }
+/* Units at the weight of a label rather than a figure, so 480 reads as the
+   number and Mb/s as its unit instead of competing with it. */
+.facts .v .u { color: var(--ink-faint); font-weight: 400; margin-left: 2px; }
 .meta { font-size: 11px; color: var(--ink-faint); }
 .warn-line { color: var(--warn); font-size: 11px; margin: 2px 0; }
 .group-note { margin: 0 0 4px; }

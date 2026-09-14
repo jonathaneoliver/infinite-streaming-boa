@@ -502,6 +502,11 @@ func (e *Engine) demoCounters(key string, mbps float64, sh Shape, now time.Time)
 func demoBridgeState(cfg Config) BridgeInfo {
 	const apMAC = "9c:ef:d5:f6:3f:f2"
 	bi := BridgeInfo{Bridge: cfg.Bridge}
+	// A Pi 5's real USB topology, MEASURED on the box: two ports at 5000 and
+	// four at 480. It is what the advice for the underspeed wlan1 below is
+	// built from, so leaving it zero would make demo mode show the one branch
+	// that means "topology unknown" rather than the one an operator sees.
+	bi.USBFastestMbps, bi.USBFastPorts = 5000, 2
 	bi.Ifaces = []IfaceInfo{
 		{
 			Name: cfg.WANPort, Role: RoleWAN, MAC: "d8:3a:dd:ad:00:86",
@@ -555,8 +560,17 @@ func demoBridgeState(cfg Config) BridgeInfo {
 			Radio: &RadioInfo{
 				Iface: "wlan1", Driver: "mt7921u", Bus: "usb",
 				Vendor: "Panda Wireless", Product: "PAU0F AXE3000",
-				// High-Speed, so the degraded-adapter readout is exercised too.
-				LinkMbps: 480, USBVersion: "2.10",
+				// A USB 3 adapter attached at High-Speed, so the underspeed
+				// readout is exercised -- which is what this fixture always
+				// claimed to do and did not.
+				//
+				// The version reads 2.10 BECAUSE the rate is 480: sysfs reports
+				// the bcdUSB of the connection, so a device at High-Speed
+				// always claims USB 2, whatever it is capable of. An earlier
+				// version of this fixture said 3.20 at 480 to exercise a rule
+				// that compared the two, and no real device ever reports that
+				// pair. See USBUnderspeed in collect.go.
+				LinkMbps: 480, USBVersion: "2.10", USBUnderspeed: true,
 			},
 			AP: &APStatus{
 				SSID: "infinite-streaming-boa", BSSID: "9c:ef:d5:aa:11:07",

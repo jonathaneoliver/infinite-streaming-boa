@@ -652,6 +652,24 @@ BridgeInfo is the whole answer for the bridge view.
 
 **`ifaces`** `[]IfaceInfo`
 
+**`usb_fastest_mbps`** `int` _(omitted when empty)_
+> USBFastestMbps and USBFastPorts describe what this BOX can offer, not
+> what any adapter got: the fastest root-hub rate and how many ports run
+> at it.
+>
+> Box-wide rather than per adapter because that is the shape of the fact,
+> and it is what makes the remedy for an underspeed adapter either true or
+> false. With ports to spare the answer is "move it, and if it is already
+> in one, reseat or flip the USB-C cable". With none it is "this board
+> cannot go faster", and telling somebody to find a USB 3 port their Pi
+> does not have wastes their afternoon.
+>
+> Counted in PORTS. This Pi's four root hubs are 480/2 ports, 5000/1,
+> 480/2, 5000/1 -- so it offers TWO USB 3 sockets, and reporting two buses
+> would read as more.
+
+**`usb_fast_ports`** `int` _(omitted when empty)_
+
 **`notes`** `[]Notice` _(omitted when empty)_
 > Notes are stated limitations, not errors -- chiefly "this radio's
 > clients are not conditioned". They exist because the alternative is an
@@ -1915,6 +1933,30 @@ renaming a wire field costs more than the inaccuracy does.
 > LinkMbps is the NEGOTIATED speed, from sysfs `speed`: 5000 for
 > SuperSpeed, 480 for High-Speed. Not the advertised capability -- that is
 > the whole point, since the two disagree exactly when it matters.
+
+**`usb_underspeed`** `bool` _(omitted when empty)_
+> USBUnderspeed marks a USB adapter that did not negotiate USB 3 rates.
+>
+> Worth a field of its own because nothing else on screen shows it.
+> MEASURED on the Pi 2026-09-14: all four adapters sat behind a USB 2 hub
+> at 480 while two 5 Gbit/s root buses stood idle, and throughout the box
+> reported the ethernet link at 1000 Mbit/s and the negotiated Wi-Fi rate
+> at 961, so every figure it published looked healthy. Moving them to a
+> USB 3 port took the Wi-Fi downlink from 92 to 632 Mbit/s and the bridged
+> path from 87 to 203 -- so while it was wrong, any cap above about
+> 90 Mbit/s was silently unenforceable.
+>
+> DELIBERATELY NOT a comparison against the device's own claim, which was
+> the first attempt and does not work. sysfs `version` reports the bcdUSB
+> of the CONNECTION, not the hardware: the same four adapters read 3.20 at
+> 5000 and 2.10 at 480. So a device running at USB 2 rates always declares
+> USB 2, and "declares 3 but got 2" can never fire.
+>
+> The cost is a standing flag on an adapter that is genuinely USB 2 only.
+> That is accepted: on this box a 480 Mbit/s attachment is a throughput
+> ceiling worth seeing whether the cable or the adapter imposed it, and
+> the remedy offered -- try a USB 3 port -- is harmless if it was the
+> adapter.
 
 **`usb_version`** `string` _(omitted when empty)_
 > USBVersion is bcdUSB as the device declares it, e.g. "3.20" or "2.10".

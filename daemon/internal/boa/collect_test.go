@@ -64,3 +64,59 @@ func TestNeighFromEntriesRejectsUnparseableAddresses(t *testing.T) {
 		t.Errorf("unparseable address was accepted: %v", got)
 	}
 }
+
+// --- USB attachment -------------------------------------------------------
+
+// TestUSBUnderspeedIsAnythingBelowUSB3 pins the rule, which is deliberately
+// blunt: on the bus and not at USB 3 rates.
+//
+// IT DOES NOT CONSULT THE DEVICE'S OWN CLAIM, and the first version of this
+// did. sysfs `version` reports the bcdUSB of the CONNECTION rather than the
+// hardware -- MEASURED on the Pi 2026-09-14, the same four adapters read
+// " 3.20" while attached at 5000 and " 2.10" while attached at 480 through a
+// USB 2 hub. So "declares USB 3 but negotiated USB 2" describes nothing that
+// can happen, and the check it produced never fired on the box it was written
+// for. This is what replaced it.
+func TestUSBUnderspeedIsAnythingBelowUSB3(t *testing.T) {
+	for _, c := range []struct {
+		bus  string
+		link int
+		want bool
+		why  string
+	}{
+		{"usb", 480, true, "measured on the box: a USB 2 path, whoever imposed it"},
+		{"usb", 12, true, "Full-Speed is worse, not exempt"},
+		{"usb", 5000, false, "measured after the fix: USB 3 rates"},
+		{"usb", 10000, false, "USB 3.2 gen2x2 is not underspeed"},
+		{"usb", 0, false, "no speed file is UNKNOWN, not slow"},
+		{"onboard", 0, false, "the onboard radio is not on the bus at all"},
+	} {
+		r := RadioInfo{Bus: c.bus, LinkMbps: c.link}
+		if got := r.LinkMbps > 0 && !r.SuperSpeed(); got != c.want {
+			t.Errorf("bus=%q link=%d -> %v, want %v (%s)",
+				c.bus, c.link, got, c.want, c.why)
+		}
+	}
+}
+
+// TestUSBUnderspeedIgnoresTheDeclaredVersion guards the mistake directly, so a
+// future edit cannot quietly reintroduce a rule that reads `version`.
+//
+// Both rows were observed on the same four adapters on the same box an hour
+// apart, with nothing changed but which hub they were plugged into.
+func TestUSBUnderspeedIgnoresTheDeclaredVersion(t *testing.T) {
+	for _, c := range []struct {
+		version string
+		link    int
+		want    bool
+	}{
+		{" 2.10", 480, true},   // as observed on the USB 2 hub: still a fault
+		{" 3.20", 5000, false}, // as observed on the USB 3 hub: fine
+	} {
+		r := RadioInfo{Bus: "usb", USBVersion: c.version, LinkMbps: c.link}
+		if got := r.LinkMbps > 0 && !r.SuperSpeed(); got != c.want {
+			t.Errorf("version=%q link=%d -> %v, want %v",
+				c.version, c.link, got, c.want)
+		}
+	}
+}

@@ -1832,6 +1832,17 @@ fit through a 480 Mbit/s bus — so it negotiates 1000 Mbit/s and looks like an
 ordinary gigabit adapter. Both ends read `1000baseT`, nothing errors, and the
 only trace is the enumeration speed.
 
+**The box now finds this for you.** Any adapter attached below USB 3 rates
+carries a red `⚠ USB 480Mb/s` on its own row in the adapter rack — wired ports
+included, since those are USB devices too — and its hover text gives the remedy
+for the board it is on: how many USB 3 ports this box actually has and to move
+it to one, or to reseat it and turn the USB-C cable over if it is already in
+one, or that on a board with no faster port only different hardware will help.
+`boactl probe` fails on it as well, because while it lasts every cap above
+roughly 90 Mbit/s is unenforceable. The commands below are still how you
+separate a bad cable from a bad port — you no longer need them to find out that
+something is wrong.
+
 **A USB-C adapter adds a converter to the path, and that is where SuperSpeed is
 most easily lost.** The Pi's sockets are USB-A, so a USB-C NIC reaches them
 through a C-to-A cable or a stubby C-to-A dongle — and most of those are USB 2.0
@@ -1849,8 +1860,35 @@ the way a C-to-C cable has — and the standard expects the device end to carry 
 mux that routes SuperSpeed to whichever orientation the CC pins say is live.
 Cheap parts omit that mux or wire it to one side only. It costs five seconds and
 it separates a bad cable from a badly built one, which the enumeration speed
-alone cannot. Not observed on this box; the failure here was a cable with no
-SuperSpeed pins in either orientation.
+alone cannot.
+
+**Observed here on 2026-09-14.** The hub enumerated as a `USB2.1 Hub` and
+nothing else — no SuperSpeed device on the bus at all, so every adapter behind
+it was capped at 480 Mbit/s. Turning the USB-C end over and plugging it back in
+brought up the `USB3.1 Hub` alongside it, and the adapters followed to 5000. The
+cable had the pins; it routed them to one orientation only.
+
+An earlier failure on this box was the other kind — a cable with no SuperSpeed
+pins in either orientation, which no amount of turning over will fix and which
+only a cable change did. Both exist, they look identical from the enumeration
+speed, and the five seconds above is what separates them.
+
+**Power-cycle the hub after the fix, not just the upstream cable.** An
+externally powered hub holds VBUS on its downstream ports while its own upstream
+cable is out, so the adapters never reset — and an adapter that has already
+fallen back to USB 2 has nothing to make it retry SuperSpeed. It does not
+re-attempt training on its own. Observed here immediately after the orientation
+fix above: the hub came back at 5000 and the two ethernet adapters trained with
+it, while the two Wi-Fi dongles beside them stayed at 480 until the hub's power
+was pulled, at which point all four came up at 5000. Read alone, that looks like
+a fix that did not work.
+
+Both halves of that are worth keeping, because the simple version of the rule is
+wrong: the ethernet adapters retrained across the same uninterrupted VBUS that
+the dongles did not, so this is a difference in how a given device's link state
+machine behaves and not a property of powered hubs. The remedy costs nothing
+either way — cut the hub's power, or unplug the adapters themselves, before
+concluding a cable or port change achieved nothing.
 
 The same adapter here was moved through two different USB 3.0 ports and
 enumerated at 480 Mbit/s in both, so the port was never at fault; a cable change
@@ -2859,6 +2897,14 @@ chart is blank on the onboard one — see
   — a healthy throttled client shows it climbing constantly.
 - **PHY rate is not throughput.** The radio routinely negotiates 400+ Mbps on a
   link carrying 2 Mbps.
+- **An adapter on a USB 2 link looks healthy in every other number.** It keeps
+  its 80 MHz channel, its 802.11ax and a PHY rate over 1 Gbit/s while delivering
+  a fraction of the throughput, and the ethernet ports still read
+  `1000 Mbit/s`. Measured here: four adapters behind a USB 2 hub held the Wi-Fi
+  downlink to 92 Mbit/s where a USB 3 port gave 632. The adapter rack now warns
+  on its own row, which is the only place it shows — see [The cable decides
+  whether you get 2.5 GbE at
+  all](#the-cable-decides-whether-you-get-25-gbe-at-all).
 - **The queue is sized from rate × delay.** netem's default 1000-packet queue
   would silently drop half the traffic on a "50 Mbps, 500 ms, 0 % loss" profile.
   boa computes the queue depth instead, so configured loss is the only loss.

@@ -150,7 +150,19 @@ func cmdProbe(c *client, args []string) error {
 	//    "active" proves nothing -- see issue #164.
 	checkRadios(rep, first)
 
-	// 6. Every routable address of a conditioned client needs its own filter.
+	// 6. A USB adapter must be attached at the rate it is capable of. This is
+	//    the only check here that reads the BRIDGE rather than the snapshot,
+	//    because the hardware facts live per interface, and it is worth the
+	//    extra request: the fault it finds is invisible in every other number
+	//    the box publishes.
+	var bridge boa.BridgeInfo
+	if err := c.get("/api/bridge", &bridge); err != nil {
+		rep.add(warn, "usb attachment", "could not read /api/bridge: "+err.Error())
+	} else {
+		checkUSBAttachment(rep, bridge)
+	}
+
+	// 7. Every routable address of a conditioned client needs its own filter.
 	//    Privacy extensions mean a device usually holds several v6 addresses,
 	//    and one filter is a PARTIAL shape, which looks like a working one.
 	checkAddressCoverage(rep, first, *useSSH)
@@ -325,6 +337,70 @@ func checkCounters(rep *report, a, b boa.Snapshot, gap time.Duration) {
 	if moving == 0 {
 		rep.add(warn, "counters moving", fmt.Sprintf(
 			"no client passed traffic in %s; run a transfer through the box and probe again", gap))
+	}
+}
+
+// checkUSBAttachment fails a USB adapter not attached at USB 3 rates.
+//
+// Probe's job is to exit non-zero when the box is not doing what it claims,
+// and this is exactly that: every link speed and PHY rate stays healthy while
+// the throughput behind them is capped at a fraction. MEASURED on the Pi
+// 2026-09-14 -- four adapters behind a USB 2 hub held the Wi-Fi downlink to
+// 92 Mbit/s where a USB 3 port gave 632, and the bridged path to 87 against
+// 203.
+//
+// It does not ask whether the adapter could have done better, because sysfs
+// cannot say: `version` reports the bcdUSB of the connection, so a device at
+// 480 always claims USB 2. A genuinely USB 2 adapter is therefore flagged too,
+// and the message says what to CHECK rather than asserting whose fault it is.
+//
+// A fail rather than a warn, because it makes every cap above roughly
+// 90 Mbit/s unenforceable while it lasts, and an unenforceable cap is the one
+// thing this box must never report as working.
+func checkUSBAttachment(rep *report, b boa.BridgeInfo) {
+	usb, bad := 0, 0
+	for _, in := range b.Ifaces {
+		r := in.Radio
+		if r == nil || r.Bus != "usb" {
+			continue
+		}
+		usb++
+		if !r.USBUnderspeed {
+			continue
+		}
+		bad++
+		// THE REMEDY DEPENDS ON THE BOARD, not on the adapter, which is why
+		// this reads the box's own topology. "Use a USB 3 port" is the right
+		// advice on a Pi 5 with two of them and a wasted afternoon on a board
+		// with none. Counted in ports rather than buses -- see USBBuses.
+		var remedy string
+		switch {
+		case b.USBFastestMbps == 0:
+			remedy = "this box did not report what its USB ports can do, so check " +
+				"the socket, the cable and any hub by hand"
+		case b.USBFastestMbps <= r.LinkMbps:
+			remedy = fmt.Sprintf(
+				"no port on this box runs faster than %d Mbit/s, so that is the "+
+					"ceiling here -- only a board with USB 3 ports gets past it",
+				b.USBFastestMbps)
+		default:
+			remedy = fmt.Sprintf(
+				"this box has %d port(s) at %d Mbit/s, so check it is in one of "+
+					"those rather than a slower socket or a hub; if it already is, "+
+					"reseat it and try the USB-C cable the other way up",
+				b.USBFastPorts, b.USBFastestMbps)
+		}
+		rep.add(fail, "usb attachment", fmt.Sprintf(
+			"%s (%s, port %s) is attached at %d Mbit/s, below USB 3 -- %s. Throughput "+
+				"is capped far below the link and PHY rates this box reports",
+			in.Name, r.Driver, r.Socket, r.LinkMbps, remedy))
+	}
+	switch {
+	case usb == 0:
+		rep.add(warn, "usb attachment", "no USB adapter to check")
+	case bad == 0:
+		rep.add(pass, "usb attachment", fmt.Sprintf(
+			"%d USB adapter(s), all at USB 3 rates", usb))
 	}
 }
 

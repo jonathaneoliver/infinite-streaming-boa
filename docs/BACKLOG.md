@@ -20,6 +20,17 @@ and documented so they are not rediscovered.
 
 ## Known limitations — accepted, documented so they are not rediscovered
 
+- **A genuinely USB 2 adapter carries a standing underspeed warning**, because
+  sysfs cannot tell it apart from a USB 3 adapter on a bad cable. `version`
+  reports the `bcdUSB` of the CONNECTION rather than of the hardware — measured
+  2026-09-14, the same four adapters read `3.20` attached at 5000 and `2.10`
+  attached at 480 — so "declares USB 3, running at USB 2" can never fire, and
+  the rule is the negotiated rate alone. Accepted rather than fixed: on this box
+  a 480 Mbit/s attachment is a real throughput ceiling whoever imposed it, and
+  the advice offered is harmless if it was the adapter. Nothing in sysfs, and
+  nothing in the USB descriptors a High-Speed connection exposes, carries the
+  device's own maximum.
+
 - **No per-station RSSI.** The Pi 5's Broadcom radio reports no `signal` line in
   `iw station dump` in AP mode. Not fixable in software.
 - **`mt7921` never reports per-station transmit retries**, and prints the line

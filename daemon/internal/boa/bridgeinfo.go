@@ -195,6 +195,22 @@ type IfaceInfo struct {
 type BridgeInfo struct {
 	Bridge string      `json:"bridge"`
 	Ifaces []IfaceInfo `json:"ifaces"`
+	// USBFastestMbps and USBFastPorts describe what this BOX can offer, not
+	// what any adapter got: the fastest root-hub rate and how many ports run
+	// at it.
+	//
+	// Box-wide rather than per adapter because that is the shape of the fact,
+	// and it is what makes the remedy for an underspeed adapter either true or
+	// false. With ports to spare the answer is "move it, and if it is already
+	// in one, reseat or flip the USB-C cable". With none it is "this board
+	// cannot go faster", and telling somebody to find a USB 3 port their Pi
+	// does not have wastes their afternoon.
+	//
+	// Counted in PORTS. This Pi's four root hubs are 480/2 ports, 5000/1,
+	// 480/2, 5000/1 -- so it offers TWO USB 3 sockets, and reporting two buses
+	// would read as more.
+	USBFastestMbps int `json:"usb_fastest_mbps,omitempty"`
+	USBFastPorts   int `json:"usb_fast_ports,omitempty"`
 	// Notes are stated limitations, not errors -- chiefly "this radio's
 	// clients are not conditioned". They exist because the alternative is an
 	// operator discovering it from an empty device list.
@@ -478,6 +494,10 @@ func (e *Engine) freshenBridge() {
 // BridgeState's first call or its background refresh.
 func (e *Engine) buildBridgeState() BridgeInfo {
 	bi := BridgeInfo{Bridge: e.cfg.Bridge}
+	// What the board itself offers, read once per view rather than per adapter:
+	// it is a property of the hardware, identical for every interface, and it
+	// decides whether "move it to a USB 3 port" is advice or a wild goose chase.
+	bi.USBFastestMbps, bi.USBFastPorts = USBBuses()
 	addrs := ipAddrs()
 	country := e.regDomainCached()
 	// What the tick's station dumps revealed about per-client airtime support.
