@@ -1832,6 +1832,17 @@ fit through a 480 Mbit/s bus — so it negotiates 1000 Mbit/s and looks like an
 ordinary gigabit adapter. Both ends read `1000baseT`, nothing errors, and the
 only trace is the enumeration speed.
 
+**The box now finds this for you.** Any adapter attached below USB 3 rates
+carries a red `⚠ USB 480Mb/s` on its own row in the adapter rack — wired ports
+included, since those are USB devices too — and its hover text gives the remedy
+for the board it is on: how many USB 3 ports this box actually has and to move
+it to one, or to reseat it and turn the USB-C cable over if it is already in
+one, or that on a board with no faster port only different hardware will help.
+`boactl probe` fails on it as well, because while it lasts every cap above
+roughly 90 Mbit/s is unenforceable. The commands below are still how you
+separate a bad cable from a bad port — you no longer need them to find out that
+something is wrong.
+
 **A USB-C adapter adds a converter to the path, and that is where SuperSpeed is
 most easily lost.** The Pi's sockets are USB-A, so a USB-C NIC reaches them
 through a C-to-A cable or a stubby C-to-A dongle — and most of those are USB 2.0
@@ -2859,6 +2870,14 @@ chart is blank on the onboard one — see
   — a healthy throttled client shows it climbing constantly.
 - **PHY rate is not throughput.** The radio routinely negotiates 400+ Mbps on a
   link carrying 2 Mbps.
+- **An adapter on a USB 2 link looks healthy in every other number.** It keeps
+  its 80 MHz channel, its 802.11ax and a PHY rate over 1 Gbit/s while delivering
+  a fraction of the throughput, and the ethernet ports still read
+  `1000 Mbit/s`. Measured here: four adapters behind a USB 2 hub held the Wi-Fi
+  downlink to 92 Mbit/s where a USB 3 port gave 632. The adapter rack now warns
+  on its own row, which is the only place it shows — see [The cable decides
+  whether you get 2.5 GbE at
+  all](#the-cable-decides-whether-you-get-25-gbe-at-all).
 - **The queue is sized from rate × delay.** netem's default 1000-packet queue
   would silently drop half the traffic on a "50 Mbps, 500 ms, 0 % loss" profile.
   boa computes the queue depth instead, so configured loss is the only loss.

@@ -814,7 +814,7 @@ not from `lsusb`, which a minimal image does not have.
 |---|---|
 | `device/driver` (symlink) | Driver name, e.g. `mt7921u`, `brcmfmac` |
 | `device/../speed` | **Negotiated** link speed in Mbit/s: 5000 SuperSpeed, 480 High-Speed. Absent for a non-USB radio |
-| `device/../version` | `bcdUSB` as the device declares it, e.g. `3.20` |
+| `device/../version` | `bcdUSB` **of the negotiated connection**, e.g. `3.20` — NOT of the hardware. See below |
 | `device/../product`, `manufacturer` | USB descriptor strings, so the interface can name the adapter |
 
 **Semantics that bite**
@@ -826,11 +826,50 @@ not from `lsusb`, which a minimal image does not have.
   measure: same 80MHz channel, same 802.11ax, same PHY rate over 1 Gbit/s, no
   error logged anywhere. Measured on one adapter minutes apart: 717 Mbit/s on
   USB 3.0 against 117 on USB 2.0.
+- **`version` describes the CONNECTION, not the device**, and reading it as a
+  capability produces a check that can never fire. MEASURED 2026-09-14: the same
+  four adapters read `" 3.20"` while attached at 5000 and `" 2.10"` while
+  attached at 480 through a USB 2 hub, with nothing changed but the hub. A
+  device running at USB 2 rates therefore always claims USB 2, so "declares
+  USB 3 but negotiated USB 2" describes nothing that happens — the underspeed
+  warning is `speed` alone, against 5000. The cost, accepted, is a standing
+  warning on genuinely USB 2 hardware; see `docs/BACKLOG.md`.
 - The absence of `speed` means **not a USB device**, which for the onboard
   radio is the normal case and not a failure to read. It hangs off SDIO.
 - `device` is a **symlink**, and the USB device is its parent. Resolve it
   before taking `..`: a lexical join yields `/sys/class/net/<iface>` instead,
   every read returns empty, and a USB adapter reports as onboard.
+
+## Source I addendum — sysfs · what this box's own USB ports can do
+
+**VERIFIED** on hardware on 2026-09-14, against `maxchild` read by hand on the
+Pi 5. Read from `/sys/bus/usb/devices/usb*`, the root hubs. Feeds
+`usb_fastest_mbps` and `usb_fast_ports` on `GET /api/bridge`.
+
+| Path | Meaning |
+|---|---|
+| `usb*/speed` | That root hub's rate in Mbit/s — 5000 for a SuperSpeed bus, 480 for a High-Speed one |
+| `usb*/maxchild` | How many PORTS hang off that hub |
+
+`usb_fastest_mbps` is the highest `speed` of any root hub with at least one
+port; `usb_fast_ports` is the sum of `maxchild` across every hub at that speed.
+
+**Semantics that bite**
+
+- **PORTS, not buses, and the difference is the whole reason `maxchild` is
+  read.** This Pi 5 has four root hubs — 480 with 2 ports, 5000 with 1, 480
+  with 2, 5000 with 1 — so it offers **two** USB 3 sockets, which is what is
+  physically on the case. Counting buses reports four, and an operator told to
+  move an adapter into one of "four USB 3 ports" goes looking for sockets that
+  do not exist.
+- A hub with `maxchild` 0 cannot take an adapter, so it is skipped: it is not an
+  answer to "where should this go".
+- `usb_fastest_mbps` 0 means the topology could not be read, NOT that the box
+  has no USB. It is a distinct case in the advice, which then says to check the
+  socket and cable by hand rather than naming a port count.
+- This is a property of the BOX, not of any adapter, which is why it sits on
+  `BridgeInfo` rather than on each `RadioInfo`. It is what makes the remedy for
+  an underspeed adapter either true or false — see Source I.
 
 ## Source J — sysfs + `ip -j addr` · the box's own interfaces
 
