@@ -1098,6 +1098,31 @@ Clients ARE told it has gone, unlike a power cut.`
                reflow the grid the way the AP fields could. -->
           <div v-if="r.radio?.bus === 'usb'"><span class="k">USB port</span>
             <span class="v num">{{ r.radio.socket || '—' }}</span></div>
+          <!-- HOW FAST THE ADAPTER IS ATTACHED, which nothing else on this
+               page shows and which silently caps everything the box measures.
+               MEASURED 2026-09-14: four adapters declaring USB 3.20 and
+               negotiating 480 held the Wi-Fi downlink to 92 Mbit/s where a
+               USB 3 port gave 632, and the bridged path to 87 where it gave
+               203 -- all while this interface reported a 1000 Mbit/s link and
+               a 961 Mbit/s PHY rate. Any cap above about 90 Mbit/s was
+               unenforceable and read as working.
+
+               Warned on only when the adapter can do better than it got. A
+               genuinely USB 2 adapter declares 2.x, for which 480 is correct,
+               and flagging it would be noise on hardware that is behaving. -->
+          <div v-if="r.radio?.bus === 'usb' && r.radio.link_mbps">
+            <span class="k">USB link</span>
+            <span class="v num" :class="{ warn: r.radio.usb_underspeed }"
+                  :title="r.radio.usb_underspeed
+                    ? `Attached at ${r.radio.link_mbps} Mbit/s but declares USB `
+                      + `${r.radio.usb_version} — capable of 5000. Throughput is capped `
+                      + `far below the link and PHY rates shown here. Check the USB-C `
+                      + `to USB-A cable and use a USB 3 port.`
+                    : `Negotiated ${r.radio.link_mbps} Mbit/s on the USB bus; the `
+                      + `adapter declares USB ${r.radio.usb_version || '?'}.`">
+              {{ r.radio.link_mbps }}<span class="u">Mb/s</span>
+              <template v-if="r.radio.usb_underspeed"> · below USB {{ r.radio.usb_version }}</template>
+            </span></div>
           <div><span class="k">MAC</span><span class="v num">{{ r.mac }}</span></div>
           <!-- BRIDGE, not "bridge port", and the old label was wrong on every
                row rather than only on the scanner. The field holds the BRIDGE's
@@ -1976,6 +2001,13 @@ Clients ARE told it has gone, unlike a power cut.`
 /* Hex, MACs and counts, so digits keep their column as they change rather than
    sliding the rest of the value sideways on every update. */
 .facts .v.num { font-variant-numeric: tabular-nums; }
+/* A fact that is a FAULT rather than a reading. Only the value turns, never
+   the key: the key still names what is being reported, and colouring both
+   would read as the whole row being broken. */
+.facts .v.warn { color: var(--warn); font-weight: 600; }
+/* Units at the weight of a label rather than a figure, so 480 reads as the
+   number and Mb/s as its unit instead of competing with it. */
+.facts .v .u { color: var(--ink-faint); font-weight: 400; margin-left: 2px; }
 .meta { font-size: 11px; color: var(--ink-faint); }
 .warn-line { color: var(--warn); font-size: 11px; margin: 2px 0; }
 .group-note { margin: 0 0 4px; }

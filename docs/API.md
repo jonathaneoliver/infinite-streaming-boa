@@ -1916,6 +1916,24 @@ renaming a wire field costs more than the inaccuracy does.
 > SuperSpeed, 480 for High-Speed. Not the advertised capability -- that is
 > the whole point, since the two disagree exactly when it matters.
 
+**`usb_underspeed`** `bool` _(omitted when empty)_
+> USBUnderspeed marks an adapter attached far below what it can do:
+> it DECLARES USB 3 in bcdUSB and yet NEGOTIATED a USB 2 rate.
+>
+> This is worth a field of its own because nothing else on screen shows
+> it. MEASURED on the Pi 2026-09-14: all four adapters declared version
+> 3.20 and negotiated 480, because a USB-C to USB-A lead wired for USB 2
+> sat between them and the Pi, while two 5 Gbit/s root buses stood idle.
+> Throughout, the box reported the ethernet link at 1000 Mbit/s and the
+> negotiated Wi-Fi PHY rate at 961, so every figure it published looked
+> healthy. Moving them to a USB 3 port took the Wi-Fi downlink from 92 to
+> 632 Mbit/s and the bridged path from 87 to 203 -- so while this was
+> wrong, any cap above about 90 Mbit/s was silently unenforceable.
+>
+> The comparison is exact and needs no threshold guessing: a genuinely
+> USB 2 adapter declares 2.x and 480 is then the RIGHT answer for it, so
+> it is not flagged. Only a device that can do better than it got is.
+
 **`usb_version`** `string` _(omitted when empty)_
 > USBVersion is bcdUSB as the device declares it, e.g. "3.20" or "2.10".
 

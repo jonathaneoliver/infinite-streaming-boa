@@ -555,8 +555,16 @@ func demoBridgeState(cfg Config) BridgeInfo {
 			Radio: &RadioInfo{
 				Iface: "wlan1", Driver: "mt7921u", Bus: "usb",
 				Vendor: "Panda Wireless", Product: "PAU0F AXE3000",
-				// High-Speed, so the degraded-adapter readout is exercised too.
-				LinkMbps: 480, USBVersion: "2.10",
+				// A USB 3 adapter that enumerated at High-Speed, so the
+				// degraded-adapter readout is exercised -- which is what this
+				// fixture always claimed to do and did not.
+				//
+				// It declared 2.10 before, and 480 is the CORRECT rate for a
+				// USB 2 device, so nothing was degraded and nothing flagged.
+				// The AXE3000 this imitates is a USB 3 adapter, so 3.20 is
+				// both the honest descriptor and the one that exercises the
+				// fault. See underspeedUSB.
+				LinkMbps: 480, USBVersion: "3.20", USBUnderspeed: true,
 			},
 			AP: &APStatus{
 				SSID: "infinite-streaming-boa", BSSID: "9c:ef:d5:aa:11:07",

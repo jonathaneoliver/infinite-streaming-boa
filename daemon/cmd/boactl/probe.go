@@ -150,7 +150,19 @@ func cmdProbe(c *client, args []string) error {
 	//    "active" proves nothing -- see issue #164.
 	checkRadios(rep, first)
 
-	// 6. Every routable address of a conditioned client needs its own filter.
+	// 6. A USB adapter must be attached at the rate it is capable of. This is
+	//    the only check here that reads the BRIDGE rather than the snapshot,
+	//    because the hardware facts live per interface, and it is worth the
+	//    extra request: the fault it finds is invisible in every other number
+	//    the box publishes.
+	var bridge boa.BridgeInfo
+	if err := c.get("/api/bridge", &bridge); err != nil {
+		rep.add(warn, "usb attachment", "could not read /api/bridge: "+err.Error())
+	} else {
+		checkUSBAttachment(rep, bridge)
+	}
+
+	// 7. Every routable address of a conditioned client needs its own filter.
 	//    Privacy extensions mean a device usually holds several v6 addresses,
 	//    and one filter is a PARTIAL shape, which looks like a working one.
 	checkAddressCoverage(rep, first, *useSSH)
@@ -325,6 +337,45 @@ func checkCounters(rep *report, a, b boa.Snapshot, gap time.Duration) {
 	if moving == 0 {
 		rep.add(warn, "counters moving", fmt.Sprintf(
 			"no client passed traffic in %s; run a transfer through the box and probe again", gap))
+	}
+}
+
+// checkUSBAttachment fails an adapter attached below its own capability.
+//
+// Probe's job is to exit non-zero when the box is not doing what it claims,
+// and an adapter that declares USB 3 while running at USB 2 rates is exactly
+// that: every link speed and PHY rate it reports stays healthy while the
+// throughput behind them is capped at a fraction. MEASURED on the Pi
+// 2026-09-14 -- four adapters declaring 3.20 and negotiating 480 held the
+// Wi-Fi downlink to 92 Mbit/s where a USB 3 port gave 632.
+//
+// A fail rather than a warn, because it makes every cap above roughly
+// 90 Mbit/s unenforceable while it lasts, and an unenforceable cap is the one
+// thing this box must never report as working.
+func checkUSBAttachment(rep *report, b boa.BridgeInfo) {
+	usb, bad := 0, 0
+	for _, in := range b.Ifaces {
+		r := in.Radio
+		if r == nil || r.Bus != "usb" {
+			continue
+		}
+		usb++
+		if !r.USBUnderspeed {
+			continue
+		}
+		bad++
+		rep.add(fail, "usb attachment", fmt.Sprintf(
+			"%s (%s, port %s) declares USB %s but negotiated %d Mbit/s -- check the "+
+				"USB-C to USB-A cable and use a USB 3 port; throughput is capped "+
+				"far below the link and PHY rates this box reports",
+			in.Name, r.Driver, r.Socket, r.USBVersion, r.LinkMbps))
+	}
+	switch {
+	case usb == 0:
+		rep.add(warn, "usb attachment", "no USB adapter to check")
+	case bad == 0:
+		rep.add(pass, "usb attachment", fmt.Sprintf(
+			"%d USB adapter(s), none attached below its declared capability", usb))
 	}
 }
 

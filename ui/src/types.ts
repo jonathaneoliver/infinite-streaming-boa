@@ -627,6 +627,13 @@ export interface RadioInfo {
   vendor?: string;
   link_mbps?: number;
   usb_version?: string;
+  /** Attached far below what it can do: declares USB 3 in bcdUSB and yet
+   *  negotiated a USB 2 rate. Measured on the Pi: four adapters declaring
+   *  3.20 and negotiating 480 held the Wi-Fi downlink to 92 Mbit/s where a
+   *  USB 3 port gave 632, while the link speed and PHY rate both read healthy
+   *  throughout. A genuinely USB 2 adapter is NOT flagged -- 480 is the right
+   *  answer for it. */
+  usb_underspeed?: boolean;
   /** The adapter's own MAC. The name is assigned by a udev rule; this is the
    *  hardware. When the two disagree, that disagreement is the finding. */
   mac?: string;
