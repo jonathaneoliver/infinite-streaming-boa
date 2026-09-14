@@ -49,6 +49,19 @@ Intended for:
   must be what was configured.
 - **Honest measurement.** The interface reports what the kernel is doing, and
   states plainly where the numbers cannot be trusted.
+- **Immediate control, immediate evidence.** A change applies to live traffic
+  the moment it is made — no restart, no separate apply step — and its effect is
+  visible beside the control within seconds, as a measurement of what the bridge
+  is actually delivering rather than a copy of the setting. An operator should
+  never have to take a setting on trust, wait for a later run to learn whether it
+  worked, or reach for a second tool to find out. The rules that carry this are
+  spread through §6: a slider applies on release and every device is counted
+  before it has a policy (§6.2, §6.3); charts plot delivered throughput at 1 Hz
+  against the cap in force (§6.5); a pattern's cap line follows what is enforced,
+  not what is stored (§6.2); a control that can state something untrue shows the
+  truth beside it (§6.6); a downlink test runs through the conditioning it is
+  checking (§6.7). The evidence today is **throughput**: configured delay, jitter
+  and loss are applied just as immediately, but are not yet measured on screen.
 - **Self-contained appliance.** Boots ready; no first-boot internet required.
 - **Every radio present serves the AP.** With a USB adapter fitted alongside
   the onboard chip the box runs **dual-band, like a router**: the adapter on

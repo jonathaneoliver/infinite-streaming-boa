@@ -751,6 +751,17 @@ and the changed addresses that implies. boa identifies a device by the MAC on a
 frame it is already forwarding, which requires no address of its own and no
 routing role. ATC was archived on 30 October 2018 and is read-only.
 
+**Setting a condition is half of it; seeing that it took is the other half.**
+As far as their documentation shows, ATC and WANem both stop at the first half.
+ATC's web page and API shape and unshape a device, with nothing reporting what
+that device then receives. WANem's WANalyzer measures the path to a remote host
+so its figures can be copied into the emulator, which characterises a link
+before a test rather than showing the conditioning during one. boa applies a
+change to live traffic the moment it is made and draws each device's delivered
+throughput against the cap in force, on the same page as the control, a second
+later. Neither project's source was read to confirm the absence, so treat that
+comparison as a reading of what they document.
+
 **Where the others are better.** A rack emulator is calibrated, repeatable and
 certified; boa is explicitly none of those (see [Non-Goals](PRD.md#3-non-goals)).
 Caps here are verified from 0.25 to 50 Mbps; above that a cap exceeds what the
