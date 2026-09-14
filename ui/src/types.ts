@@ -1005,6 +1005,22 @@ export interface BridgeInfo {
   ifaces: IfaceInfo[];
   notes?: Notice[];
   /**
+   * What this BOX's USB ports can do -- the fastest root-hub rate, and how
+   * many PORTS run at it. Not what any adapter got; see
+   * `RadioInfo.usb_underspeed` for that.
+   *
+   * Here because it is what makes the advice for an underspeed adapter either
+   * true or false. With faster ports free, the answer is "move it, and if it
+   * is already in one, reseat or flip the USB-C cable"; with none, it is "this
+   * board cannot go faster", and telling somebody to find a USB 3 port their
+   * Pi does not have wastes their afternoon.
+   *
+   * PORTS, not buses. This Pi's four root hubs are 480/2 ports, 5000/1, 480/2,
+   * 5000/1 -- two USB 3 sockets, where a bus count would read as four.
+   */
+  usb_fastest_mbps?: number;
+  usb_fast_ports?: number;
+  /**
    * The box's own processes -- ntopng and glances -- with a switch each.
    *
    * On the bridge payload rather than in caps because reading them costs a

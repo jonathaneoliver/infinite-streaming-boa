@@ -404,22 +404,28 @@ type RadioInfo struct {
 	// SuperSpeed, 480 for High-Speed. Not the advertised capability -- that is
 	// the whole point, since the two disagree exactly when it matters.
 	LinkMbps int `json:"link_mbps,omitempty"`
-	// USBUnderspeed marks an adapter attached far below what it can do:
-	// it DECLARES USB 3 in bcdUSB and yet NEGOTIATED a USB 2 rate.
+	// USBUnderspeed marks a USB adapter that did not negotiate USB 3 rates.
 	//
-	// This is worth a field of its own because nothing else on screen shows
-	// it. MEASURED on the Pi 2026-09-14: all four adapters declared version
-	// 3.20 and negotiated 480, because a USB-C to USB-A lead wired for USB 2
-	// sat between them and the Pi, while two 5 Gbit/s root buses stood idle.
-	// Throughout, the box reported the ethernet link at 1000 Mbit/s and the
-	// negotiated Wi-Fi PHY rate at 961, so every figure it published looked
-	// healthy. Moving them to a USB 3 port took the Wi-Fi downlink from 92 to
-	// 632 Mbit/s and the bridged path from 87 to 203 -- so while this was
-	// wrong, any cap above about 90 Mbit/s was silently unenforceable.
+	// Worth a field of its own because nothing else on screen shows it.
+	// MEASURED on the Pi 2026-09-14: all four adapters sat behind a USB 2 hub
+	// at 480 while two 5 Gbit/s root buses stood idle, and throughout the box
+	// reported the ethernet link at 1000 Mbit/s and the negotiated Wi-Fi rate
+	// at 961, so every figure it published looked healthy. Moving them to a
+	// USB 3 port took the Wi-Fi downlink from 92 to 632 Mbit/s and the bridged
+	// path from 87 to 203 -- so while it was wrong, any cap above about
+	// 90 Mbit/s was silently unenforceable.
 	//
-	// The comparison is exact and needs no threshold guessing: a genuinely
-	// USB 2 adapter declares 2.x and 480 is then the RIGHT answer for it, so
-	// it is not flagged. Only a device that can do better than it got is.
+	// DELIBERATELY NOT a comparison against the device's own claim, which was
+	// the first attempt and does not work. sysfs `version` reports the bcdUSB
+	// of the CONNECTION, not the hardware: the same four adapters read 3.20 at
+	// 5000 and 2.10 at 480. So a device running at USB 2 rates always declares
+	// USB 2, and "declares 3 but got 2" can never fire.
+	//
+	// The cost is a standing flag on an adapter that is genuinely USB 2 only.
+	// That is accepted: on this box a 480 Mbit/s attachment is a throughput
+	// ceiling worth seeing whether the cable or the adapter imposed it, and
+	// the remedy offered -- try a USB 3 port -- is harmless if it was the
+	// adapter.
 	USBUnderspeed bool `json:"usb_underspeed,omitempty"`
 	// USBVersion is bcdUSB as the device declares it, e.g. "3.20" or "2.10".
 	USBVersion string `json:"usb_version,omitempty"`
@@ -490,43 +496,61 @@ func Radio(iface string) RadioInfo {
 	info.USBVersion = strings.TrimSpace(readSysfs(filepath.Join(parent, "version")))
 	info.Product = strings.TrimSpace(readSysfs(filepath.Join(parent, "product")))
 	info.Vendor = strings.TrimSpace(readSysfs(filepath.Join(parent, "manufacturer")))
-	info.USBUnderspeed = underspeedUSB(info.USBVersion, info.LinkMbps)
+	info.USBUnderspeed = info.LinkMbps > 0 && !info.SuperSpeed()
 	return info
 }
 
-// usbMajor is the major version out of bcdUSB as sysfs prints it.
+// USBBuses is what this box could offer, which decides what advice is even
+// true: the fastest root-hub rate and how many PORTS run at it.
 //
-// The file carries a leading space and two decimals -- " 3.20", " 2.10" -- so
-// it is parsed rather than compared. 0 for anything unreadable, which makes an
-// unparseable version mean "do not judge" rather than "not capable".
-func usbMajor(version string) int {
-	v := strings.TrimSpace(version)
-	if i := strings.IndexByte(v, '.'); i > 0 {
-		v = v[:i]
-	}
-	n, err := strconv.Atoi(v)
+// PORTS, NOT BUSES, and the difference is the whole reason maxchild is read.
+// This Pi has four root hubs -- two at 480 with two ports each and two at 5000
+// with one each -- so "two 5 Gbit/s buses" is two USB 3 sockets, not four, and
+// an operator counting sockets would be told to use ports that do not exist.
+// Measured on the box 2026-09-14; maxchild gives 2, 1, 2, 1.
+//
+// FastPorts of 0 means there is nowhere faster to move an adapter to, and the
+// only remedy is different hardware. Saying "use a USB 3 port" to a board that
+// has none is worse than saying nothing.
+func USBBuses() (fastestMbps, fastPorts int) {
+	dirs, err := filepath.Glob("/sys/bus/usb/devices/usb*")
 	if err != nil {
-		return 0
+		return 0, 0
 	}
-	return n
-}
-
-// underspeedUSB reports a device attached below its own declared capability.
-//
-// Both halves are required. A missing or zero speed is not slow, it is
-// unknown -- the onboard radio has no speed file at all -- and an unparseable
-// version must not convict a device of anything.
-func underspeedUSB(version string, linkMbps int) bool {
-	return usbMajor(version) >= 3 && linkMbps > 0 && linkMbps < 5000
+	type bus struct{ speed, ports int }
+	var buses []bus
+	for _, d := range dirs {
+		sp, err := strconv.Atoi(strings.TrimSpace(readSysfs(filepath.Join(d, "speed"))))
+		if err != nil || sp <= 0 {
+			continue
+		}
+		// A root hub with no ports cannot take an adapter, so it is not an
+		// answer to "where should this go".
+		n, err := strconv.Atoi(strings.TrimSpace(readSysfs(filepath.Join(d, "maxchild"))))
+		if err != nil || n <= 0 {
+			continue
+		}
+		buses = append(buses, bus{sp, n})
+		if sp > fastestMbps {
+			fastestMbps = sp
+		}
+	}
+	for _, b := range buses {
+		if b.speed == fastestMbps {
+			fastPorts += b.ports
+		}
+	}
+	return fastestMbps, fastPorts
 }
 
 // SuperSpeed reports whether a USB radio negotiated USB 3 rates. False for an
 // onboard radio, which is not slow -- it is simply not on the bus.
 //
-// Not the inverse of USBUnderspeed: this one is false for a device that only
-// ever claimed USB 2, where USBUnderspeed is also false because 480 is
-// correct for it. "Not SuperSpeed" and "attached below what it can do" are
-// different findings and only the second is a fault.
+// USBUnderspeed is its inverse for anything ON the bus, which is why that
+// field is derived from this rather than from a second rule: an adapter is
+// either at USB 3 rates or it is not, and a box whose measurements are capped
+// by the difference should say so either way. The LinkMbps > 0 guard keeps the
+// onboard radio out of it -- no speed file is unknown, not slow.
 func (r RadioInfo) SuperSpeed() bool { return r.Bus == "usb" && r.LinkMbps >= 5000 }
 
 func readSysfs(path string) string {

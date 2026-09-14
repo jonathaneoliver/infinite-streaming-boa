@@ -719,8 +719,58 @@ function bssFloorTitle(r: IfaceInfo, what: 'util' | 'stations'): string {
   );
 }
 
+/**
+ * A USB adapter not attached at USB 3 rates.
+ *
+ * The DAEMON's rule, read off the payload, rather than the identical
+ * comparison this used to do here. Two copies of one rule is how the row and
+ * the fold come to disagree, and the daemon's is the one `boactl probe` fails
+ * on -- see USBUnderspeed in collect.go for why it does not consult the
+ * device's own declared version.
+ */
 function degraded(i: IfaceInfo): boolean {
-  return i.radio?.bus === 'usb' && !!i.radio.link_mbps && i.radio.link_mbps < 5000;
+  return !!i.radio?.usb_underspeed;
+}
+
+/**
+ * What to DO about an underspeed adapter, which depends on the box rather than
+ * on the adapter: with faster ports free the answer is to move it, and with
+ * none it is that this board cannot go faster.
+ *
+ * Three cases, because the wrong one wastes somebody's time. "Use a USB 3
+ * port" on a board with none sends them hunting a socket that does not exist,
+ * and a promised port count that does not match the sockets on the case is
+ * worse than no number -- this Pi has two, not the four its root buses suggest.
+ */
+function usbRemedy(i: IfaceInfo): string {
+  const fastest = props.bridge.info.value?.usb_fastest_mbps ?? 0;
+  const ports = props.bridge.info.value?.usb_fast_ports ?? 0;
+  if (!fastest) {
+    return 'This box did not report what its USB ports can do, so check the '
+      + 'socket, the cable and any hub by hand.';
+  }
+  if (fastest <= (i.radio?.link_mbps ?? 0)) {
+    return `No port on this box runs faster than ${fastest} Mb/s, so that is the `
+      + 'ceiling here \u2014 only a Pi with USB 3 ports gets past it.';
+  }
+  return `This box has ${ports} port(s) at ${fastest} Mb/s. Check it is in one of `
+    + 'those rather than a slower socket or a hub; if it already is, reseat it '
+    + 'and try the USB-C cable the other way up.';
+}
+
+/** The row and the fold say the same thing about the bus, in one place. */
+function usbTitle(i: IfaceInfo): string {
+  const r = i.radio;
+  if (!r) return '';
+  if (!degraded(i)) {
+    return `Negotiated ${r.link_mbps} Mb/s on the USB bus; the connection reports `
+      + `USB ${r.usb_version || '?'}.\n\nThat version is the CONNECTION's, not the `
+      + 'hardware\u2019s: the same adapter reads 3.20 in a SuperSpeed port and '
+      + '2.10 behind a USB 2 hub.';
+  }
+  return `${i.name} is attached to the USB bus at ${r.link_mbps} Mb/s, below `
+    + 'USB 3\u2019s 5000. Every link speed and PHY rate here stays healthy while '
+    + `the throughput behind them is capped at a fraction.\n\n${usbRemedy(i)}`;
 }
 </script>
 
@@ -767,14 +817,14 @@ function degraded(i: IfaceInfo): boolean {
 
                `flex: 0 0 auto` so it is never the thing the ellipsis eats:
                the summary beside it can truncate, a fault may not. -->
-          <span
-            v-if="r.radio?.usb_underspeed" class="usb-bad"
-            :title="`${r.name} is attached to the USB bus at `
-              + `${r.radio.link_mbps} Mbit/s but declares USB ${r.radio.usb_version} `
-              + `— it is capable of 5000. Throughput is capped far below the link `
-              + `and PHY rates this row shows. Check the USB-C to USB-A cable and `
-              + `use a USB 3 port.`"
-          >USB {{ r.radio.link_mbps }}<span class="u">Mb/s</span></span>
+          <span v-if="degraded(r)" class="usb-bad" :title="usbTitle(r)">
+            <!-- The glyph carries the meaning for a reader who does not already
+                 know that 480 is slow; the figure carries it for one who does.
+                 Red alone would not: this row also dims a powered-off
+                 adapter. -->
+            <span aria-hidden="true">⚠</span>
+            USB {{ r.radio?.link_mbps }}<span class="u">Mb/s</span>
+          </span>
         </span>
 
         <!-- Contention, in the fixed column the old survey-derived `air` badge
@@ -1131,21 +1181,16 @@ Clients ARE told it has gone, unlike a power cut.`
                a 961 Mbit/s PHY rate. Any cap above about 90 Mbit/s was
                unenforceable and read as working.
 
-               Warned on only when the adapter can do better than it got. A
-               genuinely USB 2 adapter declares 2.x, for which 480 is correct,
-               and flagging it would be noise on hardware that is behaving. -->
+               Warned on for ANY attachment below USB 3, including a
+               genuinely USB 2 adapter. The first version compared against the
+               device's own declared version and could never fire: sysfs
+               `version` reports the bcdUSB of the CONNECTION, so a device at
+               480 always claims USB 2. See USBUnderspeed in collect.go. -->
           <div v-if="r.radio?.bus === 'usb' && r.radio.link_mbps">
             <span class="k">USB link</span>
-            <span class="v num" :class="{ bad: r.radio.usb_underspeed }"
-                  :title="r.radio.usb_underspeed
-                    ? `Attached at ${r.radio.link_mbps} Mbit/s but declares USB `
-                      + `${r.radio.usb_version} — capable of 5000. Throughput is capped `
-                      + `far below the link and PHY rates shown here. Check the USB-C `
-                      + `to USB-A cable and use a USB 3 port.`
-                    : `Negotiated ${r.radio.link_mbps} Mbit/s on the USB bus; the `
-                      + `adapter declares USB ${r.radio.usb_version || '?'}.`">
+            <span class="v num" :class="{ bad: degraded(r) }" :title="usbTitle(r)">
               {{ r.radio.link_mbps }}<span class="u">Mb/s</span>
-              <template v-if="r.radio.usb_underspeed"> · below USB {{ r.radio.usb_version }}</template>
+              <template v-if="degraded(r)"> · below USB 3</template>
             </span></div>
           <div><span class="k">MAC</span><span class="v num">{{ r.mac }}</span></div>
           <!-- BRIDGE, not "bridge port", and the old label was wrong on every
@@ -1370,11 +1415,10 @@ Clients ARE told it has gone, unlike a power cut.`
         />
 
         <p v-if="degraded(r)" class="notice bad inline">
-          This adapter negotiated USB 2 speed ({{ r.radio?.link_mbps }} Mb/s)<template
-            v-if="r.radio?.usb_version"> while declaring USB {{ r.radio.usb_version }}</template>.
-          It still reports its full channel width and PHY rate while delivering roughly
-          a sixth of the throughput, so nothing else here will look wrong — reseat it
-          in a SuperSpeed port.
+          This adapter is attached to the USB bus at {{ r.radio?.link_mbps }} Mb/s,
+          below USB 3’s 5000. It still reports its full channel width and PHY
+          rate while delivering a fraction of the throughput, so nothing else here
+          will look wrong. {{ usbRemedy(r) }}
         </p>
 
         <template v-if="r.ap">

@@ -780,27 +780,41 @@ damages packets, never link state.
   and also means it cannot tell you where the hardware is. The port does: it is
   the identifier the kernel blames a fault on, so it is what connects a warning
   in the log to a socket somebody can reach.
-- **Each adapter also shows how fast it is attached, and says so loudly when
-  that is below what it can do.** An adapter reports the rate it negotiated on
-  the bus beside the port it is plugged into, and an adapter that declares USB
-  3 while running at USB 2 rates is marked as a fault rather than reported as a
-  reading. `probe` fails on it, because while it lasts every cap above roughly
-  90 Mbit/s is unenforceable and the box has no other way to know.
+- **Each adapter also shows how fast it is attached, and says so loudly on the
+  adapter's own row when that is below USB 3.** The negotiated bus rate sits
+  beside the port it is plugged into, and any USB adapter attached below USB 3
+  rates carries a red warning on its collapsed row — not behind its caret,
+  because a fault nobody opens a fold to find is very nearly one that was never
+  shown. `probe` fails on it too, because while it lasts every cap above
+  roughly 90 Mbit/s is unenforceable and the box has no other way to know.
 
   This is the fault the page header's bus speed was always meant to catch, and
-  a per-adapter reading is what actually catches it: the header names one
-  radio, and the fault can be on any adapter. MEASURED on the Pi 2026-09-14 —
-  four adapters declaring bcdUSB 3.20 all negotiated 480 through a USB-C to
-  USB-A lead wired for USB 2, while two 5 Gbit/s buses stood idle. Throughout,
-  the interface reported a 1000 Mbit/s ethernet link and a 961 Mbit/s
-  negotiated Wi-Fi rate, so nothing on screen looked wrong. Moving them to a
-  USB 3 port took the Wi-Fi downlink from 92 to 632 Mbit/s and the bridged path
-  from 87 to 203.
+  a per-adapter warning is what actually catches it: the header names one
+  radio, and the fault can be on any adapter — including a wired one, since the
+  ethernet ports are USB devices too. MEASURED on the Pi 2026-09-14 — four
+  adapters all negotiated 480 through a USB-C to USB-A lead wired for USB 2,
+  while two 5 Gbit/s buses stood idle. Throughout, the interface reported a
+  1000 Mbit/s ethernet link and a 961 Mbit/s negotiated Wi-Fi rate, so nothing
+  on screen looked wrong. Moving them to a USB 3 port took the Wi-Fi downlink
+  from 92 to 632 Mbit/s and the bridged path from 87 to 203.
 
-  **An adapter that only claims USB 2 is not a fault.** 480 is the right answer
-  for such hardware, and warning about it would put a permanent alarm on a
-  device that is behaving. The comparison is the device's own declared
-  capability against what it negotiated, which needs no threshold to be chosen.
+  **The rule is the rate alone, not the rate against the adapter's own claim.**
+  That comparison was tried first and cannot work: sysfs reports the bcdUSB of
+  the CONNECTION, so the same four adapters read 3.20 attached at 5000 and 2.10
+  attached at 480 — a device running at USB 2 rates always declares USB 2, and
+  "declares 3, got 2" never fires. The cost is a standing warning on hardware
+  that is genuinely USB 2 only, which is accepted: on this box a 480 Mbit/s
+  attachment is a throughput ceiling worth seeing whoever imposed it.
+
+- **The advice for an underspeed adapter matches the board it is on.** The box
+  reports the fastest rate its own USB root hubs run at and how many PORTS run
+  at it, and the warning branches on that: with faster ports free it says how
+  many there are and to move the adapter, and to reseat it or try the USB-C
+  cable the other way up if it is already in one; with none it says this board
+  cannot go faster and only different hardware will. Counted in ports rather
+  than buses on purpose — this Pi's four root hubs are two ports at 480, one at
+  5000, two at 480 and one at 5000, so it has **two** USB 3 sockets, and a bus
+  count would promise four that nobody can find on the case.
 - **"Not answering" is never reported as "not serving".** A radio's control
   interface can go silent for minutes while its driver re-initialises, and a
   question that could not be asked has no answer. The box says that it cannot
