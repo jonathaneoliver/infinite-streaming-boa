@@ -125,8 +125,9 @@ rm -f "$OUT"/*.apk "$OUT"/packages.adb
 
 # boa
 R="$(mktemp -d)"
-install -d "$R/usr/libexec/boa" "$R/etc/init.d" "$R/etc/config" "$R/lib/upgrade/keep.d"
+install -d "$R/usr/libexec/boa" "$R/usr/sbin" "$R/etc/init.d" "$R/etc/config" "$R/lib/upgrade/keep.d"
 install -m 0755 /in/boad "$R/usr/libexec/boa/boad"
+install -m 0755 "$F/usr/sbin/boa-setup" "$R/usr/sbin/boa-setup"
 install -m 0755 "$F/etc/init.d/boa" "$R/etc/init.d/boa"
 install -m 0644 "$F/etc/config/boa" "$R/etc/config/boa"
 echo /etc/infinite-streaming-boa/ > "$R/lib/upgrade/keep.d/boa"

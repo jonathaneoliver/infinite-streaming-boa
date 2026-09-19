@@ -40,6 +40,30 @@ uci commit wireless && wifi reload
 service and installing the full one does not start it; a reload with no
 hostapd running leaves every AP down until it is started by hand.
 
+## Check a device: `boa-setup check`
+
+```sh
+boa-setup check
+```
+
+Installed with the `boa` package. It walks every prerequisite above and below
+-- access, USB adapters and their drivers, hostapd, each access point, the
+transparent bridge, packages, boa's own config, the service -- and prints each
+as `OK`, `WARN` or `FAIL`, with the command that fixes it. It exits 1 if
+anything failed.
+
+**It is read-only**: no `uci set`, no reload, no restart, so it is safe on a
+router carrying traffic. Two of its findings come from the device rather than
+from config. The uplink is the `br-lan` port the bridge learned the default
+gateway's MAC on, so a `boa.main.wan` that names the wrong port is caught; and
+a Wi-Fi netdev outside the bridge is offered as the scan radio.
+
+Measured on the Pi 5: the prepared device passed with 0 failed and 0 warnings.
+Run against a copy of its config edited back to a router's -- `lan` static,
+`wan` present, DHCP and RA on, a radio on 6 GHz without a country, 802.11k off,
+`boa.main.wan` on the wrong port, no scan radio -- it reported all nine, as
+5 failures and 4 warnings, each with its fix.
+
 ## Install from the package feed
 
 Signed releases are published to a feed on GitHub Pages,
@@ -55,7 +79,8 @@ echo https://jonathaneoliver.github.io/infinite-streaming-boa/openwrt/25.12/aarc
 apk update && apk add luci-app-boa
 ```
 
-Later releases arrive with `apk upgrade`, or from LuCI -> System -> Software.
+Then `boa-setup check` says what the device still needs. Later releases arrive
+with `apk upgrade`, or from LuCI -> System -> Software.
 The workflow signs with the repository secret `BOA_APK_PRIVATE_KEY`, the same
 key as a local build, and refuses to run without it -- a key made on a runner
 would sign a feed no device trusts. It can also be run by hand from the

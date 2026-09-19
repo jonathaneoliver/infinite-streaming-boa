@@ -52,8 +52,9 @@ define Build/Compile
 endef
 
 define Package/boa/install
-	$(INSTALL_DIR) $(1)/usr/libexec/boa $(1)/etc/init.d $(1)/etc/config $(1)/lib/upgrade/keep.d
+	$(INSTALL_DIR) $(1)/usr/libexec/boa $(1)/usr/sbin $(1)/etc/init.d $(1)/etc/config $(1)/lib/upgrade/keep.d
 	$(INSTALL_BIN) $(PKG_BUILD_DIR)/boad $(1)/usr/libexec/boa/boad
+	$(INSTALL_BIN) $(BOA_FILES)/usr/sbin/boa-setup $(1)/usr/sbin/boa-setup
 	$(INSTALL_BIN) $(BOA_FILES)/etc/init.d/boa $(1)/etc/init.d/boa
 	$(INSTALL_CONF) $(BOA_FILES)/etc/config/boa $(1)/etc/config/boa
 	# Policies, ladders and remembered channels live here; a sysupgrade keeps them.

@@ -56,7 +56,8 @@ echo https://jonathaneoliver.github.io/infinite-streaming-boa/openwrt/@RELEASE@/
   &gt;&gt; /etc/apk/repositories.d/customfeeds.list
 apk update
 apk add luci-app-boa</code></pre>
-  <p>Then open LuCI → <strong>Services → infinite-streaming-boa</strong>, or <code>http://&lt;device&gt;:8080/</code>.
+  <p>Then run <code>boa-setup check</code>: it is read-only, and lists what the device still needs, with the
+  command that fixes each item. After that, open LuCI → <strong>Services → infinite-streaming-boa</strong>, or <code>http://&lt;device&gt;:8080/</code>.
   Later releases arrive with <code>apk upgrade</code>, or from LuCI → System → Software.</p>
 
   <h2>Trust</h2>
