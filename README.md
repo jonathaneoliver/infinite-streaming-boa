@@ -141,11 +141,17 @@ helper here, and [Build an image](#build-an-image) says why. Boot it and open
 `http://infinite-streaming-boa.local/`.
 
 **An OpenWrt device** (25.12, arm64 — a Pi 5 or a newer router — already a
-transparent bridge running the full `wpad`):
+transparent bridge running the full `wpad`), from the signed feed:
 
 ```sh
-scripts/openwrt-package.sh root@<device>   # builds boa + luci-app-boa, installs them
+wget -O /etc/apk/keys/boa-packages.pem \
+  https://jonathaneoliver.github.io/infinite-streaming-boa/openwrt/boa-packages.pem
+echo https://jonathaneoliver.github.io/infinite-streaming-boa/openwrt/25.12/aarch64_cortex-a76/packages.adb \
+  >> /etc/apk/repositories.d/customfeeds.list
+apk update && apk add luci-app-boa
 ```
+
+or built from this checkout with `scripts/openwrt-package.sh root@<device>`.
 
 Then open LuCI → **Services → infinite-streaming-boa**, or
 `http://<device>:8080/`. Preparing the device, and what the packages install,
