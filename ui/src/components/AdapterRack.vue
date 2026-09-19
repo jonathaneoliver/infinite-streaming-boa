@@ -377,7 +377,18 @@ function warnText(r: IfaceInfo): string {
 }
 
 function apLive(r: IfaceInfo): boolean {
-  return r.powered !== false && r.ap?.enabled === true;
+  return !radioOff(r) && r.ap?.enabled === true;
+}
+
+/**
+ * Known to be switched off. NOT `!r.powered`: a radio whose rfkill switch
+ * cannot be read at all reports powered=false with power_known=false, and that
+ * is "cannot tell", not "off". OpenWrt kernels ship without rfkill, so every
+ * radio there reads that way -- and testing `powered` alone greyed out gather,
+ * evict and the AP controls on radios that were serving clients.
+ */
+function radioOff(r: IfaceInfo): boolean {
+  return r.power_known && !r.powered;
 }
 
 /**
@@ -1002,8 +1013,8 @@ function usbTitle(i: IfaceInfo): string {
                ambiguous on a control an operator reaches for precisely when
                they are unsure what state a radio is in. -->
           <button
-            class="ghost" :class="{ accent: r.powered && r.ap && !r.ap.enabled }"
-            :disabled="busy || !r.powered || !r.ap"
+            class="ghost" :class="{ accent: !radioOff(r) && r.ap && !r.ap.enabled }"
+            :disabled="busy || radioOff(r) || !r.ap"
             :title="r.ap?.enabled
               ? `Take ${r.name}'s access point down, leaving the radio powered. \
 Clients ARE told it has gone, unlike a power cut.`
@@ -1055,8 +1066,8 @@ Clients ARE told it has gone, unlike a power cut.`
                So: individually on the way down, by broadcast on the way up,
                the same frame type in both, and never a no-op in either. -->
           <button
-            class="ghost" :class="{ accent: r.powered && r.ap && !r.ap.enabled }"
-            :disabled="busy || !r.powered || !r.ap
+            class="ghost" :class="{ accent: !radioOff(r) && r.ap && !r.ap.enabled }"
+            :disabled="busy || radioOff(r) || !r.ap
               || (apLive(r) && !r.ap?.stations)"
             :title="!apLive(r)
               ? `Bring ${r.name}'s access point back up AND announce it, so a client `
@@ -1477,7 +1488,9 @@ Clients ARE told it has gone, unlike a power cut.`
               >{{ s }}s</button>
             </div>
             <button
-              :disabled="busy || !r.powered"
+              :disabled="busy || !r.power_known || !r.powered"
+              :title="r.power_known ? undefined
+                : `${r.name} has no readable rfkill switch, so its power cannot be cut.`"
               @click="bridge.powerOutage(r.name, outage[r.name] ?? 10)"
             >cut and restore automatically</button>
             <span v-if="r.power_known && !r.powered" class="meta warn-line">

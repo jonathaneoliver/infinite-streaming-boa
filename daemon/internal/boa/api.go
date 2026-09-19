@@ -1006,6 +1006,14 @@ func (a *API) stream(w http.ResponseWriter, r *http.Request) {
 		case <-r.Context().Done():
 			return
 		case <-bridgeCheck.C:
+			// Asking for the view is what schedules its rebuild: BridgeState
+			// starts one in the background once the view is older than
+			// bridgeTTL, and never blocks. Comparing versions alone never did,
+			// so with only a stream connected the view froze at its first build
+			// -- a gather moved every client and the rack went on showing them
+			// where they had been, with gather and evict enabled or greyed out
+			// from those stale counts.
+			a.e.BridgeState()
 			if v := a.e.BridgeVersion(); v != lastBridge {
 				lastBridge = v
 				if !sendBridge() {

@@ -2002,6 +2002,13 @@ func (e *Engine) scanBand(iface string, apply, allowOutage, background bool) (Sc
 			} else if moved {
 				res.Applied, res.Now = true, res.Best
 			}
+			// A move the operator asked for by choosing "apply", so it is
+			// remembered exactly as MoveChannel's is. Without this the restore
+			// loop sees a radio off its remembered channel and moves it back to
+			// wherever it was last put by hand.
+			if res.Applied {
+				e.rememberChannel(iface, res.Best, useWidth, res.Now)
+			}
 			// The device list caches each radio's channel; this just changed it.
 			e.forgetRadioOn()
 			// Only now is there an outage to report: the BSS was down from the
