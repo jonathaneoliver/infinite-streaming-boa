@@ -83,7 +83,10 @@ done
 # Pinned to this build. A bare `apk add` leaves an installed package at its old
 # version, and `apk add --upgrade` upgrades its dependencies too -- measured:
 # a boa reinstall also moved rpcd, luci-base and ten other system packages.
-# A version constraint moves only these two.
+# A version constraint moves only these two. apk then records that constraint
+# in /etc/apk/world, where it pins the packages for good: measured, a later
+# `apk upgrade` from the feed did nothing. Adding them again unversioned only
+# rewrites world -- it upgrades nothing -- so the feed can move them on.
 V="$BOA_VERSION-r$BOA_RELEASE"
-ssh "$TARGET" "apk add --repository /tmp/boa-repo/packages.adb boa=$V luci-app-boa=$V"
+ssh "$TARGET" "apk add --repository /tmp/boa-repo/packages.adb boa=$V luci-app-boa=$V && apk add boa luci-app-boa >/dev/null"
 log "Installed. LuCI: Services -> infinite-streaming-boa"
