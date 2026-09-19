@@ -269,6 +269,14 @@ never inferred -- does two things no other target does:
   lengthen a deadzone that is being measured. boa's deny list stays the ban
   that decides.
 
+The Pi target's daemon and services are also published as an apt package,
+`infinite-streaming-boa`, for arm64 and amd64. It is a way to install that
+target's software on a machine not flashed from the image, not a fourth
+target: it carries `boad`, its unit, the iperf3 unit and
+`/etc/default/infinite-streaming-boa`, and none of the bridge, hostapd or
+adapter-naming configuration the image builds, so the service it enables
+starts only once the bridge exists.
+
 Where a requirement below genuinely differs, it says so. Three do: ntopng and
 glances are absent from the container image and from OpenWrt, the container's
 management address is a private point-to-point link rather than a rescue

@@ -1,0 +1,22 @@
+Package: infinite-streaming-boa
+Version: @VERSION@
+Architecture: @ARCH@
+Maintainer: Jonathan Oliver <jonathaneoliver@gmail.com>
+Installed-Size: @SIZE@
+Section: net
+Priority: optional
+Depends: iproute2, nftables, iw, hostapd, rfkill, iperf3
+Recommends: avahi-daemon
+Suggests: tcpdump
+Homepage: https://github.com/jonathaneoliver/infinite-streaming-boa
+Description: per-device network link conditioner for a transparent bridge
+ boa sits between an existing router and the devices under test as a
+ transparent layer-2 bridge, and conditions each device's traffic
+ independently -- rate, latency, jitter and loss, per direction -- from a
+ web interface. It also drives the Wi-Fi link itself through hostapd: drop,
+ deadzone, steer and gather a client between radios.
+ .
+ This package installs the daemon and its service. It does not build the
+ bridge or write hostapd configurations: the service is enabled on install
+ but started only once the bridge named in /etc/default/infinite-streaming-boa
+ exists.

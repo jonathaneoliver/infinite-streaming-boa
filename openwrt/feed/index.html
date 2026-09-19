@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>infinite-streaming-boa — OpenWrt package feed</title>
+<title>infinite-streaming-boa packages</title>
 <style>
   :root { --bg: #fafaf9; --fg: #1c1917; --muted: #57534e; --code: #f0efed; --line: #e7e5e4; --accent: #0b6bcb; }
   @media (prefers-color-scheme: dark) {
@@ -13,7 +13,8 @@
          font: 16px/1.55 system-ui, -apple-system, "Segoe UI", sans-serif; }
   main { max-width: 46rem; margin: 0 auto; padding: 2.5rem 1.25rem 4rem; }
   h1 { font-size: 1.6rem; margin: 0 0 .25rem; }
-  h2 { font-size: 1.1rem; margin: 2rem 0 .5rem; }
+  h2 { font-size: 1.2rem; margin: 2.2rem 0 .5rem; }
+  h3 { font-size: 1rem; margin: 1.4rem 0 .4rem; }
   p.lead { color: var(--muted); margin-top: 0; }
   pre { background: var(--code); border: 1px solid var(--line); border-radius: 6px;
         padding: .8rem 1rem; overflow-x: auto; font-size: .86rem; line-height: 1.5; }
@@ -27,9 +28,31 @@
 </head>
 <body>
 <main>
-  <h1>infinite-streaming-boa for OpenWrt</h1>
-  <p class="lead">A signed apk feed for <a href="https://github.com/jonathaneoliver/infinite-streaming-boa">boa</a>,
-  the per-device link conditioner, and its LuCI page.</p>
+  <h1>infinite-streaming-boa packages</h1>
+  <p class="lead">Signed package feeds for <a href="https://github.com/jonathaneoliver/infinite-streaming-boa">boa</a>,
+  the per-device link conditioner: an apt repository for Raspberry Pi OS and Debian, and an apk feed for OpenWrt.</p>
+
+  <h2>Raspberry Pi OS and Debian (apt)</h2>
+  <table>
+    <tr><td>Version</td><td><code>@DEBVERSION@</code></td></tr>
+    <tr><td>Architectures</td><td><code>arm64</code> (Raspberry Pi OS 64-bit), <code>amd64</code></td></tr>
+    <tr><td>Package</td><td><code>infinite-streaming-boa</code></td></tr>
+  </table>
+  <pre><code>sudo install -d -m 0755 /etc/apt/keyrings
+curl -fsSL https://jonathaneoliver.github.io/infinite-streaming-boa/apt/boa-archive-keyring.gpg \
+  | sudo tee /etc/apt/keyrings/infinite-streaming-boa.gpg &gt;/dev/null
+echo "deb [signed-by=/etc/apt/keyrings/infinite-streaming-boa.gpg] https://jonathaneoliver.github.io/infinite-streaming-boa/apt stable main" \
+  | sudo tee /etc/apt/sources.list.d/infinite-streaming-boa.list
+sudo apt update
+sudo apt install infinite-streaming-boa</code></pre>
+  <p>The package installs the daemon and its service, and pulls in <code>hostapd</code>, <code>iw</code>,
+  <code>nftables</code> and <code>iperf3</code>. It does <strong>not</strong> build the bridge or configure the radios:
+  the service is enabled, and starts once the <code>br-lan</code> bridge exists. Set the ports in
+  <code>/etc/default/infinite-streaming-boa</code>. Later releases arrive with <code>apt upgrade</code>.
+  For a box that does all of that for you, flash the
+  <a href="https://github.com/jonathaneoliver/infinite-streaming-boa#1-a-raspberry-pi-5-from-an-image">Pi image</a> instead.</p>
+
+  <h2>OpenWrt (apk)</h2>
 
   <table>
     <tr><td>Version</td><td><code>@VERSION@</code></td></tr>
@@ -38,7 +61,7 @@
     <tr><td>Packages</td><td><code>boa</code>, <code>luci-app-boa</code></td></tr>
   </table>
 
-  <h2>Before installing</h2>
+  <h3>Before installing</h3>
   <p>boa conditions traffic on a <strong>transparent bridge</strong>, and needs the full hostapd. Neither is
   something a package should do to a router on its own, so they are done by hand, once:</p>
   <ul>
@@ -49,7 +72,7 @@
   <p>The <a href="https://github.com/jonathaneoliver/infinite-streaming-boa/blob/main/openwrt/README.md">OpenWrt README</a>
   has the exact commands.</p>
 
-  <h2>Install</h2>
+  <h3>Install</h3>
   <pre><code>wget -O /etc/apk/keys/boa-packages.pem \
   https://jonathaneoliver.github.io/infinite-streaming-boa/openwrt/boa-packages.pem
 echo https://jonathaneoliver.github.io/infinite-streaming-boa/openwrt/@RELEASE@/@ARCH@/packages.adb \
@@ -61,8 +84,9 @@ apk add luci-app-boa</code></pre>
   Later releases arrive with <code>apk upgrade</code>, or from LuCI → System → Software.</p>
 
   <h2>Trust</h2>
-  <p>The index is signed; apk checks it against the key above, so no <code>--allow-untrusted</code> is needed.
-  That key signs nothing but this feed.</p>
+  <p>Both are signed: apt checks the repository's <code>InRelease</code> against the keyring named in
+  <code>signed-by</code>, and apk checks the feed's index against the key in <code>/etc/apk/keys</code>, so
+  neither needs its signature checks turned off. Each key signs nothing but its own feed.</p>
 </main>
 </body>
 </html>

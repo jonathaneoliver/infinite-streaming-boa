@@ -1,0 +1,14 @@
+#!/bin/sh
+# Stop boa on removal. Stopping is what removes its qdiscs: boad tears down
+# every queueing discipline it installed on SIGTERM, so a removed package never
+# leaves a device conditioned. An upgrade is not stopped here; postinst
+# restarts it onto the new binary.
+set -e
+
+UNITS="infinite-streaming-boa.service infinite-streaming-boa-iperf3.service"
+
+if [ "$1" = remove ] && [ -d /run/systemd/system ]; then
+	systemctl stop $UNITS >/dev/null 2>&1 || true
+	systemctl disable $UNITS >/dev/null 2>&1 || true
+fi
+exit 0
