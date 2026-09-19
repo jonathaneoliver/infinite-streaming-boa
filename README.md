@@ -5,6 +5,7 @@
 [![Go](https://img.shields.io/github/go-mod/go-version/jonathaneoliver/infinite-streaming-boa?filename=daemon%2Fgo.mod)](daemon/go.mod)
 [![Platform: Raspberry Pi 5](https://img.shields.io/badge/platform-Raspberry%20Pi%205-c51a4a)](#1-a-raspberry-pi-5-from-an-image)
 [![Platform: Linux container](https://img.shields.io/badge/platform-Linux%20container-2496ed)](#2-a-linux-host-from-a-container)
+[![Platform: OpenWrt](https://img.shields.io/badge/platform-OpenWrt%2025.12-00b5e2)](#3-an-openwrt-device-as-packages)
 [![Sponsor](https://img.shields.io/badge/support%20this%20project-ea4aaa?logo=githubsponsors&logoColor=white)](https://github.com/sponsors/jonathaneoliver)
 
 Part of the infinite-streaming family. The repository is
@@ -24,10 +25,12 @@ page: move one to another channel, take its access point down, deauthenticate or
 disassociate a device, or push it onto a different radio. Conditioning the link
 and disturbing the radio are separate axes, and a run can use either or both.
 
-It runs on **either of two targets, on equal terms**: a Raspberry Pi 5 flashed
-from an image, or a container on an ordinary x86_64 Linux host. The same daemon
-binary and the same interface serve both, and no code under `daemon/` differs
-between them — see [Two ways to run it](#two-ways-to-run-it).
+It runs on **any of three targets, on equal terms**: a Raspberry Pi 5 flashed
+from an image, a container on an ordinary x86_64 Linux host, or a pair of
+packages on an OpenWrt device. The same daemon binary and the same interface
+serve all three; on OpenWrt one flag, `-openwrt`, keeps OpenWrt's own
+configuration in step with what boa does — see
+[Three ways to run it](#three-ways-to-run-it).
 
 It is a **transparent bridge**, not a router. Devices under test keep their
 normal addresses on your normal network, discovery protocols keep working, and
@@ -107,9 +110,9 @@ delay, jitter and loss lanes unused in this run.
 
 ## Quickstart
 
-Two targets, and neither is the reference — see
-[Two ways to run it](#two-ways-to-run-it) for which to pick. Both read the same
-`.env`.
+Three targets, and none is the reference — see
+[Three ways to run it](#three-ways-to-run-it) for which to pick. The Pi and the
+container read the same `.env`; OpenWrt is configured from UCI.
 
 **A Linux host you already have** (x86_64, two USB adapters, nothing to flash):
 
@@ -137,7 +140,18 @@ Write the `.img` from `dist/` to a card with
 helper here, and [Build an image](#build-an-image) says why. Boot it and open
 `http://infinite-streaming-boa.local/`.
 
-Both need `docker` on the machine you build from, including on Linux;
+**An OpenWrt device** (25.12, arm64 — a Pi 5 or a newer router — already a
+transparent bridge running the full `wpad`):
+
+```sh
+scripts/openwrt-package.sh root@<device>   # builds boa + luci-app-boa, installs them
+```
+
+Then open LuCI → **Services → infinite-streaming-boa**, or
+`http://<device>:8080/`. Preparing the device, and what the packages install,
+is in [`openwrt/README.md`](openwrt/README.md).
+
+All three need `docker` on the machine you build from, including on Linux;
 [Requirements for the build and control host](#requirements-for-the-build-and-control-host)
 has the toolchain floors. If the box is up but you cannot reach it, that has its
 own section: [Reaching the box](#reaching-the-box).
@@ -152,9 +166,9 @@ own section: [Reaching the box](#reaching-the-box).
 
 **Running it**
 
-- [Two ways to run it](#two-ways-to-run-it) — the Pi and the container, on equal terms
+- [Three ways to run it](#three-ways-to-run-it) — the Pi, the container and OpenWrt, on equal terms
 - [Hardware](#hardware) — parts, RAM, host requirements, and what the radios cannot do
-- [Build an image](#build-an-image) · [Run it as a container](#run-it-as-a-container-on-a-linux-host)
+- [Build an image](#build-an-image) · [Run it as a container](#run-it-as-a-container-on-a-linux-host) · [Run it on OpenWrt](openwrt/README.md)
 - [Reaching the box](#reaching-the-box) · [Configuration](#configuration) · [Security](#security)
 
 **What it can and cannot measure**
@@ -868,30 +882,35 @@ on `:8474` lets a test set up and tear down its own faults, and its toxics —
 netem cannot produce. For proving a service survives a flaky dependency in CI,
 it is the right tool and this one is not.
 
-## Two ways to run it
+## Three ways to run it
 
-boa runs on a Raspberry Pi 5 flashed from an image, or as a container on an
-ordinary x86_64 Linux host. **Neither is the reference and neither is a port.**
-The same `boad` binary and the same embedded interface serve both, and nothing
-under `daemon/` is conditional on the target — the container reuses even
-`radioplan`, copied out of the Pi overlay unchanged, so a channel plan made on
-one cannot drift from a plan made on the other.
+boa runs on a Raspberry Pi 5 flashed from an image, as a container on an
+ordinary x86_64 Linux host, or as packages on an OpenWrt device. **None is the
+reference and none is a port.** The same `boad` binary and the same embedded
+interface serve all three. The container reuses even `radioplan`, copied out of
+the Pi overlay unchanged, so a channel plan made on one cannot drift from a plan
+made on the other. The only code that runs on one target and not the others is
+behind `boad -openwrt`, which OpenWrt's init script passes and nothing infers:
+it writes channel moves back to OpenWrt's wireless config and mirrors bans onto
+hostapd's ubus ban list, because on OpenWrt it is OpenWrt that owns the radios.
 
 What differs is only where the box gets four things a bridge needs: the bridge
 itself, the hostapd configs, hotplug handling, and process supervision. The Pi
-takes them from the distribution. The container brings its own.
+takes them from the distribution. The container brings its own. OpenWrt
+already has all four.
 
-| | Raspberry Pi 5 | Linux container |
-|---|---|---|
-| Install | Flash an image, once | `scripts/docker-deploy.sh <host>` |
-| Update the daemon | `scripts/deploy.sh`, ~10 s | `scripts/docker-deploy.sh`, rebuild and restart |
-| Reflash needed for | Units, packages, kernel settings, network profiles | Nothing — the image is rebuilt every deploy |
-| Bridge built by | NetworkManager | The container entrypoint |
-| AP configs written by | `radioplan`, at boot | `radioplan`, identical, at start and on hotplug |
-| Hotplug handled by | A udev rule | A udev rule on the host, plus a poll in the entrypoint |
-| Supervision by | systemd units | The entrypoint, plus a `systemctl` shim for the two calls the daemon makes |
-| ntopng and glances | Included | Absent by decision; the interface offers to start them and says why it cannot |
-| Host is left | Dedicated to boa | Still itself, with its NIC bridged and the USB adapters given away |
+| | Raspberry Pi 5 | Linux container | OpenWrt |
+|---|---|---|---|
+| Install | Flash an image, once | `scripts/docker-deploy.sh <host>` | `scripts/openwrt-package.sh <device>`: two signed apk packages |
+| Update the daemon | `scripts/deploy.sh`, ~10 s | `scripts/docker-deploy.sh`, rebuild and restart | The same script, ~20 s, upgrading only boa's packages |
+| Reflash needed for | Units, packages, kernel settings, network profiles | Nothing — the image is rebuilt every deploy | Nothing |
+| Bridge built by | NetworkManager | The container entrypoint | netifd, from UCI — set up by hand, once |
+| AP configs written by | `radioplan`, at boot | `radioplan`, identical, at start and on hotplug | OpenWrt's wifi scripts, from UCI; boa writes back the channels it keeps |
+| Hotplug handled by | A udev rule | A udev rule on the host, plus a poll in the entrypoint | OpenWrt |
+| Supervision by | systemd units | The entrypoint, plus a `systemctl` shim for the two calls the daemon makes | procd, `/etc/init.d/boa` |
+| Interface | `:80` | `:8080` on the host | `:8080`, `:8443` over https, and a LuCI page |
+| ntopng and glances | Included | Absent by decision; the interface offers to start them and says why it cannot | Absent: not packaged for OpenWrt |
+| Host is left | Dedicated to boa | Still itself, with its NIC bridged and the USB adapters given away | Still a working OpenWrt device, now a bridge |
 
 Throughput is comparable so far, which is the point of listing both. These are
 separate machines with separate radios, so read the table as "neither target is
@@ -900,15 +919,19 @@ obviously the bottleneck" rather than as a benchmark of one against the other.
 Each `not measured` below is a run nobody has done yet, not a figure too dull to
 record.
 
-| Unshaped, `iperf3` **to** the box | Raspberry Pi 5 | Linux container |
-|---|---|---|
-| Wired downlink, 2.5 GbE | 1.91 Gbit/s | 1.95 Gbit/s |
-| Wired uplink, 2.5 GbE | 2.35 Gbit/s | 2.35 Gbit/s |
-| One radio, 80 MHz 802.11ax | 495–683 Mbit/s | 454 Mbit/s |
-| Two radios carrying clients at once | *not measured* | *not measured* |
+| Unshaped, `iperf3` **to** the box | Raspberry Pi 5 | Linux container | OpenWrt (Pi 5) |
+|---|---|---|---|
+| Wired downlink, 2.5 GbE | 1.91 Gbit/s | 1.95 Gbit/s | *not measured* |
+| Wired uplink, 2.5 GbE | 2.35 Gbit/s | 2.35 Gbit/s | *not measured* |
+| One radio, 80 MHz 802.11ax | 495–683 Mbit/s | 454 Mbit/s | 639–644 Mbit/s down, 469–564 up (ch 149) |
+| Two radios carrying clients at once | *not measured* | *not measured* | *not measured* |
 
 The wired figures agree to within 2%, on two machines with different CPUs, which
-says the 2.5 GbE adapter rather than the target is the limit in both.
+says the 2.5 GbE adapter rather than the target is the limit in both. The
+OpenWrt radio figure is the same Pi 5 and the same `mt7921u` as the first
+column, on channel 149; on channel 40 at the same address it was 400 down and
+306 up, which is the congested-channel effect described under
+[What a channel is worth](#what-a-channel-is-worth), not the target.
 
 | Through the box, or under a cap | Raspberry Pi 5 | Linux container |
 |---|---|---|
@@ -958,6 +981,29 @@ tracks two simpler arrangements that would remove most of them.
 
 See [Run it as a container on a Linux host](#run-it-as-a-container-on-a-linux-host)
 for the walkthrough.
+
+### 3. An OpenWrt device, as packages
+
+The option for a box that is already an OpenWrt router or access point. boa
+installs next to LuCI as two packages — `boa`, the daemon, and `luci-app-boa`,
+a **Services → infinite-streaming-boa** page that frames the interface — and
+OpenWrt keeps doing everything it already does: the bridge, the radios, hotplug,
+supervision, upgrades.
+
+Choose it when the device should stay a normal OpenWrt box with LuCI, when you
+want boa's controls alongside OpenWrt's own, or when the hardware is a router
+rather than a Pi.
+
+It asks more of you before it installs than the other two, because a package
+must never rewire a router's network: the device has to be a **transparent
+bridge** already, and needs the **full `wpad`** with 802.11k/v on for steer and
+measure to work. Measured on a Pi 5 running OpenWrt 25.12.5, conditioning and
+most link controls work as on the other targets; a silent power cut (OpenWrt's
+kernel has no rfkill), a CSA channel switch (`mt7921u` refuses it) and an
+advertised BSS Load do not. Packages are built for arm64 on 25.12 only.
+
+See [`openwrt/README.md`](openwrt/README.md) for preparing the device, the
+packages, configuration, and every control as measured.
 
 ## Hardware
 
@@ -2695,7 +2741,9 @@ See the warning under [Hardware](#hardware).
 
 - **No login, and plain HTTP.** The interface on `:80` and ntopng on `:3000` have
   no authentication, and neither uses TLS — the box has no domain, so any
-  certificate would be self-signed. On a shared layer-2 segment an on-path
+  certificate would be self-signed. On OpenWrt the interface is also on `:8443`
+  with LuCI's own self-signed certificate, so that a LuCI reached over https can
+  frame it; its LuCI page asks for LuCI's login, but `:8080` and `:8443` do not. On a shared layer-2 segment an on-path
   attacker can read a management session, and the mDNS `.local` name it answers to
   can be spoofed. Reach it over a network you trust.
 - **The daemon runs as root** — shaping and the packet socket require it — and its

@@ -232,11 +232,13 @@ test.
 
 ## 5) System Overview
 
-**Two deployment targets, on equal terms.** boa runs either on a Raspberry Pi
-flashed from a purpose-built image, or as a container on an x86_64 Linux host
-that owns its adapters outright. Neither is the reference implementation and
-neither is a port. **The same `boad` binary and the same embedded interface
-serve both, and no behaviour in this document is conditional on the target.**
+**Three deployment targets, on equal terms.** boa runs on a Raspberry Pi
+flashed from a purpose-built image, as a container on an x86_64 Linux host
+that owns its adapters outright, or as a package on an OpenWrt device. None is
+the reference implementation and none is a port. **The same `boad` binary and
+the same embedded interface serve all three, and no behaviour in this document
+is conditional on the target** -- except the two below that exist because
+OpenWrt, not boa, owns the radios' configuration.
 
 What differs is only where the box obtains four things a bridge needs — the
 bridge itself, the hostapd configurations, hotplug handling, and process
@@ -248,10 +250,31 @@ move the physical adapters into its network namespace. The channel planner is
 shared verbatim between them, so a plan made on one target cannot drift from a
 plan made on the other.
 
-Where a requirement below genuinely differs, it says so. Two do: ntopng and
-glances are absent from the container image, and the container's management
-address is a private point-to-point link rather than a rescue address on the
-bridge.
+**OpenWrt** takes all four from itself: netifd builds the bridge from UCI,
+OpenWrt's wifi scripts start hostapd, hotplug is its own, and procd supervises
+`boad` through `/etc/init.d/boa`, configured from `/etc/config/boa`. boa
+installs as two packages, `boa` and `luci-app-boa`, and the device must already
+be a transparent bridge running the full `wpad` build. Because OpenWrt re-applies
+`/etc/config/wireless` at every boot, `wifi reload` and LuCI save, boa there
+must leave the device's own configuration agreeing with what it did. So `boad`
+started with `-openwrt` -- which only the init script passes, and which is
+never inferred -- does two things no other target does:
+
+- **A channel boa keeps is written into UCI** (`band`, `channel`, the width in
+  `htmode`), committed without a reload. Without it the next reload puts the
+  radio back and the restore loop moves it again, indefinitely.
+- **Every ban boa places is mirrored onto hostapd's ubus ban list**, so
+  OpenWrt's own tooling sees it. The mirror lasts at most 15 s and never longer
+  than boa's hold, because ubus bans cannot be lifted early and must not
+  lengthen a deadzone that is being measured. boa's deny list stays the ban
+  that decides.
+
+Where a requirement below genuinely differs, it says so. Three do: ntopng and
+glances are absent from the container image and from OpenWrt, the container's
+management address is a private point-to-point link rather than a rescue
+address on the bridge, and on OpenWrt the interface is on :8080 (LuCI holds
+:80) and on :8443 over https, and is reached from LuCI as
+Services -> infinite-streaming-boa.
 
 **Topology.** A transparent layer-2 bridge (`br-lan`) spans the WAN port, the
 wireless AP and any USB ethernet ports. Clients get addresses from the
@@ -263,12 +286,17 @@ fixed rescue address. On a container host the WAN port is one end of a veth pair
 whose other end sits in a bridge on the host, which is what keeps the uplink a
 real layer-2 port carrying arbitrary client MACs; the rescue address is replaced
 by a private management veth on its own /30, reachable through a DNAT on the
-host. In both cases downstream ports are named after the device rather than the
-socket it occupies.
+host. On OpenWrt the WAN port is the bridge port cabled to the upstream router,
+the rescue address is a second static interface on `br-lan`, and the AP and
+wired ports are read from the bridge at each start, because OpenWrt names APs
+after their phy in USB enumeration order. On the Pi and the container,
+downstream ports are named after the device rather than the socket it occupies.
 
 **Daemon** (`boad`) — a single Go binary with the Vue
-interface embedded. Serves :80. Requires root: it configures queueing
-disciplines and opens a packet socket. Identical on both targets.
+interface embedded. Serves :80 -- :8080 on OpenWrt, plus https on :8443 with
+the certificate LuCI already uses, so a LuCI reached over https can frame it.
+Requires root: it configures queueing disciplines and opens a packet socket.
+Identical on every target.
 
 **ntopng** — traffic analysis on :3000, watching `br-lan`. Deep links from each
 device card. Optional: the image builds without it, and **it is absent from the
@@ -329,7 +357,9 @@ machine that, on this target, is **still itself and not the appliance**. The
 honest place to run it is the host, directly, where every figure is about the
 same computer.
 
-None of :80, :3000 or :61208 authenticates. The box is a bench appliance for a
+None of :80, :3000 or :61208 authenticates, nor :8080 or :8443 on OpenWrt --
+the LuCI page that frames the interface asks for LuCI's login, but the ports
+it frames do not. The box is a bench appliance for a
 network you already control, and anyone who can reach it can re-shape any
 device on it — and, through glances, read its whole process list; put it on a
 network where that is acceptable.
@@ -1461,6 +1491,14 @@ damages packets, never link state.
   on every start. Root-owned helpers on the host therefore do this work, and the
   container deployment is not a zero-footprint one. Simpler arrangements are
   being evaluated.
+- **OpenWrt needs the device prepared by hand.** It must already be a
+  transparent bridge, with the full `wpad` build and 802.11k/v on each AP; no
+  package reconfigures a router's network, since a mistake there cuts off the
+  person making it. Without the full build, steer fails and measure is refused.
+- **OpenWrt lacks three radio controls.** Its kernel has no rfkill, so there is
+  no silent power cut; the `mt7921u` refuses a CSA channel switch, so a channel
+  moves by scan-and-apply; and the advertised BSS Load needs a testing build of
+  hostapd, so it is not offered. Packages are built for arm64 on 25.12 only.
 - **The container host must run NetworkManager.** The uplink NIC is put into a
   bridge with `nmcli`, and the script refuses to guess rather than acting on a
   host it cannot put back. A host using netplan with systemd-networkd — the

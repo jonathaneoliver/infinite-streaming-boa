@@ -1,0 +1,26 @@
+
+config boa 'main'
+	option enabled '1'
+	# uhttpd (LuCI) already owns :80.
+	option addr ':8080'
+	option bridge 'br-lan'
+	# The bridge port cabled to the existing network. Uplink is shaped here.
+	option wan 'eth1'
+	# Leave empty to take every bridge port that is a Wi-Fi AP (wlan) or a
+	# wired port other than wan (lan), read from the bridge at start. OpenWrt
+	# names APs after the phy (phy1-ap0), and USB radios can enumerate in a
+	# different order, so a fixed list goes stale.
+	option wlan ''
+	option lan ''
+	# Listen-only radios, never served on. Space-separated.
+	option scan ''
+	# /var is tmpfs on OpenWrt; policy has to live on the overlay to survive
+	# a reboot.
+	option state '/etc/infinite-streaming-boa/policies.json'
+	# The unshaped-ceiling server boa advertises on :5201.
+	option iperf '1'
+	# https as well as http, with the certificate LuCI already uses (uhttpd
+	# generates it, DER, on first start). Empty tls_addr turns it off.
+	option tls_addr ':8443'
+	option tls_cert '/etc/uhttpd.crt'
+	option tls_key '/etc/uhttpd.key'

@@ -663,7 +663,7 @@ func (e *Engine) runPin(
 	for _, mac := range macs {
 		ok := true
 		for i, w := range op.deny {
-			if err := e.denyACLOn(w, "ADD", mac); err != nil {
+			if err := e.denyACLAdd(w, mac, time.Duration(durSec*float64(time.Second))); err != nil {
 				// Unwind this client. A ban covering some of the radios is worse
 				// than none: the client is barred from part of the box and free
 				// to sit on the rest, which is neither the old behaviour nor the
