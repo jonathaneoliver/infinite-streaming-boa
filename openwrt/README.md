@@ -4,6 +4,8 @@ Runs `boad` on an OpenWrt device as a procd service, next to LuCI, instead of
 on the Raspberry Pi OS image. Measured on a Raspberry Pi 5 with OpenWrt 25.12.5
 (`bcm27xx/bcm2712`) and two MT7961 (`mt7921u`) USB adapters.
 
+![boa inside LuCI: Services -> infinite-streaming-boa](../docs/images/openwrt-luci.png)
+
 ## Prerequisite: a transparent bridge
 
 boa shapes uplink on the egress of the port cabled to the existing network,
