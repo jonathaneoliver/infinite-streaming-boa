@@ -46,6 +46,9 @@ log "Building boad $VER for linux/arm64"
     go build -trimpath -ldflags="-s -w -X main.version=${VER}" -o "../$BUILD/boad" . )
 
 if [ ! -f "$KEYS/private-key.pem" ]; then
+  # Never in CI: a key made there signs a feed no device trusts, and is lost
+  # with the runner. The workflow installs the real one from a secret.
+  [ -z "${CI:-}" ] || die "no signing key in $KEYS, and CI must not make one"
   log "Creating the package signing key in $KEYS"
   mkdir -p "$KEYS"
   ( umask 077; openssl ecparam -name prime256v1 -genkey -noout -out "$KEYS/private-key.pem" )

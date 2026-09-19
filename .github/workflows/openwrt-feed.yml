@@ -1,0 +1,102 @@
+# The OpenWrt package feed: boa and luci-app-boa, signed, on GitHub Pages.
+#
+# Built by the same scripts/openwrt-package.sh a developer runs, so the feed
+# and a local build cannot drift. On an x86-64 runner the OpenWrt SDK
+# container runs natively rather than under emulation.
+#
+# On a release tag, and by hand. Not on every push to main: a device on this
+# feed upgrades to whatever it serves, so it serves releases.
+#
+# Signing: the key is the repository secret BOA_APK_PRIVATE_KEY -- the same
+# key devices already trust. The build refuses to run without it rather than
+# let openwrt-package.sh generate a fresh key that no device trusts.
+name: OpenWrt package feed
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# One deploy at a time, and never cancel one halfway through publishing.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+env:
+  # The feed path a device puts in /etc/apk/repositories.d. Must match
+  # SDK_IMAGE in scripts/openwrt-package.sh: bcm27xx/bcm2712 on 25.12 is
+  # aarch64_cortex-a76.
+  OPENWRT_RELEASE: '25.12'
+  OPENWRT_ARCH: aarch64_cortex-a76
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # scripts/version.sh is `git describe --tags`.
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: daemon/go.mod
+          # No dependencies, so no go.sum to key a cache on.
+          cache: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+
+      - name: Install interface dependencies
+        run: npm ci
+        working-directory: ui
+
+      - name: Install the signing key
+        env:
+          KEY: ${{ secrets.BOA_APK_PRIVATE_KEY }}
+        run: |
+          if [ -z "$KEY" ]; then
+            echo "::error::The BOA_APK_PRIVATE_KEY secret is not set. Refusing to sign with a new key no device trusts."
+            exit 1
+          fi
+          mkdir -p cache/openwrt-keys
+          ( umask 077; printf '%s\n' "$KEY" > cache/openwrt-keys/private-key.pem )
+          openssl ec -in cache/openwrt-keys/private-key.pem -pubout \
+            -out cache/openwrt-keys/public-key.pem 2>/dev/null
+
+      - name: Build and sign the packages
+        run: ./scripts/openwrt-package.sh
+
+      - name: Assemble the site
+        run: |
+          feed="site/openwrt/$OPENWRT_RELEASE/$OPENWRT_ARCH"
+          mkdir -p "$feed"
+          cp dist/openwrt/*.apk dist/openwrt/packages.adb "$feed/"
+          cp cache/openwrt-keys/public-key.pem site/openwrt/boa-packages.pem
+          sed -e "s|@RELEASE@|$OPENWRT_RELEASE|g" -e "s|@ARCH@|$OPENWRT_ARCH|g" \
+              -e "s|@VERSION@|$(ls dist/openwrt/boa-[0-9]*.apk | sed -E 's|.*/boa-(.*)\.apk|\1|')|g" \
+              openwrt/feed/index.html > site/index.html
+          rm -f cache/openwrt-keys/private-key.pem
+          find site -type f | sort
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>infinite-streaming-boa — OpenWrt package feed</title>
+<style>
+  :root { --bg: #fafaf9; --fg: #1c1917; --muted: #57534e; --code: #f0efed; --line: #e7e5e4; --accent: #0b6bcb; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #111214; --fg: #e7e5e4; --muted: #a8a29e; --code: #1d1f23; --line: #2a2c31; --accent: #6cb4ff; }
+  }
+  body { margin: 0; background: var(--bg); color: var(--fg);
+         font: 16px/1.55 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  main { max-width: 46rem; margin: 0 auto; padding: 2.5rem 1.25rem 4rem; }
+  h1 { font-size: 1.6rem; margin: 0 0 .25rem; }
+  h2 { font-size: 1.1rem; margin: 2rem 0 .5rem; }
+  p.lead { color: var(--muted); margin-top: 0; }
+  pre { background: var(--code); border: 1px solid var(--line); border-radius: 6px;
+        padding: .8rem 1rem; overflow-x: auto; font-size: .86rem; line-height: 1.5; }
+  code { font-family: ui-monospace, "SF Mono", Menlo, monospace; }
+  a { color: var(--accent); }
+  table { border-collapse: collapse; font-size: .92rem; }
+  td { padding: .2rem 1rem .2rem 0; vertical-align: top; }
+  td:first-child { color: var(--muted); white-space: nowrap; }
+  ul { padding-left: 1.2rem; }
+</style>
+</head>
+<body>
+<main>
+  <h1>infinite-streaming-boa for OpenWrt</h1>
+  <p class="lead">A signed apk feed for <a href="https://github.com/jonathaneoliver/infinite-streaming-boa">boa</a>,
+  the per-device link conditioner, and its LuCI page.</p>
+
+  <table>
+    <tr><td>Version</td><td><code>@VERSION@</code></td></tr>
+    <tr><td>OpenWrt</td><td><code>@RELEASE@</code></td></tr>
+    <tr><td>Architecture</td><td><code>@ARCH@</code> (Raspberry Pi 5, and routers of the same architecture)</td></tr>
+    <tr><td>Packages</td><td><code>boa</code>, <code>luci-app-boa</code></td></tr>
+  </table>
+
+  <h2>Before installing</h2>
+  <p>boa conditions traffic on a <strong>transparent bridge</strong>, and needs the full hostapd. Neither is
+  something a package should do to a router on its own, so they are done by hand, once:</p>
+  <ul>
+    <li>The uplink port, wired ports and access points in <code>br-lan</code>; <code>lan</code> on DHCP;
+      OpenWrt's DHCP and RA off; <code>wan</code> removed.</li>
+    <li><code>wpad-mbedtls</code> in place of <code>wpad-basic-mbedtls</code>, with 802.11k/v on each access point.</li>
+  </ul>
+  <p>The <a href="https://github.com/jonathaneoliver/infinite-streaming-boa/blob/main/openwrt/README.md">OpenWrt README</a>
+  has the exact commands.</p>
+
+  <h2>Install</h2>
+  <pre><code>wget -O /etc/apk/keys/boa-packages.pem \
+  https://jonathaneoliver.github.io/infinite-streaming-boa/openwrt/boa-packages.pem
+echo https://jonathaneoliver.github.io/infinite-streaming-boa/openwrt/@RELEASE@/@ARCH@/packages.adb \
+  &gt;&gt; /etc/apk/repositories.d/customfeeds.list
+apk update
+apk add luci-app-boa</code></pre>
+  <p>Then open LuCI → <strong>Services → infinite-streaming-boa</strong>, or <code>http://&lt;device&gt;:8080/</code>.
+  Later releases arrive with <code>apk upgrade</code>, or from LuCI → System → Software.</p>
+
+  <h2>Trust</h2>
+  <p>The index is signed; apk checks it against the key above, so no <code>--allow-untrusted</code> is needed.
+  That key signs nothing but this feed.</p>
+</main>
+</body>
+</html>

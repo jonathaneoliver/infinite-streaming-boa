@@ -40,7 +40,28 @@ uci commit wireless && wifi reload
 service and installing the full one does not start it; a reload with no
 hostapd running leaves every AP down until it is started by hand.
 
-## Install, as packages
+## Install from the package feed
+
+Signed releases are published to a feed on GitHub Pages,
+<https://jonathaneoliver.github.io/infinite-streaming-boa/>, by
+`.github/workflows/openwrt-feed.yml` on every `v*` tag. With the prerequisites
+above in place:
+
+```sh
+wget -O /etc/apk/keys/boa-packages.pem \
+  https://jonathaneoliver.github.io/infinite-streaming-boa/openwrt/boa-packages.pem
+echo https://jonathaneoliver.github.io/infinite-streaming-boa/openwrt/25.12/aarch64_cortex-a76/packages.adb \
+  >> /etc/apk/repositories.d/customfeeds.list
+apk update && apk add luci-app-boa
+```
+
+Later releases arrive with `apk upgrade`, or from LuCI -> System -> Software.
+The workflow signs with the repository secret `BOA_APK_PRIVATE_KEY`, the same
+key as a local build, and refuses to run without it -- a key made on a runner
+would sign a feed no device trusts. It can also be run by hand from the
+Actions tab.
+
+## Build the packages yourself
 
 ```sh
 ./scripts/openwrt-package.sh                     # dist/openwrt/: boa, luci-app-boa, packages.adb
