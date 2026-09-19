@@ -990,6 +990,16 @@ a **Services → infinite-streaming-boa** page that frames the interface — and
 OpenWrt keeps doing everything it already does: the bridge, the radios, hotplug,
 supervision, upgrades.
 
+![boa inside LuCI on OpenWrt: the Services -> infinite-streaming-boa page
+framing boa's interface, with one iPhone's traffic on the charts and in the
+routing view](docs/images/openwrt-luci.png)
+
+Above: the LuCI page on a Pi 5 running OpenWrt 25.12.5, over http, framing
+boa from `:8080`. The header chips are boa's own — bridged via `eth1`, the
+5 GHz `mt7921u` on USB 3 — and ntopng and glances show as off, because OpenWrt
+has neither. The bridge line carries both of the box's addresses: the one from
+the upstream router and the `192.168.1.1` rescue address.
+
 Choose it when the device should stay a normal OpenWrt box with LuCI, when you
 want boa's controls alongside OpenWrt's own, or when the hardware is a router
 rather than a Pi.
