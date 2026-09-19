@@ -1383,6 +1383,16 @@ func (e *Engine) rememberChannel(iface string, channel, widthMHz, settled int) {
 			"choice could not be saved, so a restart will not restore it: %v\n",
 			iface, channel, err)
 	}
+	// And where OpenWrt looks, or its next `wifi reload` moves the radio back.
+	// See uci.go.
+	if !e.cfg.OpenWrt {
+		return
+	}
+	if err := persistChannelUCI(iface, channel, widthMHz); err != nil {
+		fmt.Printf("infinite-streaming-boa: %s moved to channel %d but "+
+			"/etc/config/wireless could not be updated, so the next wifi "+
+			"reload will move it back: %v\n", iface, channel, err)
+	}
 }
 
 // coexError explains a move that hostapd accepted, applied, and then undid.

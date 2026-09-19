@@ -9,6 +9,7 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"flag"
 	"fmt"
 	"net/http"
@@ -68,6 +69,16 @@ func main() {
 	flag.BoolVar(&cfg.Verbose, "verbose", false,
 		"log the received management frames that are context rather than events: "+
 			"association capabilities, and subtypes nothing acts on")
+	// HTTPS alongside HTTP, off unless an address is given. For OpenWrt, whose
+	// LuCI may be reached over https and cannot then frame a plain-http page;
+	// see tls.go for why the certificate may be DER.
+	var tlsAddr, tlsCert, tlsKey string
+	flag.StringVar(&tlsAddr, "tls-addr", "", "also serve over https on this address (e.g. :8443); empty = off")
+	flag.StringVar(&tlsCert, "tls-cert", "", "certificate for -tls-addr, PEM or DER")
+	flag.StringVar(&tlsKey, "tls-key", "", "private key for -tls-addr, PEM or DER")
+	flag.BoolVar(&cfg.OpenWrt, "openwrt", false,
+		"this is an OpenWrt device: write channel moves to UCI and mirror bans "+
+			"onto hostapd's ubus ban list; set by /etc/init.d/boa")
 	flag.BoolVar(&showVersion, "version", false, "print the version and exit")
 	flag.Parse()
 
@@ -114,6 +125,30 @@ func main() {
 		}
 	}()
 
+	// The same handler, not a second Routes(): one API, reachable two ways.
+	// A certificate problem disables https and says so, but is not fatal --
+	// refusing to start over it would leave the box both unconditioned and
+	// unreachable, when plain http is still there to be used.
+	var tlsSrv *http.Server
+	if tlsAddr != "" {
+		if pair, err := loadKeyPair(tlsCert, tlsKey); err != nil {
+			fmt.Fprintf(os.Stderr, "boa: https on %s disabled: %v\n", tlsAddr, err)
+		} else {
+			tlsSrv = &http.Server{
+				Addr:              tlsAddr,
+				Handler:           srv.Handler,
+				ReadHeaderTimeout: 10 * time.Second,
+				TLSConfig:         &tls.Config{Certificates: []tls.Certificate{pair}},
+			}
+			go func() {
+				fmt.Printf("infinite-streaming-boa: serving https on %s\n", tlsAddr)
+				if err := tlsSrv.ListenAndServeTLS("", ""); err != nil && err != http.ErrServerClosed {
+					fmt.Fprintln(os.Stderr, "boa https:", err)
+				}
+			}()
+		}
+	}
+
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
 	<-stop
@@ -129,4 +164,7 @@ func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	_ = srv.Shutdown(ctx)
+	if tlsSrv != nil {
+		_ = tlsSrv.Shutdown(ctx)
+	}
 }

@@ -1,0 +1,83 @@
+#!/bin/sh /etc/rc.common
+# infinite-streaming-boa on OpenWrt: procd service for boad (and iperf3).
+#
+# Settings live in /etc/config/boa. `service boa reload` after editing it.
+#
+# Stopping the service sends SIGTERM, and boad removes every qdisc it installed
+# before exiting -- a stopped daemon must never leave a device conditioned.
+
+START=95
+STOP=10
+USE_PROCD=1
+
+PROG=/usr/libexec/boa/boad
+
+# bridge_ports <bridge> <wan> <kind>: bridge members that are Wi-Fi (kind=wlan)
+# or wired and not the wan port (kind=lan), space-separated.
+bridge_ports() {
+	local br="$1" wan="$2" kind="$3" p out=""
+	for p in /sys/class/net/"$br"/brif/*; do
+		[ -e "$p" ] || continue
+		p="${p##*/}"
+		[ "$p" = "$wan" ] && continue
+		if [ -e /sys/class/net/"$p"/phy80211 ]; then
+			[ "$kind" = wlan ] && out="$out $p"
+		else
+			[ "$kind" = lan ] && out="$out $p"
+		fi
+	done
+	echo "${out# }"
+}
+
+start_service() {
+	local enabled addr bridge wan wlan lan scan state iperf tls_addr tls_cert tls_key
+
+	config_load boa
+	config_get_bool enabled main enabled 1
+	[ "$enabled" -eq 1 ] || return 0
+
+	config_get addr   main addr ':8080'
+	config_get bridge main bridge 'br-lan'
+	config_get wan    main wan 'eth1'
+	config_get wlan   main wlan ''
+	config_get lan    main lan ''
+	config_get scan   main scan ''
+	config_get state  main state '/etc/infinite-streaming-boa/policies.json'
+	config_get_bool iperf main iperf 1
+	config_get tls_addr main tls_addr ':8443'
+	config_get tls_cert main tls_cert '/etc/uhttpd.crt'
+	config_get tls_key  main tls_key  '/etc/uhttpd.key'
+
+	[ -n "$wlan" ] || wlan="$(bridge_ports "$bridge" "$wan" wlan)"
+	[ -n "$lan" ]  || lan="$(bridge_ports "$bridge" "$wan" lan)"
+
+	mkdir -p "${state%/*}"
+
+	procd_open_instance boad
+	# -openwrt: channel moves go to UCI, bans onto hostapd's ubus ban list.
+	procd_set_param command "$PROG" -openwrt \
+		-addr "$addr" -bridge "$bridge" -wan "$wan" \
+		-wlan "$wlan" -lan "$lan" -state "$state"
+	[ -n "$scan" ] && procd_append_param command -scan "$scan"
+	# https only when the certificate is there to serve it: uhttpd creates
+	# /etc/uhttpd.crt on its first start, which may be after this one.
+	[ -n "$tls_addr" ] && [ -f "$tls_cert" ] && [ -f "$tls_key" ] && \
+		procd_append_param command -tls-addr "$tls_addr" -tls-cert "$tls_cert" -tls-key "$tls_key"
+	procd_set_param respawn 3600 5 5
+	# Long enough for boad to tear its qdiscs down before procd SIGKILLs it.
+	procd_set_param term_timeout 15
+	procd_set_param stdout 1
+	procd_set_param stderr 1
+	procd_close_instance
+
+	if [ "$iperf" -eq 1 ] && [ -x /usr/bin/iperf3 ]; then
+		procd_open_instance iperf3
+		procd_set_param command /usr/bin/iperf3 -s
+		procd_set_param respawn 3600 5 5
+		procd_close_instance
+	fi
+}
+
+service_triggers() {
+	procd_add_reload_trigger boa
+}

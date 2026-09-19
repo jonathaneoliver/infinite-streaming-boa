@@ -315,7 +315,7 @@ func (e *Engine) LinkDeadzone(mac string, durSec float64, scope string) error {
 		return err
 	}
 	for i, w := range on {
-		if err := e.denyACLOn(w, "ADD", mac); err != nil {
+		if err := e.denyACLAdd(w, mac, time.Duration(durSec*float64(time.Second))); err != nil {
 			// Unwind what did land. A deadzone that covered half the radios is
 			// the thing this function refuses to be, and leaving the halves in
 			// place would strand the client exactly as #205 did.
@@ -391,7 +391,7 @@ func (e *Engine) reapplyDeadzones(iface string) {
 	e.mu.RUnlock()
 
 	for _, j := range jobs {
-		if err := e.denyACLOn(iface, "ADD", j.mac); err != nil {
+		if err := e.denyACLAdd(iface, j.mac, j.left); err != nil {
 			e.logEvent(EventWarning, iface, j.mac,
 				"could not restore the deadzone on %s after a restart: %v", iface, err)
 			continue

@@ -1,0 +1,13 @@
+{
+	"admin/services/boa": {
+		"title": "infinite-streaming-boa",
+		"order": 10,
+		"action": {
+			"type": "view",
+			"path": "boa/boa"
+		},
+		"depends": {
+			"acl": [ "luci-app-boa" ]
+		}
+	}
+}

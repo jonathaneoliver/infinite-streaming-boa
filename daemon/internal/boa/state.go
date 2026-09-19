@@ -73,6 +73,13 @@ type Config struct {
 	// setting that needs a restart to change is one that gets turned on
 	// afterwards, for the run that has already finished.
 	Verbose bool
+	// OpenWrt says the box is an OpenWrt device, where netifd owns the radios
+	// and the tools that describe them are uci and ubus. It turns on the two
+	// things only such a box needs: channel moves written back to
+	// /etc/config/wireless (uci.go) and bans mirrored onto hostapd's ubus ban
+	// list (ubusban.go). Set by /etc/init.d/boa, never detected: a Debian box
+	// with a stray uci binary must not start editing a config nothing reads.
+	OpenWrt bool
 }
 
 // PrimaryWlan is the radio reported wherever a single name is still wanted --
