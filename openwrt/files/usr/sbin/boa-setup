@@ -1,0 +1,352 @@
+#!/bin/sh
+#
+# boa-setup: what an OpenWrt device still needs before boa can run on it.
+#
+#   boa-setup check      read-only: every prerequisite, OK / WARN / FAIL,
+#                        with the command that fixes each one
+#
+# `check` changes nothing -- no uci set, no reload, no restart -- so it is safe
+# to run on a router carrying traffic. It exits 1 if anything failed.
+#
+# The steps it checks are the ones a vanilla OpenWrt 25.12 install on a
+# Raspberry Pi 5 needed by hand, in the order they were done: access, drivers,
+# hostapd, Wi-Fi, the bridge, packages, boa's own config, the service.
+
+FAILS=0
+WARNS=0
+
+ok()      { printf '  OK    %s\n' "$*"; }
+fail()    { printf '  FAIL  %s\n' "$*"; FAILS=$((FAILS + 1)); }
+warn()    { printf '  WARN  %s\n' "$*"; WARNS=$((WARNS + 1)); }
+note()    { printf '  --    %s\n' "$*"; }
+fix()     { printf '        fix: %s\n' "$*"; }
+section() { printf '\n%s\n' "$*"; }
+
+installed() { apk info -e "$1" >/dev/null 2>&1; }
+in_bridge() { [ -e "/sys/class/net/br-lan/brif/$1" ]; }
+is_wifi()   { [ -e "/sys/class/net/$1/phy80211" ]; }
+
+# --- 1. Access ---------------------------------------------------------------
+check_access() {
+	section "Access"
+	case "$(awk -F: '$1 == "root" { print $2 }' /etc/shadow 2>/dev/null)" in
+		''|'*'|'!') fail "root has no password: anyone on the LAN can log in"
+		            fix "passwd" ;;
+		*)          ok "root has a password" ;;
+	esac
+	if [ -s /etc/dropbear/authorized_keys ]; then
+		ok "SSH keys: $(grep -c . /etc/dropbear/authorized_keys)"
+	else
+		note "no SSH keys in /etc/dropbear/authorized_keys"
+	fi
+}
+
+# --- 2. Drivers --------------------------------------------------------------
+# Adapters boa has been run with, and the package that drives each. Anything
+# else is reported, never guessed at.
+known_usb() {
+	case "$1" in
+		0e8d:7961) echo "wifi kmod-mt7921u kmod-mt7921-firmware|MediaTek MT7921AU (Wi-Fi 6)" ;;
+		0e8d:7612) echo "wifi kmod-mt76x2u|MediaTek MT7612U (Wi-Fi 5)" ;;
+		0bda:8156) echo "eth kmod-usb-net-rtl8152|Realtek RTL8156 (2.5 GbE)" ;;
+		0bda:8153) echo "eth kmod-usb-net-rtl8152|Realtek RTL8153 (1 GbE)" ;;
+		0bda:8152) echo "eth kmod-usb-net-rtl8152|Realtek RTL8152 (100 Mb)" ;;
+	esac
+}
+
+check_drivers() {
+	section "USB adapters and drivers"
+	local d id info kind pkgs name drv seen=0
+	for d in /sys/bus/usb/devices/*; do
+		[ -f "$d/idVendor" ] || continue
+		# Hubs, and the root hubs of the controllers themselves.
+		[ "$(cat "$d/bDeviceClass")" = 09 ] && continue
+		id="$(cat "$d/idVendor"):$(cat "$d/idProduct")"
+		drv="$(basename "$(readlink "$d/${d##*/}:1.0/driver" 2>/dev/null)" 2>/dev/null)"
+		info="$(known_usb "$id")"
+		seen=1
+		if [ -n "$info" ]; then
+			kind="${info%% *}"; pkgs="${info#* }"; pkgs="${pkgs%%|*}"; name="${info#*|}"
+			if [ -n "$drv" ]; then
+				ok "$name at ${d##*/}: driver $drv"
+			else
+				fail "$name at ${d##*/} has no driver"
+				fix "apk add $pkgs"
+			fi
+		elif [ -n "$drv" ]; then
+			note "$id $(cat "$d/product" 2>/dev/null) at ${d##*/}: driver $drv (not an adapter boa has been tested with)"
+		else
+			warn "$id $(cat "$d/product" 2>/dev/null) at ${d##*/} has no driver, and boa knows no package for it"
+		fi
+	done
+	[ "$seen" = 1 ] || warn "no USB devices: boa's tested radios and 2.5 GbE ports are all USB"
+}
+
+# --- 3. hostapd --------------------------------------------------------------
+check_hostapd() {
+	section "hostapd"
+	local full="" basic="" p
+	for p in $(apk info 2>/dev/null | grep -E '^wpad'); do
+		case "$p" in
+			wpad-basic*|wpad-mini*) basic="$p" ;;
+			*)                      full="$p" ;;
+		esac
+	done
+	if [ -n "$full" ]; then
+		ok "$full: 802.11k/v commands available"
+	elif [ -n "$basic" ]; then
+		fail "$basic has no BSS transition management: steer fails, measure is refused"
+		fix "apk del $basic && apk add wpad-mbedtls && /etc/init.d/wpad enable && /etc/init.d/wpad start"
+		fix "start wpad BEFORE any wifi reload: the swap leaves it stopped, and a reload then brings no AP up"
+	else
+		fail "no wpad installed: nothing can run an access point"
+		fix "apk add wpad-mbedtls"
+	fi
+	if ubus list hostapd >/dev/null 2>&1; then
+		ok "hostapd is running"
+	else
+		fail "hostapd is not running"
+		fix "/etc/init.d/wpad start"
+	fi
+	/etc/init.d/wpad enabled 2>/dev/null && ok "wpad starts at boot" || {
+		fail "wpad does not start at boot"; fix "/etc/init.d/wpad enable"; }
+}
+
+# --- 4. Wi-Fi ----------------------------------------------------------------
+# Whether wifi-device $1 has an enabled access-point interface configured.
+serves_ap() {
+	local i
+	for i in $(uci -q show wireless | sed -n 's/^wireless\.\([^.=]*\)=wifi-iface$/\1/p'); do
+		[ "$(uci -q get wireless.$i.device)" = "$1" ] &&
+			[ "$(uci -q get wireless.$i.mode)" = ap ] &&
+			[ "$(uci -q get wireless.$i.disabled)" != 1 ] && return 0
+	done
+	return 1
+}
+
+# The netdev of wifi-device $1's phy, when it has exactly the one OpenWrt made
+# for it (wlan0 on the Pi 5's onboard radio): its path matches the phy's device.
+radio_ifname() {
+	local path p n
+	path="$(uci -q get wireless.$1.path)"
+	[ -n "$path" ] || return
+	for p in /sys/class/ieee80211/*; do
+		case "$(readlink -f "$p/device")" in
+			*"$path") for n in "$p"/device/net/*; do [ -e "$n" ] && echo "${n##*/}"; done; return ;;
+		esac
+	done
+}
+
+check_wifi() {
+	section "Wi-Fi"
+	local r band country dis serving=0 i dev mode ifname st k v
+	for r in $(uci -q show wireless | sed -n 's/^wireless\.\([^.=]*\)=wifi-device$/\1/p'); do
+		dis="$(uci -q get wireless.$r.disabled)"
+		band="$(uci -q get wireless.$r.band)"
+		country="$(uci -q get wireless.$r.country)"
+		if [ "$dis" = 1 ]; then
+			note "$r ($band) is disabled"
+			continue
+		fi
+		# Only a radio that serves needs its own country: the regulatory domain
+		# is one for the whole system, and a listen-only scanner -- the onboard
+		# radio on a Pi 5 -- runs under whatever the serving radios set.
+		if ! serves_ap "$r"; then
+			note "$r ($band) runs no access point$( [ "$(uci -q get boa.main.scan)" = "$(radio_ifname "$r")" ] && echo ": boa's scan radio")"
+			continue
+		fi
+		case "$country" in
+			''|00) fail "$r has no country set, so it runs on the world domain's few channels"
+			       fix "uci set wireless.$r.country=<CC> && uci commit wireless && wifi reload" ;;
+		esac
+		# `wifi config` offers 6g first on these radios, and the mt7921u will
+		# not start a 6 GHz access point.
+		[ "$band" = 6g ] && {
+			warn "$r is set to 6 GHz, where the mt7921u will not run an access point"
+			fix "uci set wireless.$r.band=5g (or 2g) && uci commit wireless && wifi reload"; }
+	done
+
+	for i in $(uci -q show wireless | sed -n 's/^wireless\.\([^.=]*\)=wifi-iface$/\1/p'); do
+		dev="$(uci -q get wireless.$i.device)"
+		mode="$(uci -q get wireless.$i.mode)"
+		[ "$mode" = ap ] || continue
+		[ "$(uci -q get wireless.$i.disabled)" = 1 ] && { note "$i on $dev is disabled"; continue; }
+		[ "$(uci -q get wireless.$dev.disabled)" = 1 ] && continue
+		ifname="$(ubus call network.wireless status 2>/dev/null |
+			jsonfilter -e "@.$dev.interfaces[@.section='$i'].ifname" 2>/dev/null)"
+		if [ -z "$ifname" ]; then
+			fail "$i on $dev is configured but has no interface: the AP did not come up"
+			fix "logread -e hostapd; wifi up $dev"
+			continue
+		fi
+		st="$(ubus call "hostapd.$ifname" get_status 2>/dev/null | jsonfilter -e @.status 2>/dev/null)"
+		if [ "$st" = ENABLED ]; then
+			serving=$((serving + 1))
+			ok "$ifname ($dev, $(uci -q get wireless.$dev.band), ch $(uci -q get wireless.$dev.channel)) is serving \"$(uci -q get wireless.$i.ssid)\""
+		else
+			fail "$ifname is ${st:-not answering}, not serving"
+			fix "logread -e hostapd; wifi up $dev"
+		fi
+		in_bridge "$ifname" || {
+			fail "$ifname is not in br-lan, so boa cannot see or shape its clients"
+			fix "uci set wireless.$i.network=lan && uci commit wireless && wifi reload"; }
+		for k in ieee80211k:measure bss_transition:steer; do
+			v="$(uci -q get wireless.$i.${k%%:*})"
+			[ "$v" = 1 ] || {
+				warn "$ifname: ${k%%:*} is off, so ${k#*:} will not work"
+				fix "uci set wireless.$i.${k%%:*}=1 && uci commit wireless && wifi reload"; }
+		done
+	done
+	[ "$serving" -gt 0 ] || fail "no access point is serving"
+}
+
+# --- 5. The bridge -----------------------------------------------------------
+UPLINK=""
+
+check_bridge() {
+	section "Transparent bridge"
+	local gw gwmac ports p rescue
+	if [ ! -d /sys/class/net/br-lan/brif ]; then
+		fail "there is no br-lan bridge"
+		return
+	fi
+	ports="$(ls /sys/class/net/br-lan/brif | tr '\n' ' ')"
+	note "br-lan ports: $ports"
+
+	[ "$(uci -q get network.lan.proto)" = dhcp ] && ok "lan takes its address by DHCP from the upstream router" || {
+		fail "lan is '$(uci -q get network.lan.proto)', not dhcp: the device is routing, not bridging"
+		fix "a bridge conversion (see openwrt/README.md, 'Prerequisite: a transparent bridge')"; }
+	for p in wan wan6; do
+		[ -n "$(uci -q get network.$p)" ] && {
+			fail "network.$p exists: with NAT every client leaves with one address, and uplink shaping cannot tell them apart"
+			fix "part of the bridge conversion: uci delete network.$p"; }
+	done
+	[ "$(uci -q get dhcp.lan.ignore)" = 1 ] && ok "OpenWrt's DHCP server is off on lan" || {
+		fail "OpenWrt's DHCP server is on: clients must get addresses from the upstream router"
+		fix "uci set dhcp.lan.ignore=1 && uci commit dhcp && /etc/init.d/dnsmasq restart"; }
+	[ "$(uci -q get dhcp.lan.ra)" = disabled ] || {
+		warn "router advertisements are on for lan"
+		fix "uci set dhcp.lan.ra=disabled && uci set dhcp.lan.dhcpv6=disabled && uci commit dhcp && /etc/init.d/odhcpd restart"; }
+
+	# The uplink is the port the upstream router is behind, found by asking the
+	# bridge where it learned the default gateway's MAC -- not by guessing from
+	# names, which on a USB box follow enumeration order.
+	gw="$(ip -4 route show default 2>/dev/null | awk '{ print $3; exit }')"
+	if [ -z "$gw" ]; then
+		fail "no default route: the bridge has no working upstream"
+	else
+		ping -c 1 -W 1 "$gw" >/dev/null 2>&1
+		gwmac="$(ip neigh show "$gw" 2>/dev/null | awk '{ for (i = 1; i < NF; i++) if ($i == "lladdr") print $(i + 1) }')"
+		UPLINK="$(bridge fdb show br br-lan 2>/dev/null | awk -v m="$gwmac" 'tolower($1) == tolower(m) && $2 == "dev" { print $3; exit }')"
+		if [ -n "$UPLINK" ]; then
+			ok "uplink: $UPLINK (the upstream router, $gw, is behind it)"
+		else
+			warn "the upstream router ($gw) was not found behind any br-lan port"
+		fi
+	fi
+
+	rescue="$(for p in $(uci -q show network | sed -n 's/^network\.\([^.=]*\)=interface$/\1/p'); do
+		[ "$(uci -q get network.$p.device)" = br-lan ] && [ "$(uci -q get network.$p.proto)" = static ] &&
+			echo "$(uci -q get network.$p.ipaddr) ($p)"
+	done | head -1)"
+	[ -n "$rescue" ] && ok "rescue address on br-lan: $rescue" || {
+		warn "no static rescue address on br-lan: if the DHCP lease moves, the device's address does too"
+		fix "uci set network.mgmt=interface; uci set network.mgmt.device=br-lan; uci set network.mgmt.proto=static; uci set network.mgmt.ipaddr=192.168.1.1/24"; }
+}
+
+# --- 6. Packages -------------------------------------------------------------
+check_packages() {
+	section "Packages"
+	local p missing=""
+	for p in tc-full kmod-netem kmod-ifb kmod-sched-core kmod-nft-bridge ip-full ip-bridge iw iperf3; do
+		installed "$p" || missing="$missing $p"
+	done
+	[ -z "$missing" ] && ok "boa's dependencies are installed" || {
+		fail "missing:$missing"
+		fix "apk add$missing"; }
+	installed luci-app-boa && ok "luci-app-boa: Services -> infinite-streaming-boa" ||
+		note "luci-app-boa is not installed (optional: the LuCI page)"
+}
+
+# --- 7. boa's configuration --------------------------------------------------
+check_boa_config() {
+	section "boa configuration (/etc/config/boa)"
+	local wan scan n spare=""
+	wan="$(uci -q get boa.main.wan)"; wan="${wan:-eth1}"
+	if ! in_bridge "$wan"; then
+		fail "boa.main.wan is $wan, which is not a br-lan port"
+		[ -n "$UPLINK" ] && fix "uci set boa.main.wan=$UPLINK && uci commit boa && service boa restart"
+	elif [ -n "$UPLINK" ] && [ "$wan" != "$UPLINK" ]; then
+		fail "boa.main.wan is $wan, but the upstream router is behind $UPLINK: uplink shaping would miss"
+		fix "uci set boa.main.wan=$UPLINK && uci commit boa && service boa restart"
+	else
+		ok "boa.main.wan = $wan"
+	fi
+
+	for n in $(ls /sys/class/net); do
+		is_wifi "$n" && ! in_bridge "$n" && spare="$spare $n"
+	done
+	spare="${spare# }"
+	scan="$(uci -q get boa.main.scan)"
+	if [ -n "$scan" ]; then
+		if ! is_wifi "$scan"; then
+			fail "boa.main.scan is $scan, which is not a radio"
+		elif in_bridge "$scan"; then
+			fail "boa.main.scan is $scan, which is serving clients: every scan takes it off channel"
+		else
+			ok "boa.main.scan = $scan, a radio that serves nobody"
+		fi
+	elif [ -n "$spare" ]; then
+		warn "no scan radio set, so boa scans with a radio that serves clients; $spare serves nobody"
+		fix "uci set boa.main.scan='$spare' && uci commit boa && service boa restart"
+	else
+		note "no spare radio: boa will scan with a serving radio, off channel for ~1.3 s each time"
+	fi
+	[ -n "$(uci -q get boa.main.tls_addr)" ] && [ ! -f "$(uci -q get boa.main.tls_cert || echo /etc/uhttpd.crt)" ] &&
+		warn "https is configured but the certificate is missing; boad serves http only"
+}
+
+# --- 8. The service ----------------------------------------------------------
+check_service() {
+	section "boa service"
+	local port health
+	if [ ! -x /etc/init.d/boa ]; then
+		fail "boa is not installed"
+		fix "apk add boa"
+		return
+	fi
+	/etc/init.d/boa enabled && ok "starts at boot" || { fail "does not start at boot"; fix "/etc/init.d/boa enable"; }
+	if ! pidof boad >/dev/null; then
+		fail "boad is not running"
+		fix "/etc/init.d/boa start; logread -e boad"
+		return
+	fi
+	ubus call service list '{"name":"boa"}' 2>/dev/null | grep -q -- '"-openwrt"' &&
+		ok "boad is running with -openwrt" ||
+		warn "boad is running without -openwrt: channel moves will not reach UCI"
+	port="$(uci -q get boa.main.addr)"; port="${port##*:}"; port="${port:-8080}"
+	health="$(wget -q -T 3 -O - "http://127.0.0.1:$port/api/health" 2>/dev/null | jsonfilter -e @.ok 2>/dev/null)"
+	[ "$health" = true ] && ok "answering on :$port" || fail "not answering on :$port"
+}
+
+cmd_check() {
+	printf 'boa-setup check -- read-only; nothing is changed\n'
+	check_access
+	check_drivers
+	check_hostapd
+	check_wifi
+	check_bridge
+	check_packages
+	check_boa_config
+	check_service
+	printf '\n%d failed, %d warning(s)\n' "$FAILS" "$WARNS"
+	[ "$FAILS" -eq 0 ]
+}
+
+case "${1:-}" in
+	check) cmd_check ;;
+	*)
+		echo "usage: boa-setup check" >&2
+		echo "  check   read-only: what this device still needs before boa can run on it" >&2
+		exit 2 ;;
+esac

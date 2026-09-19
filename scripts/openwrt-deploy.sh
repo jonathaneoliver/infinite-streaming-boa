@@ -58,6 +58,7 @@ log "Installing files"
 # with "text file busy" while the service is up.
 ssh "$TARGET" 'mkdir -p /usr/libexec/boa && cat > /usr/libexec/boa/boad.new && chmod 0755 /usr/libexec/boa/boad.new && mv /usr/libexec/boa/boad.new /usr/libexec/boa/boad' < "$OUT/boad"
 ssh "$TARGET" 'cat > /etc/init.d/boa && chmod 0755 /etc/init.d/boa' < openwrt/files/etc/init.d/boa
+ssh "$TARGET" 'cat > /usr/sbin/boa-setup && chmod 0755 /usr/sbin/boa-setup' < openwrt/files/usr/sbin/boa-setup
 ssh "$TARGET" '[ -f /etc/config/boa ] || cat > /etc/config/boa' < openwrt/files/etc/config/boa
 
 # LuCI's Services -> Boa page. LuCI caches its menu and rpcd reads ACLs only at
