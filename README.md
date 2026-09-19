@@ -134,6 +134,18 @@ cp .env.example .env      # set AP_SSID, AP_PASSWORD, AP_COUNTRY
 ./build.sh                # ~5 min first time, then cached
 ```
 
+Or, on a Raspberry Pi OS (or Debian) machine you already have, install the
+daemon and its service from the signed apt repository — it does not build the
+bridge or configure the radios, so see [`deb/README.md`](deb/README.md) first:
+
+```sh
+curl -fsSL https://jonathaneoliver.github.io/infinite-streaming-boa/apt/boa-archive-keyring.gpg \
+  | sudo tee /etc/apt/keyrings/infinite-streaming-boa.gpg >/dev/null
+echo "deb [signed-by=/etc/apt/keyrings/infinite-streaming-boa.gpg] https://jonathaneoliver.github.io/infinite-streaming-boa/apt stable main" \
+  | sudo tee /etc/apt/sources.list.d/infinite-streaming-boa.list
+sudo apt update && sudo apt install infinite-streaming-boa
+```
+
 Write the `.img` from `dist/` to a card with
 [Raspberry Pi Imager](https://www.raspberrypi.com/software/) or
 [balenaEtcher](https://etcher.balena.io/) — there is deliberately no flashing
@@ -966,6 +978,13 @@ should not also be doing anything else.
 
 See [Hardware](#hardware) for the parts and [Build an image](#build-an-image)
 for the build.
+
+The daemon and its service are also an apt package, `infinite-streaming-boa`
+(arm64 and amd64), for a Pi OS or Debian machine that is not flashed from the
+image. It installs what the image's overlay installs and nothing the image
+builds around it — no bridge, no hostapd configs, no adapter naming — so it
+suits a machine already set up as a bridge, and updates with `apt upgrade`.
+See [`deb/README.md`](deb/README.md).
 
 ### 2. A Linux host, from a container
 

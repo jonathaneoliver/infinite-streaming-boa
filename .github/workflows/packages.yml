@@ -1,16 +1,22 @@
-# The OpenWrt package feed: boa and luci-app-boa, signed, on GitHub Pages.
+# boa's package feeds, signed, on GitHub Pages: the OpenWrt apk feed (boa,
+# luci-app-boa) under /openwrt/, and the apt repository (infinite-streaming-boa
+# for arm64 and amd64) under /apt/.
 #
-# Built by the same scripts/openwrt-package.sh a developer runs, so the feed
-# and a local build cannot drift. On an x86-64 runner the OpenWrt SDK
-# container runs natively rather than under emulation.
+# ONE workflow for both because a Pages deploy replaces the whole site: two
+# workflows would each publish a site without the other's feed.
+#
+# Built by the same scripts/openwrt-package.sh and scripts/deb-package.sh a
+# developer runs, so the feeds and a local build cannot drift. On an x86-64
+# runner the OpenWrt SDK container runs natively rather than under emulation.
 #
 # On a release tag, and by hand. Not on every push to main: a device on this
 # feed upgrades to whatever it serves, so it serves releases.
 #
-# Signing: the key is the repository secret BOA_APK_PRIVATE_KEY -- the same
-# key devices already trust. The build refuses to run without it rather than
-# let openwrt-package.sh generate a fresh key that no device trusts.
-name: OpenWrt package feed
+# Signing: the repository secrets BOA_APK_PRIVATE_KEY (apk) and
+# BOA_APT_GPG_PRIVATE_KEY (apt) -- the keys clients already trust. The build
+# refuses to run without either rather than let a script generate a fresh key
+# that nothing trusts.
+name: Package feeds
 
 on:
   push:
@@ -72,8 +78,22 @@ jobs:
           openssl ec -in cache/openwrt-keys/private-key.pem -pubout \
             -out cache/openwrt-keys/public-key.pem 2>/dev/null
 
-      - name: Build and sign the packages
+      - name: Install the apt archive key
+        env:
+          KEY: ${{ secrets.BOA_APT_GPG_PRIVATE_KEY }}
+        run: |
+          if [ -z "$KEY" ]; then
+            echo "::error::The BOA_APT_GPG_PRIVATE_KEY secret is not set. Refusing to sign with a new key no client trusts."
+            exit 1
+          fi
+          mkdir -p cache/apt-keys
+          ( umask 077; printf '%s\n' "$KEY" > cache/apt-keys/private.asc )
+
+      - name: Build and sign the OpenWrt packages
         run: ./scripts/openwrt-package.sh
+
+      - name: Build and sign the apt repository
+        run: ./scripts/deb-package.sh
 
       - name: Assemble the site
         run: |
@@ -81,10 +101,12 @@ jobs:
           mkdir -p "$feed"
           cp dist/openwrt/*.apk dist/openwrt/packages.adb "$feed/"
           cp cache/openwrt-keys/public-key.pem site/openwrt/boa-packages.pem
+          cp -R dist/apt site/apt
           sed -e "s|@RELEASE@|$OPENWRT_RELEASE|g" -e "s|@ARCH@|$OPENWRT_ARCH|g" \
               -e "s|@VERSION@|$(ls dist/openwrt/boa-[0-9]*.apk | sed -E 's|.*/boa-(.*)\.apk|\1|')|g" \
+              -e "s|@DEBVERSION@|$(ls dist/deb/*_arm64.deb | sed -E 's|.*_(.*)_arm64\.deb|\1|')|g" \
               openwrt/feed/index.html > site/index.html
-          rm -f cache/openwrt-keys/private-key.pem
+          rm -f cache/openwrt-keys/private-key.pem cache/apt-keys/private.asc
           find site -type f | sort
 
       - uses: actions/upload-pages-artifact@v3

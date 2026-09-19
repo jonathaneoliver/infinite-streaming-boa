@@ -1,0 +1,37 @@
+#!/bin/sh
+# Enable boa, and start it only where it has something to condition.
+#
+# Started unconditionally, boad would come up on a machine with no bridge,
+# claim :80, and shape nothing -- on a Pi someone installed it on to try it,
+# possibly next to a web server of their own. So the service is enabled, and
+# started only if the bridge it is configured for already exists; otherwise
+# the install says what is missing and it starts at the next boot after the
+# bridge is built.
+set -e
+
+DEFAULTS=/etc/default/infinite-streaming-boa
+UNITS="infinite-streaming-boa.service infinite-streaming-boa-iperf3.service"
+
+case "$1" in
+configure)
+	mkdir -p /var/lib/infinite-streaming-boa
+	# No systemd running: a chroot, a container, an image being built.
+	[ -d /run/systemd/system ] || exit 0
+	systemctl daemon-reload
+	systemctl enable $UNITS >/dev/null 2>&1
+	# `|| true`: under set -e a missing $DEFAULTS (deleted by hand) would
+	# otherwise end the script here, silently, with the service enabled.
+	bridge=$(sed -n 's/^BOA_BRIDGE=//p' "$DEFAULTS" 2>/dev/null || true)
+	bridge=${bridge:-br-lan}
+	if [ -e "/sys/class/net/$bridge" ]; then
+		systemctl restart $UNITS
+	else
+		echo "infinite-streaming-boa: enabled but not started -- there is no $bridge bridge." >&2
+		echo "  boa conditions traffic on a transparent bridge between the router and the" >&2
+		echo "  devices under test. Build it, set the ports in $DEFAULTS, then:" >&2
+		echo "    sudo systemctl start infinite-streaming-boa" >&2
+		echo "  https://github.com/jonathaneoliver/infinite-streaming-boa#three-ways-to-run-it" >&2
+	fi
+	;;
+esac
+exit 0

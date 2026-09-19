@@ -68,7 +68,7 @@ Run against a copy of its config edited back to a router's -- `lan` static,
 
 Signed releases are published to a feed on GitHub Pages,
 <https://jonathaneoliver.github.io/infinite-streaming-boa/>, by
-`.github/workflows/openwrt-feed.yml` on every `v*` tag. With the prerequisites
+`.github/workflows/packages.yml` on every `v*` tag. With the prerequisites
 above in place:
 
 ```sh
