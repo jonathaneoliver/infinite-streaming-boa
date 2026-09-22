@@ -83,6 +83,40 @@ func (e *Engine) ensureScanIfaces() {
 		}
 		e.logEvent(EventRadio, s, "", "%s recreated on %s: listen-only, and a reboot does not keep one", s, phy)
 	}
+	e.warnOrphanScanIfaces()
+}
+
+// warnOrphanScanIfaces names a listen-only interface this box made and no
+// longer claims.
+//
+// The other direction of the same disagreement ensureScanIfaces fixes, and it
+// is NOT fixed here: the interface is harmless, and deleting one somebody made
+// on purpose would be this box tidying away hardware it does not own. What is
+// harmful is the silence -- an orphan reads as an ordinary radio in the rack,
+// down, not serving, offering every access point control there is. So it is
+// said once, at the start, in terms that name the repair.
+func (e *Engine) warnOrphanScanIfaces() {
+	claimed := map[string]bool{}
+	for _, s := range e.cfg.ScanPorts {
+		claimed[s] = true
+	}
+	ents, err := os.ReadDir("/sys/class/net")
+	if err != nil {
+		return
+	}
+	for _, ent := range ents {
+		name := ent.Name()
+		if claimed[name] || phyOfScanIface(name) == "" {
+			continue
+		}
+		want := strings.TrimSpace(strings.Join(e.cfg.ScanPorts, " ") + " " + name)
+		e.logEvent(EventWarning, name, "",
+			"%s is a listen-only interface this box made and no longer watches, so it "+
+				"shows in the rack as a radio serving nobody. Watch it again with "+
+				"`uci set boa.main.scan='%s' && uci commit boa && /etc/init.d/boa restart`, "+
+				"or take it away with `iw dev %s del`",
+			name, want, name)
+	}
 }
 
 // SetRadioRole makes a radio listen-only, or gives it back to OpenWrt to serve.
@@ -134,7 +168,7 @@ func (e *Engine) SetRadioRole(iface string, scanner bool) (string, error) {
 			}
 		}
 		_ = exec.Command("ip", "link", "set", scan, "up").Run()
-		if err := uciSet("boa.main.scan=" + scan); err != nil {
+		if err := setScanPort(scan, true); err != nil {
 			return "", err
 		}
 	} else {
@@ -149,7 +183,7 @@ func (e *Engine) SetRadioRole(iface string, scanner bool) (string, error) {
 				return "", fmt.Errorf("removing %s: %v: %s", scan, err, strings.TrimSpace(string(out)))
 			}
 		}
-		if err := uciDelete("boa.main.scan"); err != nil {
+		if err := setScanPort(scan, false); err != nil {
 			return "", err
 		}
 		if out, err := exec.Command("wifi", "reload").CombinedOutput(); err != nil {
@@ -185,6 +219,69 @@ func (e *Engine) SetRadioRole(iface string, scanner bool) (string, error) {
 		return scan, nil
 	}
 	return iface, nil
+}
+
+/*
+ * boa.main.scan IS A LIST, and treating it as a single value is how making one
+ * radio listen-only silently un-made another.
+ *
+ * MEASURED on the Cudy TR3000, 2026-09-22: phy0 had been listening for hours;
+ * turning phy3 listen-only from the rack left `boa.main.scan=phy3-scan` and
+ * nothing else. The phy0-scan interface was still there and still worked -- a
+ * hand-run scan on it returned BSSes -- but the daemon no longer knew it was an
+ * instrument, so the row drew it as an ordinary access point and offered
+ * deauth, disassoc, steer, evict and gather on a BSS that does not exist. The
+ * delete was the same mistake pointed the other way: taking ONE radio back to
+ * serving removed every scanner from the config.
+ *
+ * The daemon has always accepted several -- main.go hands the flag to
+ * SplitPorts, which splits on commas and spaces -- so only the writer was
+ * wrong. See issue #351.
+ */
+
+// setScanPort adds or removes one port in boa.main.scan, leaving the others
+// alone. Removing the last one deletes the option, which is what "no scanners"
+// looks like in UCI.
+func setScanPort(port string, want bool) error {
+	have := SplitPorts(uciGet("boa.main.scan"))
+	next := scanPortsAfter(have, port, want)
+	if len(next) == 0 {
+		return uciDelete("boa.main.scan")
+	}
+	return uciSet("boa.main.scan=" + strings.Join(next, " "))
+}
+
+// scanPortsAfter is that edit as a value, so the rule can be tested without a
+// box to run uci on.
+//
+// Order is preserved and duplicates are dropped: the list is read back at every
+// start, and a port named twice would have the daemon poll one radio twice
+// while reporting it once.
+func scanPortsAfter(have []string, port string, want bool) []string {
+	out := make([]string, 0, len(have)+1)
+	seen := map[string]bool{}
+	for _, p := range have {
+		if p == "" || seen[p] || (p == port && !want) {
+			continue
+		}
+		seen[p] = true
+		out = append(out, p)
+	}
+	if want && !seen[port] && port != "" {
+		out = append(out, port)
+	}
+	return out
+}
+
+// uciGet reads one option, empty for anything unset. Errors are the same
+// answer as unset here: an option that cannot be read is one this box is about
+// to write.
+func uciGet(key string) string {
+	out, err := exec.Command("uci", "-q", "get", key).Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
 }
 
 // uciRadioForPhy finds the wifi-device behind an interface, by two routes.
