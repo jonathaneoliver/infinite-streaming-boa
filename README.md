@@ -158,7 +158,8 @@ transparent bridge running the full `wpad`), from the signed feed:
 ```sh
 wget -O /etc/apk/keys/boa-packages.pem \
   https://jonathaneoliver.github.io/infinite-streaming-boa/openwrt/boa-packages.pem
-echo https://jonathaneoliver.github.io/infinite-streaming-boa/openwrt/25.12/aarch64_cortex-a76/packages.adb \
+. /etc/openwrt_release   # DISTRIB_ARCH picks the feed
+echo https://jonathaneoliver.github.io/infinite-streaming-boa/openwrt/25.12/$DISTRIB_ARCH/packages.adb \
   >> /etc/apk/repositories.d/customfeeds.list
 apk update && apk add luci-app-boa
 ```

@@ -1,10 +1,17 @@
 #!/usr/bin/env bash
 #
 # Build signed OpenWrt packages: boa (the daemon) and luci-app-boa (the LuCI
-# page), for OpenWrt 25.12 on bcm27xx/bcm2712 (Raspberry Pi 5).
+# page), for OpenWrt 25.12 on bcm27xx/bcm2712 (Raspberry Pi 5) by default.
 #
 #   ./scripts/openwrt-package.sh              -> dist/openwrt/*.apk
 #   ./scripts/openwrt-package.sh root@<host>  -> and install them there
+#
+# Another target is another SDK; the package architecture is read from it:
+#
+#   SDK_IMAGE=openwrt/sdk:mediatek-filogic-25.12.5 ./scripts/openwrt-package.sh
+#
+# builds aarch64_cortex-a53, for MediaTek Filogic routers such as the Cudy
+# TR3000. boad is the same static arm64 binary either way.
 #
 # boad is cross-compiled here, as deploy.sh does, with the interface embedded;
 # the OpenWrt SDK then only packages and signs. The SDK is x86-64 only, so on
@@ -35,7 +42,9 @@ command -v docker >/dev/null || die "docker is required to run the OpenWrt SDK"
 VER="$(bash scripts/version.sh)"
 BOA_VERSION="$(printf '%s' "$VER" | sed -E 's/^v//; s/[^0-9.].*$//')"
 [ -n "$BOA_VERSION" ] || BOA_VERSION=0.0.0
-BOA_RELEASE="$(date -u +%Y%m%d%H%M)"
+# The feed workflow sets it once for every architecture it builds, so a release
+# carries the same version in each feed rather than one a minute apart.
+BOA_RELEASE="${BOA_RELEASE:-$(date -u +%Y%m%d%H%M)}"
 
 log "Building interface"
 ( cd ui && { [ -d node_modules ] || npm install --silent; } && npm run build --silent )

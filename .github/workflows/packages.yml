@@ -34,11 +34,19 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  # The feed path a device puts in /etc/apk/repositories.d. Must match
-  # SDK_IMAGE in scripts/openwrt-package.sh: bcm27xx/bcm2712 on 25.12 is
-  # aarch64_cortex-a76.
+  # The feed path a device puts in /etc/apk/repositories.d is
+  # openwrt/<release>/<its DISTRIB_ARCH>/, one per SDK below.
   OPENWRT_RELEASE: '25.12'
-  OPENWRT_ARCH: aarch64_cortex-a76
+  OPENWRT_SDK_VERSION: '25.12.5'
+  # SDK target, then the package architecture it must produce. The build is
+  # checked against the second, so a renamed SDK cannot publish under the
+  # wrong path. boad is the same static arm64 binary in both; only apk's label
+  # differs, and apk refuses a package whose label is not the device's.
+  #   bcm27xx-bcm2712  Raspberry Pi 5
+  #   mediatek-filogic MT7981/MT7986 routers: Cudy TR3000, GL.iNet MT3000, ...
+  OPENWRT_TARGETS: >-
+    bcm27xx-bcm2712:aarch64_cortex-a76
+    mediatek-filogic:aarch64_cortex-a53
 
 jobs:
   build:
@@ -89,20 +97,29 @@ jobs:
           mkdir -p cache/apt-keys
           ( umask 077; printf '%s\n' "$KEY" > cache/apt-keys/private.asc )
 
-      - name: Build and sign the OpenWrt packages
-        run: ./scripts/openwrt-package.sh
+      - name: Build and sign the OpenWrt packages, one feed per architecture
+        run: |
+          # One release stamp for every feed, so a release has one version.
+          export BOA_RELEASE="$(date -u +%Y%m%d%H%M)"
+          for t in $OPENWRT_TARGETS; do
+            sdk="${t%%:*}" arch="${t##*:}"
+            SDK_IMAGE="openwrt/sdk:$sdk-$OPENWRT_SDK_VERSION" ./scripts/openwrt-package.sh \
+              | tee build.log
+            grep -q "^packed boa-.* ($arch):" build.log \
+              || { echo "::error::$sdk did not produce $arch packages"; exit 1; }
+            feed="site/openwrt/$OPENWRT_RELEASE/$arch"
+            mkdir -p "$feed"
+            cp dist/openwrt/*.apk dist/openwrt/packages.adb "$feed/"
+          done
 
       - name: Build and sign the apt repository
         run: ./scripts/deb-package.sh
 
       - name: Assemble the site
         run: |
-          feed="site/openwrt/$OPENWRT_RELEASE/$OPENWRT_ARCH"
-          mkdir -p "$feed"
-          cp dist/openwrt/*.apk dist/openwrt/packages.adb "$feed/"
           cp cache/openwrt-keys/public-key.pem site/openwrt/boa-packages.pem
           cp -R dist/apt site/apt
-          sed -e "s|@RELEASE@|$OPENWRT_RELEASE|g" -e "s|@ARCH@|$OPENWRT_ARCH|g" \
+          sed -e "s|@RELEASE@|$OPENWRT_RELEASE|g" \
               -e "s|@VERSION@|$(ls dist/openwrt/boa-[0-9]*.apk | sed -E 's|.*/boa-(.*)\.apk|\1|')|g" \
               -e "s|@DEBVERSION@|$(ls dist/deb/*_arm64.deb | sed -E 's|.*_(.*)_arm64\.deb|\1|')|g" \
               openwrt/feed/index.html > site/index.html
