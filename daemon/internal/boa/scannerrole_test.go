@@ -1,6 +1,9 @@
 package boa
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 // The `+N` on a radio's path is which phy on that device it is, and two phys
 // sharing one device is the normal case rather than an oddity: MEASURED on a
@@ -46,5 +49,71 @@ func TestScanIfaceNameRoundTrips(t *testing.T) {
 		if got := phyOfScanIface(name); got != "" {
 			t.Errorf("phyOfScanIface(%q) = %q, want none", name, got)
 		}
+	}
+}
+
+// A SECOND SCANNER MUST NOT UNMAKE THE FIRST, which is exactly what shipped.
+//
+// MEASURED on the Cudy TR3000, 2026-09-22: phy0 had been listening for hours,
+// and turning phy3 listen-only from the rack left `boa.main.scan=phy3-scan`.
+// The phy0-scan interface was still there and still scanned by hand, but the
+// daemon no longer knew it was an instrument -- so the rack drew it as an
+// ordinary access point and offered deauth, evict and gather on a BSS that did
+// not exist. Issue #351.
+//
+// Neither unit test in this file could have caught it: both are about ONE
+// radio, and the option had always been a list. So this one presses the toggle
+// twice, which is the smallest thing the box does that the tests did not.
+func TestASecondScannerLeavesTheFirstAlone(t *testing.T) {
+	for _, c := range []struct {
+		what string
+		have []string
+		port string
+		want bool
+		out  []string
+	}{
+		{"the first scanner", nil, "phy0-scan", true, []string{"phy0-scan"}},
+		{"and the second keeps it", []string{"phy0-scan"}, "phy3-scan", true,
+			[]string{"phy0-scan", "phy3-scan"}},
+		{"asking twice changes nothing", []string{"phy0-scan", "phy3-scan"}, "phy3-scan", true,
+			[]string{"phy0-scan", "phy3-scan"}},
+		// The same mistake pointed the other way: taking ONE radio back to
+		// serving used to delete the option, and with it every other scanner.
+		{"taking one back leaves the rest", []string{"phy0-scan", "phy3-scan"}, "phy3-scan", false,
+			[]string{"phy0-scan"}},
+		{"taking the last one back empties it", []string{"phy0-scan"}, "phy0-scan", false, []string{}},
+		{"removing one that was never there", []string{"phy0-scan"}, "phy9-scan", false,
+			[]string{"phy0-scan"}},
+		// A hand-written config is the operator's, and order is theirs too:
+		// the list is read back at every start, so reordering it would move
+		// which radio answers first for no reason anybody asked for.
+		{"a port named by hand survives", []string{"wlan-mon", "phy0-scan"}, "phy3-scan", true,
+			[]string{"wlan-mon", "phy0-scan", "phy3-scan"}},
+		{"and a duplicate in the file is not kept", []string{"phy0-scan", "phy0-scan"}, "phy3-scan", true,
+			[]string{"phy0-scan", "phy3-scan"}},
+	} {
+		got := scanPortsAfter(c.have, c.port, c.want)
+		if len(got) != len(c.out) {
+			t.Errorf("%s: scanPortsAfter(%v, %q, %v) = %v, want %v",
+				c.what, c.have, c.port, c.want, got, c.out)
+			continue
+		}
+		for i := range got {
+			if got[i] != c.out[i] {
+				t.Errorf("%s: scanPortsAfter(%v, %q, %v) = %v, want %v",
+					c.what, c.have, c.port, c.want, got, c.out)
+				break
+			}
+		}
+	}
+}
+
+// The option holds what the daemon's own parser reads back, or a list written
+// here is a list nobody can use. SplitPorts is what main.go hands the flag to.
+func TestTheWrittenListIsTheListThatIsReadBack(t *testing.T) {
+	ports := scanPortsAfter([]string{"phy0-scan"}, "phy3-scan", true)
+	back := SplitPorts(strings.Join(ports, " "))
+	if len(back) != 2 || back[0] != "phy0-scan" || back[1] != "phy3-scan" {
+		t.Fatalf("round trip lost a port: %v -> %q -> %v", ports, strings.Join(ports, " "), back)
 	}
 }
