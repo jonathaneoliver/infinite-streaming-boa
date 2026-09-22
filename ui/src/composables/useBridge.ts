@@ -402,6 +402,39 @@ export function useBridge(active: Ref<boolean>) {
     );
 
   /**
+   * What a radio-wide steer carries. The first three only ask; `insist` warns
+   * and then disassociates a client still there after 5s. None adds a ban.
+   */
+  type SteerMode = 'suggest' | 'imminent' | 'terminate' | 'insist';
+
+  /**
+   * Steer: ASK every client on `from` to move to `to`, and nothing more.
+   *
+   * The same endpoint as the per-client steer, without `mac`. `mode` picks
+   * what the 802.11v request carries, and three of the four are only that
+   * request: no deny list, no disassociation, so a client that refuses stays
+   * where it is and the refusal is the result. `insist` alone follows through,
+   * disassociating a client still there after 5s -- and still adds no ban.
+   * Evict and gather answer a different question; they remove choices.
+   */
+  const steerTo = (from: string, to: string, mode: SteerMode = 'suggest') =>
+    act(
+      `/api/bridge/radios/${encodeURIComponent(from)}/steer?to=${encodeURIComponent(to)}&mode=${mode}`,
+      (b) =>
+        !b.asked
+          ? `${from}: nobody to steer — no clients here.`
+          : mode === 'insist'
+            ? `${from}: asked ${b.asked} client(s) to move to ${b.to}, warning `
+              + `they will be dropped in 5s. Any still here then is disassociated `
+              + `and picks its own access point.`
+            : `${from}: asked ${b.asked} client(s) to move to ${b.to}`
+              + (mode === 'imminent' ? ', saying they are about to be dropped'
+                : mode === 'terminate' ? ', saying this access point is shutting down'
+                  : '')
+              + `. A request, not a move — each may refuse, and nothing stops it staying.`,
+    );
+
+  /**
    * A per-client link event applied to every station on a radio.
    *
    * Both are ANNOUNCED: the clients are told and reconnect knowing why, which
@@ -486,6 +519,6 @@ export function useBridge(active: Ref<boolean>) {
     scans, scanSummaries, air, bssLoad,
     load, loadSurvey, deauthAll, setPower, setAPEnabled, setService, powerOutage,
     scanBand,
-    applyProfile, setThreshold, setBSSLoad, evict, gather, linkAll, moveChannel,
+    applyProfile, setThreshold, setBSSLoad, steerTo, evict, gather, linkAll, moveChannel,
   };
 }

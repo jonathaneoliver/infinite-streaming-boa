@@ -447,6 +447,26 @@ function evictTo(r: IfaceInfo): IfaceInfo | undefined {
 }
 
 /**
+ * The four steers, in rising order of what they tell the client. Each tooltip
+ * says what follows the request, because that is the only way they differ.
+ * The warnings were measured on the Cudy's mt798x radio before being offered:
+ * hostapd sends both and acts on neither.
+ */
+const STEERS = [
+  { mode: 'suggest', label: 'steer',
+    says: 'Only a request: nobody is denied or disconnected, and a client that refuses stays here.' },
+  { mode: 'imminent', label: 'warn',
+    says: 'Says it is about to be dropped (Disassociation Imminent, no timer). It never is: '
+      + 'nothing follows the warning, and a client that refuses stays here.' },
+  { mode: 'terminate', label: 'term',
+    says: 'Says this access point is shutting down (BSS Termination Included). It does not: '
+      + 'the AP stays up, and a client that refuses stays here.' },
+  { mode: 'insist', label: 'force',
+    says: 'Warns it will be dropped in 5s, then disassociates any client still here, which '
+      + 'picks its own access point. No deny list, so it may come straight back.' },
+] as const;
+
+/**
  * What the row says beyond the token.
  *
  * NOT the channel: the token already carries it, and printing "ch 149" twice in
@@ -1111,6 +1131,22 @@ Clients ARE told it has gone, unlike a power cut.`
                button on this row should ever say.
                Its own AP is different. With no BSS here there is genuinely
                nothing to steer, and dead is the honest state. -->
+          <!-- STEER sits before them and is the other kind of act: a request.
+               No deny list, so a client that refuses stays put and the refusal
+               is the answer. All four name the same destination evict would,
+               so they differ only in what the request carries. -->
+          <button
+            v-for="s in STEERS" :key="s.mode"
+            class="ghost"
+            :disabled="busy || !apLive(r) || !r.ap?.stations || !evictTo(r)?.name"
+            :title="!apLive(r)
+              ? `${r.name} has no access point up, so it has nobody to steer.`
+              : !evictTo(r)?.name
+                ? 'No other access point is up to steer them to.'
+                : `Ask all ${r.ap?.stations ?? 0} client(s) on ${r.name} to move to `
+                  + `${evictTo(r)?.name} (802.11v BSS transition). ${s.says}`"
+            @click="bridge.steerTo(r.name, evictTo(r)!.name, s.mode)"
+          >{{ s.label }}</button>
           <button
             class="ghost"
             :disabled="busy || !apLive(r) || !r.ap?.stations || !evictTo(r)"

@@ -546,6 +546,19 @@ damages packets, never link state.
   on either band is steered the right way round. Offered **only when there is
   somewhere to send it**: on a box serving one radio a transition request has no
   destination to name, so the control is absent rather than present and failing.
+- **A radio can steer all of its clients at once, four ways.** The adapter row
+  carries **steer**, **warn**, **term** and **force** before evict and gather.
+  Each sends the same request to every client on that radio, naming the access
+  point evict would name, and none adds a deny list:
+  - **steer** is the bare request.
+  - **warn** adds Disassociation Imminent with no timer, and **term** adds BSS
+    Termination Included. Neither is carried out -- hostapd sends both and acts
+    on neither (measured on the Cudy's mt798x radio) -- so a client that refuses
+    stays where it is. Measured: devices that refused a bare steer left when
+    warned, but chose their own destination, twice landing on 2.4 GHz rather
+    than the access point named.
+  - **force** warns of a disassociation in 5s and then carries it out, so a
+    client that has not left picks its own access point.
 - **The client's own answer is reported, in words.** A transition request is
   answered with a status code, and the log renders it — accepted, or the reason
   it was refused — rather than the number, which is a value nobody looks up.

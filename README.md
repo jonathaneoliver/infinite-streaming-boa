@@ -95,7 +95,7 @@ than a failure.
 
 The two adapters not carrying clients are still fully controllable, which is the
 point of the rack: `disable AP`, `deauth + disable AP`, `deauth`, `disassoc`,
-`evict`, `gather` and `scan` sit on every radio whether or not anything is
+`steer`, `warn`, `term`, `force`, `evict`, `gather` and `scan` sit on every radio whether or not anything is
 associated to it.
 
 ![The boa interface: an iPhone streaming while the valley pattern walks the
@@ -221,11 +221,14 @@ own section: [Reaching the box](#reaching-the-box).
 - **Moves clients between its radios, and is honest about which moves are
   guaranteed.** The box serves one SSID from every radio it has, so a client can
   be pushed around the box the way a real network pushes it around a building.
-  Three controls, three different promises:
+  Different controls, different promises:
 
   | control | what it does | can the client refuse? |
   |---|---|---|
-  | **steer** | asks one client to move (802.11v BSS transition) | **yes** — and whether it does is the measurement |
+  | **steer** | asks one client, or every client on a radio, to move (802.11v BSS transition) | **yes** — and whether it does is the measurement |
+  | **warn** | the same request, saying the client is about to be disassociated. It never is | **yes** |
+  | **term** | the same request, saying the access point is shutting down. It does not | **yes** |
+  | **force** | the same request with a 5 s deadline, then disassociates a client still there | no, but *where* it lands is its own choice |
   | **gather** | denies it on every radio but the destination, then moves it | no — there is nothing to refuse |
   | **evict** | denies it on the radio being emptied, then moves it | no, but *where* it lands is its own choice |
 
@@ -235,9 +238,12 @@ own section: [Reaching the box](#reaching-the-box).
   steering works on real controllers. The bans are timed, lift as soon as every
   affected client has landed, and a new command supersedes the last one rather
   than combining with it.
-  `steer` deliberately stays a request, because "does this phone honour a
-  transition?" is a question worth answering and a control that removes the
-  choice cannot answer it.
+  `steer`, `warn` and `term` deliberately stay requests, because "does this
+  phone honour a transition?" is a question worth answering and a control that
+  removes the choice cannot answer it. None of the four adds a ban. The radio-wide
+  forms sit on each adapter row and name the access point evict would; measured,
+  devices that refused a plain steer left when warned, but picked their own
+  destination rather than the one named.
 - **Takes an access point down and back, silently or with a goodbye.** A router
   losing power tells nobody, so that is the default: the box suppresses
   hostapd's start/stop broadcasts, which would otherwise land on exactly the
