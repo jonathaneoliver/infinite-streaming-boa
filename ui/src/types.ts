@@ -708,6 +708,18 @@ export interface APStatus {
   dtim_period?: number;
 }
 
+/**
+ * A radio's transmit power as the kernel reports it. `max_dbm` is the limit on
+ * the channel it is on (absent when unreadable); `why` says why a driver that
+ * ignores the setting has no control.
+ */
+export interface TxPower {
+  dbm: number;
+  max_dbm?: number;
+  settable: boolean;
+  why?: string;
+}
+
 export interface IfaceInfo {
   name: string;
   role: IfaceRole;
@@ -727,6 +739,8 @@ export interface IfaceInfo {
   wireless: boolean;
   radio?: RadioInfo;
   ap?: APStatus;
+  /** Transmit power, and whether this driver honours a setting. */
+  txpower?: TxPower;
   /** A radio the daemon watches. Clients on any other are NOT conditioned and
    *  never appear in the Clients tab. */
   serving: boolean;

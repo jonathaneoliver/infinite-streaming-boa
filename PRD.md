@@ -93,15 +93,34 @@ Intended for:
   being duplicated by it.
 - Certification-grade impairment. Profiles approximate real links; they are a
   place to start, not a standard.
-- **Attenuation.** boa does not weaken the radio, and on this hardware it could
-  not: setting transmit power is accepted by the driver and has no effect,
-  measured across the adapter's entire legal range, and the PHY rate set cannot
-  be clamped either — both radios refuse `iw ... set bitrates` outright, because
-  rate selection happens in firmware. A weak signal is produced by distance or
-  obstruction, not from the interface. What the box does instead is condition the
-  link above the radio, impose real MAC-layer cost through the radio profiles —
-  which change what the radio *is*, never how loudly it talks — and **model**
-  what a weaker signal would do, which is the next bullet.
+- **Attenuation, where the driver ignores it.** On the `mt7921u` adapters the
+  setting is accepted and has no effect, measured across the adapter's entire
+  legal range, and the PHY rate set cannot be clamped either — both radios refuse
+  `iw ... set bitrates` outright, because rate selection happens in firmware.
+  There, a weak signal is produced by distance or obstruction, not from the
+  interface, and what the box offers instead is conditioning above the radio,
+  real MAC-layer cost through the radio profiles — which change what the radio
+  *is*, never how loudly it talks — and a **model** of what a weaker signal
+  would do, which is the next bullet. The model stays whatever the radio can do,
+  because it drives rate, delay, jitter and loss together and a power setting
+  moves only the signal.
+
+- **Transmit power, where the driver honours it.** A slider per radio, applied
+  to the phy, live: clients stay associated and the signal they hear moves with
+  it. Measured on a Cudy TR3000's `mt798x` radio: 23 → 10 → 3 dBm took a
+  MacBook's received signal from −38 to −48 to −55 dBm with its association
+  unbroken and no packet lost, and on OpenWrt the value is written into UCI so a
+  radio reload does not undo it.
+
+- **A radio that will not attenuate says so, and is measured rather than
+  assumed.** `iw` exits 0 on a driver that takes a level and discards it, so
+  every set is READ BACK: land within a dB of what was asked -- the driver
+  rounds to its own step -- and it counts; land further away and that driver is
+  recorded as ignoring the control, with the numbers in the reason ("asked for
+  10 dBm, it reports 3.00"). The slider is then disabled on its radios rather
+  than removed, so the control's absence has a stated cause. Two drivers are
+  known before anyone tries, and the finding is forgotten on a restart: it is a
+  claim about driver code, and driver code gets fixed.
 
 - **A device can be told to behave as though it were further away.** One
   control per device stands for a distance: it derives a rate, a delay, a jitter,

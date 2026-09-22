@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue';
+import { computed, ref, watch } from 'vue';
 import type { BSSLoadState, IfaceInfo, ScanAP, Series } from '@/types';
 import { DEVELOPER } from '@/types';
 import { rackAdapters, isOpen, toggleAdapter } from '@/composables/useAdapters';
@@ -469,6 +469,84 @@ function gatherable(r: IfaceInfo): number {
  */
 function evictTo(r: IfaceInfo): IfaceInfo | undefined {
   return otherRadios(r).find((o) => o.ap?.enabled);
+}
+
+/**
+ * Transmit power while a slider is being dragged, so the number beside it
+ * follows the hand.
+ */
+const txStaged = ref<Record<string, number>>({});
+
+/**
+ * Where a released slider is HELD until the radio says the same thing.
+ *
+ * Without it the handle jumped on release and then jumped again: the change is
+ * sent, the staged value drops, and the next snapshot still carries the reading
+ * from before it landed -- the bridge view is rebuilt on its own timer and
+ * polled on another, so an old number is the normal thing to see for a second.
+ * The handle went back to where it had been dragged from and then forward
+ * again, which reads as the box refusing the setting.
+ *
+ * The house pattern: ShapeSliders keeps its staged value until props.shape
+ * matches, and ClientCard drops patDraft when the stored pattern does. The
+ * difference here is what is being waited for. Those wait on the daemon's own
+ * copy of a policy, which always comes back equal; this waits on the KERNEL,
+ * which may not. A driver can clamp the value, or take it and do nothing (see
+ * mt7921u, #202), and an interface that held the handle for ever would be
+ * showing a setting the radio never adopted. So the hold expires: after
+ * txHoldMs the reading wins, disagreement and all.
+ */
+const txPending = ref<Record<string, { dbm: number; at: number }>>({});
+const txHoldMs = 20000;
+
+/**
+ * How far the radio may land from the asked-for level and still count as having
+ * done it. A dB, because the level is not ours to quantise: the driver rounds
+ * to whatever step its firmware takes, and the regulatory table it clamps
+ * against is in whole dBm. Asking for 13 and being given 12.5 is the radio
+ * doing as it was told.
+ *
+ * Wider than that is not rounding, and is not smoothed over: a driver that
+ * clamps to its own ceiling, or ignores the level entirely, leaves the reading
+ * disagreeing with the handle -- and that disagreement is the finding.
+ */
+const txMatchDB = 1;
+
+watch(rackAdapters, (list) => {
+  for (const r of list) {
+    const p = txPending.value[r.name];
+    if (!p) continue;
+    const got = r.txpower?.dbm;
+    const landed = got != null && Math.abs(got - p.dbm) <= txMatchDB;
+    if (landed || Date.now() - p.at > txHoldMs) {
+      delete txPending.value[r.name];
+      delete txStaged.value[r.name];
+    }
+  }
+});
+
+/** The top of the slider: the channel's limit, or the current setting if unreadable. */
+function txMax(r: IfaceInfo): number {
+  return Math.round(r.txpower?.max_dbm || r.txpower?.dbm || 20);
+}
+
+/** True while the handle and the radio's own reading are further apart than rounding. */
+function txDisagrees(r: IfaceInfo): boolean {
+  const got = r.txpower?.dbm;
+  return got != null && Math.abs(got - txShown(r)) > txMatchDB;
+}
+
+function txShown(r: IfaceInfo): number {
+  return txPending.value[r.name]?.dbm ?? txStaged.value[r.name] ?? r.txpower?.dbm ?? 0;
+}
+
+async function commitTx(r: IfaceInfo, dbm: number | 'auto') {
+  // 'auto' hands the level back to the driver, so there is no value to hold
+  // the handle at: whatever it chooses is the answer, and the reading is it.
+  if (dbm === 'auto') delete txStaged.value[r.name];
+  else txPending.value[r.name] = { dbm, at: Date.now() };
+  await props.bridge.setTxPower(r.name, dbm);
+  if (dbm === 'auto') delete txPending.value[r.name];
 }
 
 /**
@@ -1398,6 +1476,57 @@ Clients ARE told it has gone, unlike a power cut.`
             <slot name="plan" :radio="r" :others="otherRadios(r)" />
           </section>
 
+          <!-- TRANSMIT POWER, ITS OWN BOX, DIRECTLY UNDER THE CHANNEL.
+               It sat with RTS/CTS and fragmentation, which is true about what
+               it costs -- live, nobody dropped -- and wrong about what it is
+               for. Those two make the MAC work harder; this changes what every
+               client HEARS, which is the same subject as the channel above it:
+               where this radio is and how far it reaches. It is also the
+               control most reached for, and a heading of its own is what says
+               so.
+               Where the driver ignores it (mt7921u, #202) the reason stands in
+               for the slider: present-and-ineffective is the one state a
+               control here must never be in. -->
+          <section v-if="r.txpower" class="group">
+            <h4>Transmit power</h4>
+            <div class="ctl-set free">
+              <p class="ctl-set-label">
+                live on the next frame — nobody is dropped, and every client's
+                signal moves with it
+              </p>
+              <div class="ctl-boxes">
+                <div class="ctl-box">
+                  <div class="action-row txpower">
+                    <template v-if="r.txpower.settable">
+                      <span class="meta" title="0 dBm is 1 mW — the lowest the radio goes, not off">0</span>
+                      <input
+                        type="range" min="0" :max="txMax(r)" step="1"
+                        :value="txShown(r)" :disabled="busy"
+                        :title="`Transmit power on ${r.name}, 0 to ${txMax(r)} dBm — 0 is 1 mW, the floor, not off; the top is this channel's own regulatory limit. Clients stay associated; the signal they hear moves with it.`"
+                        @input="txStaged[r.name] = +($event.target as HTMLInputElement).value"
+                        @change="commitTx(r, +($event.target as HTMLInputElement).value)"
+                      />
+                      <span class="meta" :title="`${txMax(r)} dBm is this channel's regulatory limit`">{{ txMax(r) }}</span>
+                      <span
+                        class="val num"
+                        :class="{ disagree: txDisagrees(r) }"
+                        :title="txDisagrees(r)
+                          ? `Asked for ${txShown(r).toFixed(0)} dBm; the radio reports ${r.txpower.dbm.toFixed(2)} dBm.`
+                          : 'What the radio reports.'"
+                      >{{ txShown(r).toFixed(0) }} dBm</span>
+                      <button :disabled="busy"
+                        title="Hand transmit power back to the driver, which sets it from the regulatory domain."
+                        @click="commitTx(r, 'auto')">default</button>
+                    </template>
+                    <span v-else class="meta" :title="r.txpower.why">
+                      {{ r.txpower.dbm.toFixed(0) }} dBm, fixed — {{ r.txpower.why }}
+                    </span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </section>
+
           <!-- The timed outage goes behind developer=1 with the power switch
                it belongs to: same mechanism, same cost, same tendency to wedge
                the USB adapter. -->
@@ -2240,6 +2369,9 @@ Clients ARE told it has gone, unlike a power cut.`
 }
 .load-row > label { color: var(--ink-faint); }
 .load-row input[type='range'] { width: 100%; margin: 0; }
+.action-row.txpower input[type='range'] { width: 220px; margin: 0; }
+.action-row.txpower .val { min-width: 4.5em; }
+.action-row.txpower .val.disagree { color: var(--warn); }
 /* The value and the truth in ONE cell, because they are one fact read together.
    As two grid tracks the number sat right-aligned in a fixed column with a gap
    before the thing it was being compared against, and the pair read as two

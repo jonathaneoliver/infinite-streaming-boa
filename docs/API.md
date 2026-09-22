@@ -17,7 +17,7 @@ see `docs/DATA-CONTRACT.md` for where each number comes from.
 
 ## Endpoints
 
-55 routes.
+56 routes.
 
 | Method | Path |
 |---|---|
@@ -41,6 +41,7 @@ see `docs/DATA-CONTRACT.md` for where each number comes from.
 | POST | `/api/bridge/radios/{iface}/profile` |
 | POST | `/api/bridge/radios/{iface}/bssload` |
 | POST | `/api/bridge/radios/{iface}/threshold` |
+| POST | `/api/bridge/radios/{iface}/txpower` |
 | POST | `/api/bridge/radios/{iface}/steer` |
 | POST | `/api/bridge/radios/{iface}/gather` |
 | POST | `/api/bridge/radios/{iface}/evict` |
@@ -265,6 +266,14 @@ _No description: `postBSSLoad` has no doc comment._
 
 postThreshold sets the RTS or fragmentation threshold. The only radio
 impairment here that costs nothing: live on the next frame, nobody dropped.
+
+### POST /api/bridge/radios/{iface}/txpower
+
+postTxPower sets a radio's transmit power, live, on its phy.
+
+`?dbm=N` fixes it at N dBm; `?dbm=auto` hands it back to the driver. Nobody
+is dropped: the setting goes to the driver, not through hostapd. Refused on
+drivers known to ignore it, rather than reported as done. See txpower.go.
 
 ### POST /api/bridge/radios/{iface}/steer
 
@@ -1494,6 +1503,10 @@ IfaceInfo is one interface as the bridge view draws it.
 
 **`ap`** `*APStatus` _(omitted when empty)_
 
+**`txpower`** `*TxPower` _(omitted when empty)_
+> TxPower is the radio's transmit power and whether it can be set. See
+> txpower.go.
+
 **`serving`** `bool`
 > Serving marks a radio the daemon watches. Clients on any other radio are
 > not conditioned and do not appear in the device list.
@@ -2596,4 +2609,22 @@ one such level on its way up and would otherwise discard the reading.
 **`variation`** `float64`
 > Variation is the coefficient of variation across the window: the jitter a
 > rung measured at this rate inherits from the shaper.
+
+### TxPower
+
+TxPower is a radio's transmit power as the kernel reports it.
+
+**`dbm`** `float64`
+> DBm is the current setting, from `iw dev <if> info`.
+
+**`max_dbm`** `float64` _(omitted when empty)_
+> MaxDBm is the regulatory limit on the channel the radio is on, from the
+> phy's channel list. 0 when it cannot be read, in which case the slider
+> has no top to offer.
+
+**`settable`** `bool`
+> Settable is false where the driver is known to ignore a setting, and
+> Why then says so.
+
+**`why`** `string` _(omitted when empty)_
 

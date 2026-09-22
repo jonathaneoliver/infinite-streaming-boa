@@ -52,6 +52,7 @@ func (a *API) Routes() *http.ServeMux {
 	mux.HandleFunc("POST /api/bridge/radios/{iface}/profile", a.postRadioProfile)
 	mux.HandleFunc("POST /api/bridge/radios/{iface}/bssload", a.postBSSLoad)
 	mux.HandleFunc("POST /api/bridge/radios/{iface}/threshold", a.postThreshold)
+	mux.HandleFunc("POST /api/bridge/radios/{iface}/txpower", a.postTxPower)
 	mux.HandleFunc("POST /api/bridge/radios/{iface}/steer", a.postSteer)
 	mux.HandleFunc("POST /api/bridge/radios/{iface}/gather", a.postGather)
 	mux.HandleFunc("POST /api/bridge/radios/{iface}/evict", a.postEvict)
@@ -737,6 +738,39 @@ func (a *API) postRadioProfile(w http.ResponseWriter, r *http.Request) {
 		"iface": iface, "action": "profile", "profile": name,
 		"stations_dropped": dropped,
 	})
+}
+
+// postTxPower sets a radio's transmit power, live, on its phy.
+//
+// `?dbm=N` fixes it at N dBm; `?dbm=auto` hands it back to the driver. Nobody
+// is dropped: the setting goes to the driver, not through hostapd. Refused on
+// drivers known to ignore it, rather than reported as done. See txpower.go.
+func (a *API) postTxPower(w http.ResponseWriter, r *http.Request) {
+	iface := r.PathValue("iface")
+	if err := a.e.radioExists(iface); err != nil {
+		writeErr(w, http.StatusServiceUnavailable, err.Error())
+		return
+	}
+	dbm := -1.0
+	switch s := strings.TrimSpace(r.URL.Query().Get("dbm")); s {
+	case "", "auto":
+	default:
+		n, err := strconv.ParseFloat(s, 64)
+		if err != nil || n < 0 {
+			writeErr(w, http.StatusBadRequest, "dbm must be a number of dBm, 0 or more, or 'auto'")
+			return
+		}
+		dbm = n
+	}
+	if err := a.e.SetTxPower(iface, dbm); err != nil {
+		writeErr(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	out := map[string]any{"iface": iface, "action": "txpower", "auto": dbm < 0}
+	if dbm >= 0 {
+		out["dbm"] = dbm
+	}
+	writeJSON(w, http.StatusOK, out)
 }
 
 // postThreshold sets the RTS or fragmentation threshold. The only radio

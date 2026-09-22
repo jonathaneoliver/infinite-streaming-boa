@@ -241,6 +241,17 @@ type Engine struct {
 	// access point down every tick.
 	restore restoreState
 
+	// txIgnored is every driver MEASURED discarding a transmit power, keyed by
+	// driver name and learned by reading the level back after setting it. See
+	// txpower.go; the static list there is what is known before anyone tries.
+	//
+	// In memory on purpose, so it is forgotten on a restart: this is a claim
+	// about a driver, and drivers get fixed. The mt7921u patch in #202 is
+	// unmerged, not imaginary -- a learned refusal written to disk would
+	// outlive the bug and keep a working radio disabled with no way back that
+	// anybody would think to look for.
+	txIgnored map[string]string
+
 	// radioLocks serialises reconfiguration per radio, so a move from the API
 	// and a move from the tick's restore cannot interleave on one interface.
 	radioMu    sync.Mutex
