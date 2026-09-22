@@ -150,6 +150,9 @@ type IfaceInfo struct {
 	Wireless bool       `json:"wireless"`
 	Radio    *RadioInfo `json:"radio,omitempty"`
 	AP       *APStatus  `json:"ap,omitempty"`
+	// TxPower is the radio's transmit power and whether it can be set. See
+	// txpower.go.
+	TxPower *TxPower `json:"txpower,omitempty"`
 	// Serving marks a radio the daemon watches. Clients on any other radio are
 	// not conditioned and do not appear in the device list.
 	Serving bool `json:"serving"`
@@ -535,6 +538,9 @@ func (e *Engine) buildBridgeState() BridgeInfo {
 		}
 		if in.Wireless {
 			in.Powered, in.PowerKnown = radioPowered(name)
+			if in.Radio != nil {
+				in.TxPower = readTxPower(name, in.Radio.Driver)
+			}
 			in.Serving = e.cfg.IsWlan(name)
 			in.AirtimePerClient, in.AirtimeCapKnown = airSeen[name]
 			// A scanner is never promoted to RoleAP, even if hostapd answers

@@ -232,6 +232,7 @@ an iPhone and a Watch on the 5 GHz AP, each radio-wide steer naming the USB
 | Warn (Disassociation Imminent, no timer) | hostapd never disassociated anyone (a Mac held 16 s). Two of three left on their own, the Mac first to 2.4 GHz, not the AP named |
 | Term (BSS Termination Included) | The AP stayed `ENABLED`. The one client left moved to 2.4 GHz, not the AP named |
 | Any of the three | No deny-list entry on any radio |
+| Transmit power | Works on the built-in `mt798x` radios, live: 23/10/3 dBm took a MacBook from −38/−48/−55 dBm received with its association unbroken and no ping lost. Written to UCI, so a `wifi reload` keeps it. The USB `mt7921u` reports 3 dBm and ignores it (#202) |
 
 ## Not yet working on OpenWrt
 

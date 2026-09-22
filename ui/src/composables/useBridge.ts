@@ -270,6 +270,19 @@ export function useBridge(active: Ref<boolean>) {
 
   /** RTS or fragmentation threshold. The one radio impairment that costs
    *  nothing: live on the next frame, nobody dropped. */
+  /**
+   * Set a radio's transmit power, live, on its phy; `'auto'` hands it back to
+   * the driver. Nobody is dropped -- the setting never goes through hostapd.
+   */
+  const setTxPower = (iface: string, dbm: number | 'auto') =>
+    act(
+      `/api/bridge/radios/${encodeURIComponent(iface)}/txpower?dbm=${dbm}`,
+      (b) =>
+        b.auto
+          ? `${b.iface}: transmit power back to the driver's default.`
+          : `${b.iface}: transmit power ${b.dbm} dBm. Clients stay connected; their signal moves.`,
+    );
+
   const setThreshold = (iface: string, kind: 'rts' | 'frag', value: number | 'off') =>
     act(
       `/api/bridge/radios/${encodeURIComponent(iface)}/threshold` +
@@ -519,6 +532,6 @@ export function useBridge(active: Ref<boolean>) {
     scans, scanSummaries, air, bssLoad,
     load, loadSurvey, deauthAll, setPower, setAPEnabled, setService, powerOutage,
     scanBand,
-    applyProfile, setThreshold, setBSSLoad, steerTo, evict, gather, linkAll, moveChannel,
+    applyProfile, setThreshold, setTxPower, setBSSLoad, steerTo, evict, gather, linkAll, moveChannel,
   };
 }

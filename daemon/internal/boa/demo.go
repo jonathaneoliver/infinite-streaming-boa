@@ -542,6 +542,8 @@ func demoBridgeState(cfg Config) BridgeInfo {
 				Vendor: "Panda Wireless", Product: "PAU0F AXE3000",
 				LinkMbps: 5000, USBVersion: "3.20",
 			},
+			// The refusal, as the real mt7921u gives it (#202).
+			TxPower: &TxPower{DBm: 3, MaxDBm: 23, Why: txpowerIgnoredBy["mt7921u"]},
 			AP: &APStatus{
 				SSID: "infinite-streaming-boa", BSSID: apMAC, Country: "US",
 				Channel: 36, FreqMHz: 5180, WidthMHz: 80, Mode: "802.11ax",
@@ -572,6 +574,10 @@ func demoBridgeState(cfg Config) BridgeInfo {
 				// pair. See USBUnderspeed in collect.go.
 				LinkMbps: 480, USBVersion: "2.10", USBUnderspeed: true,
 			},
+			// Settable, which this driver really is not: the fixture's radios
+			// are all mt7921u, and the slider needs somewhere to be developed.
+			// The figures are the Cudy's built-in 2.4GHz radio's.
+			TxPower: &TxPower{DBm: 20, MaxDBm: 26, Settable: true},
 			AP: &APStatus{
 				SSID: "infinite-streaming-boa", BSSID: "9c:ef:d5:aa:11:07",
 				Country: "US", Channel: 6, FreqMHz: 2437, WidthMHz: 20,

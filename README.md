@@ -696,7 +696,9 @@ access point can genuinely turn itself down, the client really does receive less
 signal, and everything the client decides from that signal responds. Cheap, and
 it would be a real improvement on what is here.
 
-It is not available on this hardware. The `mt7921u` reports `3.00 dBm` whatever
+It is not available on the `mt7921u`, and is on other hardware: a Cudy TR3000's
+built-in `mt798x` radios honour it live, and boa puts a slider on radios like
+those. The `mt7921u` reports `3.00 dBm` whatever
 it is set to — a known driver bug — and the *control* is inert as well: a 30 dB
 request across the adapter's whole legal range moved received signal by nothing
 at all ([measured](#access-point-performance)).
@@ -1840,9 +1842,16 @@ Two more things that will mislead you here:
   | `fixed 3000` again | −22 dBm | 587 Mbit/s |
 
   A 30 dB request across the adapter's whole legal range moves the received
-  signal by nothing at all. **So attenuation is not an available impairment on
-  this box**: to test a weak link, move the device or put something in the way.
-  See [Source Q](docs/DATA-CONTRACT.md) for the full method and the trap in it.
+  signal by nothing at all. **So attenuation is not available on this adapter**:
+  to test a weak link on it, move the device or put something in the way. See
+  [Source Q](docs/DATA-CONTRACT.md) for the full method and the trap in it.
+
+  **It is available where the driver implements it**, and then boa offers it as
+  a slider on the radio. Measured 2026-09-22 on a Cudy TR3000's built-in
+  `mt798x` radio, a MacBook associated throughout: 23 dBm → −38 dBm received,
+  10 dBm → −48, 3 dBm → −55, and back. The association never broke and no ping
+  was lost, because the setting goes to the phy and never through hostapd. A
+  radio whose driver ignores it says so in place of the slider.
 
   What the box offers instead is a **distance model** — tell a device to behave
   as though it were further away, and it is handed the rate, delay, jitter and

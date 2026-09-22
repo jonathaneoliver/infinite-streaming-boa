@@ -447,6 +447,27 @@ function evictTo(r: IfaceInfo): IfaceInfo | undefined {
 }
 
 /**
+ * Transmit power while a slider is being dragged, so the number beside it
+ * follows the hand; cleared once the change is sent and the radio's own
+ * reading takes over.
+ */
+const txStaged = ref<Record<string, number>>({});
+
+/** The top of the slider: the channel's limit, or the current setting if unreadable. */
+function txMax(r: IfaceInfo): number {
+  return Math.round(r.txpower?.max_dbm || r.txpower?.dbm || 20);
+}
+
+function txShown(r: IfaceInfo): number {
+  return txStaged.value[r.name] ?? r.txpower?.dbm ?? 0;
+}
+
+async function commitTx(r: IfaceInfo, dbm: number | 'auto') {
+  await props.bridge.setTxPower(r.name, dbm);
+  delete txStaged.value[r.name];
+}
+
+/**
  * The four steers, in rising order of what they tell the client. Each tooltip
  * says what follows the request, because that is the only way they differ.
  * The warnings were measured on the Cudy's mt798x radio before being offered:
@@ -1622,6 +1643,34 @@ Clients ARE told it has gone, unlike a power cut.`
                 @click="bridge.setThreshold(r.name, 'frag', 256)">at 256</button>
             </div>
           </div>
+          <!-- TRANSMIT POWER belongs in this group: set on the phy, live, and
+               nobody reassociates -- measured on the Cudy, a MacBook's signal
+               fell 19 dB with its association unbroken. Committed on release,
+               not on every step of the drag, so one gesture is one change.
+               Where the driver ignores it (mt7921u, #202) the reason stands
+               in for the slider: present-and-ineffective is the one state a
+               control here must never be in. -->
+          <div v-if="r.txpower" class="ctl-box">
+            <div class="action-row txpower">
+              <label class="k">tx power</label>
+              <template v-if="r.txpower.settable">
+                <input
+                  type="range" min="1" :max="txMax(r)" step="1"
+                  :value="txShown(r)" :disabled="busy"
+                  :title="`Transmit power on ${r.name}, 1 to ${txMax(r)} dBm — the top is this channel's limit. Clients stay associated; the signal they hear moves with it.`"
+                  @input="txStaged[r.name] = +($event.target as HTMLInputElement).value"
+                  @change="commitTx(r, +($event.target as HTMLInputElement).value)"
+                />
+                <span class="val num">{{ txShown(r).toFixed(0) }} dBm</span>
+                <button :disabled="busy"
+                  title="Hand transmit power back to the driver, which sets it from the regulatory domain."
+                  @click="commitTx(r, 'auto')">default</button>
+              </template>
+              <span v-else class="meta" :title="r.txpower.why">
+                {{ r.txpower.dbm.toFixed(0) }} dBm, fixed — {{ r.txpower.why }}
+              </span>
+            </div>
+          </div>
             </div>
           </div>
           </section>
@@ -2185,6 +2234,8 @@ Clients ARE told it has gone, unlike a power cut.`
 }
 .load-row > label { color: var(--ink-faint); }
 .load-row input[type='range'] { width: 100%; margin: 0; }
+.action-row.txpower input[type='range'] { width: 160px; margin: 0; }
+.action-row.txpower .val { min-width: 4.5em; }
 /* The value and the truth in ONE cell, because they are one fact read together.
    As two grid tracks the number sat right-aligned in a fixed column with a gap
    before the thing it was being compared against, and the pair read as two
