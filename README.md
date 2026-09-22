@@ -1043,8 +1043,11 @@ must never rewire a router's network: the device has to be a **transparent
 bridge** already, and needs the **full `wpad`** with 802.11k/v on for steer and
 measure to work. Measured on a Pi 5 running OpenWrt 25.12.5, conditioning and
 most link controls work as on the other targets; a silent power cut (OpenWrt's
-kernel has no rfkill), a CSA channel switch (`mt7921u` refuses it) and an
-advertised BSS Load do not. Packages are built for arm64 on 25.12 only.
+kernel has no rfkill) and an advertised BSS Load do not. The CSA channel switch
+depends on the radio rather than on the target: measured on a Cudy TR3000, the
+built-in `mt798x` radios announce the move and their clients follow it, while a
+`mt7921u` adapter on the same box still has to restart to move. Packages are
+built for arm64 on 25.12 only.
 
 See [`openwrt/README.md`](openwrt/README.md) for preparing the device, the
 packages, configuration, and every control as measured.
@@ -1257,7 +1260,9 @@ Not one is an access-point part.
 
 That single fact explains most of the limits catalogued in
 [what the radios will not do](#channel-manipulation-what-client-class-silicon-will-not-do):
-no channel switch announcement, so every channel move is an outage; no DFS, so
+no channel switch announcement, so on THESE radios every channel move is an
+outage — the Cudy's built-in `mt798x` announces one and keeps its clients, which
+is what tells the two apart; no DFS, so
 16 of the 25 usable 5 GHz channels are off the table; one BSS per radio; no rate
 pinning, which is why distance is *modelled* rather than imposed.
 
@@ -2911,18 +2916,27 @@ a radio.
 
 | Behaviour | Here | What an AP-class part does |
 |---|---|---|
-| **Channel Switch Announcement (802.11h)** | **refused by both drivers** ([#154](https://github.com/jonathaneoliver/infinite-streaming-boa/issues/154)) | Counts the move down in its beacons; associated clients **follow, staying associated**. boa must take the BSS down and bring it up elsewhere — every client is told nothing, and must notice, rescan and rejoin |
+| **Channel Switch Announcement (802.11h)** | **refused by both of these drivers** ([#154](https://github.com/jonathaneoliver/infinite-streaming-boa/issues/154)); **works on the Cudy's `mt798x`** ([#349](https://github.com/jonathaneoliver/infinite-streaming-boa/issues/349)) | Counts the move down in its beacons; associated clients **follow, staying associated**. Where that is refused boa takes the BSS down and brings it up elsewhere — every client is told nothing, and must notice, rescan and rejoin |
 | **DFS with radar detection** | **cannot serve there at all** | Operates on 52–144 after a channel-availability check. That is **16 of the 25** non-6 GHz 5 GHz channels, and the emptiest ones — excluded from `apChannels` because the Pi refuses to start an AP on them |
 | **Off-channel scan while beaconing** | **mt7921u refuses** (`-95`) | Evaluates other channels continuously without dropping the BSS. Only the onboard radio manages it here, and that is the weak one |
 | **Automatic channel selection** | **not possible on the onboard radio** | Picks a channel at startup from survey data. brcmfmac returns no survey at all, so there is nothing to choose from |
 | **20/40 coexistence** | **applied to us, not by us** | Chooses its primary and secondary deliberately. Here hostapd's coex scan swaps them out from under the request: 36 at 80 MHz comes back up on **40**, and the box records where it *landed* rather than where it was sent |
 
-**The first row is the one that shapes the product.** Because CSA is refused,
-**there is no such thing as a cheap channel change on this box** — moving a
-radio is an outage, and every control that moves one says so before it runs. A
-real access point re-homes its clients in a few beacon intervals; this one drops
-them and waits for them to come back. It is also, in fairness, what most
+**The first row is the one that shapes the product.** Where CSA is refused,
+**there is no such thing as a cheap channel change** — moving a radio is an
+outage, and the control that moves one says so before it runs. A real access
+point re-homes its clients in a few beacon intervals; a radio in this class
+drops them and waits for them to come back. It is also, in fairness, what most
 consumer routers actually do.
+
+**And it is the row that moved.** On AP-class silicon — the Cudy TR3000's
+built-in `mt798x`, measured 2026-09-22 — the switch IS announced and the clients
+do follow: 3 of 3 across one move, 23 of 24 crossings across eight. So boa
+announces where the radio can and restarts where it cannot, in the same request,
+and reports which one happened; the band plan carries a `seamless` or `drops
+clients` badge before the press; and `mode=restart` forces the outage on capable
+hardware, because otherwise the behaviour every radio above shares would stop
+being reachable to test.
 
 **The second row is why the band plan looks so sparse.** Non-DFS 5 GHz is two
 blocks with the whole DFS range between them — 36/40/44/48 and

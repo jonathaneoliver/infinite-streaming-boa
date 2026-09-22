@@ -153,6 +153,10 @@ type IfaceInfo struct {
 	// TxPower is the radio's transmit power and whether it can be set. See
 	// txpower.go.
 	TxPower *TxPower `json:"txpower,omitempty"`
+	// ChanSwitch says whether a channel move on this radio will be announced,
+	// so clients follow it, or will drop them -- the fact the operator needs
+	// BEFORE pressing a channel, not after. See csa.go.
+	ChanSwitch *ChanSwitchAbility `json:"chan_switch,omitempty"`
 	// Serving marks a radio the daemon watches. Clients on any other radio are
 	// not conditioned and do not appear in the device list.
 	Serving bool `json:"serving"`
@@ -540,6 +544,7 @@ func (e *Engine) buildBridgeState() BridgeInfo {
 			in.Powered, in.PowerKnown = radioPowered(name)
 			if in.Radio != nil {
 				in.TxPower = e.readTxPower(name, in.Radio.Driver)
+				in.ChanSwitch = e.chanSwitchAbility(in.Radio.Driver)
 			}
 			in.Serving = e.cfg.IsWlan(name)
 			in.AirtimePerClient, in.AirtimeCapKnown = airSeen[name]

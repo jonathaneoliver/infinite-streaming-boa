@@ -190,10 +190,25 @@ func (e *Engine) noteLinkAll(iface, kind string, n int) {
 
 // noteMoveChannel, noteProfile and noteSteer exist for the same reason as
 // noteLinkAll: each is raised from two places, the real path and the demo one.
-func (e *Engine) noteMoveChannel(iface string, channel int) {
+//
+// THE MECHANISM IS THE MESSAGE. This used to say "the AP vanished and
+// reappeared, so clients rejoined" for every move, because that was the only
+// thing a move could do here. On a radio that announces the switch it is the
+// opposite of what happened, and the event log is where client behaviour is
+// read back from afterwards -- so the line that describes the move has to be
+// the one that is true of it.
+func (e *Engine) noteMoveChannel(iface string, m ChannelMove) {
+	if m.Method == MethodAnnounce {
+		e.logEvent(EventRadio, iface, "",
+			"%s announced a channel switch to %d at %dMHz (802.11h); %d client(s) "+
+				"were asked to follow and none was dropped",
+			iface, m.Channel, m.WidthMHz, m.Stations)
+		return
+	}
 	e.logEvent(EventRadio, iface, "",
-		"%s moved to channel %d — the AP vanished and reappeared, so clients rejoined",
-		iface, channel)
+		"%s restarted onto channel %d at %dMHz — the AP vanished and reappeared, "+
+			"so %d client(s) had to rejoin; %.1fs out of service",
+		iface, m.Channel, m.WidthMHz, m.Dropped, m.OutageSec)
 }
 
 func (e *Engine) noteProfile(iface, name string, dropped int) {

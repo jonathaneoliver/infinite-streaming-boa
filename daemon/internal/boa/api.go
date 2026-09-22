@@ -40,7 +40,6 @@ func (a *API) Routes() *http.ServeMux {
 	mux.HandleFunc("GET /api/events", a.getEvents)
 	mux.HandleFunc("GET /api/events/stream", a.streamEvents)
 	mux.HandleFunc("GET /api/bridge/radios/{iface}/survey", a.getSurvey)
-	mux.HandleFunc("POST /api/bridge/radios/{iface}/channel", a.postChannel)
 	mux.HandleFunc("POST /api/bridge/radios/{iface}/move-channel", a.postMoveChannel)
 	mux.HandleFunc("POST /api/bridge/radios/{iface}/deauth-all", a.postDeauthAll)
 	mux.HandleFunc("POST /api/bridge/radios/{iface}/link-all", a.postLinkAll)
@@ -346,65 +345,26 @@ func (a *API) getSurvey(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, res)
 }
 
-// postMoveChannel puts a radio on a chosen channel by taking it down and
-// bringing it back up there.
+// postMoveChannel puts a radio on a chosen channel, by whichever mechanism that
+// radio can do.
 //
-// The working counterpart to postChannel. That one announces the move and lets
-// clients follow without reconnecting, which is the nicer behaviour and is
-// refused by both drivers on this box; this one drops the access point and
-// brings it back elsewhere, which works and is what most consumer routers
-// actually do. Clients are not told and must rediscover it.
-func (a *API) postMoveChannel(w http.ResponseWriter, r *http.Request) {
-	iface := r.PathValue("iface")
-	if err := a.e.radioReady(iface); err != nil {
-		writeErr(w, http.StatusServiceUnavailable, err.Error())
-		return
-	}
-	ch, err := strconv.Atoi(strings.TrimSpace(r.URL.Query().Get("channel")))
-	if err != nil {
-		writeErr(w, http.StatusBadRequest, "channel must be a number")
-		return
-	}
-	width := 20
-	if q := strings.TrimSpace(r.URL.Query().Get("width")); q != "" {
-		n, werr := strconv.Atoi(q)
-		if werr != nil {
-			writeErr(w, http.StatusBadRequest, "width must be a number")
-			return
-		}
-		width = n
-	}
-	dropped := len(StationDump(iface))
-	now, err := a.e.MoveChannel(iface, ch, width)
-	if err != nil {
-		// 400 for an argument this box will never accept, 502 for hostapd
-		// declining one it might have -- the same split postChannel makes.
-		// A width the channel cannot carry belongs on the 400 side: 165 at
-		// 80MHz is refused here every time, never attempted, so reporting it
-		// as an upstream failure would point at the wrong thing.
-		known, ok := apChannels[ch]
-		if !ok || width > known.maxWidth() {
-			writeErr(w, http.StatusBadRequest, err.Error())
-			return
-		}
-		writeErr(w, http.StatusBadGateway, err.Error())
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{
-		"iface": iface, "action": "move_channel", "channel": now,
-		"width_mhz": width, "stations_dropped": dropped,
-	})
-}
-
-// postChannel moves a radio, and every client associated to it, to another
-// channel via an 802.11h channel switch announcement.
+// ONE ROUTE, NOT TWO. This used to have a sibling -- POST .../channel, which
+// only ever announced the switch and only ever failed, because the two drivers
+// on the Pi refuse CSA (#154). Two routes made the operator choose a MECHANISM
+// when the question they have is about a CHANNEL, and hid the seamless path
+// behind a button that errored on the only hardware anyone had. So the
+// mechanism is a mode on the one control:
+//
+//	announce (default)  the switch is announced, and falls back by itself on a
+//	                    driver that will not do it
+//	restart             force the teardown: drops every client, seconds out of
+//	                    service, and it is what a radio that CANNOT announce does
+//	                    every time. Worth forcing on capable hardware, because
+//	                    it is the only behaviour the Pi and every mt7921u offer.
 //
 // AP-WIDE, unlike every /api/devices action: there is no MAC here because the
-// blast radius is the whole radio. The interface says so before the button is
-// pressed; this refuses loudly if hostapd will not do it, because a channel
-// switch that silently did nothing would look identical to one a client simply
-// followed. See issue #122.
-func (a *API) postChannel(w http.ResponseWriter, r *http.Request) {
+// blast radius is the whole radio.
+func (a *API) postMoveChannel(w http.ResponseWriter, r *http.Request) {
 	iface := r.PathValue("iface")
 	if err := a.e.radioReady(iface); err != nil {
 		writeErr(w, http.StatusServiceUnavailable, err.Error())
@@ -419,33 +379,44 @@ func (a *API) postChannel(w http.ResponseWriter, r *http.Request) {
 	// omitted parameter cannot produce a command hostapd rejects wholesale.
 	width := 20
 	if q := strings.TrimSpace(r.URL.Query().Get("width")); q != "" {
-		n, err := strconv.Atoi(q)
-		if err != nil {
+		n, werr := strconv.Atoi(q)
+		if werr != nil {
 			writeErr(w, http.StatusBadRequest, "width must be a number")
 			return
 		}
 		width = n
 	}
-	if err := a.e.ChanSwitch(iface, ch, width); err != nil {
+	mode := strings.TrimSpace(r.URL.Query().Get("mode"))
+	if mode != "" && mode != MethodAnnounce && mode != MethodRestart {
+		writeErr(w, http.StatusBadRequest,
+			"mode must be \"announce\" or \"restart\"")
+		return
+	}
+	move, err := a.e.MoveChannel(iface, ch, width, mode)
+	if err != nil {
 		// 400 for an argument this box will never accept, 502 for hostapd
-		// declining one it might have. A width wider than the channel allows
-		// is the first kind: 165 at 80MHz is refused here every time, not by
-		// hostapd on the day.
-		code := http.StatusBadGateway
+		// declining one it might have. A width the channel cannot carry belongs
+		// on the 400 side: 165 at 80MHz is refused here every time, never
+		// attempted, so reporting it as an upstream failure would point at the
+		// wrong thing.
 		known, ok := apChannels[ch]
 		if !ok || width != 20 && width != 40 && width != 80 || width > known.maxWidth() {
-			code = http.StatusBadRequest
+			writeErr(w, http.StatusBadRequest, err.Error())
+			return
 		}
-		writeErr(w, code, err.Error())
+		writeErr(w, http.StatusBadGateway, err.Error())
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"iface": iface, "action": "chan_switch", "channel": ch, "width_mhz": width,
+		"iface": iface, "action": "move_channel", "channel": move.Channel,
+		"width_mhz": move.WidthMHz, "method": move.Method,
+		"outage_sec": move.OutageSec, "stations": move.Stations,
+		"stations_dropped": move.Dropped,
 	})
 }
 
 // postDeauthAll drops every station on a radio. AP-wide, same reasoning as
-// postChannel; the count returned is how many were there to drop.
+// postMoveChannel; the count returned is how many were there to drop.
 func (a *API) postDeauthAll(w http.ResponseWriter, r *http.Request) {
 	iface := r.PathValue("iface")
 	if err := a.e.radioReady(iface); err != nil {

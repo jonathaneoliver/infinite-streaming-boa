@@ -1053,7 +1053,30 @@ differently from how they read.
 
 **Semantics that bite**
 
-- **`CHAN_SWITCH` fails on both drivers here, and they fail DIFFERENTLY.**
+- **`CHAN_SWITCH` IS A PROPERTY OF THE SILICON, and one of these radios does
+  it.** MEASURED 2026-09-22 on a Cudy TR3000 (OpenWrt 25.12.5, hostapd
+  v2.12-devel, `mt798x-wmac`), with the box announcing the switch and counting,
+  per client, who rode it:
+
+  | Switch | Method reported | Clients that followed |
+  |---|---|---|
+  | `phy1` 40@80 → 44@40 | `announce`, `outage_sec` 0 | — (idle) |
+  | `phy1` 44@40 → 36@80 | `announce`, `outage_sec` 0 | 1 of 1 |
+  | `phy1` 36 → 44 → 36 @40 | `announce` each | 1 of 1, three times |
+  | `phy1` → 40@80 | `announce`, `outage_sec` 0 | **3 of 3** |
+  | `phy1` forced `restart` | `restart`, 1.0 s and 1.1 s | 1 dropped, as promised |
+
+  So the figure to quote is per MOVE and per DRIVER, not per box: an announced
+  switch costs nothing and a restart costs about a second of access point plus
+  however long each client takes to notice, rescan and rejoin.
+
+  **One restart in three took 84.7 s**, because the access point came back with
+  no BSS on the air and the daemon rebuilt it (the wedge recovery). Recorded
+  rather than averaged away: the outage a restart costs is not a constant, which
+  is the second reason the mechanism is reported rather than inferred from the
+  number.
+
+- **`CHAN_SWITCH` fails on both of the PI's drivers, and they fail DIFFERENTLY.**
   Re-measured 2026-09-08 with the radios idle, at 20 MHz as well as 80, because
   the first pass recorded one blanket refusal and an unstable identifier.
 
@@ -1069,10 +1092,20 @@ differently from how they read.
   width-reducing one on the mt7921u both return `FAIL`, as does the bare
   `CHAN_SWITCH 5 5180`. The AP does not move in any case.
 
-  **Advertised capability is not evidence of support.** The only test that
-  answers this question is issuing the command and reading the reply, which is
-  why the refusal is surfaced as a `502` carrying hostapd's own text rather than
-  being reported as success.
+  **Advertised capability is not evidence of support — IN BOTH DIRECTIONS.**
+  `iw phy info` lists `channel_switch` on the mt7921u, which refuses every form
+  of it, and the only test that answers the question is issuing the command and
+  reading the reply. So the box ATTEMPTS the switch and falls back to the
+  restart in the same request, and caches what it learned against the DRIVER.
+
+  A `FAIL` is ambiguous — it means "this driver refuses CSA" or "this target is
+  not switchable", a cross-band move being the everyday example — so a refusal
+  is recorded as the driver's only when the failed attempt was an ordinary
+  in-band move AND the fallback then landed on exactly that channel. That
+  combination proves the target was legal. Every offered channel is non-DFS by
+  construction, so no CAC wait can hide in it. The cache is per process: a claim
+  about driver code, forgotten when the daemon restarts, because driver code
+  gets fixed.
 
   **Do not identify a radio by its phy index.** An earlier version of this note
   said `iw phy phy1 info` lists `channel_switch`; on 2026-09-08 `phy1` was the
@@ -1093,9 +1126,20 @@ differently from how they read.
   OpenWrt reached the same place from the other direction: its hostapd ubus
   `switch_chan` method carries a `csa_force` flag documented as "restart the
   interface in case the CSA fails". That is what `POST /api/bridge/radios/
-  {iface}/move-channel` does here — down, `SET`, up — so the fallback is the
-  conventional answer to a driver that refuses CSA, not a workaround peculiar
-  to this box.
+  {iface}/move-channel` falls back to here — down, `SET`, up — so the fallback
+  is the conventional answer to a driver that refuses CSA, not a workaround
+  peculiar to this box. `?mode=restart` asks for it deliberately, which is how a
+  measurement taken on a radio that CAN announce still describes one that
+  cannot.
+
+  **Who followed is the box's own observation, not hostapd's.** Ten seconds
+  after an announced switch the station dump is compared with the one taken
+  before it: a client still present whose connected time did not reset never
+  left, one present with a fresh connected time noticed the move and rejoined,
+  and one that is gone did not come back. Per client, because they differ — 3 of
+  3 on the run above, and 23 of 24 crossings over the longer run in issue #349,
+  where the single loss reassociated four seconds later and then rode six
+  consecutive switches.
 
 - **The two radios have OPPOSITE scanning capabilities**, so neither order of
   operations suits both. Measured 2026-09-03 with both serving:

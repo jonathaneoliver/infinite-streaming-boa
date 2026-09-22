@@ -698,7 +698,8 @@ const pending = ref('');
           <ChannelPlan
             :radio="radio" :scans="bridge.scanSummaries.value" :busy="bridge.busy.value"
             :others="others"
-            @move="(ch: number, w: number) => bridge.moveChannel(radio.name, ch, w)"
+            @move="(ch: number, w: number, mode: 'announce' | 'restart') =>
+              bridge.moveChannel(radio.name, ch, w, mode)"
           />
         </template>
       </AdapterRack>
