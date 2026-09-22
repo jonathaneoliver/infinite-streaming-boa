@@ -283,6 +283,26 @@ export function useBridge(active: Ref<boolean>) {
           : `${b.iface}: transmit power ${b.dbm} dBm. Clients stay connected; their signal moves.`,
     );
 
+  /**
+   * Make a radio listen-only, or give it back to serving.
+   *
+   * The daemon changes OpenWrt's wireless config and its own, then restarts
+   * the service to re-read its ports -- so the reply arrives and the box goes
+   * away for about a second. The poll that follows is expected to fail once;
+   * the message says so rather than letting it read as a failed switch.
+   */
+  const setRadioRole = (iface: string, scanner: boolean) =>
+    act(
+      `/api/bridge/radios/${encodeURIComponent(iface)}/role?as=${scanner ? 'scanner' : 'ap'}`,
+      (b) =>
+        b.role === 'scanner'
+          ? `${b.iface}: listening only, as ${b.now}. Its access point is gone and it `
+            + `sweeps continuously, so no serving radio has to leave its channel. `
+            + `The daemon is restarting to pick this up — a second or so.`
+          : `${b.iface}: serving again. The daemon is restarting to pick this up — `
+            + `a second or so.`,
+    );
+
   const setThreshold = (iface: string, kind: 'rts' | 'frag', value: number | 'off') =>
     act(
       `/api/bridge/radios/${encodeURIComponent(iface)}/threshold` +
@@ -532,6 +552,6 @@ export function useBridge(active: Ref<boolean>) {
     scans, scanSummaries, air, bssLoad,
     load, loadSurvey, deauthAll, setPower, setAPEnabled, setService, powerOutage,
     scanBand,
-    applyProfile, setThreshold, setTxPower, setBSSLoad, steerTo, evict, gather, linkAll, moveChannel,
+    applyProfile, setThreshold, setRadioRole, setTxPower, setBSSLoad, steerTo, evict, gather, linkAll, moveChannel,
   };
 }

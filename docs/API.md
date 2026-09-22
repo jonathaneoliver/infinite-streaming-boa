@@ -17,7 +17,7 @@ see `docs/DATA-CONTRACT.md` for where each number comes from.
 
 ## Endpoints
 
-56 routes.
+57 routes.
 
 | Method | Path |
 |---|---|
@@ -42,6 +42,7 @@ see `docs/DATA-CONTRACT.md` for where each number comes from.
 | POST | `/api/bridge/radios/{iface}/bssload` |
 | POST | `/api/bridge/radios/{iface}/threshold` |
 | POST | `/api/bridge/radios/{iface}/txpower` |
+| POST | `/api/bridge/radios/{iface}/role` |
 | POST | `/api/bridge/radios/{iface}/steer` |
 | POST | `/api/bridge/radios/{iface}/gather` |
 | POST | `/api/bridge/radios/{iface}/evict` |
@@ -274,6 +275,16 @@ postTxPower sets a radio's transmit power, live, on its phy.
 `?dbm=N` fixes it at N dBm; `?dbm=auto` hands it back to the driver. Nobody
 is dropped: the setting goes to the driver, not through hostapd. Refused on
 drivers known to ignore it, rather than reported as done. See txpower.go.
+
+### POST /api/bridge/radios/{iface}/role
+
+postRadioRole makes a radio listen-only, or gives it back to serving.
+
+`?as=scanner` stops its access point and puts a listen-only interface on the
+phy; `?as=ap` reverses both. It changes OpenWrt's wireless config and boa's
+own -- which have to agree about the hardware -- and then restarts the
+service, because the ports are read at startup. About a second, and no
+client on another radio is touched. See scannerrole.go.
 
 ### POST /api/bridge/radios/{iface}/steer
 

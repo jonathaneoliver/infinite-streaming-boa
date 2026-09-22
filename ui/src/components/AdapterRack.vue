@@ -376,7 +376,7 @@ function warnText(r: IfaceInfo): string {
   // so the state it is in gets the same word family -- one word for one thing,
   // which is the whole point of #229. A reader should not have to work out
   // that the listening row and the scanner role are the same radio.
-  if (r.role === 'scanner') return 'scanning';
+  if (roleOf(r) === 'scanner') return 'scanning';
   if (!r.serving) return 'not serving';
   // The STATE, in the same words the pattern lane uses for it: a lane authoring
   // `radio-off` and a badge reading `off` are the same condition, and a reader
@@ -525,6 +525,71 @@ watch(rackAdapters, (list) => {
   }
 });
 
+/**
+ * The role the row should be DRAWN as, which is the one that was asked for
+ * while the box is catching up.
+ *
+ * Changing a radio's role restarts the daemon, so the answer takes a restart
+ * plus a poll to arrive -- several seconds during which the row kept every
+ * control that only makes sense on a serving radio: deauth, disassoc, evict,
+ * gather, steer, all pointed at an access point that was already going away.
+ * It read as the interface ignoring the press.
+ *
+ * So the ask is held here and the row believes it. It is dropped the moment
+ * the box agrees, and after ROLE_WAIT_MS regardless -- a wish that outlived a
+ * failed change would leave the row describing a radio that never moved, which
+ * is the same lie one direction later.
+ */
+const roleWish = ref<Record<string, string>>({});
+const ROLE_WAIT_MS = 30000;
+
+watch(rackAdapters, (list) => {
+  for (const r of list) {
+    if (roleWish.value[r.name] && roleWish.value[r.name] === r.role) delete roleWish.value[r.name];
+  }
+});
+
+function roleOf(r: IfaceInfo): string {
+  return roleWish.value[r.name] ?? r.role;
+}
+
+async function setRole(r: IfaceInfo, scanner: boolean) {
+  const want = scanner ? 'scanner' : 'ap';
+  roleWish.value = { ...roleWish.value, [r.name]: want };
+  const name = r.name;
+  window.setTimeout(() => delete roleWish.value[name], ROLE_WAIT_MS);
+  await props.bridge.setRadioRole(r.name, scanner);
+  // THEN CHASE IT, because the box is not slow -- the poll is. The call itself
+  // returns in about a quarter of a second, and the daemon then restarts to
+  // re-read its ports: the reload that follows the call lands while it is
+  // down, and the next scheduled one is five seconds later, so a change that
+  // happened at once appeared to take the better part of ten. The interface
+  // name changes with the role (phy3-ap0 becomes phy3-scan), so the ROW cannot
+  // be kept honest locally either -- the old row has to go and the new one
+  // arrive, and only the box can say that.
+  //
+  // Asking repeatedly for a few seconds is the honest version of waiting: each
+  // attempt is a real read, a failure while the daemon is down is expected and
+  // ignored, and it stops as soon as the answer contains the radio in the role
+  // that was asked for.
+  for (let i = 0; i < ROLE_CHASE_TRIES; i++) {
+    await new Promise((done) => window.setTimeout(done, ROLE_CHASE_MS));
+    await props.bridge.load();
+    const now = rackAdapters.value.find((a) => a.role === want && a.name.startsWith(phyPrefix(name)));
+    if (now) break;
+  }
+}
+
+/** The phy an interface belongs to, which survives the rename a role change
+ *  causes: phy3-ap0 and phy3-scan are the same radio. Not phyOf below, which
+ *  is a PHY RATE -- same three letters, different subject. */
+function phyPrefix(iface: string): string {
+  return iface.split('-')[0];
+}
+
+const ROLE_CHASE_TRIES = 12;
+const ROLE_CHASE_MS = 700;
+
 /** The top of the slider: the channel's limit, or the current setting if unreadable. */
 function txMax(r: IfaceInfo): number {
   return Math.round(r.txpower?.max_dbm || r.txpower?.dbm || 20);
@@ -582,7 +647,7 @@ function summary(r: IfaceInfo): string {
   // while scanning perfectly -- 19 access points in 1.2s. So `down` here is
   // both the normal case and a word that reads as a fault. What changes about
   // a scanner is when it last swept, so that is what the row says.
-  if (r.role === 'scanner') {
+  if (roleOf(r) === 'scanner') {
     const age = surveyAge(r.name);
     return age ? `swept ${age}` : 'no sweep yet';
   }
@@ -995,7 +1060,7 @@ function usbTitle(i: IfaceInfo): string {
                What it does have is the sweep: how many neighbours it heard and
                the busiest channel it found. Same column, same question, a
                source it actually has. -->
-          <template v-if="r.role === 'scanner'">
+          <template v-if="roleOf(r) === 'scanner'">
             <span class="k">heard</span
             ><span class="v num">{{ heardCount(r.name) || '—' }}</span>
             <span class="k">busiest</span
@@ -1059,7 +1124,7 @@ function usbTitle(i: IfaceInfo): string {
              track left, which this file records breaking the row once already
              -- but "no clients" on an instrument invites the reader to wonder
              why none have joined it. -->
-        <span v-else-if="r.role === 'scanner'" class="who-none"></span>
+        <span v-else-if="roleOf(r) === 'scanner'" class="who-none"></span>
         <span v-else class="who-none">no clients</span>
 
         <div class="tail">
@@ -1069,7 +1134,7 @@ function usbTitle(i: IfaceInfo): string {
                radio whose state was changing. -->
           <span
             v-if="r.wireless" class="badge warn-badge"
-            :class="{ blank: !warnText(r), 'role-badge': r.role === 'scanner' }"
+            :class="{ blank: !warnText(r), 'role-badge': roleOf(r) === 'scanner' }"
             :title="warnText(r) === 'AP disabled'
               ? `${r.name} is powered, but its access point is down — clients cannot join it.`
               : warnText(r) === 'no AP'
@@ -1100,7 +1165,7 @@ function usbTitle(i: IfaceInfo): string {
              available on it. Nor does hiding them shift anything mid-press --
              a radio's role does not change while someone is reaching for a
              button. `scan` moves below, because that one does apply. -->
-        <template v-if="r.wireless && r.role !== 'scanner'">
+        <template v-if="r.wireless && roleOf(r) !== 'scanner'">
           <!-- CUTTING POWER IS BEHIND developer=1.
                It is the most destructive control here and the least
                recoverable: rfkill wedges the USB adapter often enough that
@@ -1290,10 +1355,34 @@ Clients ARE told it has gone, unlike a power cut.`
              is no BSS to take down and nobody to drop. Left inside the block it
              was drawn permanently disabled, under a tooltip explaining that a
              scan would take down an access point this radio does not have. -->
+        <!-- WHAT THIS RADIO IS FOR, on the row rather than in the fold.
+             A scanner and an access point are different instruments, and the
+             row is where a radio says which it is -- the badge to the left
+             already reads `scanning`. In the fold it was one level deeper than
+             the fact it changes, and it rendered inside the access-point block,
+             so the toggle appeared only on radios that were serving: listening
+             could be switched on and never off.
+             TWO LABELS, ONE CONTROL. `listen only` and `serve` name the act,
+             not the state, because every other button in this row is a verb and
+             a checkbox reading `listen only` beside them invited the reader to
+             work out which it meant. -->
         <button
           v-if="r.wireless"
-          class="ghost" :disabled="busy || (!apLive(r) && r.role !== 'scanner')"
-          :title="r.role === 'scanner'
+          class="ghost" :class="{ on: roleOf(r) === 'scanner' }" :disabled="busy"
+          :title="roleOf(r) === 'scanner'
+            ? `${r.name} serves nobody and sweeps continuously. This gives it back an access point — boa restarts to pick it up, about a second.`
+            : `Take ${r.name}'s access point away and let it listen instead: it then sweeps `
+              + 'continuously, so no serving radio has to leave its channel to survey. '
+              + (r.ap?.stations
+                  ? `The ${r.ap.stations} client(s) here will move to another radio. `
+                  : '')
+              + 'boa restarts to pick it up, about a second.'"
+          @click="setRole(r, roleOf(r) !== 'scanner')"
+        >{{ roleOf(r) === 'scanner' ? 'serve' : 'scan only' }}</button>
+        <button
+          v-if="r.wireless"
+          class="ghost" :disabled="busy || (!apLive(r) && roleOf(r) !== 'scanner')"
+          :title="roleOf(r) === 'scanner'
             ? `Sweep both bands on ${r.name} now. It serves nobody, so this drops no client and costs no outage — the same reading the 15s poll takes.`
             : apLive(r)
               ? 'Survey the band. Costs a few beacon gaps, or an outage on a radio that will not scan while serving.'
@@ -1373,7 +1462,7 @@ Clients ARE told it has gone, unlike a power cut.`
                four permanent dashes read as four things broken. A scanner gets
                the age of its reading in their place -- the one fact about it
                that changes. -->
-          <template v-if="r.role !== 'scanner'">
+          <template v-if="roleOf(r) !== 'scanner'">
             <div><span class="k">SSID</span><span class="v">{{ r.ap?.ssid || '—' }}</span></div>
             <div><span class="k">BSSID</span><span class="v num">{{ r.ap?.bssid || '—' }}</span></div>
             <div><span class="k">country</span><span class="v num">{{ r.ap?.country || '—' }}</span></div>
@@ -1405,7 +1494,7 @@ Clients ARE told it has gone, unlike a power cut.`
              nothing has been seen. That is an invitation to wait for something
              structurally impossible. -->
         <AdapterStack
-          v-if="series && r.role !== 'scanner'"
+          v-if="series && roleOf(r) !== 'scanner'"
           :iface="r.name" :series="series" :labels="labels ?? {}"
         />
 
@@ -1426,7 +1515,7 @@ Clients ARE told it has gone, unlike a power cut.`
              to attribute it to. What a scanner does measure about airtime is
              the channel survey above, which is a different quantity. -->
         <AdapterStack
-          v-if="series && r.wireless && r.role !== 'scanner'"
+          v-if="series && r.wireless && roleOf(r) !== 'scanner'"
           mode="airtime"
           :iface="r.name" :series="series" :labels="labels ?? {}"
           :airtime-known="r.airtime_cap_known"
@@ -1440,7 +1529,14 @@ Clients ARE told it has gone, unlike a power cut.`
           will look wrong. {{ usbRemedy(r) }}
         </p>
 
-        <template v-if="r.ap">
+        <!-- AND ON THE ROLE, not on the access point alone. Everything below
+             belongs to a radio that serves: the channel it beacons on, the
+             conditioning that restarts its BSS, what it advertises. r.ap is
+             live data and arrives a restart and a poll after the choice, so
+             gating on it alone left the whole fold describing an access point
+             the operator had just taken away. The row switched at once and its
+             own fold did not. -->
+        <template v-if="r.ap && roleOf(r) !== 'scanner'">
           <!-- CHANNEL AND WIDTH leads the CONTROLS, straight after the status
                above it. Opening an adapter is nearly always to change where it
                is, and a band plan is the one control here that has to be READ
@@ -2403,6 +2499,12 @@ Clients ARE told it has gone, unlike a power cut.`
 /* The badge slot is shared with every real fault on the row, so a label that is
    NOT a fault has to drop the warning colour as well as the wording. An amber
    "listening" reads as a problem with the one radio that is behaving. */
+/* The role toggle while the radio is listening: it is reporting a state as
+   much as offering an act, so it does not read as another idle verb. */
+.tail .ghost.on {
+  border-color: color-mix(in srgb, var(--down) 55%, var(--line));
+  color: var(--ink);
+}
 .badge.warn-badge.role-badge {
   color: var(--ink-dim);
   border-color: var(--line);
