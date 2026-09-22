@@ -52,6 +52,7 @@ func (a *API) Routes() *http.ServeMux {
 	mux.HandleFunc("POST /api/bridge/radios/{iface}/profile", a.postRadioProfile)
 	mux.HandleFunc("POST /api/bridge/radios/{iface}/bssload", a.postBSSLoad)
 	mux.HandleFunc("POST /api/bridge/radios/{iface}/threshold", a.postThreshold)
+	mux.HandleFunc("POST /api/bridge/radios/{iface}/role", a.postRadioRole)
 	mux.HandleFunc("POST /api/bridge/radios/{iface}/steer", a.postSteer)
 	mux.HandleFunc("POST /api/bridge/radios/{iface}/gather", a.postGather)
 	mux.HandleFunc("POST /api/bridge/radios/{iface}/evict", a.postEvict)
@@ -736,6 +737,40 @@ func (a *API) postRadioProfile(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"iface": iface, "action": "profile", "profile": name,
 		"stations_dropped": dropped,
+	})
+}
+
+// postRadioRole makes a radio listen-only, or gives it back to serving.
+//
+// `?as=scanner` stops its access point and puts a listen-only interface on the
+// phy; `?as=ap` reverses both. It changes OpenWrt's wireless config and boa's
+// own, which have to agree about the hardware, and then restarts the service
+// because the ports are read at startup -- about a second, and no client on
+// another radio is touched. See scannerrole.go.
+func (a *API) postRadioRole(w http.ResponseWriter, r *http.Request) {
+	iface := r.PathValue("iface")
+	if err := a.e.radioExists(iface); err != nil {
+		writeErr(w, http.StatusServiceUnavailable, err.Error())
+		return
+	}
+	var scanner bool
+	switch strings.TrimSpace(r.URL.Query().Get("as")) {
+	case "scanner":
+		scanner = true
+	case "ap", "":
+	default:
+		writeErr(w, http.StatusBadRequest, `as must be "scanner" or "ap"`)
+		return
+	}
+	name, err := a.e.SetRadioRole(iface, scanner)
+	if err != nil {
+		writeErr(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"iface": iface, "action": "role",
+		"role": map[bool]string{true: "scanner", false: "ap"}[scanner],
+		"now":  name, "restarting": true,
 	})
 }
 

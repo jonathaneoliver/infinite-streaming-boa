@@ -678,6 +678,10 @@ func (e *Engine) Start() {
 	// Everything else here talks to hostapd in request/reply, which cannot see
 	// a client's answer to a steer -- see hostapdmonitor.go.
 	e.watchHostapdEvents()
+	// A listen-only interface this box made does not survive a reboot -- it is
+	// a netdev, not config -- so it is rebuilt before anything tries to raise
+	// or sweep it. Without this the setting outlives the interface it names.
+	e.ensureScanIfaces()
 	// A listen-only radio is raised BEFORE the poll that will scan it, because
 	// nothing else on the box raises it and its first scan otherwise lands in
 	// the couple of seconds its driver needs to settle. See raiseScanners.
