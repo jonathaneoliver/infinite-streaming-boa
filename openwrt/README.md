@@ -74,7 +74,8 @@ above in place:
 ```sh
 wget -O /etc/apk/keys/boa-packages.pem \
   https://jonathaneoliver.github.io/infinite-streaming-boa/openwrt/boa-packages.pem
-echo https://jonathaneoliver.github.io/infinite-streaming-boa/openwrt/25.12/aarch64_cortex-a76/packages.adb \
+. /etc/openwrt_release   # DISTRIB_ARCH picks the feed
+echo https://jonathaneoliver.github.io/infinite-streaming-boa/openwrt/25.12/$DISTRIB_ARCH/packages.adb \
   >> /etc/apk/repositories.d/customfeeds.list
 apk update && apk add luci-app-boa
 ```
@@ -95,7 +96,7 @@ Actions tab.
 
 Two packages, as OpenWrt splits an application from its LuCI page:
 
-- **boa** (`aarch64_cortex-a76`): `/usr/libexec/boa/boad`, `/etc/init.d/boa`,
+- **boa** (`aarch64_cortex-a76` or `aarch64_cortex-a53`, from the SDK): `/usr/libexec/boa/boad`, `/etc/init.d/boa`,
   `/etc/config/boa` (a conffile: an edited copy survives an upgrade, and the
   packaged one lands beside it as `.apk-new`). Depends on `tc-full kmod-netem
   kmod-ifb kmod-sched-core kmod-nft-bridge ip-full ip-bridge iw iperf3`, so apk
@@ -106,7 +107,9 @@ Two packages, as OpenWrt splits an application from its LuCI page:
 
 The script cross-compiles boad on the host and packs both in the OpenWrt SDK
 container (`openwrt/sdk:bcm27xx-bcm2712-25.12.5`, x86-64, emulated on arm64;
-about 20 s). `openwrt/package/*/Makefile` define the packages -- names,
+about 20 s). For a MediaTek Filogic router (Cudy TR3000, GL.iNet MT3000) name
+its SDK instead: `SDK_IMAGE=openwrt/sdk:mediatek-filogic-25.12.5`. The package
+architecture comes from the SDK, and the feed publishes both. `openwrt/package/*/Makefile` define the packages -- names,
 dependencies, descriptions -- and still build them in a buildroot with the
 feeds; `openwrt/mkpkg.sh` reads them and does what `include/package-pack.mk`
 does, because the SDK's own `make` rebuilds every kmod package boa depends on.

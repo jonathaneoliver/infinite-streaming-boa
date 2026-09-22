@@ -57,7 +57,8 @@ sudo apt install infinite-streaming-boa</code></pre>
   <table>
     <tr><td>Version</td><td><code>@VERSION@</code></td></tr>
     <tr><td>OpenWrt</td><td><code>@RELEASE@</code></td></tr>
-    <tr><td>Architecture</td><td><code>@ARCH@</code> (Raspberry Pi 5, and routers of the same architecture)</td></tr>
+    <tr><td>Architectures</td><td><code>aarch64_cortex-a76</code> (Raspberry Pi 5), <code>aarch64_cortex-a53</code>
+      (MediaTek Filogic routers: Cudy TR3000, GL.iNet MT3000, and others)</td></tr>
     <tr><td>Packages</td><td><code>boa</code>, <code>luci-app-boa</code></td></tr>
   </table>
 
@@ -75,10 +76,13 @@ sudo apt install infinite-streaming-boa</code></pre>
   <h3>Install</h3>
   <pre><code>wget -O /etc/apk/keys/boa-packages.pem \
   https://jonathaneoliver.github.io/infinite-streaming-boa/openwrt/boa-packages.pem
-echo https://jonathaneoliver.github.io/infinite-streaming-boa/openwrt/@RELEASE@/@ARCH@/packages.adb \
+. /etc/openwrt_release
+echo https://jonathaneoliver.github.io/infinite-streaming-boa/openwrt/@RELEASE@/$DISTRIB_ARCH/packages.adb \
   &gt;&gt; /etc/apk/repositories.d/customfeeds.list
 apk update
 apk add luci-app-boa</code></pre>
+  <p>The feed is picked by the device's own architecture. On any other architecture <code>apk update</code>
+  reports the feed missing; the packages can still be built from source for it with the OpenWrt SDK.</p>
   <p>Then run <code>boa-setup check</code>: it is read-only, and lists what the device still needs, with the
   command that fixes each item. After that, open LuCI → <strong>Services → infinite-streaming-boa</strong>, or <code>http://&lt;device&gt;:8080/</code>.
   Later releases arrive with <code>apk upgrade</code>, or from LuCI → System → Software.</p>
