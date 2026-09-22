@@ -167,6 +167,31 @@ const busy = computed(() => props.bridge.busy.value);
 const survey = (name: string) => props.bridge.scanSummaries.value[name];
 
 /**
+ * Every radio that has a sweep to show, in rack order.
+ *
+ * Whoever swept, not whoever is CALLED a scanner: with no listen-only radio
+ * boa sweeps with a serving one, and that reading is the only account of the
+ * neighbourhood the box has.
+ */
+const sweepers = computed(() =>
+  rackAdapters.value.map((r) => r.name).filter((n) => survey(n)),
+);
+
+/** Networks heard, across the sweeps, counted once per BSSID. */
+const hoodHeardTotal = computed(() => {
+  const seen = new Set<string>();
+  for (const n of sweepers.value) {
+    for (const a of survey(n)?.neighbours ?? []) seen.add(a.bssid);
+  }
+  return seen.size;
+});
+
+/** Open by default: it is the answer to "why is this channel slow", and a
+ *  closed fold on a rack nobody has touched hides the reading behind a click
+ *  that has to be discovered first. */
+const hoodOpen = ref(true);
+
+/**
  * The busiest and quietest channels this scan MEASURED.
  *
  * Measured, and the distinction is the whole reason this is not a one-liner. A
@@ -1281,137 +1306,6 @@ Clients ARE told it has gone, unlike a power cut.`
             <span class="v num">{{ surveyAge(r.name) || 'not yet' }}</span></div>
         </div>
 
-        <!-- WHAT THIS RADIO IS FOR, where its throughput chart used to be. -->
-        <template v-if="r.role === 'scanner'">
-          <div v-if="survey(r.name)" class="survey">
-            <div class="survey-head">
-              <span class="survey-title">last sweep</span>
-              <span class="survey-sub num">{{ surveyAge(r.name) }}</span>
-            </div>
-            <div class="facts">
-              <div><span class="k">heard</span>
-                <span class="v num">{{ surveyHeard(r.name).aps }} AP<template
-                  v-if="surveyHeard(r.name).aps !== 1">s</template>,
-                  {{ surveyHeard(r.name).stations }} client<template
-                  v-if="surveyHeard(r.name).stations !== 1">s</template></span></div>
-              <!-- LOOKED AT against FOUND ON, because the difference decides
-                   what an empty channel means: visited and silent is a
-                   measurement, never visited is a gap. The band plan's colours
-                   rest on exactly this distinction. -->
-              <div><span class="k">channels</span>
-                <span class="v num">{{ surveyHeard(r.name).channels }} of
-                  {{ surveyHeard(r.name).looked }} swept carried something</span></div>
-              <template v-if="surveyMeasured(r.name)">
-                <div><span class="k">busiest</span>
-                  <span class="v num">{{ surveyBusiest(r.name) }}</span></div>
-                <div><span class="k">quietest</span>
-                  <span class="v num">{{ surveyQuietest(r.name) }}</span></div>
-                <!-- HOW MANY of the swept channels carried a real airtime
-                     reading, rather than only a headcount. A colour resting on
-                     evidence and one resting on a guess must not look alike,
-                     which is the rule the plan itself follows. -->
-                <div><span class="k">measured airtime</span>
-                  <span class="v num">{{ surveyMeasured(r.name) }} channel<template
-                    v-if="surveyMeasured(r.name) !== 1">s</template></span></div>
-              </template>
-            </div>
-            <p v-if="!surveyMeasured(r.name)" class="survey-note">
-              No neighbour on any swept channel advertised its airtime, so this
-              sweep is a headcount. A channel nobody measured is not an idle
-              one.
-            </p>
-            <!-- OUR OWN ACCESS POINTS, as this radio hears them and on the
-                 channels the same sweep measured.
-                 The dBm is the only reading of our own beacons taken from
-                 outside them -- a radio cannot hear itself -- and the channel
-                 figures beside it turn that from "the antenna works" into "and
-                 the channel you put it on looks like this". -->
-            <div v-if="ourAPsHeard(r.name).length" class="neigh">
-              <div class="survey-head">
-                <span class="survey-title">our access points</span>
-                <span class="survey-sub num">heard from outside</span>
-              </div>
-              <div class="neigh-scroll">
-                <table class="neigh-table">
-                  <thead>
-                    <tr>
-                      <th>radio</th><th>ch</th><th class="r">heard at</th>
-                      <th class="r">channel airtime</th><th class="r">neighbours covering</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    <tr v-for="o in ourAPsHeard(r.name)" :key="o.iface">
-                      <td><span class="ssid">{{ o.iface }}</span></td>
-                      <td class="num">{{ o.channel || '—' }}</td>
-                      <td class="num r">{{ o.dbm }} dBm</td>
-                      <!-- Three states, not two. A figure where neighbours
-                           reported one; "not measured" where the channel was
-                           swept and nobody advertised; an em-dash where the
-                           sweep never visited it. Collapsing the last two
-                           would rate an unvisited channel as quiet. -->
-                      <td class="num r">{{ o.util || (o.swept ? 'not measured' : '—') }}</td>
-                      <td class="num r">{{ o.channel ? o.covering : '—' }}</td>
-                    </tr>
-                  </tbody>
-                </table>
-              </div>
-            </div>
-
-            <!-- WHO IS ACTUALLY THERE, which the per-channel rollup above can
-                 only total. "Channel 36 is 35% busy" and "channel 36 has one
-                 80MHz neighbour at -42 dBm reporting 12 clients" are different
-                 answers, and only the second tells an operator what to do
-                 about it.
-
-                 WIDTH IS THE COLUMN THAT EARNS ITS PLACE. An 80MHz neighbour
-                 fills four 20MHz channels and competes across all of them, so
-                 a channel that looks empty by headcount can be fully occupied
-                 -- which is the common case on 5GHz and the reason the band
-                 plan counts coverage separately. -->
-            <div v-if="neighbours(r.name).length" class="neigh">
-              <div class="survey-head">
-                <span class="survey-title">neighbours</span>
-                <span class="survey-sub num">{{ heardCount(r.name) }} heard<template
-                  v-if="heardCount(r.name) > neighbours(r.name).length">,
-                  {{ neighbours(r.name).length }} strongest shown</template></span>
-              </div>
-              <div class="neigh-scroll">
-                <table class="neigh-table">
-                  <thead>
-                    <tr>
-                      <th>network</th><th>ch</th><th>occupies</th>
-                      <th class="r">signal</th><th class="r">its clients</th>
-                      <th class="r">its airtime</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    <tr v-for="a in neighbours(r.name)" :key="a.bssid">
-                      <td>
-                        <!-- A HIDDEN SSID IS NAMED AS ONE, not left blank: an
-                             empty cell reads as a parse failure, and the BSSID
-                             below it is the identity either way. -->
-                        <span class="ssid">{{ a.ssid || '(hidden)' }}</span>
-                        <span class="bssid num">{{ a.bssid }}</span>
-                      </td>
-                      <td class="num">{{ a.channel }}</td>
-                      <td class="num">{{ apWidthLabel(a) }}</td>
-                      <td class="num r">{{ a.signal_dbm }} dBm</td>
-                      <!-- Em-dash, not 0: a neighbour that advertises no BSS
-                           Load has told us nothing, and zero clients is a
-                           different claim. -->
-                      <td class="num r">{{ a.stations ?? '—' }}</td>
-                      <td class="num r">{{ apUtil(a) || '—' }}</td>
-                    </tr>
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          </div>
-          <p v-else class="notice inline">
-            {{ r.name }} has taken no reading yet. It sweeps both bands every
-            15 seconds once it is up; <em>scan</em> below forces one now.
-          </p>
-        </template>
 
         <!-- WHAT IT IS CARRYING, with the facts rather than with the
              controls: this is status, and CHANNEL AND WIDTH still leads the
@@ -1735,6 +1629,167 @@ Clients ARE told it has gone, unlike a power cut.`
         </template>
       </div>
     </article>
+
+
+    <!-- THE NEIGHBOURHOOD IS NOT A PROPERTY OF A RADIO.
+         This sat inside one adapter's fold, which put the air around the box
+         under the controls of whichever radio happened to sweep -- and on a
+         box with no listen-only radio that is a SERVING one, whose fold is
+         where nobody looks for what the neighbours are doing. The subject here
+         is the environment, so it belongs in the section that names the set,
+         the same rule the pattern timeline below follows.
+         WHAT DOES NOT CHANGE IS THE ATTRIBUTION. A sweep is taken by one radio
+         from one vantage point at one moment, and two radios hear different
+         things -- a 2.4GHz-only phy cannot see 5GHz at all. So each reading is
+         labelled with the radio that took it and how old it is, and several
+         sweeps are listed rather than merged into one list that would claim a
+         completeness no single radio has. -->
+    <div v-if="sweepers.length" class="fold rack-wide">
+      <div class="row rack-row">
+        <button
+          class="caret" :aria-expanded="hoodOpen"
+          :title="hoodOpen ? 'Hide what the box can hear' : 'Show what the box can hear'"
+          @click="hoodOpen = !hoodOpen"
+        >{{ hoodOpen ? '\u25be' : '\u25b8' }}</button>
+        <span class="hood-title">neighbourhood</span>
+        <span class="meta">{{ hoodHeardTotal }} network<template
+          v-if="hoodHeardTotal !== 1">s</template> heard by {{ sweepers.length }} radio<template
+          v-if="sweepers.length !== 1">s</template></span>
+      </div>
+      <div v-if="hoodOpen" class="hood-body">
+        <div v-for="s in sweepers" :key="s" class="hood-source">
+          <p class="hood-by">
+            heard by <span class="num">{{ s }}</span>, <span class="num">{{ surveyAge(s) }}</span>
+            <span class="meta"> — one radio's vantage point, on the bands it can tune to</span>
+          </p>
+
+            <div class="survey">
+              <div class="survey-head">
+                <span class="survey-title">last sweep</span>
+                <span class="survey-sub num">{{ surveyAge(s) }}</span>
+              </div>
+              <div class="facts">
+                <div><span class="k">heard</span>
+                  <span class="v num">{{ surveyHeard(s).aps }} AP<template
+                    v-if="surveyHeard(s).aps !== 1">s</template>,
+                    {{ surveyHeard(s).stations }} client<template
+                    v-if="surveyHeard(s).stations !== 1">s</template></span></div>
+                <!-- LOOKED AT against FOUND ON, because the difference decides
+                     what an empty channel means: visited and silent is a
+                     measurement, never visited is a gap. The band plan's colours
+                     rest on exactly this distinction. -->
+                <div><span class="k">channels</span>
+                  <span class="v num">{{ surveyHeard(s).channels }} of
+                    {{ surveyHeard(s).looked }} swept carried something</span></div>
+                <template v-if="surveyMeasured(s)">
+                  <div><span class="k">busiest</span>
+                    <span class="v num">{{ surveyBusiest(s) }}</span></div>
+                  <div><span class="k">quietest</span>
+                    <span class="v num">{{ surveyQuietest(s) }}</span></div>
+                  <!-- HOW MANY of the swept channels carried a real airtime
+                       reading, rather than only a headcount. A colour resting on
+                       evidence and one resting on a guess must not look alike,
+                       which is the rule the plan itself follows. -->
+                  <div><span class="k">measured airtime</span>
+                    <span class="v num">{{ surveyMeasured(s) }} channel<template
+                      v-if="surveyMeasured(s) !== 1">s</template></span></div>
+                </template>
+              </div>
+              <p v-if="!surveyMeasured(s)" class="survey-note">
+                No neighbour on any swept channel advertised its airtime, so this
+                sweep is a headcount. A channel nobody measured is not an idle
+                one.
+              </p>
+              <!-- OUR OWN ACCESS POINTS, as this radio hears them and on the
+                   channels the same sweep measured.
+                   The dBm is the only reading of our own beacons taken from
+                   outside them -- a radio cannot hear itself -- and the channel
+                   figures beside it turn that from "the antenna works" into "and
+                   the channel you put it on looks like this". -->
+              <div v-if="ourAPsHeard(s).length" class="neigh">
+                <div class="survey-head">
+                  <span class="survey-title">our access points</span>
+                  <span class="survey-sub num">heard from outside</span>
+                </div>
+                <div class="neigh-scroll">
+                  <table class="neigh-table">
+                    <thead>
+                      <tr>
+                        <th>radio</th><th>ch</th><th class="r">heard at</th>
+                        <th class="r">channel airtime</th><th class="r">neighbours covering</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <tr v-for="o in ourAPsHeard(s)" :key="o.iface">
+                        <td><span class="ssid">{{ o.iface }}</span></td>
+                        <td class="num">{{ o.channel || '—' }}</td>
+                        <td class="num r">{{ o.dbm }} dBm</td>
+                        <!-- Three states, not two. A figure where neighbours
+                             reported one; "not measured" where the channel was
+                             swept and nobody advertised; an em-dash where the
+                             sweep never visited it. Collapsing the last two
+                             would rate an unvisited channel as quiet. -->
+                        <td class="num r">{{ o.util || (o.swept ? 'not measured' : '—') }}</td>
+                        <td class="num r">{{ o.channel ? o.covering : '—' }}</td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+
+              <!-- WHO IS ACTUALLY THERE, which the per-channel rollup above can
+                   only total. "Channel 36 is 35% busy" and "channel 36 has one
+                   80MHz neighbour at -42 dBm reporting 12 clients" are different
+                   answers, and only the second tells an operator what to do
+                   about it.
+
+                   WIDTH IS THE COLUMN THAT EARNS ITS PLACE. An 80MHz neighbour
+                   fills four 20MHz channels and competes across all of them, so
+                   a channel that looks empty by headcount can be fully occupied
+                   -- which is the common case on 5GHz and the reason the band
+                   plan counts coverage separately. -->
+              <div v-if="neighbours(s).length" class="neigh">
+                <div class="survey-head">
+                  <span class="survey-title">neighbours</span>
+                  <span class="survey-sub num">{{ heardCount(s) }} heard<template
+                    v-if="heardCount(s) > neighbours(s).length">,
+                    {{ neighbours(s).length }} strongest shown</template></span>
+                </div>
+                <div class="neigh-scroll">
+                  <table class="neigh-table">
+                    <thead>
+                      <tr>
+                        <th>network</th><th>ch</th><th>occupies</th>
+                        <th class="r">signal</th><th class="r">its clients</th>
+                        <th class="r">its airtime</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <tr v-for="a in neighbours(s)" :key="a.bssid">
+                        <td>
+                          <!-- A HIDDEN SSID IS NAMED AS ONE, not left blank: an
+                               empty cell reads as a parse failure, and the BSSID
+                               below it is the identity either way. -->
+                          <span class="ssid">{{ a.ssid || '(hidden)' }}</span>
+                          <span class="bssid num">{{ a.bssid }}</span>
+                        </td>
+                        <td class="num">{{ a.channel }}</td>
+                        <td class="num">{{ apWidthLabel(a) }}</td>
+                        <td class="num r">{{ a.signal_dbm }} dBm</td>
+                        <!-- Em-dash, not 0: a neighbour that advertises no BSS
+                             Load has told us nothing, and zero clients is a
+                             different claim. -->
+                        <td class="num r">{{ a.stations ?? '—' }}</td>
+                        <td class="num r">{{ apUtil(a) || '—' }}</td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+        </div>
+      </div>
+    </div>
 
     <!-- Rack-level, and deliberately NOT another fold.
          A timeline that spans the radios has the SET as its subject, so it
@@ -2220,4 +2275,19 @@ Clients ARE told it has gone, unlike a power cut.`
   color: var(--ink-dim);
   border-color: var(--line);
 }
+
+/* The neighbourhood fold wears the rack's clothes; only its header differs,
+   because it counts networks rather than describing a radio. */
+.hood-title {
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+.rack-row { display: flex; align-items: center; gap: 8px; padding: 8px 14px; }
+.hood-body { padding: 0 14px 12px; }
+.hood-source + .hood-source {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px dashed var(--line-soft);
+}
+.hood-by { margin: 0 0 6px; font-size: 12px; color: var(--ink-dim); }
 </style>
