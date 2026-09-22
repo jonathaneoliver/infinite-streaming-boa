@@ -252,6 +252,13 @@ type Engine struct {
 	// anybody would think to look for.
 	txIgnored map[string]string
 
+	// csaRefused is every driver MEASURED refusing a channel switch
+	// announcement, keyed by driver name and learned only from a failure the
+	// fallback proved was the driver's fault. See csa.go, which explains why
+	// the capability bit cannot be asked instead, and why this is in memory
+	// for the same reason txIgnored is.
+	csaRefused map[string]string
+
 	// radioLocks serialises reconfiguration per radio, so a move from the API
 	// and a move from the tick's restore cannot interleave on one interface.
 	radioMu    sync.Mutex

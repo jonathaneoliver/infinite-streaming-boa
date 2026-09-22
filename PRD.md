@@ -1416,6 +1416,28 @@ damages packets, never link state.
   first scan after every restart was reported as "exit status 151", which is
   arithmetic on an error code the box had been given in plain words and thrown
   away.
+- **A channel move is ANNOUNCED where the radio can and a restart where it
+  cannot, and the result says which.** An 802.11h channel switch counts the move
+  down in the beacons and clients follow it still associated; a restart takes
+  the access point down and brings it back elsewhere, telling nobody. That is
+  the whole of what a client experiences, so it is not left to be inferred from
+  an outage figure: the move reports its `method`, the band plan carries a
+  `seamless` or `drops clients` badge before the press, and the event log says
+  which happened and — for an announced one, ten seconds later — **how many
+  clients actually followed, per client**. Measured on the Cudy's `mt798x`
+  radio: 3 of 3.
+- **Which radios can announce is learned by attempting, never by asking.** The
+  `mt7921u` lists `channel_switch` among its capabilities and refuses every form
+  of it, so the capability bit returns the opposite of the truth. A move is
+  attempted by announcement and falls back to the restart inside the SAME
+  request — the operator asked for a channel, not for a mechanism — and a
+  refusal is remembered against the driver only when the attempt was an ordinary
+  in-band move that the fallback then completed, which is what proves the target
+  was legal rather than the driver at fault.
+- **The outage can be asked for.** A radio that announces its switches cleanly
+  would otherwise make the other behaviour unreachable, and that behaviour is
+  what the Pi and every `mt7921u` do every time. Forcing the teardown is how a
+  finding on capable hardware still describes hardware that is not.
 - **A chosen channel is remembered, and a radio is put back on it.** The move
   itself is applied to the running access point and lasts only as long as that
   process, so a restart, a reboot, a USB re-enumeration or a driver reload
@@ -1427,9 +1449,10 @@ damages packets, never link state.
   configurations are per ROLE, two of them describe the same onboard radio in
   different bands, and which one is live depends on whether the USB adapter is
   present.
-- Putting it back **costs an outage and says so before it takes one**. The move
-  drops every client on that radio without telling them, so the log names the
-  channel it drifted to and the one it is going back to, before it moves. It is
+- Putting it back **costs whatever that radio's mechanism costs, and says so**.
+  The log names the channel it drifted to and the one it is going back to before
+  it moves, and the move's own event then says whether the clients were asked to
+  follow or were dropped without being told. It is
   attempted only on a radio that is actually serving — a radio deliberately
   switched off stays off, because being off is the operator's decision and not
   something a restore may quietly undo. After a few failed attempts it stops
@@ -1535,10 +1558,12 @@ damages packets, never link state.
   transparent bridge, with the full `wpad` build and 802.11k/v on each AP; no
   package reconfigures a router's network, since a mistake there cuts off the
   person making it. Without the full build, steer fails and measure is refused.
-- **OpenWrt lacks three radio controls.** Its kernel has no rfkill, so there is
-  no silent power cut; the `mt7921u` refuses a CSA channel switch, so a channel
-  moves by scan-and-apply; and the advertised BSS Load needs a testing build of
+- **OpenWrt lacks two radio controls.** Its kernel has no rfkill, so there is no
+  silent power cut, and the advertised BSS Load needs a testing build of
   hostapd, so it is not offered. Packages are built for arm64 on 25.12 only.
+  The channel switch is no longer among them: the built-in `mt798x` radios
+  announce it and keep their clients, while a `mt7921u` adapter on the same box
+  still restarts to move.
 - **The container host must run NetworkManager.** The uplink NIC is put into a
   bridge with `nmcli`, and the script refuses to guess rather than acting on a
   host it cannot put back. A host using netplan with systemd-networkd — the

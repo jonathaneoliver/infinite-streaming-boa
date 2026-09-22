@@ -1224,25 +1224,49 @@ func (e *Engine) forgetRadioOn() {
 	e.mu.Unlock()
 }
 
-// MoveChannel puts a radio on a chosen channel by taking it down and bringing
-// it back up there.
+// The two ways to change channel, and the difference is the whole of what a
+// client experiences:
 //
-// The working half of two ways to change channel, and the difference matters:
+//	MethodAnnounce  CHAN_SWITCH (802.11h). The AP counts the move down in its
+//	                beacons and clients FOLLOW, staying associated. No outage.
+//	MethodRestart   Down and up. The AP vanishes and reappears elsewhere;
+//	                clients are told nothing and must notice, rescan and rejoin.
+const (
+	MethodAnnounce = "announce"
+	MethodRestart  = "restart"
+)
+
+// ChannelMove is what a channel change actually did, as opposed to what was
+// asked for.
 //
-//	CHAN_SWITCH (802.11h)  the AP counts down in its beacons and clients FOLLOW,
-//	                       staying associated -- seamless, and refused by both
-//	                       drivers on this box (issue #154)
-//	down and up            the AP vanishes and reappears elsewhere; clients are
-//	                       told nothing and must notice, rescan and rejoin
+// Method is here rather than left to be inferred from OutageSec, which very
+// nearly says it: zero means nobody was dropped. But a fast restart on an idle
+// radio would round to a tenth of a second and read the same, and the mechanism
+// is the thing being reported -- so it is stated.
+type ChannelMove struct {
+	Channel   int     `json:"channel"`
+	WidthMHz  int     `json:"width_mhz"`
+	Method    string  `json:"method"`
+	OutageSec float64 `json:"outage_sec"`
+	Stations  int     `json:"stations"`
+	Dropped   int     `json:"stations_dropped"`
+}
+
+// MoveChannel puts a radio on a chosen channel, by whichever of the two ways
+// that radio can actually do.
 //
-// So this is the one that works here, and it is also what most consumer routers
-// actually do when their channel changes. The cost is a reconnect for every
-// client on the radio, which is why it says so before it runs.
+// ANNOUNCE FIRST unless the driver is known to refuse it, and fall back to the
+// restart WITHIN THE SAME REQUEST when it does: the operator asked for a
+// channel, not for a mechanism. mode is MethodAnnounce (or empty, the same
+// thing) or MethodRestart, which forces the teardown on hardware that need not
+// suffer it -- the only behaviour the Pi and every mt7921u can offer, so
+// forcing it here is what lets a finding on a capable radio still describe one
+// that is not.
 //
 // Returns the channel the radio is actually on afterwards, READ BACK rather
 // than assumed -- a refused SET partway through does not undo the ones before
 // it, and reporting the requested channel would be confidently wrong.
-func (e *Engine) MoveChannel(iface string, channel, widthMHz int) (int, error) {
+func (e *Engine) MoveChannel(iface string, channel, widthMHz int, mode string) (ChannelMove, error) {
 	// ONE MOVE AT A TIME PER RADIO.
 	//
 	// A move is a read-modify-write on hardware -- DISABLE, a run of SETs, one
@@ -1265,7 +1289,7 @@ func (e *Engine) MoveChannel(iface string, channel, widthMHz int) (int, error) {
 
 	ch, ok := apChannels[channel]
 	if !ok {
-		return 0, fmt.Errorf(
+		return ChannelMove{}, fmt.Errorf(
 			"channel %d is not offered: %s "+
 				"(DFS is excluded -- the Pi cannot serve an AP on one)",
 			channel, offeredChannels)
@@ -1276,25 +1300,64 @@ func (e *Engine) MoveChannel(iface string, channel, widthMHz int) (int, error) {
 	// would return OK before the ENABLE failed and left the radio down --
 	// exactly the shape of #166.
 	if max := ch.maxWidth(); widthMHz > max {
-		return 0, fmt.Errorf(
+		return ChannelMove{}, fmt.Errorf(
 			"channel %d runs at %dMHz at most (asked for %d)", channel, max, widthMHz)
+	}
+	switch mode {
+	case "", MethodAnnounce, MethodRestart:
+	default:
+		return ChannelMove{}, fmt.Errorf(
+			"mode must be %q or %q (got %q)", MethodAnnounce, MethodRestart, mode)
 	}
 	cmds := setChannelCommands(ch, widthMHz)
 	if err := e.radioReady(iface); err != nil {
-		return 0, err
+		return ChannelMove{}, err
 	}
 	if e.cfg.Demo {
-		e.noteMoveChannel(iface, channel)
-		return channel, nil
+		demo := ChannelMove{Channel: channel, WidthMHz: widthMHz, Method: MethodAnnounce}
+		e.noteMoveChannel(iface, demo)
+		return demo, nil
 	}
 
-	wasEnabled := false
+	wasEnabled, wasChannel := false, 0
 	if st, err := hostapdCmd(iface, "STATUS"); err == nil {
 		wasEnabled = strings.Contains(st, "state=ENABLED")
+		wasChannel = atoiSafe(parseHostapdKV(st)["channel"])
 	}
+	before := StationDump(iface)
+	driver := Radio(iface).Driver
+
+	// THE ANNOUNCEMENT, unless this driver is already known to refuse one or
+	// the operator asked for the teardown on purpose.
+	var announceErr error
+	if mode != MethodRestart && wasEnabled {
+		if why := e.csaRefusedReason(driver); why != "" {
+			e.logEvent(EventRadio, iface, "",
+				"%s cannot announce a channel switch, so this move drops its clients: %s",
+				iface, why)
+		} else if announceErr = e.announceChannel(iface, ch, widthMHz); announceErr == nil {
+			done := ChannelMove{
+				Channel: channel, WidthMHz: widthMHz, Method: MethodAnnounce,
+				Stations: len(before),
+			}
+			e.forgetRadioOn()
+			e.freshenBridge()
+			e.rememberChannel(iface, channel, widthMHz, channel)
+			e.noteMoveChannel(iface, done)
+			e.syncRadioState(iface)
+			// Who actually followed is answered ten seconds from now, in the
+			// background: the operator asked for a channel, and holding the
+			// response open to report on clients would make the seamless move
+			// feel slower than the outage it replaced.
+			go e.watchFollowers(iface, before, channel)
+			return done, nil
+		}
+	}
+
+	outageFrom := time.Now()
 	if wasEnabled {
 		if _, err := hostapdCmd(iface, "DISABLE"); err != nil {
-			return 0, fmt.Errorf("could not take %s down to move it: %w", iface, err)
+			return ChannelMove{}, fmt.Errorf("could not take %s down to move it: %w", iface, err)
 		}
 	}
 	var refused string
@@ -1310,6 +1373,7 @@ func (e *Engine) MoveChannel(iface string, channel, widthMHz int) (int, error) {
 		// is no self-recovery to wait for. See #281.
 		e.enableAPNow(iface)
 	}
+	outage := time.Since(outageFrom).Seconds()
 	e.forgetRadioOn()
 	// AND THE BRIDGE VIEW, which is what the interface actually reads.
 	//
@@ -1337,11 +1401,15 @@ func (e *Engine) MoveChannel(iface string, channel, widthMHz int) (int, error) {
 	// else anyway. Asking for 36 and being told "now on channel 40" with no
 	// explanation is precisely the confidently-wrong readout the rest of this
 	// file exists to avoid.
+	done := ChannelMove{
+		Channel: now, WidthMHz: widthMHz, Method: MethodRestart,
+		OutageSec: outage, Stations: len(before), Dropped: len(before),
+	}
 	if now != channel {
 		e.logEvent(EventWarning, iface, "",
 			"%s was asked for channel %d and came back on %d", iface, channel, now)
 		if refused != "" {
-			return now, fmt.Errorf(
+			return done, fmt.Errorf(
 				"%q was refused, so %s came back on channel %d", refused, iface, now)
 		}
 		// The coexistence swap is remembered rather than treated as a failure:
@@ -1350,12 +1418,48 @@ func (e *Engine) MoveChannel(iface string, channel, widthMHz int) (int, error) {
 		// where it settled is what stops the tick reading it as a radio that
 		// has drifted and moving it once a second forever.
 		e.rememberChannel(iface, channel, widthMHz, now)
-		return now, coexError(iface, channel, now, widthMHz)
+		return done, coexError(iface, channel, now, widthMHz)
 	}
 	e.rememberChannel(iface, channel, widthMHz, now)
-	e.noteMoveChannel(iface, now)
+	e.noteMoveChannel(iface, done)
+	if announceErr != nil {
+		e.learnCSARefusal(iface, driver, wasChannel, ch, announceErr)
+	}
 	e.syncRadioState(iface)
-	return now, nil
+	return done, nil
+}
+
+// learnCSARefusal decides whether a failed announcement condemns the DRIVER, or
+// says only that this particular move was not announceable.
+//
+// FAIL is ambiguous, and this is the part to get right. It means "this driver
+// refuses CSA" or "this target is not switchable" -- a cross-band move is the
+// live example, since a radio cannot announce its way from 2.4GHz to 5GHz. The
+// map is keyed by driver, so caching a channel-specific refusal as a driver
+// verdict would let one bad request permanently condemn every radio on that
+// driver, and the way back is a daemon restart nobody would think to try.
+//
+// So a refusal is recorded only when the failed attempt was an ORDINARY in-band
+// move AND the fallback then landed on exactly that channel. That combination
+// proves the target was legal, which leaves the driver as the only explanation.
+// Every offered channel is non-DFS by construction (see apChannels), so no CAC
+// wait can be hiding in here.
+func (e *Engine) learnCSARefusal(iface, driver string, wasChannel int, want apChannel, why error) {
+	from, known := apChannels[wasChannel]
+	if !known || from.is24() != want.is24() {
+		// Cannot prove the target was legal, so nothing is learned: the next
+		// in-band move on this radio will ask again.
+		e.logEvent(EventRadio, iface, "",
+			"%s could not announce the move to channel %d, so it restarted instead: %v",
+			iface, want.Channel, why)
+		return
+	}
+	reason := fmt.Sprintf("the %s driver refused CHAN_SWITCH for an ordinary in-band move "+
+		"(%d to %d), which then succeeded by restart", driver, wasChannel, want.Channel)
+	e.noteCSARefused(driver, reason)
+	e.logEvent(EventWarning, iface, "",
+		"%s: %s — channel moves on this driver drop their clients until the daemon restarts",
+		iface, reason)
 }
 
 // rememberChannel records a move that the access point actually came back from.

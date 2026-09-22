@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed } from 'vue';
+import { computed, ref } from 'vue';
 import type { IfaceInfo, ScanSummary } from '@/types';
 import { describeChannel, mergeScans, rateFor, type Quality } from '@/composables/channelQuality';
 
@@ -33,7 +33,43 @@ const props = defineProps<{
    */
   others?: IfaceInfo[];
 }>();
-const emit = defineEmits<{ (e: 'move', channel: number, width: number): void }>();
+const emit = defineEmits<{
+  (e: 'move', channel: number, width: number, mode: 'announce' | 'restart'): void;
+}>();
+
+/**
+ * What a move costs, which is a property of the DRIVER and not of the channel.
+ *
+ * A radio that can announce the switch counts it down in its beacons and its
+ * clients follow, still associated. One that cannot takes the access point
+ * down and brings it back elsewhere, and its clients are told nothing at all.
+ * Same button, opposite experience -- so it is said BEFORE the press, from the
+ * box's own cache of what each driver has been caught doing, rather than left
+ * to be discovered from the result. See issue #30.
+ */
+const announces = computed(() => props.radio.chan_switch?.announces !== false);
+const whyNot = computed(() => props.radio.chan_switch?.why ?? '');
+
+/**
+ * Forcing the teardown on hardware that need not suffer it.
+ *
+ * Not a preference: a measurement. The outage IS the behaviour of the Pi and
+ * of every mt7921u, and once a radio announces its switches cleanly that path
+ * becomes unreachable here -- so "what does the player do when the access point
+ * vanishes and comes back on another channel" would stop being answerable on
+ * the only box that can answer it quickly. Off by default, and hidden on a
+ * radio that drops its clients anyway, where it would offer to force what
+ * already happens.
+ */
+const force = ref(false);
+const FORCE_NOTE =
+  'Force the teardown instead of announcing the switch: the access point ' +
+  'vanishes and reappears on the new channel, dropping every client without ' +
+  'telling them. It is what a radio that cannot announce does every time, so ' +
+  'forcing it here is how a finding on this box still describes one that cannot.';
+const mode = computed<'announce' | 'restart'>(() =>
+  force.value || !announces.value ? 'restart' : 'announce',
+);
 
 /**
  * EVERY scan, not this radio's own.
@@ -408,10 +444,15 @@ function cellNote(radio: IfaceInfo, row: PlanRow, cell: PlanCell): string {
       `and gain nothing. Move ${who} first if you want this block. ${per}`
     );
   }
+  const clients = radio.ap?.stations ?? 0;
+  const cost =
+    mode.value === 'announce'
+      ? `Announced in the beacons, so its ${clients} client(s) follow without ` +
+        `reconnecting. If the driver refuses, it falls back to the teardown by itself.`
+      : `Takes the radio down and brings it back, so all ${clients} ` +
+        `client(s) are dropped and NOT told.`;
   return (
-    `Move ${radio.name} to ${cell.label} at ${row.width} MHz. ${per}. ` +
-    `Takes the radio down and brings it back, so all ${radio.ap?.stations ?? 0} ` +
-    `client(s) are dropped and NOT told.` +
+    `Move ${radio.name} to ${cell.label} at ${row.width} MHz. ${per}. ${cost}` +
     (row.width >= 40
       ? ' At this width hostapd picks which slice is the primary, so the channel it reports may be a sibling of the one asked for.'
       : '')
@@ -427,6 +468,22 @@ function cellNote(radio: IfaceInfo, row: PlanRow, cell: PlanCell): string {
   <div
     v-if="plan(radio)" class="plan" :class="{ working: busy }"
   >
+    <!-- WHAT A PRESS WILL COST, above the cells rather than under them. The
+         grid is a picture to be read first and the cells are what act on it,
+         so the sentence that changes the meaning of every cell belongs before
+         them. -->
+    <div class="plan-cost">
+      <span class="badge" :class="announces ? 'seamless' : 'disruptive'"
+        :title="announces
+          ? 'This driver announces the switch (802.11h): clients are told to follow and stay associated.'
+          : whyNot"
+      >{{ announces ? 'seamless' : 'drops clients' }}</span>
+      <label v-if="announces" class="force" :title="FORCE_NOTE">
+        <input type="checkbox" v-model="force" :disabled="busy" />
+        force the outage
+      </label>
+      <span v-else class="why">{{ whyNot }}</span>
+    </div>
     <!-- Which stretch is which band. On the same track set as the rows below,
          so a label covers exactly the channels it names rather than being
          positioned to look as though it does. -->
@@ -470,7 +527,7 @@ function cellNote(radio: IfaceInfo, row: PlanRow, cell: PlanCell): string {
           :style="{ gridColumn: `span ${cell.span}` }"
           :disabled="busy || isCurrent(radio, row, cell) || !!takenName(cell)"
           :title="cellNote(radio, row, cell)"
-          @click="emit('move', cell.channels[0], row.width)"
+          @click="emit('move', cell.channels[0], row.width, mode)"
         >{{ cell.label }}</button>
       </template>
     </div>
@@ -479,6 +536,19 @@ function cellNote(radio: IfaceInfo, row: PlanRow, cell: PlanCell): string {
 
 <style scoped>
 .plan { font-family: var(--sans); margin-top: 2px; }
+.plan-cost {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 4px;
+  font-size: 11px;
+}
+.plan-cost .badge { padding: 0 5px; border-radius: 3px; }
+.plan-cost .seamless { background: var(--ok-bg, #14351f); color: var(--ok, #6ee7a0); }
+.plan-cost .disruptive { background: var(--warn-bg, #3a2a12); color: var(--warn, #f0b840); }
+.plan-cost .force { display: flex; align-items: center; gap: 4px; color: var(--dim); }
+.plan-cost .force input { margin: 0; }
+.plan-cost .why { color: var(--dim); }
 /* Grid, not flex: every row shares one track set, so a cell spanning two tracks
    spans the gap between them too and lands exactly on the pair it is made of.
    Under flex each row divided a different amount of space, because the rows

@@ -726,6 +726,21 @@ export interface TxPower {
   why?: string;
 }
 
+/**
+ * What a channel move on this radio will do to the clients on it.
+ *
+ * `announces` false means the driver has been caught refusing 802.11h, so a
+ * move takes the access point down and back up and its clients are told
+ * nothing; `why` is the reason, either known before anyone tried (the mt7921u,
+ * #154) or learned from an in-band move the restart then completed. Absent or
+ * true means the switch will be ANNOUNCED and clients follow it — and the box
+ * falls back by itself if that turns out not to be so.
+ */
+export interface ChanSwitchAbility {
+  announces: boolean;
+  why?: string;
+}
+
 export interface IfaceInfo {
   name: string;
   role: IfaceRole;
@@ -747,6 +762,8 @@ export interface IfaceInfo {
   ap?: APStatus;
   /** Transmit power, and whether this driver honours a setting. */
   txpower?: TxPower;
+  /** Whether a channel move here is announced or drops every client. */
+  chan_switch?: ChanSwitchAbility;
   /** A radio the daemon watches. Clients on any other are NOT conditioned and
    *  never appear in the Clients tab. */
   serving: boolean;

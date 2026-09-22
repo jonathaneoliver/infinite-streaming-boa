@@ -34,8 +34,10 @@ func radioUsage() {
 
   scan [-apply]           listen to the band; -apply moves to the quietest
                           channel found, which drops clients on some hardware
-  channel -to N [-width M]
-                          move by taking the AP down and back; DROPS everyone
+  channel -to N [-width M] [-restart]
+                          move the radio. Announced (802.11h) where the driver
+                          does it, so clients FOLLOW; -restart forces the
+                          teardown, which drops everyone without telling them
   power on|off [-dur S]   rfkill. Clients are told NOTHING -- the transmitter
                           simply stops. -dur turns it off and back after S
   ap on|off [-deauth]     hostapd closes the BSS, transmitter still on, so the
@@ -63,6 +65,8 @@ func cmdRadio(c *client, args []string) error {
 	apply := fs.Bool("apply", false, "scan: move to the quietest channel found")
 	to := fs.Int("to", 0, "channel: the channel to move to")
 	width := fs.Int("width", 0, "channel: width in MHz (20, 40, 80); default 20")
+	restart := fs.Bool("restart", false,
+		"channel: force the down-and-up move even where the radio could announce it")
 	dur := fs.Float64("dur", 0, "power: seconds to stay off before coming back")
 	deauth := fs.Bool("deauth", false, "ap: send a deauthentication so clients are told")
 	pin := fs.Float64("pin", 0, "gather/evict: seconds to hold the deny lists")
@@ -89,7 +93,7 @@ func cmdRadio(c *client, args []string) error {
 		if *to == 0 {
 			return errors.New("radio channel needs -to, e.g. boactl radio wlan-usb channel -to 149")
 		}
-		return radioChannel(c, iface, *to, *width, serving)
+		return radioChannel(c, iface, *to, *width, serving, *restart)
 	case "power":
 		return radioPower(c, iface, onOff, *dur, serving)
 	case "ap":
@@ -168,25 +172,45 @@ func radioScan(c *client, iface string, apply bool, serving int) error {
 	return nil
 }
 
-func radioChannel(c *client, iface string, ch, width, serving int) error {
-	warnServing(iface, serving, "they will be dropped and must rediscover the AP")
+// radioChannel moves a radio, and says which of the two ways it went.
+//
+// The warning before the request is CONDITIONAL now, because the cost is: a
+// driver that announces the switch keeps every client, and one that cannot
+// drops them all. Warning about a drop that will not happen trains the reader
+// to ignore the warning that matters.
+func radioChannel(c *client, iface string, ch, width, serving int, restart bool) error {
+	if restart {
+		warnServing(iface, serving, "they will be dropped and must rediscover the AP")
+	}
 	path := fmt.Sprintf("/api/bridge/radios/%s/move-channel?channel=%d", iface, ch)
 	if width > 0 {
 		path += fmt.Sprintf("&width=%d", width)
 	}
+	if restart {
+		path += "&mode=restart"
+	}
 	var res struct {
-		Iface           string `json:"iface"`
-		Channel         int    `json:"channel"`
-		WidthMHz        int    `json:"width_mhz"`
-		StationsDropped int    `json:"stations_dropped"`
+		Iface           string  `json:"iface"`
+		Channel         int     `json:"channel"`
+		WidthMHz        int     `json:"width_mhz"`
+		Method          string  `json:"method"`
+		OutageSec       float64 `json:"outage_sec"`
+		Stations        int     `json:"stations"`
+		StationsDropped int     `json:"stations_dropped"`
 	}
 	if err := c.postJSON(path, nil, &res); err != nil {
 		return err
 	}
-	fmt.Printf("%s  channel %d at %d MHz  (%d station(s) dropped)\n",
-		res.Iface, res.Channel, res.WidthMHz, res.StationsDropped)
-	fmt.Fprintln(os.Stderr, "802.11h CHAN_SWITCH would let clients follow and is refused by both\n"+
-		"drivers here (#154), so this is the route that works: down, set, up")
+	if res.Method == "announce" {
+		fmt.Printf("%s  channel %d at %d MHz  (announced; %d station(s) asked to follow)\n",
+			res.Iface, res.Channel, res.WidthMHz, res.Stations)
+		fmt.Fprintln(os.Stderr, "802.11h CHAN_SWITCH: nobody was dropped. Which clients actually\n"+
+			"followed is in the event log about ten seconds later")
+		return nil
+	}
+	fmt.Printf("%s  channel %d at %d MHz  (restarted; %d station(s) dropped, %.1fs out)\n",
+		res.Iface, res.Channel, res.WidthMHz, res.StationsDropped, res.OutageSec)
+	fmt.Fprintln(os.Stderr, "down, set, up: the clients were told nothing and must rediscover the AP")
 	return nil
 }
 

@@ -222,7 +222,7 @@ client for every per-device control.
 | Deauth-all | Reports success, but the radio was empty when tested |
 | Gather/evict, other clients | An iPhone and a Watch left the SSID for another saved network rather than land on the target radio: a ban only covers this box's radios |
 | Power | Fails: `no rfkill switch`. OpenWrt's kernel has no rfkill (`/dev/rfkill` is absent) |
-| Channel (CSA) | Fails: hostapd returns `FAIL` to `CHAN_SWITCH` on `mt7921u`. Scan with `apply=1` is the workaround (#154) |
+| Channel (CSA) | Fails on `mt7921u`: hostapd returns `FAIL` to `CHAN_SWITCH`. The box falls back to the restart in the same request (#154, #349) |
 | BSS load | Fails every tick: `bss_load_test` exists only in hostapd builds with testing options |
 
 And on a Cudy TR3000 (`mediatek/filogic`, MT7981 radios, 2026-09-22), a MacBook,
@@ -238,6 +238,9 @@ an iPhone and a Watch on the 5 GHz AP, each radio-wide steer naming the USB
 | Transmit power | Works on the built-in `mt798x` radios, live: 23/10/3 dBm took a MacBook from −38/−48/−55 dBm received with its association unbroken and no ping lost. Written to UCI, so a `wifi reload` keeps it |
 | Attenuation moves a real client, and the thresholds differ | An iPhone one room away, walked down and back up in 2 dB steps. It left 5 GHz for the 2.4 GHz AP at **11 dBm** (−57 dBm, 25.8 Mbit/s there) and returned at **19 dBm** (−72 dBm, 576 Mbit/s): **8 dB of hysteresis**, so leaving and returning are two measurements, not one. It kept streaming across both moves -- 13.2 Mbit/s downlink while on 2.4 GHz, about half that link's 25.8 Mbit/s PHY rate. No ban and no steer: every move was the phone's own. The AP-side signal on `phy1` stayed near −73 dBm throughout, because that is the uplink and a change in the AP's power does not touch it |
 | Transmit power, USB `mt7921u` | Refused, and caught by measurement: with the known-bad list bypassed, a set to 10 dBm was accepted by `iw`, read back as 3.00 dBm, and the radio was marked as ignoring the control (#202) |
+| Channel switch, built-in `mt798x` | **Announced, and the clients follow.** Six switches on `phy1` — 40@80 to 44@40, 44 to 36@80, 36/44/36 at 40, then back to 40@80 — each reported `method: announce` with `outage_sec: 0`, and the box's own before/after station comparison counted **1 of 1** followed four times and **3 of 3** on the last, a MacBook, an iPhone and a Watch riding it together |
+| Channel switch forced to restart | `mode=restart` on the same radio: 1.0 s and 1.1 s out of service, the one client dropped without being told. A third took **84.7 s**, because the AP came back with no BSS and the daemon rebuilt it — so the outage a restart costs is not a constant |
+| Channel switch, and what it does NOT teach | The forced restarts left `announces: true` on the driver: a refusal is learned only from an announcement that FAILED on an ordinary in-band move the fallback then completed. Forcing the slow path is a choice, not evidence |
 
 ## Not yet working on OpenWrt
 

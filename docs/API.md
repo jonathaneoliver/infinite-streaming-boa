@@ -17,7 +17,7 @@ see `docs/DATA-CONTRACT.md` for where each number comes from.
 
 ## Endpoints
 
-57 routes.
+56 routes.
 
 | Method | Path |
 |---|---|
@@ -29,7 +29,6 @@ see `docs/DATA-CONTRACT.md` for where each number comes from.
 | GET | `/api/events` |
 | GET | `/api/events/stream` |
 | GET | `/api/bridge/radios/{iface}/survey` |
-| POST | `/api/bridge/radios/{iface}/channel` |
 | POST | `/api/bridge/radios/{iface}/move-channel` |
 | POST | `/api/bridge/radios/{iface}/deauth-all` |
 | POST | `/api/bridge/radios/{iface}/link-all` |
@@ -152,32 +151,32 @@ contract on the way out: this is the OPERATING channel's airtime, never a
 survey of the band, and SurveyResult.Note carries that in the payload so a
 caller cannot lose it. See Source L.
 
-### POST /api/bridge/radios/{iface}/channel
-
-postChannel moves a radio, and every client associated to it, to another
-channel via an 802.11h channel switch announcement.
-
-AP-WIDE, unlike every /api/devices action: there is no MAC here because the
-blast radius is the whole radio. The interface says so before the button is
-pressed; this refuses loudly if hostapd will not do it, because a channel
-switch that silently did nothing would look identical to one a client simply
-followed. See issue #122.
-
 ### POST /api/bridge/radios/{iface}/move-channel
 
-postMoveChannel puts a radio on a chosen channel by taking it down and
-bringing it back up there.
+postMoveChannel puts a radio on a chosen channel, by whichever mechanism that
+radio can do.
 
-The working counterpart to postChannel. That one announces the move and lets
-clients follow without reconnecting, which is the nicer behaviour and is
-refused by both drivers on this box; this one drops the access point and
-brings it back elsewhere, which works and is what most consumer routers
-actually do. Clients are not told and must rediscover it.
+ONE ROUTE, NOT TWO. This used to have a sibling -- POST .../channel, which
+only ever announced the switch and only ever failed, because the two drivers
+on the Pi refuse CSA (#154). Two routes made the operator choose a MECHANISM
+when the question they have is about a CHANNEL, and hid the seamless path
+behind a button that errored on the only hardware anyone had. So the
+mechanism is a mode on the one control:
+
+	announce (default)  the switch is announced, and falls back by itself on a
+	                    driver that will not do it
+	restart             force the teardown: drops every client, seconds out of
+	                    service, and it is what a radio that CANNOT announce does
+	                    every time. Worth forcing on capable hardware, because
+	                    it is the only behaviour the Pi and every mt7921u offer.
+
+AP-WIDE, unlike every /api/devices action: there is no MAC here because the
+blast radius is the whole radio.
 
 ### POST /api/bridge/radios/{iface}/deauth-all
 
 postDeauthAll drops every station on a radio. AP-wide, same reasoning as
-postChannel; the count returned is how many were there to drop.
+postMoveChannel; the count returned is how many were there to drop.
 
 ### POST /api/bridge/radios/{iface}/link-all
 
@@ -1286,6 +1285,19 @@ silently do nothing.
 
 **`loss_burst_note`** `string` _(omitted when empty)_
 
+### ChanSwitchAbility
+
+ChanSwitchAbility is what a channel move will do to the clients on a radio,
+so the interface can say so BEFORE the button is pressed rather than after.
+
+**`announces`** `bool`
+> Announces is false only where a refusal is KNOWN -- from the list above
+> or from an attempt that failed while the fallback proved the target
+> legal. Unknown reads as true, because the move will in fact be attempted
+> by announcement and will fall back by itself if it cannot be.
+
+**`why`** `string` _(omitted when empty)_
+
 ### Client
 
 Client is the joined view the UI renders: one row per device.
@@ -1517,6 +1529,11 @@ IfaceInfo is one interface as the bridge view draws it.
 **`txpower`** `*TxPower` _(omitted when empty)_
 > TxPower is the radio's transmit power and whether it can be set. See
 > txpower.go.
+
+**`chan_switch`** `*ChanSwitchAbility` _(omitted when empty)_
+> ChanSwitch says whether a channel move on this radio will be announced,
+> so clients follow it, or will drop them -- the fact the operator needs
+> BEFORE pressing a channel, not after. See csa.go.
 
 **`serving`** `bool`
 > Serving marks a radio the daemon watches. Clients on any other radio are

@@ -138,14 +138,16 @@ func (e *Engine) restoreChannels() {
 func (e *Engine) restoreOne(iface string, pref ChannelPref, was int) {
 	defer e.restore.done(iface)
 
-	// Said BEFORE the move, not after. The move drops every client on the
-	// radio without telling them, so the log has to explain the outage that is
-	// about to happen rather than account for it afterwards.
+	// Said BEFORE the move, not after, so the log explains what is about to
+	// happen rather than accounting for it afterwards. What that IS now
+	// depends on the radio: one that can announce the switch keeps its
+	// clients, and one that cannot drops them without telling them. Which
+	// happened is in the move's own event, so this one no longer promises
+	// either.
 	e.logEvent(EventRadio, iface, "",
-		"%s is on channel %d but was set to %d — putting it back, which drops "+
-			"anyone on it", iface, was, pref.Channel)
+		"%s is on channel %d but was set to %d — putting it back", iface, was, pref.Channel)
 
-	now, err := e.MoveChannel(iface, pref.Channel, pref.WidthMHz)
+	move, err := e.MoveChannel(iface, pref.Channel, pref.WidthMHz, MethodAnnounce)
 	if err != nil {
 		// MoveChannel already logs a warning naming the channel it came back
 		// on, so this adds only what that cannot know: whether anything will
@@ -159,7 +161,8 @@ func (e *Engine) restoreOne(iface string, pref ChannelPref, was int) {
 		return
 	}
 	e.restore.settled(iface)
-	e.logEvent(EventRadio, iface, "", "%s is back on channel %d", iface, now)
+	e.logEvent(EventRadio, iface, "", "%s is back on channel %d, by %s",
+		iface, move.Channel, move.Method)
 }
 
 func (r *restoreState) count(iface string) int {

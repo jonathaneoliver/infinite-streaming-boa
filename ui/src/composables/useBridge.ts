@@ -75,20 +75,35 @@ export function useBridge(active: Ref<boolean>) {
   }
 
   /**
-   * Move a radio to a chosen channel by taking it down and bringing it back up
-   * there. The ONLY way to change channel here: 802.11h CSA would move clients
-   * without dropping them and is refused by both radios on this box (#154), so
-   * POST /channel has no caller in the interface and is reachable only by hand.
+   * Move a radio to a chosen channel, by whichever mechanism that radio can do.
+   *
+   * ONE CALL, not two. There used to be a second endpoint that only announced
+   * the switch, behind ?developer=1, because on the Pi's two drivers it only
+   * ever failed (#154). The daemon now announces where the driver does it and
+   * tears down where it does not, falling back inside the one request -- so the
+   * caller asks for a CHANNEL and is told which mechanism happened.
+   *
+   * `restart` forces the teardown on hardware that need not suffer it, which is
+   * a measurement rather than a preference: the outage is what the Pi and every
+   * mt7921u do every time, and it would otherwise be unreachable here.
    */
-  const moveChannel = (iface: string, channel: number, width: number) =>
+  const moveChannel = (
+    iface: string,
+    channel: number,
+    width: number,
+    mode: 'announce' | 'restart' = 'announce',
+  ) =>
     act(
       `/api/bridge/radios/${encodeURIComponent(iface)}/move-channel` +
-        `?channel=${channel}&width=${width}`,
+        `?channel=${channel}&width=${width}&mode=${mode}`,
       (b) =>
-        `${b.iface}: now on channel ${b.channel} at ${b.width_mhz} MHz` +
-        (b.stations_dropped
-          ? `, ${b.stations_dropped} client(s) dropped — they were not told, so they have to rediscover it.`
-          : '.'),
+        b.method === 'announce'
+          ? `${b.iface}: moved to channel ${b.channel} at ${b.width_mhz} MHz by ` +
+            `announcement — ${b.stations} client(s) were asked to follow, no outage. ` +
+            `Who actually did appears in the event log shortly.`
+          : `${b.iface}: now on channel ${b.channel} at ${b.width_mhz} MHz, ` +
+            `restarted — ${b.stations_dropped} client(s) dropped without being told, ` +
+            `${Number(b.outage_sec ?? 0).toFixed(1)}s out of service.`,
     );
 
   /**

@@ -223,44 +223,6 @@ func chanSwitchCommand(ch apChannel, widthMHz int) (string, error) {
 	return strings.Join(parts, " "), nil
 }
 
-// ChanSwitch moves a radio, and every client on it, to another channel.
-//
-// This is the 802.11h channel switch announcement: clients are TOLD to move and
-// follow without disassociating -- in theory. Whether a given driver and a given
-// phone honour it is exactly what this button exists to find out, so a refusal
-// from hostapd is returned rather than swallowed.
-func (e *Engine) ChanSwitch(iface string, channel, widthMHz int) error {
-	if err := e.radioReady(iface); err != nil {
-		return err
-	}
-	ch, ok := apChannels[channel]
-	if !ok {
-		return fmt.Errorf(
-			"channel %d is not offered: %s "+
-				"(DFS channels are excluded -- the Pi cannot serve an AP on one)",
-			channel, offeredChannels)
-	}
-	cmd, err := chanSwitchCommand(ch, widthMHz)
-	if err != nil {
-		return err
-	}
-	if e.cfg.Demo {
-		return nil
-	}
-	reply, err := hostapdCmd(iface, cmd)
-	if err != nil {
-		return err
-	}
-	if !strings.HasPrefix(reply, "OK") {
-		return fmt.Errorf("hostapd rejected %q: %s", cmd, strings.TrimSpace(reply))
-	}
-	e.logEvent(EventRadio, iface, "",
-		"%s announced a channel switch to %d (802.11h); clients were asked to follow",
-		iface, channel)
-	e.syncRadioState(iface)
-	return nil
-}
-
 // LinkAll applies a per-client link event to EVERY station on a radio at once.
 //
 // The AP-wide siblings of the drop and nudge buttons on a device card, and they
