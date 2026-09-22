@@ -69,6 +69,37 @@ func TestEvictInsistsAndGatherDoesNot(t *testing.T) {
 	}
 }
 
+// The two warning modes carry their field and nothing that would make hostapd
+// act on it. A disassoc_timer on imminent would turn a warning into a drop, and
+// that is the one thing these buttons promise not to do.
+func TestWarningSteersAskAndNeverDrop(t *testing.T) {
+	for _, c := range []struct {
+		mode      steerMode
+		want, not []string
+	}{
+		{steerSuggest, nil, []string{"disassoc_imminent", "disassoc_timer", "bss_term"}},
+		{steerImminent, []string{"disassoc_imminent=1"}, []string{"disassoc_timer", "bss_term"}},
+		{steerTerminate, []string{"bss_term=0,1"}, []string{"disassoc_imminent", "disassoc_timer"}},
+	} {
+		got := btmCommand("aa:bb:cc:dd:ee:ff", "9c:ef:d5:aa:11:07", 6, 20, c.mode)
+		for _, w := range c.want {
+			if !strings.Contains(got, w) {
+				t.Errorf("%s: missing %q in:\n  %s", c.mode, w, got)
+			}
+		}
+		for _, n := range c.not {
+			if strings.Contains(got, n) {
+				t.Errorf("%s: must not carry %q:\n  %s", c.mode, n, got)
+			}
+		}
+	}
+	for name, m := range steerModeParam {
+		if name != "" && m.String() != name {
+			t.Errorf("mode %q round-trips as %q", name, m.String())
+		}
+	}
+}
+
 // tbttPerSec is the conversion that was wrong for as long as it was named for
 // the wrong unit. Pinned at the boundary rather than the value in use, so a
 // change to evictDisassocSec does not quietly rewrite the arithmetic too.

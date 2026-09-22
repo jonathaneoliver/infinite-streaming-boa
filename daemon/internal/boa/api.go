@@ -783,6 +783,12 @@ func (a *API) postThreshold(w http.ResponseWriter, r *http.Request) {
 // steerMode: the same frame carries a different promise depending on which
 // control sent it, and conflating them is what made "gather to wlan-usb" put a
 // device on wlan0.
+//
+// `?mode=` picks what the request carries: `suggest` (the default), `imminent`
+// (Disassociation Imminent with no timer, so nothing follows it), `terminate`
+// (BSS Termination Included; the AP is not terminated) or `insist`, the same as
+// `?insist=1`. Only insist ever disconnects anyone, and none of them adds a
+// deny-list entry.
 func (a *API) postSteer(w http.ResponseWriter, r *http.Request) {
 	from := r.PathValue("iface")
 	if err := a.e.radioReady(from); err != nil {
@@ -799,7 +805,15 @@ func (a *API) postSteer(w http.ResponseWriter, r *http.Request) {
 				"transition request needs another access point to name")
 		return
 	}
-	mode := steerSuggest
+	modeName := strings.TrimSpace(r.URL.Query().Get("mode"))
+	mode, ok := steerModeParam[modeName]
+	if !ok {
+		writeErr(w, http.StatusBadRequest,
+			`mode must be "suggest", "imminent", "terminate" or "insist": the `+
+				`first three only ask, and insist disassociates a client that `+
+				`has not left after 5s`)
+		return
+	}
 	insist := strings.TrimSpace(r.URL.Query().Get("insist"))
 	switch insist {
 	case "", "0", "false":
@@ -826,7 +840,7 @@ func (a *API) postSteer(w http.ResponseWriter, r *http.Request) {
 		}
 		writeJSON(w, http.StatusOK, map[string]any{
 			"iface": from, "action": "steer", "to": to, "asked": 1,
-			"mac": normMAC(mac), "insist": mode == steerInsist,
+			"mac": normMAC(mac), "insist": mode == steerInsist, "mode": mode.String(),
 		})
 		return
 	}
@@ -837,7 +851,7 @@ func (a *API) postSteer(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"iface": from, "action": "steer", "to": to, "asked": n,
-		"insist": mode == steerInsist,
+		"insist": mode == steerInsist, "mode": mode.String(),
 	})
 }
 

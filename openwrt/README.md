@@ -222,6 +222,17 @@ client for every per-device control.
 | Channel (CSA) | Fails: hostapd returns `FAIL` to `CHAN_SWITCH` on `mt7921u`. Scan with `apply=1` is the workaround (#154) |
 | BSS load | Fails every tick: `bss_load_test` exists only in hostapd builds with testing options |
 
+And on a Cudy TR3000 (`mediatek/filogic`, MT7981 radios, 2026-09-22), a MacBook,
+an iPhone and a Watch on the 5 GHz AP, each radio-wide steer naming the USB
+`mt7921u` AP on ch 149:
+
+| Control | Result |
+|---|---|
+| Steer | All stayed. Mac `status_code=1`, iPhone `status_code=7` |
+| Warn (Disassociation Imminent, no timer) | hostapd never disassociated anyone (a Mac held 16 s). Two of three left on their own, the Mac first to 2.4 GHz, not the AP named |
+| Term (BSS Termination Included) | The AP stayed `ENABLED`. The one client left moved to 2.4 GHz, not the AP named |
+| Any of the three | No deny-list entry on any radio |
+
 ## Not yet working on OpenWrt
 
 - **Restarting a wedged AP.** `restartHostapd` finds hostapd through

@@ -493,7 +493,51 @@ const (
 	// steerInsist disassociates a client that has not moved when the timer
 	// expires, and makes no claim about where it lands.
 	steerInsist
+	// steerImminent sets Disassociation Imminent with NO timer, and nothing
+	// follows it. The client is told it is about to be dropped and never is.
+	// MEASURED 2026-09-22 on the Cudy's mt798x radio: hostapd schedules a
+	// disassociation only for a nonzero disassoc_timer, and a MacBook sent this
+	// stayed associated 16s later, answering status 7.
+	//
+	// A different question from steerSuggest, not a stronger form of it:
+	// whether the warning alone changes a device's answer. Like suggest, a
+	// refusal leaves it where it is.
+	steerImminent
+	// steerTerminate sets BSS Termination Included, announcing that this access
+	// point is going away for bssTermMin minutes. It does not go away. MEASURED
+	// 2026-09-22 on the same radio: hostapd sends the element and the AP stayed
+	// ENABLED with the client still associated. So this too is only a request,
+	// carrying the strongest reason 802.11v has for leaving.
+	steerTerminate
 )
+
+// steerModeParam maps the API's `mode` onto a steerMode. `insist=1` predates
+// it and still selects steerInsist.
+var steerModeParam = map[string]steerMode{
+	"":          steerSuggest,
+	"suggest":   steerSuggest,
+	"imminent":  steerImminent,
+	"terminate": steerTerminate,
+	"insist":    steerInsist,
+}
+
+// String is the mode's name as the API spells it.
+func (m steerMode) String() string {
+	switch m {
+	case steerInsist:
+		return "insist"
+	case steerImminent:
+		return "imminent"
+	case steerTerminate:
+		return "terminate"
+	}
+	return "suggest"
+}
+
+// bssTermMin is the termination duration a steerTerminate request announces.
+// One minute: the smallest nonzero value the field carries. The AP is not
+// actually terminated, so the number is only what the client is told.
+const bssTermMin = 1
 
 // evictDisassocSec is how long an evicted client has to leave on its own.
 //
@@ -566,8 +610,10 @@ func tbttPerSec(sec int) int {
 // it encodes the band AND the width, so a 5GHz neighbour advertised with a
 // 2.4GHz class is a request the client will ignore rather than refuse.
 //
-// disassoc_imminent is set only for steerInsist. See steerMode for why the same
-// frame carries a different promise depending on which control sent it.
+// disassoc_imminent is set for steerInsist, with a timer, and for
+// steerImminent, without one; bss_term only for steerTerminate. See steerMode
+// for why the same frame carries a different promise depending on which
+// control sent it.
 func btmCommand(mac, bssid string, channel, widthMHz int, mode steerMode) string {
 	// bssid_info: reachable, plus the capability bits a client checks before
 	// bothering. 0x0000040f is the conventional value in hostapd's own
@@ -583,11 +629,18 @@ func btmCommand(mac, bssid string, channel, widthMHz int, mode steerMode) string
 		// "here is one option among the ones you already know".
 		"abridged=1",
 	}
-	if mode == steerInsist {
+	switch mode {
+	case steerInsist:
 		parts = append(parts,
 			"disassoc_imminent=1",
 			// In BEACON INTERVALS, not seconds. See tbttPerSec.
 			fmt.Sprintf("disassoc_timer=%d", tbttPerSec(evictDisassocSec)))
+	case steerImminent:
+		// No disassoc_timer: with none, hostapd schedules nothing.
+		parts = append(parts, "disassoc_imminent=1")
+	case steerTerminate:
+		// TSF 0, then the duration in minutes.
+		parts = append(parts, fmt.Sprintf("bss_term=0,%d", bssTermMin))
 	}
 	parts = append(parts,
 		fmt.Sprintf("neighbor=%s,%s,%d,%d,%d", bssid, bssidInfo, op, reportCh, phy))

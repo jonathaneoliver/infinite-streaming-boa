@@ -282,6 +282,12 @@ steerMode: the same frame carries a different promise depending on which
 control sent it, and conflating them is what made "gather to wlan-usb" put a
 device on wlan0.
 
+`?mode=` picks what the request carries: `suggest` (the default), `imminent`
+(Disassociation Imminent with no timer, so nothing follows it), `terminate`
+(BSS Termination Included; the AP is not terminated) or `insist`, the same as
+`?insist=1`. Only insist ever disconnects anyone, and none of them adds a
+deny-list entry.
+
 ### POST /api/bridge/radios/{iface}/gather
 
 postGather moves every client on the other radios onto this one and PINS them
