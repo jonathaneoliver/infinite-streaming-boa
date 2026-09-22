@@ -233,6 +233,7 @@ an iPhone and a Watch on the 5 GHz AP, each radio-wide steer naming the USB
 | Term (BSS Termination Included) | The AP stayed `ENABLED`. The one client left moved to 2.4 GHz, not the AP named |
 | Any of the three | No deny-list entry on any radio |
 | Transmit power | Works on the built-in `mt798x` radios, live: 23/10/3 dBm took a MacBook from −38/−48/−55 dBm received with its association unbroken and no ping lost. Written to UCI, so a `wifi reload` keeps it |
+| Attenuation moves a real client | An iPhone one room away sat on 5 GHz at −72 dBm, 408 Mbit/s. Dropping `phy1` from 13 to 7 dBm sent it to the 2.4 GHz AP (19 dB louder) on its own: −58 dBm and 25.8 Mbit/s, a fresh association. Restoring the default brought it back to 5 GHz within 20 s, at −73 dBm and 576 Mbit/s. No ban, no steer -- both moves were the phone's |
 | Transmit power, USB `mt7921u` | Refused, and caught by measurement: with the known-bad list bypassed, a set to 10 dBm was accepted by `iw`, read back as 3.00 dBm, and the radio was marked as ignoring the control (#202) |
 
 ## Not yet working on OpenWrt
