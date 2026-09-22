@@ -1914,6 +1914,14 @@ per radio per kind, which is the link lanes' model one dimension wider.
 > access point, stays down. The other three are pulses and fire once as the
 > playhead crosses them.
 
+**`dbm`** `*float64` _(omitted when empty)_
+> DBm is RadioTxPower only: the level to set.
+>
+> A POINTER because zero is a level. 0 dBm is 1 mW and this hardware takes
+> it, measured -- so a plain float with omitempty would drop the lowest
+> setting the control offers on its way through JSON and arrive as "no
+> level given". Nil names no level and is refused.
+
 ### RadioInfo
 
 RadioInfo describes the USB device behind an interface: whether it is

@@ -196,9 +196,15 @@ export interface RadioEvent {
     | 'radio-off'
     | 'disable-ap'
     | 'deauth-disable-ap'
-    | 'scan';
+    | 'scan'
+    | 'txpower';
   /** `off` only — how long the radio stays down. The rest are pulses. */
   dur_sec?: number;
+  /** `txpower` only — the level to set, in dBm.
+   *
+   *  It HOLDS until the next step names another level, unlike every other kind
+   *  here, which restore themselves. 0 is a level (1 mW), not off. */
+  dbm?: number;
 }
 
 /** The shortest outage an adapter pattern may author.

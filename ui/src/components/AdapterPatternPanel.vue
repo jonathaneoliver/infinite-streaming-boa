@@ -46,6 +46,7 @@
 import { computed, onMounted, ref, watch } from 'vue';
 import type { Pattern, PatternView, RadioEvent } from '@/types';
 import { DEVELOPER, MIN_AP_DOWN_SEC, MIN_RADIO_OFF_SEC } from '@/types';
+import { rackAdapters } from '@/composables/useAdapters';
 
 const props = defineProps<{
   /** The radios this box watches, in preference order. */
@@ -74,6 +75,11 @@ const KINDS: { kind: Kind; hint: string }[] = [
   { kind: 'evict', hint: "this radio's clients leave" },
   { kind: 'deauth', hint: 'thrown off, come back here' },
   { kind: 'scan', hint: 'survey the band; costs this radio a few seconds' },
+  // The only lane that sets a LEVEL and holds it. Every other kind here
+  // restores itself; a step stands until the next one, so a shape that walks
+  // down has to name the levels on the way back up -- which is what the valley
+  // preset does. It costs nothing to apply: no BSS restart, nobody dropped.
+  { kind: 'txpower', hint: 'transmit power: each step holds until the next; nobody is dropped' },
 ];
 
 /**
@@ -468,6 +474,39 @@ function lanePath(iface: string, kind: Kind): string {
     .map(({ e }) => e)
     .slice()
     .sort((a, b) => a.at_sec - b.at_sec);
+
+  // A LEVEL LANE IS A DIFFERENT DRAWING, and drawing it like the others was
+  // wrong in a way that looked like a bug in the pattern: each step became a
+  // pulse to the top and back, so a walk down and up rendered as twenty-three
+  // identical flags -- the one shape that says "these are all the same", about
+  // the one lane where the value is the whole point.
+  //
+  // Here the HEIGHT is the level and the step holds until the next one names
+  // another, which is exactly what the radio does. The vertical scale spans
+  // the levels this lane actually uses rather than 0..30, because a valley
+  // from 23 to 0 drawn against a fixed ceiling wastes a third of the lane and
+  // flattens the steps that carry the finding.
+  if (kind === 'txpower') {
+    if (!evs.length) return '';
+    const lvls = evs.map((e) => e.dbm ?? 0);
+    const top = Math.max(...lvls);
+    const bot = Math.min(...lvls);
+    // A flat lane sits at the bottom rather than dividing by zero.
+    const y = (dbm: number) => (top === bot ? lo : lo - ((dbm - bot) / (top - bot)) * (lo - hi));
+    const d = [`M 0,${y(lvls[0]).toFixed(1)}`];
+    for (let i = 0; i < evs.length; i++) {
+      const a = x(evs[i].at_sec);
+      if (a >= end) continue;
+      const yi = y(lvls[i]).toFixed(1);
+      // Along at the level it was, up or down at the moment it changes, then
+      // along at the new one: the staircase the radio walks.
+      d.push(`L ${a.toFixed(1)},${d.length === 1 ? yi : y(lvls[i - 1] ?? lvls[i]).toFixed(1)}`);
+      d.push(`L ${a.toFixed(1)},${yi}`);
+    }
+    d.push(`L ${end.toFixed(1)},${y(lvls[lvls.length - 1]).toFixed(1)}`);
+    return d.join(' ');
+  }
+
   const d = [`M 0,${lo}`];
   for (const e of evs) {
     const a = x(e.at_sec);
@@ -703,6 +742,21 @@ const PRESETS = computed(() => {
       ),
   });
 
+  // Only when there is a radio it can act on: 5GHz, serving, and honouring the
+  // level. Absent rather than inert, for the reason powerRadio gives.
+  if (powerRadio.value) {
+    const iface = powerRadio.value.name;
+    const top = powerTop.value;
+    out.push({
+      name: 'txpower valley',
+      note:
+        `${iface} walks from ${top} dBm down to 0 and back in ${POWER_STEP_DB} dB steps, `
+        + `${POWER_STEP_SEC}s each. Every other radio is left alone, so a client that `
+        + 'leaves has somewhere to go and the move is its own decision',
+      build: () => powerValley(iface, top),
+    });
+  }
+
   // GATED ON WHAT A PRESET BUILDS, not on where it sits in this list.
   //
   // A power cut can wedge the USB radio for two minutes (#182), so those
@@ -718,6 +772,65 @@ const PRESETS = computed(() => {
   if (DEVELOPER) return out;
   return out.filter((p) => !p.build().some((e) => e.kind === 'radio-off'));
 });
+
+/**
+ * The radio a power walk should act on: 5GHz, serving, and honouring the
+ * setting.
+ *
+ * ASKED OF THE HARDWARE rather than named. The bands are separate chains on
+ * this class of box -- one phy per band -- so "the 5GHz radio" is a real,
+ * single thing; and a radio whose driver discards the level would give a shape
+ * that plays perfectly and changes nothing, which is the failure the slider's
+ * own detection exists to prevent. Undefined when the box has no such radio,
+ * and the preset is then absent rather than offered and inert.
+ */
+const powerRadio = computed(() =>
+  rackAdapters.value.find(
+    (r) =>
+      props.radios.includes(r.name) &&
+      r.txpower?.settable &&
+      (r.ap?.freq_mhz ?? 0) >= 5000,
+  ),
+);
+
+/** The top of a power walk: this channel's regulatory ceiling. */
+const powerTop = computed(() =>
+  Math.round(powerRadio.value?.txpower?.max_dbm || powerRadio.value?.txpower?.dbm || 20),
+);
+
+/*
+ * A walk down and back up in 2 dB steps, holding each for POWER_STEP_SEC.
+ *
+ * TWO dB because that is the resolution the question has: measured on a Cudy,
+ * an iPhone a room away left 5GHz at 11 dBm and came back at 19 -- 8 dB of
+ * hysteresis a 5 dB step would have reported as "somewhere between". Whole
+ * dBm because the driver refuses fractions.
+ *
+ * FIFTEEN SECONDS a step, a floor rather than a taste: a client decides to
+ * roam on its own scan cycle, and the same measurement had one leaving 14s
+ * into a step. A shorter hold would move the level again before the device had
+ * finished reacting, and the walk would be measuring the interface's
+ * impatience.
+ *
+ * It ENDS AT THE TOP, which matters more here than in any other preset: a
+ * power step holds until something names another level, so a shape that
+ * stopped at the bottom would leave the radio there after the run -- the
+ * pattern equivalent of walking away with the slider down.
+ */
+const POWER_STEP_SEC = 15;
+const POWER_STEP_DB = 2;
+
+function powerValley(iface: string, top: number): RadioEvent[] {
+  const down: number[] = [];
+  for (let dbm = top; dbm >= 0; dbm -= POWER_STEP_DB) down.push(dbm);
+  const up = down.slice(0, -1).reverse();
+  return [...down, ...up].map((dbm, i) => ({
+    iface,
+    kind: 'txpower' as const,
+    at_sec: i * POWER_STEP_SEC,
+    dbm,
+  }));
+}
 
 /** Applying a preset REPLACES the timeline. Merging would produce something
  *  that is neither the preset nor what was there, and which would then have to
@@ -843,6 +956,18 @@ async function play() {
   }
   if (await call('/api/bridge/pattern/play', { method: 'POST' })) msg.value = 'playing';
 }
+/** Play what is drawn: save it first if it is not what the box holds. */
+async function saveAndPlay() {
+  if (dirty.value) {
+    await save();
+    // save() reports its own failure; a play on a pattern the box never took
+    // would run the previous one, which is the divergence this panel exists to
+    // avoid.
+    if (dirty.value) return;
+  }
+  await play();
+}
+
 async function stop() {
   const body = await call('/api/bridge/pattern/play', { method: 'DELETE' });
   if (body) msg.value = body.note ? `stopped — ${body.note}` : 'stopped';
@@ -902,11 +1027,20 @@ watch(
       </label>
       <button v-if="open" class="ghost" :disabled="busy || playing" @click="save()">save</button>
       <button v-if="playing" class="ghost" :disabled="busy" @click="stop()">stop</button>
+      <!-- SAVES FIRST rather than refusing. The box plays what is saved, so an
+           unsaved lane cannot be played -- but disabling the button expressed
+           that as an absence, with the reason in a tooltip nobody hovers. It
+           read as the control vanishing, and the commonest way to reach it was
+           ticking `loop`, which is a change like any other and marks the
+           pattern unsaved. The rule has not moved: the save still happens, it
+           is just no longer the operator's errand, and the label says so. -->
       <button
-        v-else class="primary" :disabled="busy || !events.length || dirty"
-        :title="dirty ? 'save first — the box plays what is saved, not what is drawn' : ''"
-        @click="play()"
-      >play</button>
+        v-else class="primary" :disabled="busy || !events.length"
+        :title="dirty
+          ? 'saves these lanes, then plays them — the box plays what is saved'
+          : ''"
+        @click="saveAndPlay()"
+      >{{ dirty ? 'save & play' : 'play' }}</button>
       <button class="ghost" @click="open = !open">
         {{ open ? 'close' : events.length ? 'edit' : 'add' }}
       </button>
@@ -986,7 +1120,9 @@ watch(
               :style="{ left: pct(e.at_sec), width: widthPct(visSec(e)) }"
               :title="e.kind === 'radio-off'
                 ? `${l.iface} off the air ${e.at_sec}s–${e.at_sec + (e.dur_sec ?? 0)}s`
-                : `${l.kind} on ${l.iface} at ${e.at_sec}s`"
+                : e.kind === 'txpower'
+                  ? `${l.iface} to ${e.dbm} dBm at ${e.at_sec}s, and it holds there until the next step`
+                  : `${l.kind} on ${l.iface} at ${e.at_sec}s`"
               @pointerdown.stop="startDrag(i, 'move', $event)"
               @dblclick.prevent.stop="remove(i)"
               @contextmenu.prevent.stop="remove(i)"

@@ -761,6 +761,22 @@ func (e *Engine) fireRadio(f RadioFire) {
 	}
 
 	switch f.Kind {
+	case RadioTxPower:
+		// The one step here that restarts nothing and drops nobody: the level
+		// goes to the phy. It does not restore itself either -- see
+		// RadioTxPower -- so a shape that walks down names the levels on the
+		// way back up. A driver that discards the setting is caught by
+		// SetTxPower's own read-back rather than believed.
+		if f.DBm == nil {
+			e.logEvent(EventRadio, f.Iface, "",
+				"pattern wanted a transmit power on %s but named no level", f.Iface)
+			return
+		}
+		if err := e.SetTxPower(f.Iface, *f.DBm); err != nil {
+			e.logEvent(EventRadio, f.Iface, "",
+				"pattern could not set transmit power on %s: %v", f.Iface, err)
+		}
+
 	case RadioOff:
 		// RadioOutage owns the restore, including the #203 marker that stops a
 		// hotplug ending it early and the startup clear that stops a dead
