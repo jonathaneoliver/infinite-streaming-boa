@@ -1604,11 +1604,11 @@ Clients ARE told it has gone, unlike a power cut.`
                 <div class="ctl-box">
                   <div class="action-row txpower">
                     <template v-if="r.txpower.settable">
-                      <span class="meta">1</span>
+                      <span class="meta" title="0 dBm is 1 mW — the lowest the radio goes, not off">0</span>
                       <input
-                        type="range" min="1" :max="txMax(r)" step="1"
+                        type="range" min="0" :max="txMax(r)" step="1"
                         :value="txShown(r)" :disabled="busy"
-                        :title="`Transmit power on ${r.name}, 1 to ${txMax(r)} dBm — the top is this channel's own regulatory limit. Clients stay associated; the signal they hear moves with it.`"
+                        :title="`Transmit power on ${r.name}, 0 to ${txMax(r)} dBm — 0 is 1 mW, the floor, not off; the top is this channel's own regulatory limit. Clients stay associated; the signal they hear moves with it.`"
                         @input="txStaged[r.name] = +($event.target as HTMLInputElement).value"
                         @change="commitTx(r, +($event.target as HTMLInputElement).value)"
                       />

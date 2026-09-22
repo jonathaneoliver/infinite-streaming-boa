@@ -32,7 +32,17 @@ import (
  * mac80211 -> the driver -> firmware, and hostapd is not on it, which is why
  * nothing is dropped.
  *
- * UNITS ARE mBm on the command line: `fixed 1000` is 10 dBm.
+ * UNITS ARE mBm on the command line: `fixed 1000` is 10 dBm. The unit allows
+ * hundredths, and this driver does not: MEASURED on the Cudy's mt798x, `fixed
+ * 50`, `250` and `270` are each refused with "Not supported (-95)" while `0`
+ * and `100` are taken. So whole dBm is what the slider offers, and a fraction
+ * is passed through rather than rounded here -- another driver may accept one,
+ * and the refusal comes back in the operator's own words either way.
+ *
+ * ZERO IS THE FLOOR AND IS NOT OFF: 0 dBm is 1 mW, and the radio reports
+ * `0.00 dBm` having taken it. Below zero is refused by the driver too
+ * (`fixed -300` -> -95), so the range is 0..the channel's regulatory limit.
+ * Switching a radio OFF is a different control, and it is rfkill's.
  */
 
 // txpowerIgnoredBy names drivers that accept a transmit power and discard it,
