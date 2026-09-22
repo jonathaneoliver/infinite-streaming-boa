@@ -213,6 +213,18 @@ const (
 	// the measurement the "musical chairs" preset exists to make.
 	RadioAPDown     = "disable-ap"
 	RadioAPDownTell = "deauth-disable-ap"
+	// RadioTxPower sets this radio's transmit power, in dBm. The only radio
+	// event carrying a VALUE rather than a pulse or a duration, and the only
+	// one that costs nothing to apply: the level goes to the phy, no access
+	// point restarts and nobody is disassociated -- measured on a Cudy TR3000,
+	// 23 -> 10 -> 3 dBm with a MacBook associated throughout, no packet lost.
+	//
+	// So a lane of these is a WALK, not a series of outages: each step holds
+	// until the next names another level, and what moves is every client's
+	// received signal. It is also the only kind that does not restore itself,
+	// which is why a shape that goes down has to come back up by naming the
+	// levels on the way.
+	RadioTxPower = "txpower"
 	// RadioScan surveys the band from this radio.
 	//
 	// A pulse with a real cost, unlike the other three pulses: a beaconing
@@ -264,6 +276,13 @@ type RadioEvent struct {
 	// access point, stays down. The other three are pulses and fire once as the
 	// playhead crosses them.
 	DurSec float64 `json:"dur_sec,omitempty"`
+	// DBm is RadioTxPower only: the level to set.
+	//
+	// A POINTER because zero is a level. 0 dBm is 1 mW and this hardware takes
+	// it, measured -- so a plain float with omitempty would drop the lowest
+	// setting the control offers on its way through JSON and arrive as "no
+	// level given". Nil names no level and is refused.
+	DBm *float64 `json:"dbm,omitempty"`
 }
 
 // RadioFire is a radio action the Player determined should happen this tick,
@@ -272,6 +291,9 @@ type RadioFire struct {
 	Iface  string
 	Kind   string
 	DurSec float64
+	// DBm is RadioTxPower only, and nil elsewhere. See RadioEvent.DBm for why
+	// a level is a pointer.
+	DBm *float64
 }
 
 // LinkFire is a link action the Player determined should happen this tick,
@@ -544,6 +566,22 @@ func validPattern(p Pattern) error {
 				return fmt.Errorf(
 					"radio event %d: %s is a pulse and takes no duration", i, ev.Kind)
 			}
+		case RadioTxPower:
+			if ev.DurSec != 0 {
+				return fmt.Errorf(
+					"radio event %d: %s sets a level and holds it, so it takes no "+
+						"duration -- the next step is what ends it", i, ev.Kind)
+			}
+			if ev.DBm == nil {
+				return fmt.Errorf("radio event %d: %s names no level", i, ev.Kind)
+			}
+			// 30 dBm is above any regulatory ceiling these radios have; 0 is
+			// 1 mW, which is a level and not an off switch.
+			if *ev.DBm < 0 || *ev.DBm > 30 {
+				return fmt.Errorf(
+					"radio event %d: %g dBm is outside 0..30 -- 0 is 1 mW, the floor, "+
+						"and taking a radio off the air is %q", i, *ev.DBm, RadioOff)
+			}
 		case RadioOff:
 			// The floor is the point, not a formality: a shorter outage is
 			// silent for less time than a client takes to notice one.
@@ -619,7 +657,7 @@ func (p Pattern) radioFires(prev, pos float64, looped bool, dur float64) []Radio
 	var out []RadioFire
 	for _, ev := range p.Radios {
 		if crossed(prev, pos, looped, dur, ev.AtSec) {
-			out = append(out, RadioFire{Iface: ev.Iface, Kind: ev.Kind, DurSec: ev.DurSec})
+			out = append(out, RadioFire{Iface: ev.Iface, Kind: ev.Kind, DurSec: ev.DurSec, DBm: ev.DBm})
 		}
 	}
 	return out
