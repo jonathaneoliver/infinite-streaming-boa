@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+	"time"
 )
 
 /*
@@ -59,9 +60,48 @@ type TxPower struct {
 	Why      string `json:"why,omitempty"`
 }
 
+// txIgnoredReason says why this driver's transmit power cannot be set: from
+// the static list, or from a reading taken after an attempt.
+func (e *Engine) txIgnoredReason(driver string) string {
+	if why, bad := txpowerIgnoredBy[driver]; bad {
+		return why
+	}
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return e.txIgnored[driver]
+}
+
+// noteTxPowerIgnored records a driver that took a level and did not apply it.
+//
+// KEYED BY DRIVER, not by interface: the fault is in the code that handles the
+// request, so a second adapter on the same driver has it too, and one probe
+// that cost a client nothing should not have to be repeated on every radio.
+func (e *Engine) noteTxPowerIgnored(driver, why string) {
+	if driver == "" {
+		return
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.txIgnored == nil {
+		e.txIgnored = map[string]string{}
+	}
+	e.txIgnored[driver] = why
+}
+
+// txSettleDelay is how long the driver is given to apply a level before it is
+// read back. Measured on the Cudy's mt798x: the new level reads back on the
+// next command, with no delay at all. This is slack, not a requirement.
+const txSettleDelay = 300 * time.Millisecond
+
+// txTolerance is how far the radio may land from what was asked and still
+// count as having done it: the driver rounds to its own step and the
+// regulatory table it clamps against is in whole dBm. The interface uses the
+// same figure.
+const txTolerance = 1.0
+
 // readTxPower reports iface's transmit power, or nil when iw has nothing to
 // say about it (a scanner that is down, a wired port).
-func readTxPower(iface, driver string) *TxPower {
+func (e *Engine) readTxPower(iface, driver string) *TxPower {
 	raw, err := exec.Command("iw", "dev", iface, "info").Output()
 	if err != nil {
 		return nil
@@ -71,7 +111,7 @@ func readTxPower(iface, driver string) *TxPower {
 		return nil
 	}
 	tp := &TxPower{DBm: dbm, Settable: true}
-	if why, bad := txpowerIgnoredBy[driver]; bad {
+	if why := e.txIgnoredReason(driver); why != "" {
 		tp.Settable, tp.Why = false, why
 	}
 	if phy, err := phyName(iface); err == nil {
@@ -131,7 +171,8 @@ func (e *Engine) SetTxPower(iface string, dbm float64) error {
 	if e.cfg.Demo {
 		return nil
 	}
-	if why, bad := txpowerIgnoredBy[Radio(iface).Driver]; bad {
+	driver := Radio(iface).Driver
+	if why := e.txIgnoredReason(driver); why != "" {
 		return fmt.Errorf("%s: %s", iface, why)
 	}
 	phy, err := phyName(iface)
@@ -147,6 +188,23 @@ func (e *Engine) SetTxPower(iface string, dbm float64) error {
 	}
 	if out, err := exec.Command("iw", args...).CombinedOutput(); err != nil {
 		return fmt.Errorf("iw %s: %v: %s", strings.Join(args, " "), err, strings.TrimSpace(string(out)))
+	}
+	// VERIFIED, NOT ASSUMED. `iw` exits 0 on a driver that discards the level
+	// -- that is exactly how the mt7921u behaves (#202) -- so success here says
+	// only that the request was accepted. Reading the level back is the whole
+	// difference between a control that works and one that looks like it does.
+	if dbm >= 0 {
+		time.Sleep(txSettleDelay)
+		back, _ := exec.Command("iw", "dev", iface, "info").Output()
+		got, ok := parseTxPower(string(back))
+		if ok && math.Abs(got-dbm) > txTolerance {
+			why := fmt.Sprintf("the %s driver ignores transmit power: asked for %.0f dBm, "+
+				"it reports %.2f", driver, dbm, got)
+			e.noteTxPowerIgnored(driver, why)
+			e.logEvent(EventRadio, iface, "", "%s: %s — the control is disabled for this driver "+
+				"until the daemon restarts", iface, why)
+			return fmt.Errorf("%s: %s", iface, why)
+		}
 	}
 	if e.cfg.OpenWrt {
 		// The next `wifi reload` or LuCI save applies wireless.radioN.txpower

@@ -110,8 +110,17 @@ Intended for:
   it. Measured on a Cudy TR3000's `mt798x` radio: 23 → 10 → 3 dBm took a
   MacBook's received signal from −38 to −48 to −55 dBm with its association
   unbroken and no packet lost, and on OpenWrt the value is written into UCI so a
-  radio reload does not undo it. A radio whose driver discards the setting shows
-  that reason in place of the control, never a slider that appears to work.
+  radio reload does not undo it.
+
+- **A radio that will not attenuate says so, and is measured rather than
+  assumed.** `iw` exits 0 on a driver that takes a level and discards it, so
+  every set is READ BACK: land within a dB of what was asked -- the driver
+  rounds to its own step -- and it counts; land further away and that driver is
+  recorded as ignoring the control, with the numbers in the reason ("asked for
+  10 dBm, it reports 3.00"). The slider is then disabled on its radios rather
+  than removed, so the control's absence has a stated cause. Two drivers are
+  known before anyone tries, and the finding is forgotten on a restart: it is a
+  claim about driver code, and driver code gets fixed.
 
 - **A device can be told to behave as though it were further away.** One
   control per device stands for a distance: it derives a rate, a delay, a jitter,

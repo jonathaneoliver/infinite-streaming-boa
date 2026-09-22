@@ -539,7 +539,7 @@ func (e *Engine) buildBridgeState() BridgeInfo {
 		if in.Wireless {
 			in.Powered, in.PowerKnown = radioPowered(name)
 			if in.Radio != nil {
-				in.TxPower = readTxPower(name, in.Radio.Driver)
+				in.TxPower = e.readTxPower(name, in.Radio.Driver)
 			}
 			in.Serving = e.cfg.IsWlan(name)
 			in.AirtimePerClient, in.AirtimeCapKnown = airSeen[name]

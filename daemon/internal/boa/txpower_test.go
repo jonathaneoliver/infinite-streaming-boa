@@ -66,3 +66,28 @@ func TestTxPowerRefusedOnTheDriverThatIgnoresIt(t *testing.T) {
 		t.Fatal("mt798x-wmac was measured honouring it and must stay settable")
 	}
 }
+
+// A driver caught discarding a level is remembered for every radio on it, and
+// only until the daemon restarts: the reason is a claim about driver code, and
+// driver code gets fixed. The mt7921u patch in #202 is unmerged, not
+// imaginary, and a refusal written to disk would outlive the bug with no way
+// back that anybody would think to look for.
+func TestALearnedRefusalCoversTheDriverAndIsNotPersisted(t *testing.T) {
+	e := &Engine{}
+	if got := e.txIgnoredReason("mt798x-wmac"); got != "" {
+		t.Fatalf("a driver nobody has caught must start settable, got %q", got)
+	}
+	e.noteTxPowerIgnored("mt798x-wmac", "asked for 10 dBm, it reports 23.00")
+	if got := e.txIgnoredReason("mt798x-wmac"); got == "" {
+		t.Fatal("a driver caught discarding a level must be remembered")
+	}
+	// A fresh Engine is a restarted daemon: the refusal is gone, so a fixed
+	// driver gets another chance without anybody editing a file.
+	if (&Engine{}).txIgnoredReason("mt798x-wmac") != "" {
+		t.Fatal("a learned refusal must not outlive the daemon")
+	}
+	// The static list needs no learning at all.
+	if (&Engine{}).txIgnoredReason("mt7921u") == "" {
+		t.Fatal("mt7921u is known before anyone tries (#202)")
+	}
+}
