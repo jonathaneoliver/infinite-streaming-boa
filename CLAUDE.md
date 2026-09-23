@@ -127,6 +127,16 @@ be developed without the hardware.
 - **Measure on hardware before claiming behaviour.** Container tests pass that
   hardware fails, because the bridge, the radio and the real traffic mix are all
   absent. State what was measured and where.
+- **Name the target. There are four, and they disagree.** The Pi and the
+  container run `mt7921u` client radios; the Cudy runs `mt798x` access-point
+  radios, which announce channel switches, honour transmit power and survey
+  while serving where the others refuse. A finding written as "this box does X"
+  is wrong on at least one target and unfalsifiable on the rest, so a
+  measurement carries **which target, which radio, and when** — in the heading
+  when a whole section belongs to one, in a scope line when a subsection does.
+  Sections that failed this rule and had to be corrected: the OFDMA conclusion,
+  the USB hub cost, the client-parts ceiling, and every "this box" that meant
+  an adapter.
 - **Never redistribute built images.** `dist/` and `cache/` are gitignored
   deliberately: an image is a Raspberry Pi OS derivative carrying hundreds of
   packages' obligations. Ship the build scripts. See `docs/LICENSING.md`.

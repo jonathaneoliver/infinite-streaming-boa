@@ -143,13 +143,13 @@ own section: [Reaching the box](#reaching-the-box).
 - [Four ways to run it](#four-ways-to-run-it) — the Pi, the container, OpenWrt, and the one box with AP-class radios
 - [Requirements for the build and control host](#requirements-for-the-build-and-control-host) — the toolchain every target is built from
 - [Hardware](#hardware) — parts, RAM, and what the radios cannot do
-- [Build an image](#build-an-image) · [Run it as a container](#run-it-as-a-container-on-a-linux-host) · [Run it on OpenWrt](openwrt/README.md)
+- [Build an image, for the Pi](#build-an-image-for-the-pi) · [Run it as a container](#run-it-as-a-container-on-a-linux-host) · [Run it on OpenWrt](openwrt/README.md)
 - [Reaching the box](#reaching-the-box) · [Configuration](#configuration) · [Security](#security)
 
 **What it can and cannot measure**
 
 - [Access point performance](#access-point-performance) — the ceiling a cap sits under
-- [Wired downstream performance](#wired-downstream-performance) · [Power](#power)
+- [Wired downstream performance, on the Pi](#wired-downstream-performance-on-the-pi) · [Power, on the Pi](#power-on-the-pi)
 - [How the conditioning works](#how-the-conditioning-works) — the shaping model
 - [What it is not, and what the radios will not do](#what-it-is-not-and-what-the-radios-will-not-do)
 - [Things that will mislead you if nobody says them](#things-that-will-mislead-you-if-nobody-says-them)
@@ -1068,7 +1068,7 @@ cp .env.example .env      # set AP_SSID, AP_PASSWORD, AP_COUNTRY
 Write the `.img` from `dist/` to a card with
 [Raspberry Pi Imager](https://www.raspberrypi.com/software/) or
 [balenaEtcher](https://etcher.balena.io/) — there is deliberately no flashing
-helper here, and [Build an image](#build-an-image) says why. Boot it and open
+helper here, and [Build an image](#build-an-image-for-the-pi) says why. Boot it and open
 `http://infinite-streaming-boa.local/`. See [Hardware](#hardware) for the parts.
 
 The daemon and its service are also an apt package, `infinite-streaming-boa`
@@ -1268,9 +1268,9 @@ every Pi number in this document.
 | Part | What was used | Why it matters |
 |---|---|---|
 | Board | [Raspberry Pi 5 Model B, 4 GB](https://www.amazon.com/dp/B0CK3L9WD3?tag=jonathaneoliv-20) — or the cheaper [2 GB](https://www.amazon.com/dp/B0DDL91V2R?tag=jonathaneoliv-20), see below | A Pi 4 works; the onboard NIC must not be USB, which is why a Pi 3 does not — see the udev rule in `scripts/customize.sh` |
-| Power | [Official Raspberry Pi 27 W USB-C PSU](https://www.amazon.com/dp/B0CW7XCY75?tag=jonathaneoliv-20), or the [CanaKit 45 W USB-C PD supply](https://www.amazon.com/dp/B07H125ZRL?tag=jonathaneoliv-20) which also delivers 5 A | A SuperSpeed Wi-Fi adapter is a real load. **5 A is what `BOA_USB_MAX_CURRENT` needs** — under it the Pi 5 caps every USB port at 600 mA between them, which reads as a flaky adapter rather than a power problem. Check `vcgencmd get_throttled` reads `0x0` — and if it does not, or a radio keeps dropping off the bus, see [Power](#power) |
+| Power | [Official Raspberry Pi 27 W USB-C PSU](https://www.amazon.com/dp/B0CW7XCY75?tag=jonathaneoliv-20), or the [CanaKit 45 W USB-C PD supply](https://www.amazon.com/dp/B07H125ZRL?tag=jonathaneoliv-20) which also delivers 5 A | A SuperSpeed Wi-Fi adapter is a real load. **5 A is what `BOA_USB_MAX_CURRENT` needs** — under it the Pi 5 caps every USB port at 600 mA between them, which reads as a flaky adapter rather than a power problem. Check `vcgencmd get_throttled` reads `0x0` — and if it does not, or a radio keeps dropping off the bus, see [Power](#power-on-the-pi) |
 | Storage | [SanDisk Ultra 16 GB microSDHC](https://www.amazon.com/dp/B074B4P7KD?tag=jonathaneoliv-20) | What was used, and enough — the finished image is ~4.6 GB. A 32 GB card costs little more and leaves room for `ntopng` data |
-| Wi-Fi adapter | [Panda Wireless PAU0F AXE3000 (mt7921u)](https://www.amazon.com/dp/B0D972VY9B?tag=jonathaneoliv-20) | Optional, and the single biggest change to what the box can test — see below. **A client part, and it does not do everything this box would like**: see [The radios here are client parts](#the-radios-here-are-client-parts-and-that-is-the-ceiling) |
+| Wi-Fi adapter | [Panda Wireless PAU0F AXE3000 (mt7921u)](https://www.amazon.com/dp/B0D972VY9B?tag=jonathaneoliv-20) | Optional, and the single biggest change to what the box can test — see below. **A client part, and it does not do everything this box would like**: see [the radios on targets 1, 2 and 3 are client parts](#the-radios-on-targets-1-2-and-3-are-client-parts-and-that-is-their-ceiling) |
 | Wired downstream | Any USB ethernet adapter — e.g. [UGREEN USB-C 2.5 GbE](https://www.amazon.com/dp/B0CD1FDKT1?tag=jonathaneoliv-20); the figures below are a Realtek RTL8156 at both ends | Becomes `lan0`. Optional. 2.5 GbE needs a SuperSpeed link end to end, and a USB-C part reaches the Pi's USB-A socket through a converter that is usually the weak point — see [The cable decides whether you get 2.5 GbE at all](#the-cable-decides-whether-you-get-25-gbe-at-all) |
 
 **Which of these the other targets share.** The **Wi-Fi adapters and the USB
@@ -1367,10 +1367,14 @@ the same constraint the Pi has and the same one the
 [powered hub figures](#what-a-hub-costs-a-radio-separated-from-what-the-channel-is-worth)
 below quantify.
 
-### The radios here are client parts, and that is the ceiling
+### The radios on targets 1, 2 and 3 are client parts, and that is their ceiling
 
-Every radio this box has ever run is a **station chip with AP mode bolted on**.
-Not one is an access-point part.
+Every radio the Pi and the container have ever run is a **station chip with AP
+mode bolted on**. Not one is an access-point part — which was true of the whole
+project until a box arrived whose radios are not, so read this as the ceiling on
+three targets rather than on the idea. The fourth is
+[the Cudy](#a-box-that-is-not-client-class-the-cudy-tr3000), and the difference
+is measured rather than argued.
 
 | Radio | Where | What it is |
 |---|---|---|
@@ -1562,7 +1566,7 @@ controlled comparison rather than left as a range:
   [What a hub costs a radio](#what-a-hub-costs-a-radio-separated-from-what-the-channel-is-worth)
 
 All of it was measured after the power fault described under
-[Power](#power) was found and fixed. Figures taken before that, between
+[Power](#power-on-the-pi) was found and fixed. Figures taken before that, between
 2026-09-03 and the morning of 09-07, ran lower and are not reproduced here.
 
 **Read the three comparisons below as controlled experiments, not as a list of
@@ -1732,9 +1736,13 @@ the box moves under a third of what it does at 80, and the air is *busier*.
 > 2026-09-04. The shape was right and the 80 MHz figure was too harsh: those
 > runs drifted between HE-MCS 9 and 11 between widths, and were taken on a Pi
 > that was browning out. The 72% above is the same effect measured with the MCS
-> held constant. See [Power](#power).
+> held constant. See [Power](#power-on-the-pi).
 
 ### What a hub costs a radio, separated from what the channel is worth
+
+> **Applies to USB radios only** — targets 1, 2 and 3, whose Wi-Fi arrives on a
+> USB adapter. The Cudy's radios are on the SoC's own bus, so it has no hub, no
+> port topology and none of this cost. Nothing in this section transfers to it.
 
 A radio behind a powered USB hub is **14% slower than the same model of adapter
 in a port directly on the Pi**, and that is separable from the channel it is on.
@@ -1817,7 +1825,14 @@ Three things qualify that:
   chassis reach 758 Mbit/s together, or desense each other, needs two
   iperf-capable clients and has not been tried.
 
-### This box does not do OFDMA, and that bounds every figure above
+### The `mt7921u` adapters do not do OFDMA, and that bounds every figure they produced
+
+> **Measured on the `mt7921u` adapters** — targets 1, 2 and 3. The Cudy's
+> built-in radios are a different part on a different driver and are **not**
+> covered by the conclusion below: on the Cudy, `mt7915e` exposes `muru_debug`
+> and `muru_stats`, the very counters this section says the client part lacks. Whether it actually serves multi-user transmissions is **untested** —
+> the acceptance test described here can now be run on hardware rather than
+> planned for hardware nobody has.
 
 802.11ax subdivides a channel in **frequency** as well as time: an 80 MHz
 channel is carved into Resource Units, and an access point can serve several
@@ -1826,7 +1841,11 @@ how a modern router gives a device a narrow effective channel without narrowing
 the radio, and it is why every 5 GHz neighbour here sits at the full 80 MHz
 rather than splitting the band.
 
-**boa does not do it**, and this is verifiable on the box rather than assumed:
+**"This box" below means the `mt7921u` adapter**, not the appliance: three of
+the four targets serve from one, and the fourth does not.
+
+**boa does not ask for it on the USB adapters**, and this is verifiable on the
+box rather than assumed:
 
 ```sh
 # hostapd sets width and centre only -- no MU options are configured
@@ -1855,7 +1874,7 @@ this is a plausible contributor to the 72% figure at 80 MHz.
 **Two consequences, and they pull in opposite directions.**
 
 Every number in this section describes a **purely time-shared radio**, because
-that is the only kind this box has. Nothing here was ever going to show OFDMA,
+that is the only kind the `mt7921u` is. Nothing here was ever going to show OFDMA,
 so the ladder and the two-radio arithmetic are sound for what they measured —
 and their scope is now a measured fact rather than an assumption.
 
@@ -2050,7 +2069,12 @@ Two more things that will mislead you here:
   [Source S](docs/DATA-CONTRACT.md) for what is taken from a standard and what
   is asserted.
 
-## Wired downstream performance
+## Wired downstream performance, on the Pi
+
+> **Target 1, and target 2 by inheritance** — both reach a wired downstream
+> through a USB ethernet adapter, which is what this measures. The Cudy has a
+> second ethernet port on the SoC and needs no adapter at all; its wired figures
+> are in [the Cudy's own record](openwrt/CUDY-TR3000.md).
 
 A USB ethernet adapter becomes `lan0` and is conditioned exactly like a wireless
 client. With a 2.5 GbE adapter at both ends the cable stops being the limit and
@@ -2282,9 +2306,9 @@ only place both directions are true at once.
 The method is the one in [Measuring it yourself](#measuring-it-yourself). It is
 not Pi-specific; `<pi>` is just the box's address either way.
 
-## Power
+## Power, on the Pi
 
-**Pi-specific.** A desktop host has a real power supply and none of this
+A desktop host has a real power supply and none of this
 applies to it — but the underlying lesson does, in the form of the hub ceiling
 noted above: starve a USB radio and the symptoms point everywhere except the
 power.
@@ -2369,9 +2393,9 @@ the next reboot — which is far cheaper than a reflash.
 > the negotiation first, confirm `max_current` reads 5000, and only then raise
 > the cap.
 
-## Build an image
+## Build an image, for the Pi
 
-**For the Pi.** The container path needs no image and no card; skip to
+The container path needs no image and no card; skip to
 [Run it as a container on a Linux host](#run-it-as-a-container-on-a-linux-host).
 
 Needs `curl`, `docker`, `go` and `npm`, **including on Linux.** All image
@@ -2498,7 +2522,7 @@ not listed here. These are the ones the script cannot catch.
 | Answers over IPv6 but not over IPv4 | No DHCP lease, which on a direct cable is normal. Use the rescue address |
 | Clients associate, then sit there with no address | **The WAN port is not connected.** Being invisible means boa issues no addresses of its own |
 | No access point at all | `AP_COUNTRY` does not match where the box physically is, so the radio stays rfkill-blocked; or there is no radio the box can serve |
-| A USB radio unregisters mid-transfer, and it reads as a Wi-Fi fault | Power, not Wi-Fi. See [Power](#power) |
+| A USB radio unregisters mid-transfer, and it reads as a Wi-Fi fault | Power, not Wi-Fi. See [Power](#power-on-the-pi) |
 | An unshaped baseline that swings by a factor of two | Also power. Same section |
 | Cannot log in to a freshly flashed box | A truncated or wrapped `BOA_SSH_PUBKEY`. The build parses every key line and refuses one it cannot decode, so this should now fail at build time instead |
 | A device loses its policy and its measured ladder | Its randomised private Wi-Fi MAC rotated. See [Things that will mislead you](#things-that-will-mislead-you-if-nobody-says-them) |
@@ -3132,7 +3156,7 @@ An AP-class part with DFS would have five more.
 
 | | Status | Why |
 |---|---|---|
-| **OFDMA / MU-MIMO scheduling** | not done | Driver, and specific to this chip. The hardware advertises HE and `Full Bandwidth UL MU-MIMO`, but `mt7921` exposes no MU counters and every frame is single-user. `mt7915` does expose them — see [above](#this-box-does-not-do-ofdma-and-that-bounds-every-figure-above) |
+| **OFDMA / MU-MIMO scheduling** | not done | Driver, and specific to this chip. The hardware advertises HE and `Full Bandwidth UL MU-MIMO`, but `mt7921` exposes no MU counters and every frame is single-user. `mt7915` does expose them — see [above](#the-mt7921u-adapters-do-not-do-ofdma-and-that-bounds-every-figure-they-produced) |
 | **160 MHz channels** | not possible | Hardware. `iw phy` lists no 160 MHz capability on either adapter |
 | **6 GHz (Wi-Fi 6E)** | **not implemented** | **Ours.** The adapter is an AX**E**3000 and the PHY offers 59 usable 6 GHz channels with AP mode among its HE Iftypes. boa neither scans nor serves there because `scanFreqs()` and `apChannels` stop at 5 GHz |
 | **Mesh / 802.11s** | not used | Ours. Both adapters list `mesh point` among their interface modes; nothing here builds on it |
@@ -3290,8 +3314,9 @@ scripts/docker-attach.sh    moves the adapters into the container's namespace
 
 ## Development
 
-Five loops, fastest first. Pick the slowest one you actually need. Loops 1 and 2
-are target-agnostic; loop 3 is the Pi and loop 4 the container.
+Six loops, fastest first. Pick the slowest one you actually need. Loops 1, 2
+and 6 are target-agnostic; loop 3 is the Pi, loop 4 the container, and loop 5
+either OpenWrt target — the Pi running it or the Cudy.
 
 ### 1. Interface only, no hardware — sub-second
 
@@ -3313,14 +3338,15 @@ reproduce on real hardware and therefore never get styled: a client associated
 but without an address yet, and a client configured but currently absent.
 Throughput responds to the sliders, so the controls feel live.
 
-### 2. Interface against a real Pi — sub-second, real data
+### 2. Interface against a real box — sub-second, real data
 
 ```sh
-./scripts/dev.sh infinite-streaming-boa.local
+./scripts/dev.sh infinite-streaming-boa.local   # or any target's address
 ```
 
-Same hot reload, but the API calls proxy to a running Pi. Note this is
-read-write: moving a slider really does condition that device's traffic.
+Same hot reload, but the API calls proxy to a running box — **any of the four**,
+since all of them serve the same API on the same port. Note this is read-write:
+moving a slider really does condition that device's traffic.
 
 ### 3. Full deploy to a Pi — about ten seconds
 
@@ -3361,7 +3387,29 @@ interface work does not need this loop either way.
 First-run setup is separate and documented in
 [Run it as a container on a Linux host](#run-it-as-a-container-on-a-linux-host).
 
-### 5. Driving a box from the terminal — `boactl`
+### 5. Full deploy to an OpenWrt box — under a minute
+
+```sh
+./scripts/openwrt-package.sh root@<device>                         # a Pi on OpenWrt
+SDK_IMAGE=openwrt/sdk:mediatek-filogic-25.12.5 \
+  ./scripts/openwrt-package.sh root@192.168.0.23                   # the Cudy
+```
+
+Cross-compiles the daemon with the interface embedded, has the OpenWrt SDK
+package and sign it, then installs both packages on the device and restarts the
+service. The SDK is x86-64 only, so on an arm64 workstation Docker emulates it —
+slower, though these packages compile nothing.
+
+**The SDK image is the target.** The default builds `aarch64_cortex-a76` for a
+Pi 5 on OpenWrt; the Filogic SDK builds `aarch64_cortex-a53` for the Cudy. Same
+static binary either way — only the package's architecture label differs, which
+is the whole reason a Pi-only feed would not install on the Cudy.
+
+There is no reflash step and no `.env`: an OpenWrt box is configured from UCI,
+so `/etc/config/boa` is the file that matters and `service boa reload` applies
+it.
+
+### 6. Driving a box from the terminal — `boactl`
 
 ```sh
 cd daemon && go build -ldflags "-X main.version=$(../scripts/version.sh)" \
@@ -3381,7 +3429,7 @@ boactl shape "Apple TV" -down 5 -delay 40 -loss 0.5
 boactl sweep "Apple TV" -service netflix  # measure its rendition ladder
 boactl pattern play "Apple TV" -name ramp_down   # and: pattern stop, pattern list
 boactl radio wlan-usb-46c7 scan           # free on the onboard radio
-boactl radio wlan-usb-46c7 channel -to 149  # DROPS every client on that radio
+boactl radio wlan-usb-46c7 channel -to 149  # announced where the radio can; -restart forces the outage
 boactl link "Apple TV" deauth             # and: disassoc, deadzone, steer, measure
 boactl events -follow > run.ndjson        # what HAPPENED, as it happens
 boactl history -window 10m -o run.csv     # what the link was DOING, per second
