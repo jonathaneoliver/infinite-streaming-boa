@@ -43,13 +43,21 @@ log "building the interface (the builder cannot)"
 # gitignored, and tar fails outright on a socket -- and any local scratch file
 # would otherwise ship to a distribution. Tracked files are also exactly what a
 # reviewer can see, which is the standard a source tarball is held to.
+# THE MODULE GOES AT THE ROOT, not under daemon/ as it sits in the checkout.
+# OpenWrt's Build/Prepare unpacks into $(PKG_BUILD_DIR)/.. and expects the
+# tarball's top-level directory to be the build directory, so a module one
+# level down ends up at boa-<v>/boa-<v>/daemon and the builder reports
+# "go.mod file not found" while go.mod is plainly in the tarball. Arranging the
+# tarball for the builder is cheaper than fighting that, and it is what a Go
+# release tarball normally looks like anyway.
 log "staging tracked source, and nothing a working tree accumulates"
 mkdir -p "$STAGE"
-git archive --format=tar HEAD daemon LICENSE openwrt/files | tar -xf - -C "$STAGE"
+git archive --format=tar HEAD daemon | tar -xf - -C "$STAGE" --strip-components=1
+git archive --format=tar HEAD LICENSE openwrt/files | tar -xf - -C "$STAGE"
 # The built interface is the one thing NOT tracked that must still ship: Go
 # embeds it, and the builder cannot make it.
-mkdir -p "$STAGE/daemon/web/dist"
-cp -R daemon/web/dist/. "$STAGE/daemon/web/dist/"
+mkdir -p "$STAGE/web/dist"
+cp -R daemon/web/dist/. "$STAGE/web/dist/"
 
 # REPRODUCIBLE, because PKG_HASH is a promise about bytes: the same source must
 # produce the same hash on the next machine, or the Makefile has to be edited to

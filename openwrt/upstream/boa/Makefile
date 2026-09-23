@@ -38,6 +38,23 @@ PKG_MAINTAINER:=Jonathan Oliver
 PKG_LICENSE:=MIT
 PKG_LICENSE_FILES:=LICENSE
 
+# THE TARBALL'S ROOT IS THE GO MODULE, which is what every other variable here
+# already assumed. In this repository the module lives in daemon/, and the
+# first attempt kept that layout and pointed PKG_BUILD_DIR into the subdirectory
+# instead. It does not work: the default Build/Prepare unpacks into
+# $(PKG_BUILD_DIR)/.., so a tarball whose top-level directory no longer matches
+# the build directory's name lands one level deep --
+#
+#   build_dir/target-.../boa-0.4.0/boa-0.4.0/daemon/go.mod
+#
+# -- and the builder looks for go.mod where there is only an empty daemon/.
+# Failing with "go.mod file not found" while go.mod is demonstrably in the
+# tarball is how that reads from the outside.
+#
+# So the release tarball is arranged for the builder rather than mirroring the
+# checkout: go.mod at the root, with LICENSE and the OpenWrt files beside it.
+# See scripts/openwrt-source-tarball.sh.
+
 PKG_BUILD_DEPENDS:=golang/host
 PKG_BUILD_PARALLEL:=1
 PKG_BUILD_FLAGS:=no-mips16
