@@ -544,7 +544,7 @@ option holding them is a list that was being written as a single value.
 
 | Limitation | Why |
 | --- | --- |
-| No silent power cut | OpenWrt's kernel has no rfkill — `/dev/rfkill` is absent. That is the only control that tells a client nothing, which is how you measure what a player does while it still believes it is connected. Transmit power covers much of it here: fading to 0 dBm is silent too, and stepped rather than binary |
+| No silent power cut **control** | `/dev/rfkill` is absent, so boa offers none. The hardware can still do it: `ip link set phy1-ap0 down` took the BSS off air with no frame sent — hostapd logged `AP-STA-DISCONNECTED` only after `INTERFACE-DISABLED`, on an interface that could no longer transmit, and a MacBook took 6 s to notice against under 1 s for a deauth. Using it needs the wedge watchdog suppressed, which rebuilt the BSS within seconds |
 | No advertised BSS Load | `bss_load_test` exists only in hostapd builds with testing options |
 | USB `mt7921u` stays client-class | It refuses the channel switch, ignores transmit power, and cannot scan without dropping its BSS. On this box it is the contrast, not the workhorse |
 | DFS untested | The silicon advertises radar detection on 52–144, and 16 non-DFS channels are all the band plan currently offers. Whether it will actually serve there after a channel-availability check is unanswered |

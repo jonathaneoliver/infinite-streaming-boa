@@ -1180,9 +1180,9 @@ else works identically.
 above is a record of what produced the figures in this document, and the Wi-Fi
 adapters in particular are the compromise the rest of the box is shaped around.
 Buy them to reproduce what is written here. Do not read the list as a
-recommendation for the best boa anyone could build, because nobody has built
-that one yet — see [Hardware worth trying, none of it
-tried](#hardware-worth-trying-none-of-it-tried).
+recommendation for the best boa anyone could build: for the radios, that is
+[the Cudy TR3000](#a-box-that-is-not-client-class-the-cudy-tr3000), whose
+built-in parts are access-point silicon and are measured as such.
 
 ### How much RAM this actually needs
 
@@ -1350,15 +1350,16 @@ channel itself: the radio moves and takes its clients with it.
   between a player and a network wherever that network happens to be.
 - **LuCI stays.** The router remains a router; boa installs beside it.
 
-**What it does not fix.** OpenWrt's kernel has no rfkill, so the silent power
-cut is unavailable — the one impairment that tells a client nothing, where every
-other control announces itself and gets a reconnect in a second or two. It
-matters for exactly one question: what a player does in the tens of seconds it
-still believes it is connected. **On this target that question is mostly
-reachable another way**, and a better one: transmit power works here, so the
-link can be faded to 0 dBm in steps rather than cut in one binary move, and the
-client is told nothing either way. What is genuinely lost is the instant, total
-cut. The advertised BSS Load needs a testing build of
+**What it does not fix.** OpenWrt's kernel has no rfkill, so boa offers no
+silent power cut on this target — the one impairment that tells a client
+nothing, where every other control announces itself and gets a reconnect in a
+second or two. That is a missing **control**, not a missing capability:
+`ip link set <ap-iface> down` takes the BSS off air here with nothing sent, and
+a MacBook took six seconds to notice. Two things stand in the way of using it —
+boa's own wedge watchdog rebuilds the BSS within seconds, and it would need
+suppressing for the duration. Meanwhile transmit power covers much of the same
+ground and covers it better: faded to 0 dBm in steps rather than cut in one
+binary move, and silent either way. The advertised BSS Load needs a testing build of
 hostapd. Its two Cortex-A53s are the throughput limit, not the radio. Flash is
 128 MB, so package space is finite. And DFS, 160 MHz width and multiple BSSes
 are all advertised by the silicon and **untested here**.
@@ -1392,88 +1393,6 @@ reports honestly what came back, including a refusal with the client's own
 candidate list. 802.11v simply has no request that *places* a station on a BSS.
 That is why the controls that reliably move a client are the ones that remove
 the alternatives — `gather` and `evict` — rather than the one that asks.
-
-### Hardware worth trying, none of it tried
-
-**None of this has been bought, run or measured.** It is where the limits above
-would go if someone did.
-
-OpenWrt's split is the useful frame. The mt7915 and mt7916 are purpose-built AP
-parts on the same `mt76` driver already in use here, where the mt7921 in these
-adapters is the client sibling — it works in AP mode but was never optimised for
-it. Qualcomm's `ath11k`, and the older `ath9k`/`ath10k`, are the other AP-class
-family, and `ath9k`/`ath10k` are the ones that expose raw
-[spectral scan](#what-ap-class-silicon-would-add-in-order-of-what-it-changes)
-data, which would let this box see interference that does not beacon.
-
-| Candidate | Form factor | What it would unlock here |
-|---|---|---|
-| **mt7916** (e.g. AW7916-NPD, 3×3 DBDC) | mPCIe / M.2 | AP-class `mt76`: CSA so a channel move stops being an outage, DFS, multiple BSS per radio, off-channel scan while beaconing, and possibly **OFDMA** |
-| **mt7915** (AW7915-NP1 4×4, or NPD-2X 2×2) | mPCIe / M.2 | As above, and 4×4 doubles the two-stream ceiling |
-| **ath11k** (e.g. QCN9074) | M.2 / PCIe | The non-MediaTek AP family, for a second opinion on driver-specific behaviour |
-| **ath9k / ath10k** | mPCIe / PCIe | Old and slow, but the only realistic route to **spectral scan** and mature **airtime fairness** |
-
-**OFDMA is the one to select on, and the datasheet will not answer it.** This
-box serves a purely time-shared radio, which
-[bounds every throughput figure in this document](#this-box-does-not-do-ofdma-and-that-bounds-every-figure-above)
-— and OFDMA attacks precisely the weakness the width sweep found, because the
-fixed overhead a wide channel wastes on one client is shared out when several
-are served in the same transmission. It is the difference between measuring a
-radio that behaves like a modern router and one that does not.
-
-The current adapter is exactly why the datasheet is worthless as evidence. It
-advertises HE and `Full Bandwidth UL MU-MIMO` and delivers neither: `mt7921`
-exposes no MU counters at all, and every frame on the air is single-user
-aggregation of at most two MSDUs.
-
-**The AP-class driver does have them**, which is the encouraging half.
-`mt7915/debugfs.c` carries a `muru_debug` switch and a `muru_stats` file
-reporting downlink MU-MIMO, downlink OFDMA and trigger-based uplink MU-MIMO and
-OFDMA as per-PPDU counts; `mt7921/debugfs.c` contains none of those words. So
-the acceptance test for any candidate is on the box, not on the box it came in —
-enable `muru_debug` first, since `muru_stats` reports nothing until you do, then
-look for multi-user transmissions under load.
-
-**The other catch is form factor, not price.** AP-class silicon is essentially
-not sold as USB. Every card above is mPCIe or M.2, which decides where each
-target can go next.
-
-**The container host can take one today.** It has an Intel AX200 on PCIe and
-three free slots: a PCIe x16, a PCIe x4, and an M.2. An mPCIe or M.2 card on a
-cheap adapter drops straight into the x4 or x16, alongside or instead of the
-AX200. No power problem, no enclosure problem. This is the shortest path from
-here to AP-class behaviour, and it is a strong argument for the container target
-independent of anything else.
-
-**The Pi needs a HAT, and power is the constraint.** The Pi 5 exposes a single
-PCIe lane on its FFC connector, so an AP-class card needs a PCIe HAT — an M.2 or
-mini-PCIe adapter. Supernetworks builds one specifically for Wi-Fi 6 AP cards
-and states the reason plainly: **the FFC connector is limited to about 5 W**, so
-they built a HAT that can draw over 10 W. A 3×3 or 4×4 AP radio is a real load,
-and this repository has already lost a day to
-[a Pi 5 browning out two USB radios](#power). The same lesson, one connector
-over.
-
-### Would PCIe beat USB here? Nobody has checked
-
-Worth benchmarking on its own, separately from what the chip can do, because
-three different things could move and they matter for different reasons.
-
-| | Why it might change | Why it matters here |
-|---|---|---|
-| **Throughput** | The Pi 5's lane is PCIe Gen 2 ×1, about 500 MB/s, roughly 4 Gbit/s. USB 3.0 offers 5 Gbit/s **shared by every adapter on the bus** — and the hub ceiling measured here was exactly that, across three | A dedicated lane per radio, instead of a bus three radios contend for |
-| **Latency** | USB is a polled, packetised transport with host-controller round trips in the path. PCIe is memory-mapped | **This is the one that could change a measurement.** Bus latency lands on top of every conditioned delay, and adaptive bitrate decisions are made on buffer level and round-trip time |
-| **CPU overhead** | Every USB frame costs the host controller driver work. The wired path here is already CPU-bound: anything above roughly 1.9 Gbit/s with `-R` is measuring a saturated core | The box is the instrument as well as the subject. CPU spent on the bus is CPU not spent conditioning |
-
-The Pi 5's lane can be pushed to Gen 3, about 1 GB/s, with `dtparam=pciex1_gen=3`.
-It is not certified for it and may be unstable, so treat that as part of the
-experiment rather than a baseline.
-
-The latency row is the one to design the test around. Throughput is already
-adequate on USB for every rendition this box serves, and CPU headroom on the
-container host is generous. A repeatable difference in round-trip time under
-load would change what the ladder measurements mean, and nothing here has ever
-isolated the bus from the radio.
 
 ## Access point performance
 
@@ -3069,6 +2988,12 @@ Report**, which is how 6 GHz access points are actually discovered. The
 ### What AP-class silicon would add, in order of what it changes
 
 Not throughput — **instruments**. Each of these was checked on this hardware.
+
+**Three of them stopped being hypothetical.** The
+[Cudy TR3000](#4-a-cudy-tr3000-as-a-whole-box) has `mt798x` radios, and the
+announced channel switch, live transmit power and scanning-while-serving below
+are all measured working there. What follows is written from the client parts'
+point of view, which is still where the Pi and the container stand.
 
 **Fixed MCS, or rate pinning.** `iw dev wlan-usb set bitrates he-mcs-5` returns
 `Invalid argument (-22)` here. That one gap is why `Policy.Rssi` and the whole
