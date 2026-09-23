@@ -136,7 +136,7 @@ own section: [Reaching the box](#reaching-the-box).
 - [Who this is for](#who-this-is-for-and-why-the-wi-fi-control-matters), and why the Wi-Fi control matters
 - [Saving and restoring a configuration](#saving-and-restoring-a-configuration)
 - [The controls, one by one](#the-controls-one-by-one) — presets, distance, radio impairment, the charts
-- [How this compares to what already exists](#how-this-compares-to-what-already-exists) — including why a proxy is a different instrument
+- [How this compares to what already exists](#how-this-compares-to-what-already-exists) — the packet/radio divide, and why a proxy is a different instrument
 
 **Running it**
 
@@ -834,16 +834,24 @@ Deliberately degrading a link is a well-worn idea, and most of the tools below
 do it with the same kernel machinery boa does. What differs is **where the
 impairment sits** — and therefore what has to cooperate for it to work.
 
+Every entry carries the date its state was checked, because half of this
+category is abandoned and none of it looks abandoned from the README. Last
+swept 23 September 2026.
+
 | | Runs where | Reaches a TV, console or set-top box | Per device | Cost |
 |---|---|---|---|---|
-| **boa** | a transparent bridge in the path | yes | yes | a Pi 5 |
+| **boa** | a transparent bridge in the path | yes | yes, per MAC | a Pi 5 |
 | [Network Link Conditioner](https://nshipster.com/network-link-conditioner/) | on the Mac or iOS device under test | no — macOS and iOS only | it *is* the device | free with Xcode's Additional Tools |
 | `tc` / `netem` by hand | a Linux host, or a router you assemble yourself | only via that router | you write the filters | free |
-| [WANem](https://wanem.sourceforge.net/) | a Linux VM/live-CD you route traffic through | yes, as the gateway | via source/destination rules | free |
+| [WANem](https://wanem.sourceforge.net/) | a Linux VM/live-CD you route traffic through | yes, as the gateway | via source/destination rules | free; last release ~2010, two revival forks both dead by 2022 |
 | [Toxiproxy](https://github.com/Shopify/toxiproxy) | between an application and its backend | no | per proxy, not per device | free |
 | [Charles](https://www.charlesproxy.com/) / Proxyman throttling | a proxy the device is pointed at | only if it honours a proxy and a custom CA | per proxied device | commercial licence |
-| [pfSense / OPNsense limiters](https://docs.netgate.com/pfsense/en/latest/trafficshaper/limiters.html) | your router | yes | yes, via source/destination-masked limiters | free, plus a box |
-| [Facebook ATC](https://github.com/facebookarchive/augmented-traffic-control) | your gateway | yes | yes, per source IP | free; archived October 2018 |
+| [pfSense / OPNsense limiters](https://docs.netgate.com/pfsense/en/latest/trafficshaper/limiters.html) | your router | yes | yes, per IP via masked limiters | free, plus a box |
+| [piem](https://github.com/cellsim/piem) | a Pi whose access point is bridged to your LAN | yes | yes, per IP and per direction | free; dormant since October 2024 |
+| [WiFry](https://github.com/lstepnio/WiFry) | a Pi serving its own NAT'd hotspot | only once re-homed onto that hotspot | no — one profile on the radio | free; four commits in April 2026 and quiet since |
+| [znail](https://github.com/znailnetem/znail) | a transparent bridge on a Pi or NanoPi | yes | no — whole link, with a host whitelist | free; last release August 2021 |
+| [Facebook ATC](https://github.com/facebookarchive/augmented-traffic-control) | your gateway | yes | yes, per source IP | free; archived October 2018, Python 2.7, no maintained fork |
+| [LANforge ICE](https://www.candelatech.com/datasheet_ice.php) | a layer-2 pass-through appliance | yes | yes, per MAC or subnet | five figures |
 | [Netropy](https://apposite-tech.com/products/netropy-network-emulation/) / Linktropy and similar | a rack appliance in the path | yes | per emulated WAN link | thousands to tens of thousands |
 
 **What boa is actually for.** Every other entry in that table asks for
@@ -873,6 +881,14 @@ and the changed addresses that implies. boa identifies a device by the MAC on a
 frame it is already forwarding, which requires no address of its own and no
 routing role. ATC was archived on 30 October 2018 and is read-only.
 
+It has not been quietly forked back to life, which is worth stating because a
+4.3k-star repository usually has been: of the fifteen most recently updated
+forks, fourteen sit unchanged at the archive snapshot and the fifteenth carries
+a single 2022 commit. Its Python 2.7 and Django 1.10 stack has been
+unbuildable on a current distribution since Python 2 reached end of life in
+January 2020. Nothing replaced it either — the most-cited tool in this
+category has been dead for seven years and no successor took the ground.
+
 **Setting a condition is half of it; seeing that it took is the other half.**
 As far as their documentation shows, ATC and WANem both stop at the first half.
 ATC's web page and API shape and unshape a device, with nothing reporting what
@@ -896,6 +912,83 @@ does not. If you need a per-application policy on one device rather than a
 per-device one, Toxiproxy or a proxy is the right tool and composes with this
 one. And if the device under test is a Mac you already control, Network Link
 Conditioner is free and takes thirty seconds.
+
+### The second axis: the packets, or the radio
+
+The table above sorts the field on where the impairment sits. Sweeping it again
+in September 2026 turned up a sharper division, and it is the one on which this
+box has almost no company: **whether a tool touches the radio at all, or only
+the packets crossing it.**
+
+| | Impairs packets | Manipulates the radio |
+|---|---|---|
+| **boa** | per device, `netem` on a bridge | yes — channel, width, transmit power, 802.11v steering, eviction |
+| [WiFry](https://github.com/lstepnio/WiFry) | one profile on the AP | yes — band switch, transmit power, deauth via `hostapd_cli` and `iw` |
+| [LANforge](https://www.candelatech.com/) | yes, in the ICE product | yes, in the WiFIRE and attenuator products — bought separately |
+| [Octobox](https://www.spirent.com/products/octobox-testbeds-wi-fi-5g) | not its job | yes, but in the RF domain: attenuation, multipath, a shielded chamber |
+| [Mininet-WiFi](https://github.com/intrig-unicamp/mininet-wifi) | yes, per link | yes, on `mac80211_hwsim` — simulated radios, no real client |
+| Netropy, NE-ONE, PacketStorm, Ixia NE2 | yes, per emulated link | **no** |
+| Everything else in the table above | yes | **no** |
+
+**"Wi-Fi emulation" on a commercial emulator does not mean a radio.** Apposite,
+iTrinegy, PacketStorm and Keysight all sell a "Wi-Fi" profile: a canned
+bandwidth, latency and loss curve applied to an Ethernet port. There is no
+802.11 in the box, no association, nothing to steer. This is the single easiest
+thing to get wrong when comparing tools, and it is why a rack emulator cannot
+answer a question about band switching however much it costs. Their own product
+pages were not all reachable when this was checked, so read this as a reading of
+the material that was.
+
+**The gap this leaves is specific.** Nothing found — free or paid — offers
+802.11v BSS transition, eviction or a channel move as a *test instrument*: a
+lever you pull at a device you do not own, to watch what it does. `usteer` and
+DAWN implement the same mechanics as autonomous production policy, deciding
+where clients ought to go. Octobox tests whether an access point's own band
+steering works. Nobody sells "push this client to the other band, now."
+
+**The honest complement is an attenuator.** Programmable USB attenuators start
+around $399 and degrade the physics of a real link repeatably — which is
+something this box cannot do, since its transmit power control moves the access
+point's output and never the path loss between two rooms. An attenuator plus
+boa is a better rig than either, and the pairing is worth knowing about before
+reaching for a chamber.
+
+### The two closest, and both are Raspberry Pis
+
+Neither was found in the original sweep, and each holds one half of this box's
+design.
+
+[**piem**](https://github.com/cellsim/piem) boots a Pi with `hostapd` **bridged**
+to the wired side rather than NATing it, so clients keep the real network's
+DHCP, and applies impairment per client and per direction across 64 `ifb`
+devices. That is a transparent bridge with per-client pipes — two of the three
+properties this README argues are the whole design. It keys on IP rather than
+MAC, does nothing to the radio, and has no interface at all: a JSON config and a
+systemd unit. Dormant since October 2024, three stars.
+
+[**WiFry**](https://github.com/lstepnio/WiFry) is the closest thing found *by
+purpose*: a Pi for testing IP video devices over a deliberately degraded Wi-Fi
+link, and it genuinely drives the radio — band switch, transmit power and deauth
+through `hostapd_cli` and `iw`. It serves a NAT'd hotspot on its own subnet, so
+the device under test is re-homed onto its network and loses the lease and the
+address it had, which is the difference this whole section is about. It also
+does something this box does not: **mitmproxy reads the HLS and DASH manifests
+as they pass**, so bitrate switches and segment errors are named directly rather
+than inferred from the shape of the traffic. That idea deserves stealing. Four
+commits in April 2026 and silent since; treat it as one person's project.
+
+**What no one had built**, as far as four independent searches of the package
+feeds, the OpenWrt forum, GitHub and the commercial catalogues could establish:
+per-MAC `netem` behind a transparent bridge, impairment that follows a client as
+it roams between radios, a scripted degradation replayed on a clock against
+physical hardware, and radio manipulation offered as an operator's instrument.
+The nearest thing in industry is Netflix's RAE — a custom box the device under
+test connects to, underneath their partner certification harness — and it is
+closed, partner-only, and appears from the public write-ups to normalise the
+network rather than degrade it.
+
+Absence of evidence, stated as such: these were searches, not an exhaustive
+census, and a private lab tool would not appear in any of them.
 
 ### Isn't this RaspAP, or a Pi access point?
 
