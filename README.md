@@ -143,13 +143,13 @@ own section: [Reaching the box](#reaching-the-box).
 - [Four ways to run it](#four-ways-to-run-it) — the Pi, the container, OpenWrt, and the one box with AP-class radios
 - [Requirements for the build and control host](#requirements-for-the-build-and-control-host) — the toolchain every target is built from
 - [Hardware](#hardware) — parts, RAM, and what the radios cannot do
-- [Build an image](#build-an-image) · [Run it as a container](#run-it-as-a-container-on-a-linux-host) · [Run it on OpenWrt](openwrt/README.md)
+- [Build an image, for the Pi](#build-an-image-for-the-pi) · [Run it as a container](#run-it-as-a-container-on-a-linux-host) · [Run it on OpenWrt](openwrt/README.md)
 - [Reaching the box](#reaching-the-box) · [Configuration](#configuration) · [Security](#security)
 
 **What it can and cannot measure**
 
 - [Access point performance](#access-point-performance) — the ceiling a cap sits under
-- [Wired downstream performance](#wired-downstream-performance) · [Power](#power)
+- [Wired downstream performance, on the Pi](#wired-downstream-performance-on-the-pi) · [Power, on the Pi](#power-on-the-pi)
 - [How the conditioning works](#how-the-conditioning-works) — the shaping model
 - [What it is not, and what the radios will not do](#what-it-is-not-and-what-the-radios-will-not-do)
 - [Things that will mislead you if nobody says them](#things-that-will-mislead-you-if-nobody-says-them)
@@ -1068,7 +1068,7 @@ cp .env.example .env      # set AP_SSID, AP_PASSWORD, AP_COUNTRY
 Write the `.img` from `dist/` to a card with
 [Raspberry Pi Imager](https://www.raspberrypi.com/software/) or
 [balenaEtcher](https://etcher.balena.io/) — there is deliberately no flashing
-helper here, and [Build an image](#build-an-image) says why. Boot it and open
+helper here, and [Build an image](#build-an-image-for-the-pi) says why. Boot it and open
 `http://infinite-streaming-boa.local/`. See [Hardware](#hardware) for the parts.
 
 The daemon and its service are also an apt package, `infinite-streaming-boa`
@@ -1268,7 +1268,7 @@ every Pi number in this document.
 | Part | What was used | Why it matters |
 |---|---|---|
 | Board | [Raspberry Pi 5 Model B, 4 GB](https://www.amazon.com/dp/B0CK3L9WD3?tag=jonathaneoliv-20) — or the cheaper [2 GB](https://www.amazon.com/dp/B0DDL91V2R?tag=jonathaneoliv-20), see below | A Pi 4 works; the onboard NIC must not be USB, which is why a Pi 3 does not — see the udev rule in `scripts/customize.sh` |
-| Power | [Official Raspberry Pi 27 W USB-C PSU](https://www.amazon.com/dp/B0CW7XCY75?tag=jonathaneoliv-20), or the [CanaKit 45 W USB-C PD supply](https://www.amazon.com/dp/B07H125ZRL?tag=jonathaneoliv-20) which also delivers 5 A | A SuperSpeed Wi-Fi adapter is a real load. **5 A is what `BOA_USB_MAX_CURRENT` needs** — under it the Pi 5 caps every USB port at 600 mA between them, which reads as a flaky adapter rather than a power problem. Check `vcgencmd get_throttled` reads `0x0` — and if it does not, or a radio keeps dropping off the bus, see [Power](#power) |
+| Power | [Official Raspberry Pi 27 W USB-C PSU](https://www.amazon.com/dp/B0CW7XCY75?tag=jonathaneoliv-20), or the [CanaKit 45 W USB-C PD supply](https://www.amazon.com/dp/B07H125ZRL?tag=jonathaneoliv-20) which also delivers 5 A | A SuperSpeed Wi-Fi adapter is a real load. **5 A is what `BOA_USB_MAX_CURRENT` needs** — under it the Pi 5 caps every USB port at 600 mA between them, which reads as a flaky adapter rather than a power problem. Check `vcgencmd get_throttled` reads `0x0` — and if it does not, or a radio keeps dropping off the bus, see [Power](#power-on-the-pi) |
 | Storage | [SanDisk Ultra 16 GB microSDHC](https://www.amazon.com/dp/B074B4P7KD?tag=jonathaneoliv-20) | What was used, and enough — the finished image is ~4.6 GB. A 32 GB card costs little more and leaves room for `ntopng` data |
 | Wi-Fi adapter | [Panda Wireless PAU0F AXE3000 (mt7921u)](https://www.amazon.com/dp/B0D972VY9B?tag=jonathaneoliv-20) | Optional, and the single biggest change to what the box can test — see below. **A client part, and it does not do everything this box would like**: see [the radios on targets 1, 2 and 3 are client parts](#the-radios-on-targets-1-2-and-3-are-client-parts-and-that-is-their-ceiling) |
 | Wired downstream | Any USB ethernet adapter — e.g. [UGREEN USB-C 2.5 GbE](https://www.amazon.com/dp/B0CD1FDKT1?tag=jonathaneoliv-20); the figures below are a Realtek RTL8156 at both ends | Becomes `lan0`. Optional. 2.5 GbE needs a SuperSpeed link end to end, and a USB-C part reaches the Pi's USB-A socket through a converter that is usually the weak point — see [The cable decides whether you get 2.5 GbE at all](#the-cable-decides-whether-you-get-25-gbe-at-all) |
@@ -1566,7 +1566,7 @@ controlled comparison rather than left as a range:
   [What a hub costs a radio](#what-a-hub-costs-a-radio-separated-from-what-the-channel-is-worth)
 
 All of it was measured after the power fault described under
-[Power](#power) was found and fixed. Figures taken before that, between
+[Power](#power-on-the-pi) was found and fixed. Figures taken before that, between
 2026-09-03 and the morning of 09-07, ran lower and are not reproduced here.
 
 **Read the three comparisons below as controlled experiments, not as a list of
@@ -1736,7 +1736,7 @@ the box moves under a third of what it does at 80, and the air is *busier*.
 > 2026-09-04. The shape was right and the 80 MHz figure was too harsh: those
 > runs drifted between HE-MCS 9 and 11 between widths, and were taken on a Pi
 > that was browning out. The 72% above is the same effect measured with the MCS
-> held constant. See [Power](#power).
+> held constant. See [Power](#power-on-the-pi).
 
 ### What a hub costs a radio, separated from what the channel is worth
 
@@ -2069,7 +2069,12 @@ Two more things that will mislead you here:
   [Source S](docs/DATA-CONTRACT.md) for what is taken from a standard and what
   is asserted.
 
-## Wired downstream performance
+## Wired downstream performance, on the Pi
+
+> **Target 1, and target 2 by inheritance** — both reach a wired downstream
+> through a USB ethernet adapter, which is what this measures. The Cudy has a
+> second ethernet port on the SoC and needs no adapter at all; its wired figures
+> are in [the Cudy's own record](openwrt/CUDY-TR3000.md).
 
 A USB ethernet adapter becomes `lan0` and is conditioned exactly like a wireless
 client. With a 2.5 GbE adapter at both ends the cable stops being the limit and
@@ -2301,9 +2306,9 @@ only place both directions are true at once.
 The method is the one in [Measuring it yourself](#measuring-it-yourself). It is
 not Pi-specific; `<pi>` is just the box's address either way.
 
-## Power
+## Power, on the Pi
 
-**Pi-specific.** A desktop host has a real power supply and none of this
+A desktop host has a real power supply and none of this
 applies to it — but the underlying lesson does, in the form of the hub ceiling
 noted above: starve a USB radio and the symptoms point everywhere except the
 power.
@@ -2388,9 +2393,9 @@ the next reboot — which is far cheaper than a reflash.
 > the negotiation first, confirm `max_current` reads 5000, and only then raise
 > the cap.
 
-## Build an image
+## Build an image, for the Pi
 
-**For the Pi.** The container path needs no image and no card; skip to
+The container path needs no image and no card; skip to
 [Run it as a container on a Linux host](#run-it-as-a-container-on-a-linux-host).
 
 Needs `curl`, `docker`, `go` and `npm`, **including on Linux.** All image
@@ -2517,7 +2522,7 @@ not listed here. These are the ones the script cannot catch.
 | Answers over IPv6 but not over IPv4 | No DHCP lease, which on a direct cable is normal. Use the rescue address |
 | Clients associate, then sit there with no address | **The WAN port is not connected.** Being invisible means boa issues no addresses of its own |
 | No access point at all | `AP_COUNTRY` does not match where the box physically is, so the radio stays rfkill-blocked; or there is no radio the box can serve |
-| A USB radio unregisters mid-transfer, and it reads as a Wi-Fi fault | Power, not Wi-Fi. See [Power](#power) |
+| A USB radio unregisters mid-transfer, and it reads as a Wi-Fi fault | Power, not Wi-Fi. See [Power](#power-on-the-pi) |
 | An unshaped baseline that swings by a factor of two | Also power. Same section |
 | Cannot log in to a freshly flashed box | A truncated or wrapped `BOA_SSH_PUBKEY`. The build parses every key line and refuses one it cannot decode, so this should now fail at build time instead |
 | A device loses its policy and its measured ladder | Its randomised private Wi-Fi MAC rotated. See [Things that will mislead you](#things-that-will-mislead-you-if-nobody-says-them) |
