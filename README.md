@@ -1285,10 +1285,26 @@ power fault that shaped this list is not its problem. Its PCIe **Intel AX200** i
 the host's own card, not from this list. The **Cudy needs none of it**: two
 radios and both ethernet ports are built in.
 
-The product links above are Amazon affiliate links. **As an Amazon Associate I
-earn from qualifying purchases.** No part was chosen for that reason — each one
-is what the numbers in this document were measured on, and buying it anywhere
-else works identically.
+**Or none of the above: the [Cudy TR3000][cudy].** One box with two AP-class
+radios and two ethernet ports on the SoC, so the Wi-Fi adapter, the wired
+adapter, the powered hub and the 5 A supply all stop applying — and its radios
+do things these cannot, measured in
+[target 4](#4-a-cudy-tr3000-as-a-whole-box). It is a router rather than a
+computer, so ntopng and glances do not come with it; that trade is set out in
+[the Cudy as a boa platform](#a-box-that-is-not-client-class-the-cudy-tr3000).
+
+**Check what arrives against
+[the OpenWrt device page](https://openwrt.org/toh/cudy/tr3000) before flashing
+it.** Revisions differ in NAND size and in flash chip, they do not take the same
+images, and a wrong image is the one mistake in this whole document that a web
+interface cannot undo. The unit every Cudy figure here came from is identified
+in [`openwrt/CUDY-TR3000.md`](openwrt/CUDY-TR3000.md) so yours can be compared
+with it.
+
+Product links in this document, including the Cudy one below, are Amazon
+affiliate links. **As an Amazon Associate I earn from qualifying purchases.** No
+part was chosen for that reason — each one is what the numbers in this document
+were measured on, and buying it anywhere else works identically.
 
 **These are the parts this was built on, not the parts it deserves.** The list
 above is a record of what produced the figures in this document, and the Wi-Fi
@@ -1462,7 +1478,7 @@ are all advertised by the silicon and **untested here**.
 unit took from stock firmware to serving traffic, in LuCI and at a shell, with
 every measurement above and the caveats on each.
 
-[cudy]: https://openwrt.org/toh/cudy/tr3000
+[cudy]: https://www.amazon.com/dp/B0BXNCRVRC?tag=jonathaneoliv-20
 
 ### Wi-Fi features not yet exercised
 
