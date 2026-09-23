@@ -111,67 +111,20 @@ delay, jitter and loss lanes unused in this run.
 
 ## Quickstart
 
-Four targets, and none is the reference — see
-[Four ways to run it](#four-ways-to-run-it) for which to pick. The Pi and the
-container read the same `.env`; both OpenWrt targets are configured from UCI.
+**Four targets, none of them the reference.** Pick by the hardware you have and
+by what the test needs the radios to do; each section below carries its own
+commands, because the four differ more in setup than in use.
 
-**A Linux host you already have** (x86_64, two USB adapters, nothing to flash):
+| Target | What it is | Choose it for |
+|---|---|---|
+| [1. Raspberry Pi 5, from an image](#1-a-raspberry-pi-5-from-an-image) | One card, nothing installed elsewhere | A dedicated, disposable bench box, with ntopng and glances |
+| [2. A Linux host, as a container](#2-a-linux-host-from-a-container) | Hardware you already have, nothing to flash | The fastest start, and PCIe slots for better radios later |
+| [3. An OpenWrt device, as packages](#3-an-openwrt-device-as-packages) | Two packages beside LuCI | A router or Pi that should stay an OpenWrt box |
+| [4. A Cudy TR3000](#4-a-cudy-tr3000-as-a-whole-box) | The same packages, on AP-class radios | Channel moves that drop nobody, and distance imposed rather than modelled |
 
-```sh
-cp .env.example .env      # set AP_SSID_DOCKER, AP_PASSWORD, AP_COUNTRY
-scripts/docker-deploy.sh <host> --setup-network
-```
-
-Then open `http://<host>:8080/`. Later deploys drop `--setup-network` and take
-about a minute. The full walkthrough, including what it installs on the host and
-how to undo it, is
-[Run it as a container](#run-it-as-a-container-on-a-linux-host).
-
-**A Raspberry Pi 5 from an image** (self-contained, disposable, carries ntopng
-and glances):
-
-```sh
-cp .env.example .env      # set AP_SSID, AP_PASSWORD, AP_COUNTRY
-./build.sh                # ~5 min first time, then cached
-```
-
-Or, on a Raspberry Pi OS (or Debian) machine you already have, install the
-daemon and its service from the signed apt repository — it does not build the
-bridge or configure the radios, so see [`deb/README.md`](deb/README.md) first:
-
-```sh
-curl -fsSL https://jonathaneoliver.github.io/infinite-streaming-boa/apt/boa-archive-keyring.gpg \
-  | sudo tee /etc/apt/keyrings/infinite-streaming-boa.gpg >/dev/null
-echo "deb [signed-by=/etc/apt/keyrings/infinite-streaming-boa.gpg] https://jonathaneoliver.github.io/infinite-streaming-boa/apt stable main" \
-  | sudo tee /etc/apt/sources.list.d/infinite-streaming-boa.list
-sudo apt update && sudo apt install infinite-streaming-boa
-```
-
-Write the `.img` from `dist/` to a card with
-[Raspberry Pi Imager](https://www.raspberrypi.com/software/) or
-[balenaEtcher](https://etcher.balena.io/) — there is deliberately no flashing
-helper here, and [Build an image](#build-an-image) says why. Boot it and open
-`http://infinite-streaming-boa.local/`.
-
-**An OpenWrt device** (25.12, arm64 — a Pi 5 or a newer router — already a
-transparent bridge running the full `wpad`), from the signed feed:
-
-```sh
-wget -O /etc/apk/keys/boa-packages.pem \
-  https://jonathaneoliver.github.io/infinite-streaming-boa/openwrt/boa-packages.pem
-. /etc/openwrt_release   # DISTRIB_ARCH picks the feed
-echo https://jonathaneoliver.github.io/infinite-streaming-boa/openwrt/25.12/$DISTRIB_ARCH/packages.adb \
-  >> /etc/apk/repositories.d/customfeeds.list
-apk update && apk add luci-app-boa
-```
-
-or built from this checkout with `scripts/openwrt-package.sh root@<device>`.
-
-Then open LuCI → **Services → infinite-streaming-boa**, or
-`http://<device>:8080/`. Preparing the device, and what the packages install,
-is in [`openwrt/README.md`](openwrt/README.md).
-
-All three need `docker` on the machine you build from, including on Linux;
+The Pi and the container read the same `.env`; both OpenWrt targets are
+configured from UCI. Building any of them needs `docker` on the machine you
+build from, including on Linux —
 [Requirements for the build and control host](#requirements-for-the-build-and-control-host)
 has the toolchain floors. If the box is up but you cannot reach it, that has its
 own section: [Reaching the box](#reaching-the-box).
@@ -991,12 +944,33 @@ Choose it when the box should be a fixed piece of bench equipment, when you want
 ntopng and glances alongside the conditioner, or when the machine that runs it
 should not also be doing anything else.
 
-See [Hardware](#hardware) for the parts and [Build an image](#build-an-image)
-for the build.
+```sh
+cp .env.example .env      # set AP_SSID, AP_PASSWORD, AP_COUNTRY
+./build.sh                # ~5 min first time, then cached
+```
+
+Write the `.img` from `dist/` to a card with
+[Raspberry Pi Imager](https://www.raspberrypi.com/software/) or
+[balenaEtcher](https://etcher.balena.io/) — there is deliberately no flashing
+helper here, and [Build an image](#build-an-image) says why. Boot it and open
+`http://infinite-streaming-boa.local/`. See [Hardware](#hardware) for the parts.
 
 The daemon and its service are also an apt package, `infinite-streaming-boa`
 (arm64 and amd64), for a Pi OS or Debian machine that is not flashed from the
-image. It installs what the image's overlay installs and nothing the image
+image. It does not build the bridge or configure the radios, so read
+[`deb/README.md`](deb/README.md) first:
+
+```sh
+curl -fsSL https://jonathaneoliver.github.io/infinite-streaming-boa/apt/boa-archive-keyring.gpg \
+  | sudo tee /etc/apt/keyrings/infinite-streaming-boa.gpg >/dev/null
+echo "deb [signed-by=/etc/apt/keyrings/infinite-streaming-boa.gpg] https://jonathaneoliver.github.io/infinite-streaming-boa/apt stable main" \
+  | sudo tee /etc/apt/sources.list.d/infinite-streaming-boa.list
+sudo apt update && sudo apt install infinite-streaming-boa
+```
+
+It installs what the image's overlay installs and nothing the image builds
+around it — no bridge, no hostapd configs, no adapter naming — so it suits a
+machine already set up as a bridge, and updates with `apt upgrade`. It installs what the image's overlay installs and nothing the image
 builds around it — no bridge, no hostapd configs, no adapter naming — so it
 suits a machine already set up as a bridge, and updates with `apt upgrade`.
 See [`deb/README.md`](deb/README.md).
@@ -1019,8 +993,15 @@ root-owned helpers on the host does the work instead — see
 Issue [#286](https://github.com/jonathaneoliver/infinite-streaming-boa/issues/286)
 tracks two simpler arrangements that would remove most of them.
 
-See [Run it as a container on a Linux host](#run-it-as-a-container-on-a-linux-host)
-for the walkthrough.
+```sh
+cp .env.example .env      # set AP_SSID_DOCKER, AP_PASSWORD, AP_COUNTRY
+scripts/docker-deploy.sh <host> --setup-network
+```
+
+Then open `http://<host>:8080/`. Later deploys drop `--setup-network` and take
+about a minute. See
+[Run it as a container on a Linux host](#run-it-as-a-container-on-a-linux-host)
+for the walkthrough, including what it installs on the host and how to undo it.
 
 ### 3. An OpenWrt device, as packages
 
@@ -1054,6 +1035,19 @@ depends on the radio rather than on the target: measured on a Cudy TR3000, the
 built-in `mt798x` radios announce the move and their clients follow it, while a
 `mt7921u` adapter on the same box still has to restart to move. Packages are
 built for arm64 on 25.12 only.
+
+```sh
+wget -O /etc/apk/keys/boa-packages.pem \
+  https://jonathaneoliver.github.io/infinite-streaming-boa/openwrt/boa-packages.pem
+. /etc/openwrt_release   # DISTRIB_ARCH picks the feed
+echo https://jonathaneoliver.github.io/infinite-streaming-boa/openwrt/25.12/$DISTRIB_ARCH/packages.adb \
+  >> /etc/apk/repositories.d/customfeeds.list
+apk update && apk add luci-app-boa
+```
+
+or built from this checkout with `scripts/openwrt-package.sh root@<device>`.
+Then open LuCI → **Services → infinite-streaming-boa**, or
+`http://<device>:8080/`.
 
 See [`openwrt/README.md`](openwrt/README.md) for preparing the device, the
 packages, configuration, and every control as measured.
