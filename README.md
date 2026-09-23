@@ -141,7 +141,8 @@ own section: [Reaching the box](#reaching-the-box).
 **Running it**
 
 - [Four ways to run it](#four-ways-to-run-it) — the Pi, the container, OpenWrt, and the one box with AP-class radios
-- [Hardware](#hardware) — parts, RAM, host requirements, and what the radios cannot do
+- [Requirements for the build and control host](#requirements-for-the-build-and-control-host) — the toolchain every target is built from
+- [Hardware](#hardware) — parts, RAM, and what the radios cannot do
 - [Build an image](#build-an-image) · [Run it as a container](#run-it-as-a-container-on-a-linux-host) · [Run it on OpenWrt](openwrt/README.md)
 - [Reaching the box](#reaching-the-box) · [Configuration](#configuration) · [Security](#security)
 
@@ -1216,6 +1217,39 @@ has the buying case and the limits; [`openwrt/CUDY-TR3000.md`](openwrt/CUDY-TR30
 is the full record of what one unit took, from stock firmware to serving
 traffic, with every measurement above.
 
+## Requirements for the build and control host
+
+**This is a toolchain, not a parts list**, and it applies to all four targets:
+every one of them is built or deployed from another machine.
+
+Three machines have requirements in this repository and only one of them is the
+box. The **build host** produces the image, the container payload or the OpenWrt
+packages; the **run host** is the Pi, the Linux host, the OpenWrt device or the
+Cudy; and the **control host** drives a running box with `deploy.sh`,
+`config.sh` and `boactl`. Build and control are usually the same laptop, and
+nothing here is specific to macOS.
+
+| Requirement | Why |
+|---|---|
+| `curl`, `docker`, `go` and `npm` on the build host | curl fetches the base image, go and npm build the payload natively, and docker runs every bit of image surgery |
+| **A runtime that can loop-mount inside a `--privileged` container** | `build.sh` runs the builder with `--privileged` and `/dev` bind-mounted, then mounts the image's own partitions. This is the requirement most likely to differ from one machine to the next |
+| **An arm64 builder, or qemu registered in `binfmt_misc` on an x86_64 build host** | `customize.sh` chroots into the arm64 Raspberry Pi OS root, and nothing here passes `--platform` or installs an emulator. On Apple Silicon and on arm64 Linux the builder is arm64 already and this is free; on x86_64 the host must be able to execute arm64 binaries. **Untested here** |
+| Go at least as new as `daemon/go.mod` asks (1.24) | The daemon is cross-compiled for `linux/arm64` with `CGO_ENABLED=0`, so neither a cross toolchain nor a C compiler is needed |
+| Node 18, 20, or 22 and later | `ui/` pins Vite 6.4, whose own `engines` field is `^18 \|\| ^20 \|\| >=22` |
+| `ssh` on the control host | Every script that touches a running box goes over ssh, and none of them install anything on it |
+| `python3` on the control host | `config.sh` validates a profile as JSON before sending it, and `deploy.sh` uses it to refuse a deploy that would interrupt a running measurement |
+| `bash` | Every script here is `#!/usr/bin/env bash`. None uses a bash-4-only construct, so macOS's own 3.2 should serve, but nothing is run against it here |
+
+**Nothing enforces the two version floors.** Below either one the failure is a
+compiler or TypeScript error from inside the build rather than a sentence
+naming the tool, so check them first when a fresh clone will not build.
+
+**Rootless Docker and podman-as-docker are untested here**, and neither
+normally exposes loop devices to a container, so expect the image build to fail
+on them. Only the *image* build needs that privilege: the container path runs
+with two added capabilities rather than `--privileged`, and builds an ordinary
+image with no loop mount anywhere.
+
 ## Hardware
 
 Where this box may be plugged in is a **safety** question before it is a parts
@@ -1332,35 +1366,6 @@ hub ceiling measured here was 5 Gbit/s shared across three adapters, which is
 the same constraint the Pi has and the same one the
 [powered hub figures](#what-a-hub-costs-a-radio-separated-from-what-the-channel-is-worth)
 below quantify.
-
-### Requirements for the build and control host
-
-Three machines have requirements in this repository and only one of them is the
-box. The **build host** produces the image or the container payload, the **run
-host** is the Pi or the Linux host above, and the **control host** drives a
-running box with `deploy.sh`, `config.sh` and `boactl`. Build and control are
-usually the same laptop, and nothing here is specific to macOS.
-
-| Requirement | Why |
-|---|---|
-| `curl`, `docker`, `go` and `npm` on the build host | curl fetches the base image, go and npm build the payload natively, and docker runs every bit of image surgery |
-| **A runtime that can loop-mount inside a `--privileged` container** | `build.sh` runs the builder with `--privileged` and `/dev` bind-mounted, then mounts the image's own partitions. This is the requirement most likely to differ from one machine to the next |
-| **An arm64 builder, or qemu registered in `binfmt_misc` on an x86_64 build host** | `customize.sh` chroots into the arm64 Raspberry Pi OS root, and nothing here passes `--platform` or installs an emulator. On Apple Silicon and on arm64 Linux the builder is arm64 already and this is free; on x86_64 the host must be able to execute arm64 binaries. **Untested here** |
-| Go at least as new as `daemon/go.mod` asks (1.24) | The daemon is cross-compiled for `linux/arm64` with `CGO_ENABLED=0`, so neither a cross toolchain nor a C compiler is needed |
-| Node 18, 20, or 22 and later | `ui/` pins Vite 6.4, whose own `engines` field is `^18 \|\| ^20 \|\| >=22` |
-| `ssh` on the control host | Every script that touches a running box goes over ssh, and none of them install anything on it |
-| `python3` on the control host | `config.sh` validates a profile as JSON before sending it, and `deploy.sh` uses it to refuse a deploy that would interrupt a running measurement |
-| `bash` | Every script here is `#!/usr/bin/env bash`. None uses a bash-4-only construct, so macOS's own 3.2 should serve, but nothing is run against it here |
-
-**Nothing enforces the two version floors.** Below either one the failure is a
-compiler or TypeScript error from inside the build rather than a sentence
-naming the tool, so check them first when a fresh clone will not build.
-
-**Rootless Docker and podman-as-docker are untested here**, and neither
-normally exposes loop devices to a container, so expect the image build to fail
-on them. Only the *image* build needs that privilege: the container path runs
-with two added capabilities rather than `--privileged`, and builds an ordinary
-image with no loop mount anywhere.
 
 ### The radios here are client parts, and that is the ceiling
 
