@@ -81,6 +81,12 @@ const caps = computed(() => snap.value?.caps);
 // development build; see main.version and scripts/version.sh.
 const version = computed(() => snap.value?.version);
 
+/** Where this build came from, for the about link in the header. A constant
+ *  rather than a field on the snapshot: it is a property of the project, not
+ *  of the box, and a box that could name its own repository could name the
+ *  wrong one. */
+const PROJECT_URL = 'https://github.com/jonathaneoliver/infinite-streaming-boa';
+
 /*
  * Whether the box can do bursty loss, provided once for every ShapeSliders on
  * the page. A property of the kernel rather than of any device, so threading it
@@ -231,6 +237,21 @@ async function onLoadConfig(e: Event) {
       <span v-if="radioLabel" class="pill" :class="{ warn: radioDegraded }" :title="radioTitle">
         {{ radioLabel }}
       </span>
+      <!-- THE BUILD, AND WHERE TO REPORT WHAT IT DID.
+           The version used to sit in the footer, quiet on the grounds that
+           nobody needs it while working. That was right about WHEN it is
+           needed -- reporting a result or an issue -- and wrong about what is
+           needed then, which is the version AND somewhere to send it. Together
+           in the row that is always on screen, that is one click rather than a
+           scroll and a search.
+           An anchor, not a button opening a window from script: a link the
+           browser can middle-click, copy or open in a background tab, and one
+           that says where it goes before it is pressed. -->
+      <a
+        class="pill link" :href="PROJECT_URL" target="_blank" rel="noopener"
+        :title="`boa ${version ?? 'development build'} — the project on GitHub: `
+          + `releases, issues, and the measurements behind these controls.`"
+      >{{ version ? `boa ${version}` : 'about' }}</a>
       <button
         class="pill link" title="Download this box's setup: every device's
 conditioning, its ladders, saved and merged patterns, and this browser's chart
@@ -348,7 +369,7 @@ the file are replaced, devices not mentioned are left alone.">
     <!-- Standing truths about how the box behaves. They never change and never
          need acting on, so they read as footnotes rather than pushing the
          devices -- the actual content -- below the fold. -->
-    <footer v-if="infoNotices.length || iperfCmd || version" class="notes">
+    <footer v-if="infoNotices.length || iperfCmd" class="notes">
       <div v-for="n in infoNotices" :key="n.text" class="notice info">
         {{ n.text }}
       </div>
@@ -365,9 +386,6 @@ the file are replaced, devices not mentioned are left alone.">
         allows. Verifying <strong>uplink</strong> needs load from a host beyond
         {{ caps?.uplink_if }}.
       </div>
-      <!-- Which build this box is on. Quiet by design: an operator needs it
-           when reporting a result or an issue, not while working. -->
-      <div v-if="version" class="version">boa {{ version }}</div>
     </footer>
   </div>
 </template>
