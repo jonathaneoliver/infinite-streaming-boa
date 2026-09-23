@@ -1408,11 +1408,13 @@ because downlink shaping sits on the client's own port and traffic from the box
 crosses it. Uplink is the direction that stays unshaped. See
 [Measuring it yourself](#measuring-it-yourself).
 
-**Every figure in this section was measured on the Pi**, on the parts listed
+**Every figure in this table was measured on the Pi**, on the parts listed
 above. The radio is the limit in almost all of them, so they carry over to the
 container host running the same adapter — see
 [Measured on the container host](#measured-on-the-container-host) for what was
-confirmed there.
+confirmed there, and
+[The same experiments on the Cudy](#the-same-experiments-on-the-cudy) for the
+one target whose radios are not those parts.
 
 | Link | Downlink | Uplink |
 |---|---|---|
@@ -1450,6 +1452,51 @@ are kept apart from the ceiling table rather than folded into it — the hub
 grid in particular is a single measurement repeated across two channels and two
 USB topologies, precisely because those two effects had been cancelling each
 other out, and reading any one of its four numbers alone will mislead.
+
+### The same experiments on the Cudy
+
+The width sweep and the channel comparison above, re-run on the fourth target's
+own `mt798x` radio on 2026-09-23 — same method, same MacBook, one run each, and
+the whole sweep cost **no client outages** because every channel change was
+announced. On the Pi this experiment drops every client at every step.
+
+| Channel | Width | Downlink | Uplink | Client signal | PHY tx/rx |
+|---|---|---|---|---|---|
+| 149 | 80 MHz | **576 Mbit/s** | **643 Mbit/s** | −44 dBm | 1200.9 / 1080.6 |
+| 149 | 40 MHz | 428 Mbit/s | 234 Mbit/s | −43 dBm | 573.5 / 300.0 |
+| 149 | 20 MHz | 227 Mbit/s | 117 Mbit/s | −43 dBm | 286.7 / 144.4 |
+| 36 | 80 MHz | 210 Mbit/s | 192 Mbit/s | −50 dBm | 1080.6 / 300.0 |
+| 36 | 20 MHz | 161 Mbit/s | 96 Mbit/s | −52 dBm | 286.7 / 144.4 |
+
+**AP-class silicon is not faster at carrying bytes.** 576 Mbit/s down at 80 MHz
+against the USB adapter's 536–691 on the Pi: the same ballpark, on a different
+chip in a different box. What the AP part buys is what it will do *while*
+carrying them — announce a channel change, honour a power setting, survey the
+band — none of which appears in a throughput table.
+
+**Width scales the same way, and holds up better in the middle.** 576 / 428 /
+227 across 80, 40 and 20 MHz, against the Pi's 691 / 379 / 198. Halving the
+width roughly halves the throughput on both, but 40 MHz kept 74% of the 80 MHz
+figure here where the Pi kept 55%.
+
+**The channel beat the hardware.** Same radio, same client, same width: 576 on
+channel 149 against 210 on channel 36, a factor of 2.7 — and the box's own
+listen-only radio had already said why, 3% busy against 56%, before anything
+moved. The contention is visible in rate control too: the client's transmit PHY
+collapsed from 1080.6 to 300.0 Mbit/s on the busy channel while its signal moved
+only 6 dB.
+
+**Do not read the uplink column as a hardware win.** 643 against the Pi's ~150
+is mostly the client: the MacBook held a 1080.6 Mbit/s receive PHY here where on
+the Pi's day it chose to transmit at 243.7. Different room, different afternoon.
+Only the downlink rows are close to like-for-like.
+
+**No clean 2.4 GHz figure.** Closing the 5 GHz BSS to leave the client one place
+to go sent it to the house network instead, twice, and an explicit join request
+did not bring it back — the same behaviour a ban shows, since neither covers
+SSIDs this box does not serve. The 2.4 GHz numbers in
+[`openwrt/CUDY-TR3000.md`](openwrt/CUDY-TR3000.md) were taken with three clients
+gathered onto one 20 MHz channel and are a worst case, not a ceiling.
 
 ### What a channel is worth
 

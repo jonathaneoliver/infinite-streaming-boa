@@ -416,6 +416,17 @@ beyond the uplink.
 | 5 GHz, ch 36 @ 80 MHz | 356, 183, 164 | 541, 544 | 253, 167 | 484 |
 | 2.4 GHz, ch 1 @ 20 MHz | 7.6 | 10.9 | 4.5 | 11.4 |
 
+A controlled sweep the next day, one run each, every move announced so the sweep
+cost no outages:
+
+| Channel | Width | Downlink | Uplink | Client signal | PHY tx/rx |
+| --- | --- | --- | --- | --- | --- |
+| 149 | 80 MHz | 576 Mbit/s | 643 Mbit/s | −44 dBm | 1200.9 / 1080.6 |
+| 149 | 40 MHz | 428 Mbit/s | 234 Mbit/s | −43 dBm | 573.5 / 300.0 |
+| 149 | 20 MHz | 227 Mbit/s | 117 Mbit/s | −43 dBm | 286.7 / 144.4 |
+| 36 | 80 MHz | 210 Mbit/s | 192 Mbit/s | −50 dBm | 1080.6 / 300.0 |
+| 36 | 20 MHz | 161 Mbit/s | 96 Mbit/s | −52 dBm | 286.7 / 144.4 |
+
 **The channel is the whole story on 5 GHz.** The box's own listen-only radio had
 already said why: channel 36 at 56% busy against channel 149 at 3%, from a sweep
 that saw 17 access points and 64 clients. Moving there was worth roughly 4x on
