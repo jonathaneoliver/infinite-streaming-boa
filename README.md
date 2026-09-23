@@ -25,12 +25,13 @@ page: move one to another channel, take its access point down, deauthenticate or
 disassociate a device, or push it onto a different radio. Conditioning the link
 and disturbing the radio are separate axes, and a run can use either or both.
 
-It runs on **any of three targets, on equal terms**: a Raspberry Pi 5 flashed
-from an image, a container on an ordinary x86_64 Linux host, or a pair of
-packages on an OpenWrt device. The same daemon binary and the same interface
-serve all three; on OpenWrt one flag, `-openwrt`, keeps OpenWrt's own
-configuration in step with what boa does — see
-[Three ways to run it](#three-ways-to-run-it).
+It runs on **any of four targets, on equal terms**: a Raspberry Pi 5 flashed
+from an image, a container on an ordinary x86_64 Linux host, packages on an
+OpenWrt device, or a Cudy TR3000 — a pocket router whose built-in radios are
+access-point parts rather than client chips, which is the one target where a
+channel move costs nothing. The same daemon binary and the same interface serve
+all four; on OpenWrt one flag, `-openwrt`, keeps OpenWrt's own configuration in
+step with what boa does — see [Four ways to run it](#four-ways-to-run-it).
 
 It is a **transparent bridge**, not a router. Devices under test keep their
 normal addresses on your normal network, discovery protocols keep working, and
@@ -110,67 +111,20 @@ delay, jitter and loss lanes unused in this run.
 
 ## Quickstart
 
-Three targets, and none is the reference — see
-[Three ways to run it](#three-ways-to-run-it) for which to pick. The Pi and the
-container read the same `.env`; OpenWrt is configured from UCI.
+**Four targets, none of them the reference.** Pick by the hardware you have and
+by what the test needs the radios to do; each section below carries its own
+commands, because the four differ more in setup than in use.
 
-**A Linux host you already have** (x86_64, two USB adapters, nothing to flash):
+| Target | What it is | Choose it for |
+|---|---|---|
+| [1. Raspberry Pi 5, from an image](#1-a-raspberry-pi-5-from-an-image) | One card, nothing installed elsewhere | A dedicated, disposable bench box, with ntopng and glances |
+| [2. A Linux host, as a container](#2-a-linux-host-from-a-container) | Hardware you already have, nothing to flash | The fastest start, and PCIe slots for better radios later |
+| [3. An OpenWrt device, as packages](#3-an-openwrt-device-as-packages) | Two packages beside LuCI — measured on target 1's own Pi and radios | A Pi or router that should stay an OpenWrt box |
+| [4. A Cudy TR3000](#4-a-cudy-tr3000-as-a-whole-box) | The same packages, on AP-class radios | Channel moves that drop nobody, and distance imposed rather than modelled |
 
-```sh
-cp .env.example .env      # set AP_SSID_DOCKER, AP_PASSWORD, AP_COUNTRY
-scripts/docker-deploy.sh <host> --setup-network
-```
-
-Then open `http://<host>:8080/`. Later deploys drop `--setup-network` and take
-about a minute. The full walkthrough, including what it installs on the host and
-how to undo it, is
-[Run it as a container](#run-it-as-a-container-on-a-linux-host).
-
-**A Raspberry Pi 5 from an image** (self-contained, disposable, carries ntopng
-and glances):
-
-```sh
-cp .env.example .env      # set AP_SSID, AP_PASSWORD, AP_COUNTRY
-./build.sh                # ~5 min first time, then cached
-```
-
-Or, on a Raspberry Pi OS (or Debian) machine you already have, install the
-daemon and its service from the signed apt repository — it does not build the
-bridge or configure the radios, so see [`deb/README.md`](deb/README.md) first:
-
-```sh
-curl -fsSL https://jonathaneoliver.github.io/infinite-streaming-boa/apt/boa-archive-keyring.gpg \
-  | sudo tee /etc/apt/keyrings/infinite-streaming-boa.gpg >/dev/null
-echo "deb [signed-by=/etc/apt/keyrings/infinite-streaming-boa.gpg] https://jonathaneoliver.github.io/infinite-streaming-boa/apt stable main" \
-  | sudo tee /etc/apt/sources.list.d/infinite-streaming-boa.list
-sudo apt update && sudo apt install infinite-streaming-boa
-```
-
-Write the `.img` from `dist/` to a card with
-[Raspberry Pi Imager](https://www.raspberrypi.com/software/) or
-[balenaEtcher](https://etcher.balena.io/) — there is deliberately no flashing
-helper here, and [Build an image](#build-an-image) says why. Boot it and open
-`http://infinite-streaming-boa.local/`.
-
-**An OpenWrt device** (25.12, arm64 — a Pi 5 or a newer router — already a
-transparent bridge running the full `wpad`), from the signed feed:
-
-```sh
-wget -O /etc/apk/keys/boa-packages.pem \
-  https://jonathaneoliver.github.io/infinite-streaming-boa/openwrt/boa-packages.pem
-. /etc/openwrt_release   # DISTRIB_ARCH picks the feed
-echo https://jonathaneoliver.github.io/infinite-streaming-boa/openwrt/25.12/$DISTRIB_ARCH/packages.adb \
-  >> /etc/apk/repositories.d/customfeeds.list
-apk update && apk add luci-app-boa
-```
-
-or built from this checkout with `scripts/openwrt-package.sh root@<device>`.
-
-Then open LuCI → **Services → infinite-streaming-boa**, or
-`http://<device>:8080/`. Preparing the device, and what the packages install,
-is in [`openwrt/README.md`](openwrt/README.md).
-
-All three need `docker` on the machine you build from, including on Linux;
+The Pi and the container read the same `.env`; both OpenWrt targets are
+configured from UCI. Building any of them needs `docker` on the machine you
+build from, including on Linux —
 [Requirements for the build and control host](#requirements-for-the-build-and-control-host)
 has the toolchain floors. If the box is up but you cannot reach it, that has its
 own section: [Reaching the box](#reaching-the-box).
@@ -178,6 +132,7 @@ own section: [Reaching the box](#reaching-the-box).
 ## Contents
 
 - [What it does](#what-it-does) — the feature list
+- [Where to plug it in](#where-to-plug-it-in-and-what-a-shared-room-does-to-a-measurement) — **read before cabling it**, and what a shared room does to a measurement
 - [Who this is for](#who-this-is-for-and-why-the-wi-fi-control-matters), and why the Wi-Fi control matters
 - [Saving and restoring a configuration](#saving-and-restoring-a-configuration)
 - [The controls, one by one](#the-controls-one-by-one) — presets, distance, radio impairment, the charts
@@ -185,8 +140,9 @@ own section: [Reaching the box](#reaching-the-box).
 
 **Running it**
 
-- [Three ways to run it](#three-ways-to-run-it) — the Pi, the container and OpenWrt, on equal terms
-- [Hardware](#hardware) — parts, RAM, host requirements, and what the radios cannot do
+- [Four ways to run it](#four-ways-to-run-it) — the Pi, the container, OpenWrt, and the one box with AP-class radios
+- [Requirements for the build and control host](#requirements-for-the-build-and-control-host) — the toolchain every target is built from
+- [Hardware](#hardware) — parts, RAM, and what the radios cannot do
 - [Build an image](#build-an-image) · [Run it as a container](#run-it-as-a-container-on-a-linux-host) · [Run it on OpenWrt](openwrt/README.md)
 - [Reaching the box](#reaching-the-box) · [Configuration](#configuration) · [Security](#security)
 
@@ -204,6 +160,13 @@ own section: [Reaching the box](#reaching-the-box).
 
 ## What it does
 
+For **anyone building a mobile app or a Wi-Fi connected device** who needs to
+know how the client's relationship with the access point affects it, not only
+how much bandwidth it gets. Those are different questions, and until this box
+could drive its own radios only the second one was testable — see
+[Who this is for](#who-this-is-for-and-why-the-wi-fi-control-matters) for the
+bench practice that follows from it.
+
 - **Conditions each client independently** — rate, latency, jitter and loss, per
   device and per direction, live from a web interface. Both IPv4 and IPv6.
 - **Drives the timeline, not just a fixed cap.** A per-client *pattern* walks the
@@ -218,7 +181,7 @@ own section: [Reaching the box](#reaching-the-box).
   control interface, so the buttons only appear when it can act. **Do not run
   these inside a building with wireless IPS containment** — it transmits the
   same deauthentication frames uninvited, and a run cannot tell its drops from
-  yours. See the warning under [Hardware](#hardware).
+  yours. See [where to plug it in](#where-to-plug-it-in-and-what-a-shared-room-does-to-a-measurement).
 - **Moves clients between its radios, and is honest about which moves are
   guaranteed.** The box serves one SSID from every radio it has, so a client can
   be pushed around the box the way a real network pushes it around a building.
@@ -251,6 +214,47 @@ own section: [Reaching the box](#reaching-the-box).
   clients a measurement is watching. The `deauth +` variants send one
   deliberately — individually to associated stations on the way down, by
   broadcast on the way up to clients still holding a stale association.
+- **Turns a radio down, live, so distance is imposed rather than modelled.**
+  Transmit power is set on the phy while the access point keeps serving:
+  measured on an AP-class radio, 23 / 10 / 3 dBm moved a MacBook's received
+  signal about 7 dB a step with nobody reassociated and no ping lost. It is the
+  difference between a *simulated* distant client and one the room actually
+  treats as distant — an iPhone walked down this way left for the other band at
+  11 dBm and came back at 19, which is 8 dB of hysteresis nobody could have
+  guessed. Where a driver accepts the setting and discards it, the box catches
+  that by reading the level back and **disables the control with the reason**
+  rather than offering a slider that does nothing.
+- **Moves a radio's channel, and announces it where the radio can.** A band plan
+  shows every channel the radio may use, coloured by what a listening radio has
+  heard there, and picking a cell picks a channel *and* a width. On access-point
+  silicon the move is an 802.11h announcement: the clients are told and follow
+  it, still associated — measured, 3 of 3 of them — and the event log then says
+  how many actually did. On client-class parts the same button takes the access
+  point down and brings it back elsewhere, which drops everyone; the box tries
+  the announcement, falls back inside the same request, and **reports which one
+  happened** rather than leaving it to be inferred.
+- **Turns any radio into a listen-only instrument, and back.** A radio in scan
+  mode serves nobody and sweeps both bands continuously, which is where the band
+  plan's colours come from: 17 access points and 64 clients seen on one pass,
+  channel 36 at 56% busy against channel 149 at 3% — the reading that predicted
+  a 2.7x throughput difference before anything moved. It costs the serving
+  radios nothing, which surveying from a serving radio does not: that is a
+  three-second hole in its traffic, measured as 18 consecutive pings.
+- **Asks the client what it sees.** An 802.11k beacon request has one client
+  measure the box's *other* radios and report back — the only reading in the
+  whole box taken from the client's point of view rather than the access
+  point's. A client may decline, and a decline is reported as the result it is.
+- **Finds the breaking point on its own.** A sweep walks one streaming device up
+  a ladder of caps, starting from an unconditioned observation of what it is
+  actually doing, and records the rung where the player stopped keeping up. It
+  refuses to start against a device that is not streaming, because a ladder
+  measured against nothing is an empty ladder that looks like a result.
+- **Shapes the radio itself, not only the link.** PHY and power-save profiles,
+  RTS and fragmentation thresholds, and an advertised BSS Load for testing how a
+  client reacts to a busy-looking access point. These live in the beacon or are
+  negotiated at association, so each rebuilds the BSS and drops the clients on
+  that radio — the interface says so before the press. BSS Load needs a hostapd
+  built with testing options and is absent where that is missing.
 - **Stays invisible.** Clients keep their existing addresses on your existing
   subnet; the Pi is not a hop and does not appear in `traceroute`.
 - **Names devices from mDNS**, so the list reads as devices rather than MACs.
@@ -278,12 +282,78 @@ own section: [Reaching the box](#reaching-the-box).
   own port, which is exactly where downlink shaping sits, so it reports the cap
   being enforced. See [Measuring it yourself](#measuring-it-yourself).
 
-## Who this is for, and why the Wi-Fi control matters
+## Where to plug it in, and what a shared room does to a measurement
 
-Anyone building **a mobile app, or a Wi-Fi connected device**, who needs to know
-how the client's relationship with the access point affects it — not only how
-much bandwidth it gets. Those are different questions, and until this box could
-drive its own radios only the second one was testable.
+### ⚠️ Put `eth0` on your own network, never a corporate LAN
+
+A transparent bridge putting many MACs onto one switch port is, to enterprise
+network security, indistinguishable from the thing that security exists to
+stop. Cable the WAN port to your own upstream, a home router, or a lab VLAN.
+
+- **Port security / 802.1X** err-disables the port on seeing a second MAC.
+  That usually needs a network admin to clear, so the person who plugged the
+  box in cannot undo it.
+- **BPDU guard and DHCP snooping** exist to stop exactly this: an unexpected
+  layer-2 device on the port, and — since clients here depend on upstream
+  DHCP crossing the bridge — exactly the traffic snooping blocks.
+- **Wireless IDS** sees an unknown BSSID bridging to the wired side, which is
+  the textbook rogue-AP signature.
+
+**And it corrupts your measurements, which is the part that wastes an
+afternoon.** Wireless IPS *containment* works by transmitting deauthentication
+frames at the rogue AP's clients — so a corporate WIPS produces, uninvited and
+untimed, the same impairment this box produces deliberately. A run inside a
+contained office shows association drops that look like your pattern firing
+and are not, with nothing on the box able to tell the two apart. See
+[Security](#security) for what else stops being true there.
+
+**If you need these features at work, put the box on an isolated lab network
+— and know that a VLAN isolates your bridge, not the air.** The wired side is
+a policy problem with a policy answer; the radio side is a physics problem
+that no network configuration touches. Offices are awash in Wi-Fi, and an
+office belonging to a company that *builds streaming devices* is the worst
+case there is: every desk carries test hardware, most of it associated to
+something, much of it on 2.4 GHz.
+
+That is not a small correction to a measurement. Airtime is shared, so one
+near-idle 802.11n client moved a measured downlink between **356 and
+717 Mbit/s** on this box while transferring 4 KB of its own traffic — a
+station linked at 65 Mbit/s holds the channel roughly 18× longer per byte
+than an 802.11ax one. A room full of them is not a quieter version of that
+effect; it is the same effect, continuously, from devices you do not control
+and cannot quiesce.
+
+### Measuring in a room you do not control
+
+What actually helps, in order:
+
+- **Use the wired downstream port when the radio is not the subject.** It is
+  repeatable to within 1%; nothing over the air comes close.
+- **Check how busy your channel actually is**, with
+  `GET /api/bridge/radios/<iface>/survey`. It reports `busy_ms` against
+  `active_ms` for the **operating channel only** — a radio that is beaconing
+  never visits the others, so their counters read zero and are omitted. Cheap,
+  non-disruptive, and the number to quote beside a result.
+- **To pick a better channel, use `scan and move to the quietest`**, which
+  rates candidates on *measured airtime* rather than on a count of visible
+  networks — the distinction that matters when one loud neighbour beats five
+  idle ones. It **takes the radio down and back up**, so it cannot be done
+  mid-run and it will disconnect that radio's clients. Do it before a run,
+  never during one.
+- **Prefer UNII-3 (149–165) and 80 MHz**, and treat 2.4 GHz in an office as
+  unusable for measurement rather than merely busy.
+- **Re-survey between runs of an A/B.** The environment drifts on its own; the
+  0.1.0 notes recorded the radio baseline moving ~100 Mbit/s over 90 s, which
+  is larger than most effects worth measuring.
+- **Capture the box's own event log alongside every run**, so a drop you did
+  not cause is at least visible as one you did not cause.
+
+**Both halves of this apply to every target.** The wired warning is about what a
+bridge looks like to a switch, and the radio warning is about who else is using
+the air — neither cares whether the daemon is running from an image, a
+container, or packages on a router.
+
+## Who this is for, and why the Wi-Fi control matters
 
 **It is a bench tool for one engineer at a time.** That is a design position
 rather than a missing feature, and it decides a lot: there is no login on any
@@ -687,7 +757,7 @@ of them, and the least faithful.
 **1. A programmable step attenuator, in an RF-shielded enclosure.** What a device
 lab uses, and better than the other two in every way that matters to a
 measurement: the level is calibrated in dB, it repeats exactly, and the enclosure
-removes the neighbours — which, per the warning under [Hardware](#hardware), is
+removes the neighbours — which, per [where to plug it in](#where-to-plug-it-in-and-what-a-shared-room-does-to-a-measurement), is
 most of what makes testing over the air hard. It also costs thousands, needs coax
 to antenna ports many consumer devices do not have, and puts the device in a
 metal box where nobody can see the screen or touch it.
@@ -909,12 +979,13 @@ on `:8474` lets a test set up and tear down its own faults, and its toxics —
 netem cannot produce. For proving a service survives a flaky dependency in CI,
 it is the right tool and this one is not.
 
-## Three ways to run it
+## Four ways to run it
 
 boa runs on a Raspberry Pi 5 flashed from an image, as a container on an
-ordinary x86_64 Linux host, or as packages on an OpenWrt device. **None is the
-reference and none is a port.** The same `boad` binary and the same embedded
-interface serve all three. The container reuses even `radioplan`, copied out of
+ordinary x86_64 Linux host, as packages on an OpenWrt device, or on a Cudy
+TR3000 — which is an OpenWrt device too, and gets its own entry because its
+radios are not client parts. **None is the reference and none is a port.** The
+same `boad` binary and the same embedded interface serve all four. The container reuses even `radioplan`, copied out of
 the Pi overlay unchanged, so a channel plan made on one cannot drift from a plan
 made on the other. The only code that runs on one target and not the others is
 behind `boad -openwrt`, which OpenWrt's init script passes and nothing infers:
@@ -926,7 +997,7 @@ itself, the hostapd configs, hotplug handling, and process supervision. The Pi
 takes them from the distribution. The container brings its own. OpenWrt
 already has all four.
 
-| | Raspberry Pi 5 | Linux container | OpenWrt |
+| | Raspberry Pi 5 | Linux container | OpenWrt (either) |
 |---|---|---|---|
 | Install | Flash an image, once | `scripts/docker-deploy.sh <host>` | `scripts/openwrt-package.sh <device>`: two signed apk packages |
 | Update the daemon | `scripts/deploy.sh`, ~10 s | `scripts/docker-deploy.sh`, rebuild and restart | The same script, ~20 s, upgrading only boa's packages |
@@ -938,6 +1009,10 @@ already has all four.
 | Interface | `:80` | `:8080` on the host | `:8080`, `:8443` over https, and a LuCI page |
 | ntopng and glances | Included | Absent by decision; the interface offers to start them and says why it cannot | Absent: not packaged for OpenWrt |
 | Host is left | Dedicated to boa | Still itself, with its NIC bridged and the USB adapters given away | Still a working OpenWrt device, now a bridge |
+
+The OpenWrt column covers targets 3 and 4 together: they install the same two
+packages the same way, and differ in what the radios underneath can do.
+That difference is the whole reason the Cudy has its own entry.
 
 Throughput is comparable so far, which is the point of listing both. These are
 separate machines with separate radios, so read the table as "neither target is
@@ -985,12 +1060,33 @@ Choose it when the box should be a fixed piece of bench equipment, when you want
 ntopng and glances alongside the conditioner, or when the machine that runs it
 should not also be doing anything else.
 
-See [Hardware](#hardware) for the parts and [Build an image](#build-an-image)
-for the build.
+```sh
+cp .env.example .env      # set AP_SSID, AP_PASSWORD, AP_COUNTRY
+./build.sh                # ~5 min first time, then cached
+```
+
+Write the `.img` from `dist/` to a card with
+[Raspberry Pi Imager](https://www.raspberrypi.com/software/) or
+[balenaEtcher](https://etcher.balena.io/) — there is deliberately no flashing
+helper here, and [Build an image](#build-an-image) says why. Boot it and open
+`http://infinite-streaming-boa.local/`. See [Hardware](#hardware) for the parts.
 
 The daemon and its service are also an apt package, `infinite-streaming-boa`
 (arm64 and amd64), for a Pi OS or Debian machine that is not flashed from the
-image. It installs what the image's overlay installs and nothing the image
+image. It does not build the bridge or configure the radios, so read
+[`deb/README.md`](deb/README.md) first:
+
+```sh
+curl -fsSL https://jonathaneoliver.github.io/infinite-streaming-boa/apt/boa-archive-keyring.gpg \
+  | sudo tee /etc/apt/keyrings/infinite-streaming-boa.gpg >/dev/null
+echo "deb [signed-by=/etc/apt/keyrings/infinite-streaming-boa.gpg] https://jonathaneoliver.github.io/infinite-streaming-boa/apt stable main" \
+  | sudo tee /etc/apt/sources.list.d/infinite-streaming-boa.list
+sudo apt update && sudo apt install infinite-streaming-boa
+```
+
+It installs what the image's overlay installs and nothing the image builds
+around it — no bridge, no hostapd configs, no adapter naming — so it suits a
+machine already set up as a bridge, and updates with `apt upgrade`. It installs what the image's overlay installs and nothing the image
 builds around it — no bridge, no hostapd configs, no adapter naming — so it
 suits a machine already set up as a bridge, and updates with `apt upgrade`.
 See [`deb/README.md`](deb/README.md).
@@ -1013,8 +1109,15 @@ root-owned helpers on the host does the work instead — see
 Issue [#286](https://github.com/jonathaneoliver/infinite-streaming-boa/issues/286)
 tracks two simpler arrangements that would remove most of them.
 
-See [Run it as a container on a Linux host](#run-it-as-a-container-on-a-linux-host)
-for the walkthrough.
+```sh
+cp .env.example .env      # set AP_SSID_DOCKER, AP_PASSWORD, AP_COUNTRY
+scripts/docker-deploy.sh <host> --setup-network
+```
+
+Then open `http://<host>:8080/`. Later deploys drop `--setup-network` and take
+about a minute. See
+[Run it as a container on a Linux host](#run-it-as-a-container-on-a-linux-host)
+for the walkthrough, including what it installs on the host and how to undo it.
 
 ### 3. An OpenWrt device, as packages
 
@@ -1023,6 +1126,21 @@ installs next to LuCI as two packages — `boa`, the daemon, and `luci-app-boa`,
 a **Services → infinite-streaming-boa** page that frames the interface — and
 OpenWrt keeps doing everything it already does: the bridge, the radios, hotplug,
 supervision, upgrades.
+
+**As measured here, this is target 1's hardware with a different owner.**
+Everything written about it was done on the same Raspberry Pi 5 and the same two
+`mt7921u` adapters, running OpenWrt 25.12.5 (`bcm27xx/bcm2712`) instead of the
+image. The radios therefore behave exactly as they do under target 1 — the same
+client parts, the same refusals — and what changes is who owns the plumbing: the
+image builds the bridge and writes the hostapd configs itself, where here netifd
+and UCI own them and boa writes its channel choices back into them. What you
+give up moving from 1 to 3 is ntopng and glances, which are not packaged for
+OpenWrt. What you gain is a box that is still a router, still upgradeable
+through opkg's successor, and still yours to use for something else.
+
+A different OpenWrt device works the same way — and if its radios are
+access-point parts rather than client ones, that is target 4, which is why the
+two are listed apart.
 
 ![boa inside LuCI on OpenWrt: the Services -> infinite-streaming-boa page
 framing boa's interface, with one iPhone's traffic on the charts and in the
@@ -1049,76 +1167,97 @@ built-in `mt798x` radios announce the move and their clients follow it, while a
 `mt7921u` adapter on the same box still has to restart to move. Packages are
 built for arm64 on 25.12 only.
 
+```sh
+wget -O /etc/apk/keys/boa-packages.pem \
+  https://jonathaneoliver.github.io/infinite-streaming-boa/openwrt/boa-packages.pem
+. /etc/openwrt_release   # DISTRIB_ARCH picks the feed
+echo https://jonathaneoliver.github.io/infinite-streaming-boa/openwrt/25.12/$DISTRIB_ARCH/packages.adb \
+  >> /etc/apk/repositories.d/customfeeds.list
+apk update && apk add luci-app-boa
+```
+
+or built from this checkout with `scripts/openwrt-package.sh root@<device>`.
+Then open LuCI → **Services → infinite-streaming-boa**, or
+`http://<device>:8080/`.
+
 See [`openwrt/README.md`](openwrt/README.md) for preparing the device, the
 packages, configuration, and every control as measured.
 
+### 4. A Cudy TR3000, as a whole box
+
+Mechanically this is target 3 — the same two packages, the same UCI
+configuration, the same LuCI page. It is listed separately because of what is
+underneath: **`mt798x` radios, which are access-point silicon**, where every
+other target in this repository runs client chips with AP mode bolted on.
+
+That distinction is not a specification detail. It is the difference between a
+channel move that costs an outage and one that costs nothing, measured on this
+hardware: the access point announces the switch in its beacons and the clients
+follow it, 3 of 3 of them, still associated. Transmit power is honoured live to
+about 7 dB a step, so distance becomes something the box imposes rather than
+models. The radio surveys the band while it is still serving. None of those work
+on the Pi's radios, and two of them fail on the USB adapters after reporting
+success.
+
+It also has two ethernet ports, so it bridges with no USB NIC — which removes
+the largest single source of flakiness in the Pi build — and it costs less than
+the adapters alone.
+
+Choose it when the radios matter: when a test needs a channel to change under a
+running player without dropping it, when distance must be imposed rather than
+simulated, or when the box has to travel.
+
+**Do not choose it as a general-purpose appliance.** Two Cortex-A53s, 485 MB of
+RAM and a 44 MB writable overlay make it a router that runs boa, not a small
+server: no ntopng, no glances, little room for packages, and the CPU already
+65% busy at 745 Mbit/s. The Pi carries the extras; this carries the radios.
+
+[The Cudy TR3000 as a boa platform](#a-box-that-is-not-client-class-the-cudy-tr3000)
+has the buying case and the limits; [`openwrt/CUDY-TR3000.md`](openwrt/CUDY-TR3000.md)
+is the full record of what one unit took, from stock firmware to serving
+traffic, with every measurement above.
+
+## Requirements for the build and control host
+
+**This is a toolchain, not a parts list**, and it applies to all four targets:
+every one of them is built or deployed from another machine.
+
+Three machines have requirements in this repository and only one of them is the
+box. The **build host** produces the image, the container payload or the OpenWrt
+packages; the **run host** is the Pi, the Linux host, the OpenWrt device or the
+Cudy; and the **control host** drives a running box with `deploy.sh`,
+`config.sh` and `boactl`. Build and control are usually the same laptop, and
+nothing here is specific to macOS.
+
+| Requirement | Why |
+|---|---|
+| `curl`, `docker`, `go` and `npm` on the build host | curl fetches the base image, go and npm build the payload natively, and docker runs every bit of image surgery |
+| **A runtime that can loop-mount inside a `--privileged` container** | `build.sh` runs the builder with `--privileged` and `/dev` bind-mounted, then mounts the image's own partitions. This is the requirement most likely to differ from one machine to the next |
+| **An arm64 builder, or qemu registered in `binfmt_misc` on an x86_64 build host** | `customize.sh` chroots into the arm64 Raspberry Pi OS root, and nothing here passes `--platform` or installs an emulator. On Apple Silicon and on arm64 Linux the builder is arm64 already and this is free; on x86_64 the host must be able to execute arm64 binaries. **Untested here** |
+| Go at least as new as `daemon/go.mod` asks (1.24) | The daemon is cross-compiled for `linux/arm64` with `CGO_ENABLED=0`, so neither a cross toolchain nor a C compiler is needed |
+| Node 18, 20, or 22 and later | `ui/` pins Vite 6.4, whose own `engines` field is `^18 \|\| ^20 \|\| >=22` |
+| `ssh` on the control host | Every script that touches a running box goes over ssh, and none of them install anything on it |
+| `python3` on the control host | `config.sh` validates a profile as JSON before sending it, and `deploy.sh` uses it to refuse a deploy that would interrupt a running measurement |
+| `bash` | Every script here is `#!/usr/bin/env bash`. None uses a bash-4-only construct, so macOS's own 3.2 should serve, but nothing is run against it here |
+
+**Nothing enforces the two version floors.** Below either one the failure is a
+compiler or TypeScript error from inside the build rather than a sentence
+naming the tool, so check them first when a fresh clone will not build.
+
+**Rootless Docker and podman-as-docker are untested here**, and neither
+normally exposes loop devices to a container, so expect the image build to fail
+on them. Only the *image* build needs that privilege: the container path runs
+with two added capabilities rather than `--privileged`, and builds an ordinary
+image with no loop mount anywhere.
+
 ## Hardware
 
-> ### ⚠️ Put `eth0` on your own network, never a corporate LAN
->
-> A transparent bridge putting many MACs onto one switch port is, to enterprise
-> network security, indistinguishable from the thing that security exists to
-> stop. Cable the WAN port to your own upstream, a home router, or a lab VLAN.
->
-> - **Port security / 802.1X** err-disables the port on seeing a second MAC.
->   That usually needs a network admin to clear, so the person who plugged the
->   box in cannot undo it.
-> - **BPDU guard and DHCP snooping** exist to stop exactly this: an unexpected
->   layer-2 device on the port, and — since clients here depend on upstream
->   DHCP crossing the bridge — exactly the traffic snooping blocks.
-> - **Wireless IDS** sees an unknown BSSID bridging to the wired side, which is
->   the textbook rogue-AP signature.
->
-> **And it corrupts your measurements, which is the part that wastes an
-> afternoon.** Wireless IPS *containment* works by transmitting deauthentication
-> frames at the rogue AP's clients — so a corporate WIPS produces, uninvited and
-> untimed, the same impairment this box produces deliberately. A run inside a
-> contained office shows association drops that look like your pattern firing
-> and are not, with nothing on the box able to tell the two apart. See
-> [Security](#security) for what else stops being true there.
->
-> **If you need these features at work, put the box on an isolated lab network
-> — and know that a VLAN isolates your bridge, not the air.** The wired side is
-> a policy problem with a policy answer; the radio side is a physics problem
-> that no network configuration touches. Offices are awash in Wi-Fi, and an
-> office belonging to a company that *builds streaming devices* is the worst
-> case there is: every desk carries test hardware, most of it associated to
-> something, much of it on 2.4 GHz.
->
-> That is not a small correction to a measurement. Airtime is shared, so one
-> near-idle 802.11n client moved a measured downlink between **356 and
-> 717 Mbit/s** on this box while transferring 4 KB of its own traffic — a
-> station linked at 65 Mbit/s holds the channel roughly 18× longer per byte
-> than an 802.11ax one. A room full of them is not a quieter version of that
-> effect; it is the same effect, continuously, from devices you do not control
-> and cannot quiesce.
->
-> What actually helps, in order:
->
-> - **Use the wired downstream port when the radio is not the subject.** It is
->   repeatable to within 1%; nothing over the air comes close.
-> - **Check how busy your channel actually is**, with
->   `GET /api/bridge/radios/<iface>/survey`. It reports `busy_ms` against
->   `active_ms` for the **operating channel only** — a radio that is beaconing
->   never visits the others, so their counters read zero and are omitted. Cheap,
->   non-disruptive, and the number to quote beside a result.
-> - **To pick a better channel, use `scan and move to the quietest`**, which
->   rates candidates on *measured airtime* rather than on a count of visible
->   networks — the distinction that matters when one loud neighbour beats five
->   idle ones. It **takes the radio down and back up**, so it cannot be done
->   mid-run and it will disconnect that radio's clients. Do it before a run,
->   never during one.
-> - **Prefer UNII-3 (149–165) and 80 MHz**, and treat 2.4 GHz in an office as
->   unusable for measurement rather than merely busy.
-> - **Re-survey between runs of an A/B.** The environment drifts on its own; the
->   0.1.0 notes recorded the radio baseline moving ~100 Mbit/s over 90 s, which
->   is larger than most effects worth measuring.
-> - **Capture the box's own event log alongside every run**, so a drop you did
->   not cause is at least visible as one you did not cause.
-
-The warning above applies to **both targets**. A transparent bridge is a
-transparent bridge whether the daemon is running on a Pi or in a container, and
-a corporate switch port objects to it identically.
+Where this box may be plugged in is a **safety** question before it is a parts
+question — see
+[Where to plug it in, and what a shared room does to a measurement](#where-to-plug-it-in-and-what-a-shared-room-does-to-a-measurement),
+which applies to every target: a transparent bridge is a transparent bridge
+whether the daemon runs on a Pi, in a container or on a router, and a corporate
+switch port objects to it identically.
 
 ### Parts for the Pi build
 
@@ -1134,6 +1273,18 @@ every Pi number in this document.
 | Wi-Fi adapter | [Panda Wireless PAU0F AXE3000 (mt7921u)](https://www.amazon.com/dp/B0D972VY9B?tag=jonathaneoliv-20) | Optional, and the single biggest change to what the box can test — see below. **A client part, and it does not do everything this box would like**: see [The radios here are client parts](#the-radios-here-are-client-parts-and-that-is-the-ceiling) |
 | Wired downstream | Any USB ethernet adapter — e.g. [UGREEN USB-C 2.5 GbE](https://www.amazon.com/dp/B0CD1FDKT1?tag=jonathaneoliv-20); the figures below are a Realtek RTL8156 at both ends | Becomes `lan0`. Optional. 2.5 GbE needs a SuperSpeed link end to end, and a USB-C part reaches the Pi's USB-A socket through a converter that is usually the weak point — see [The cable decides whether you get 2.5 GbE at all](#the-cable-decides-whether-you-get-25-gbe-at-all) |
 
+**Which of these the other targets share.** The **Wi-Fi adapters and the USB
+ethernet adapter are the same physical parts** on the Ubuntu container host —
+the container takes them off the host and into its own namespace, so anything
+that works on the Pi works there, and the hub constraint carries over with them
+(5 Gbit/s shared across three adapters, measured on both). The **board, the PSU
+and the card are the Pi's alone**: the container host brings its own x86_64
+machine, its own power and its own disk, so the 5 A supply note and
+`BOA_USB_MAX_CURRENT` do not apply to it — its radios are the same, but the
+power fault that shaped this list is not its problem. Its PCIe **Intel AX200** is
+the host's own card, not from this list. The **Cudy needs none of it**: two
+radios and both ethernet ports are built in.
+
 The product links above are Amazon affiliate links. **As an Amazon Associate I
 earn from qualifying purchases.** No part was chosen for that reason — each one
 is what the numbers in this document were measured on, and buying it anywhere
@@ -1143,9 +1294,9 @@ else works identically.
 above is a record of what produced the figures in this document, and the Wi-Fi
 adapters in particular are the compromise the rest of the box is shaped around.
 Buy them to reproduce what is written here. Do not read the list as a
-recommendation for the best boa anyone could build, because nobody has built
-that one yet — see [Hardware worth trying, none of it
-tried](#hardware-worth-trying-none-of-it-tried).
+recommendation for the best boa anyone could build: for the radios, that is
+[the Cudy TR3000](#a-box-that-is-not-client-class-the-cudy-tr3000), whose
+built-in parts are access-point silicon and are measured as such.
 
 ### How much RAM this actually needs
 
@@ -1170,7 +1321,8 @@ An earlier reading of this same box put ntopng at 278 MB and the total at
 539 MB. Nothing was done to it in between; it simply ran for longer, which is
 the caveat below arriving on schedule rather than a separate measurement.
 
-One caveat before buying the smaller board. Nothing bounds ntopng's growth:
+One caveat before buying the smaller board — the Pi 5 ships in 2, 4, 8 and
+16 GB, so the choice here is 2 against 4. Nothing bounds ntopng's growth:
 its config sets no memory limit and redis runs with `maxmemory 0`. It holds
 per-host and per-flow state, so any figure here is a floor measured on a quiet
 segment, not a ceiling. On a busy network over days it will be larger. If you
@@ -1180,9 +1332,6 @@ bigger board — unbounded growth eventually fills a 16 GB card whatever the RAM
 glances has no such problem: it holds a short in-memory window and persists
 nothing, so its 72 MB is flat and it writes nothing to the card. That last part
 is worth having deliberately on an appliance that boots from SD.
-
-There is **no 3 GB Pi 5**; that variant is a Pi 4. The Pi 5 ships in 2, 4, 8
-and 16 GB.
 
 ### Requirements for the container host
 
@@ -1218,35 +1367,6 @@ the same constraint the Pi has and the same one the
 [powered hub figures](#what-a-hub-costs-a-radio-separated-from-what-the-channel-is-worth)
 below quantify.
 
-### Requirements for the build and control host
-
-Three machines have requirements in this repository and only one of them is the
-box. The **build host** produces the image or the container payload, the **run
-host** is the Pi or the Linux host above, and the **control host** drives a
-running box with `deploy.sh`, `config.sh` and `boactl`. Build and control are
-usually the same laptop, and nothing here is specific to macOS.
-
-| Requirement | Why |
-|---|---|
-| `curl`, `docker`, `go` and `npm` on the build host | curl fetches the base image, go and npm build the payload natively, and docker runs every bit of image surgery |
-| **A runtime that can loop-mount inside a `--privileged` container** | `build.sh` runs the builder with `--privileged` and `/dev` bind-mounted, then mounts the image's own partitions. This is the requirement most likely to differ from one machine to the next |
-| **An arm64 builder, or qemu registered in `binfmt_misc` on an x86_64 build host** | `customize.sh` chroots into the arm64 Raspberry Pi OS root, and nothing here passes `--platform` or installs an emulator. On Apple Silicon and on arm64 Linux the builder is arm64 already and this is free; on x86_64 the host must be able to execute arm64 binaries. **Untested here** |
-| Go at least as new as `daemon/go.mod` asks (1.24) | The daemon is cross-compiled for `linux/arm64` with `CGO_ENABLED=0`, so neither a cross toolchain nor a C compiler is needed |
-| Node 18, 20, or 22 and later | `ui/` pins Vite 6.4, whose own `engines` field is `^18 \|\| ^20 \|\| >=22` |
-| `ssh` on the control host | Every script that touches a running box goes over ssh, and none of them install anything on it |
-| `python3` on the control host | `config.sh` validates a profile as JSON before sending it, and `deploy.sh` uses it to refuse a deploy that would interrupt a running measurement |
-| `bash` | Every script here is `#!/usr/bin/env bash`. None uses a bash-4-only construct, so macOS's own 3.2 should serve, but nothing is run against it here |
-
-**Nothing enforces the two version floors.** Below either one the failure is a
-compiler or TypeScript error from inside the build rather than a sentence
-naming the tool, so check them first when a fresh clone will not build.
-
-**Rootless Docker and podman-as-docker are untested here**, and neither
-normally exposes loop devices to a container, so expect the image build to fail
-on them. Only the *image* build needs that privilege: the container path runs
-with two added capabilities rather than `--privileged`, and builds an ordinary
-image with no loop mount anywhere.
-
 ### The radios here are client parts, and that is the ceiling
 
 Every radio this box has ever run is a **station chip with AP mode bolted on**.
@@ -1272,21 +1392,105 @@ container's namespace — the channel plan was correct against what it could see
 and wrong a second later. The entrypoint waits for the channel set to stop
 moving because of it.
 
+### A box that is not client-class: the Cudy TR3000
+
+**The exception to everything above, and the cheapest way to run boa on real
+access-point silicon.** A pocket travel router — [Cudy TR3000][cudy] — whose two
+built-in radios are `mt798x`, the AP side of the same `mt76` family whose client
+sibling is in the USB adapters here.
+
+It is the only hardware in this repository where the ceiling in the section
+above does not apply, and the difference is measured rather than claimed:
+
+| | On the Cudy's built-in radios | On the client parts |
+|---|---|---|
+| Channel move | **Announced.** 3 of 3 clients followed; no outage | Refused, so the AP is taken down and brought back; everyone rejoins |
+| Transmit power | **Honoured**, ~7 dB per step, live, nobody dropped | `mt7921u` reports 3.00 dBm whatever you ask |
+| Scan while serving | **Keeps its clients** (costs ~3 s of silence) | `mt7921u` must take the BSS down |
+| Throughput through the bridge | **745 Mbit/s** Wi-Fi, 929 wired | — |
+
+**On the client parts, moving a client and moving a radio are different
+problems**, and the second row of that table is only the first of them. A radio
+can be moved — CSA is refused, so its access point goes down and comes back
+elsewhere and everyone rejoins. Moving a *client* to another channel means
+moving it to the other radio, and there a steer is a request the device may
+simply decline: 802.11 has no frame that places a station on a BSS. That is why
+[gather and evict](#the-controls-one-by-one) remove the alternatives with a deny
+list rather than asking. On the Cudy neither workaround is needed for the
+channel itself: the radio moves and takes its clients with it.
+
+**Why it suits this project specifically**, beyond the radios:
+
+- **Two ethernet ports, so it bridges with no USB NIC.** 2.5 GbE and 1 GbE built
+  in. That removes the single largest source of flakiness on the Pi build — USB
+  ethernet adapters, the powered hub they need, and the
+  [PSU current cap](#parts-for-the-pi-build) that silently throttles them.
+- **It is already an OpenWrt target.** `mediatek/filogic` on 25.12, which is the
+  release that uses `apk`, which is what the package feed publishes. No image to
+  build, no SD card to write.
+- **One mains-powered box** replaces a Pi, two USB dongles, a hub and a PSU —
+  and fits in a coat pocket, which matters for a thing whose job is to sit
+  between a player and a network wherever that network happens to be.
+- **LuCI stays.** The router remains a router; boa installs beside it.
+
+**It is a router, not a computer, and that is the real trade.** Measured on the
+box: **two Cortex-A53 cores**, **485 MB of RAM** and a **44 MB writable
+overlay** with 31.6 MB of it free. boa itself fits comfortably — a 10.9 MB
+binary holding 18 MB resident — but almost nothing else will. There is no
+ntopng and no glances here, and not only because they are unpackaged for
+OpenWrt: the flash has no room for them and the CPU has no headroom to spare.
+Those two cores were **65% busy carrying 745 Mbit/s**, so the box is near its
+limit doing the one job it exists for, and anything else you add competes with
+the conditioning rather than sitting beside it. Choose target 1 or 2 when the
+appliance should also run things.
+
+**What it does not fix.** OpenWrt's kernel has no rfkill, so boa offers no
+silent power cut on this target — the one impairment that tells a client
+nothing, where every other control announces itself and gets a reconnect in a
+second or two. That is a missing **control**, not a missing capability:
+`ip link set <ap-iface> down` takes the BSS off air here with nothing sent, and
+a MacBook took six seconds to notice. Two things stand in the way of using it —
+boa's own wedge watchdog rebuilds the BSS within seconds, and it would need
+suppressing for the duration. Meanwhile transmit power covers much of the same
+ground and covers it better: faded to 0 dBm in steps rather than cut in one
+binary move, and silent either way. The advertised BSS Load needs a testing build of
+hostapd. Its two Cortex-A53s are the throughput limit, not the radio. Flash is
+128 MB, so package space is finite. And DFS, 160 MHz width and multiple BSSes
+are all advertised by the silicon and **untested here**.
+
+[`openwrt/CUDY-TR3000.md`](openwrt/CUDY-TR3000.md) is the whole record: what one
+unit took from stock firmware to serving traffic, in LuCI and at a shell, with
+every measurement above and the caveats on each.
+
+[cudy]: https://openwrt.org/toh/cudy/tr3000
+
 ### Wi-Fi features not yet exercised
 
 Distinct from the list of things the silicon **refuses**. These are implemented,
 or believed to work, and have never been confirmed doing their job on hardware.
-An unexercised feature is recorded as unexercised rather than assumed working.
+An unexercised feature is recorded as unexercised rather than assumed working —
+and struck off when it is exercised, which three of these were on 2026-09-22/23:
+
+- **RSSI-driven client behaviour.** The distance model still does not move real
+  signal, but transmit power does, and it is honoured on the Cudy's radios. An
+  iPhone walked down in 2 dB steps left 5 GHz at 11 dBm and came back at 19 —
+  a device reacting to its own RSSI, with 8 dB of hysteresis between the two
+  decisions. See [Power, distance and roaming](openwrt/CUDY-TR3000.md).
+- **Two radios carrying clients at once.** Both Cudy radios served clients
+  simultaneously throughout that day's work — 2 on `phy0` and 1 on `phy1` at the
+  point it was written down. Still unmeasured for *performance*: nobody has run
+  two loaded radios and looked at what they cost each other.
+- **WPA3/SAE and PMF.** The Cudy serves `sae-mixed`, and hostapd logged
+  `AP-STA-CONNECTED ... auth_alg=sae` for a real client. PMF comes with SAE.
+  Never configured on the Pi.
 
 | | Status |
 |---|---|
-| **A client accepting a steer onto 5 GHz** | The one direction ever seen to work is onto 2.4 GHz. A malformed operating class made every 5 GHz request describe a block that does not exist; it was fixed and **no client has been observed moving onto 5 GHz since** |
-| **Steer as a way to place a client** | Every recorded attempt on a real device was declined. An iPhone ignored a same-band request and refused a cross-band one, offering its own candidate list. Two Apple clients ignored an evict outright and had to be disassociated |
-| **RSSI-driven client behaviour** | The distance model does not move real signal, so a client's radio still reads an excellent link while the box reports it as distant. Anything that depends on a device *reacting to* its own RSSI has never been truly tested here |
-| **Per-station signal on the onboard Pi radio** | Absent from `iw station dump` entirely. The USB adapters report it, with per-antenna values, and the interface shows it |
-| **Two radios carrying clients at once** | Never measured on either target, despite the rack being the point |
-| **6 GHz** | The adapter is an AXE3000 and the phy offers 59 usable channels with AP mode. The box neither scans nor serves there |
-| **WPA3/SAE, PMF, 802.11r, mesh, multi-BSS** | Supported by hostapd or advertised by the phy; none configured |
+| **Steer as a way to place a client** | Still the honest summary, and now measured per mode on the Cudy: `steer` moved nobody, `warn` made 2 of 3 leave but not to the named radio, `term` moved a Watch **to the radio named** and was declined twice by a MacBook the same day, `force` always moves a client and lets it pick. One landing out of four modes. See [the per-mode table](openwrt/CUDY-TR3000.md) |
+| **A client accepting a steer onto 5 GHz** | **Done, once.** The same Watch moved `phy3-ap0` (5 GHz) to `phy1-ap0` (5 GHz) after a request. The malformed operating class that once made every 5 GHz request describe a block that does not exist is fixed and stayed fixed |
+| **Per-station signal on the onboard Pi radio** | Absent from `iw station dump` entirely. The USB adapters report it, with per-antenna values, and the interface shows it. Unchanged |
+| **6 GHz** | The adapter is an AXE3000 and the phy offers 59 usable channels with AP mode. The box neither scans nor serves there, and neither Cudy radio is a 6 GHz part |
+| **802.11r, mesh, multi-BSS** | Supported by hostapd or advertised by the phy; none configured. The Cudy's radios advertise **16 access points each** and have never run more than one |
 | **Airtime fairness** | Measured, never enforced |
 
 **The steer rows are the ones worth dwelling on**, because they are easy to
@@ -1296,94 +1500,25 @@ candidate list. 802.11v simply has no request that *places* a station on a BSS.
 That is why the controls that reliably move a client are the ones that remove
 the alternatives — `gather` and `evict` — rather than the one that asks.
 
-### Hardware worth trying, none of it tried
-
-**None of this has been bought, run or measured.** It is where the limits above
-would go if someone did.
-
-OpenWrt's split is the useful frame. The mt7915 and mt7916 are purpose-built AP
-parts on the same `mt76` driver already in use here, where the mt7921 in these
-adapters is the client sibling — it works in AP mode but was never optimised for
-it. Qualcomm's `ath11k`, and the older `ath9k`/`ath10k`, are the other AP-class
-family, and `ath9k`/`ath10k` are the ones that expose raw
-[spectral scan](#what-ap-class-silicon-would-add-in-order-of-what-it-changes)
-data, which would let this box see interference that does not beacon.
-
-| Candidate | Form factor | What it would unlock here |
-|---|---|---|
-| **mt7916** (e.g. AW7916-NPD, 3×3 DBDC) | mPCIe / M.2 | AP-class `mt76`: CSA so a channel move stops being an outage, DFS, multiple BSS per radio, off-channel scan while beaconing, and possibly **OFDMA** |
-| **mt7915** (AW7915-NP1 4×4, or NPD-2X 2×2) | mPCIe / M.2 | As above, and 4×4 doubles the two-stream ceiling |
-| **ath11k** (e.g. QCN9074) | M.2 / PCIe | The non-MediaTek AP family, for a second opinion on driver-specific behaviour |
-| **ath9k / ath10k** | mPCIe / PCIe | Old and slow, but the only realistic route to **spectral scan** and mature **airtime fairness** |
-
-**OFDMA is the one to select on, and the datasheet will not answer it.** This
-box serves a purely time-shared radio, which
-[bounds every throughput figure in this document](#this-box-does-not-do-ofdma-and-that-bounds-every-figure-above)
-— and OFDMA attacks precisely the weakness the width sweep found, because the
-fixed overhead a wide channel wastes on one client is shared out when several
-are served in the same transmission. It is the difference between measuring a
-radio that behaves like a modern router and one that does not.
-
-The current adapter is exactly why the datasheet is worthless as evidence. It
-advertises HE and `Full Bandwidth UL MU-MIMO` and delivers neither: `mt7921`
-exposes no MU counters at all, and every frame on the air is single-user
-aggregation of at most two MSDUs.
-
-**The AP-class driver does have them**, which is the encouraging half.
-`mt7915/debugfs.c` carries a `muru_debug` switch and a `muru_stats` file
-reporting downlink MU-MIMO, downlink OFDMA and trigger-based uplink MU-MIMO and
-OFDMA as per-PPDU counts; `mt7921/debugfs.c` contains none of those words. So
-the acceptance test for any candidate is on the box, not on the box it came in —
-enable `muru_debug` first, since `muru_stats` reports nothing until you do, then
-look for multi-user transmissions under load.
-
-**The other catch is form factor, not price.** AP-class silicon is essentially
-not sold as USB. Every card above is mPCIe or M.2, which decides where each
-target can go next.
-
-**The container host can take one today.** It has an Intel AX200 on PCIe and
-three free slots: a PCIe x16, a PCIe x4, and an M.2. An mPCIe or M.2 card on a
-cheap adapter drops straight into the x4 or x16, alongside or instead of the
-AX200. No power problem, no enclosure problem. This is the shortest path from
-here to AP-class behaviour, and it is a strong argument for the container target
-independent of anything else.
-
-**The Pi needs a HAT, and power is the constraint.** The Pi 5 exposes a single
-PCIe lane on its FFC connector, so an AP-class card needs a PCIe HAT — an M.2 or
-mini-PCIe adapter. Supernetworks builds one specifically for Wi-Fi 6 AP cards
-and states the reason plainly: **the FFC connector is limited to about 5 W**, so
-they built a HAT that can draw over 10 W. A 3×3 or 4×4 AP radio is a real load,
-and this repository has already lost a day to
-[a Pi 5 browning out two USB radios](#power). The same lesson, one connector
-over.
-
-### Would PCIe beat USB here? Nobody has checked
-
-Worth benchmarking on its own, separately from what the chip can do, because
-three different things could move and they matter for different reasons.
-
-| | Why it might change | Why it matters here |
-|---|---|---|
-| **Throughput** | The Pi 5's lane is PCIe Gen 2 ×1, about 500 MB/s, roughly 4 Gbit/s. USB 3.0 offers 5 Gbit/s **shared by every adapter on the bus** — and the hub ceiling measured here was exactly that, across three | A dedicated lane per radio, instead of a bus three radios contend for |
-| **Latency** | USB is a polled, packetised transport with host-controller round trips in the path. PCIe is memory-mapped | **This is the one that could change a measurement.** Bus latency lands on top of every conditioned delay, and adaptive bitrate decisions are made on buffer level and round-trip time |
-| **CPU overhead** | Every USB frame costs the host controller driver work. The wired path here is already CPU-bound: anything above roughly 1.9 Gbit/s with `-R` is measuring a saturated core | The box is the instrument as well as the subject. CPU spent on the bus is CPU not spent conditioning |
-
-The Pi 5's lane can be pushed to Gen 3, about 1 GB/s, with `dtparam=pciex1_gen=3`.
-It is not certified for it and may be unstable, so treat that as part of the
-experiment rather than a baseline.
-
-The latency row is the one to design the test around. Throughput is already
-adequate on USB for every rendition this box serves, and CPU headroom on the
-container host is generous. A repeatable difference in round-trip time under
-load would change what the ladder measurements mean, and nothing here has ever
-isolated the bus from the radio.
-
 ## Access point performance
 
 The AP's ceiling bounds the top of a measured ladder, so it decides which
 renditions can be tested at all. Measured with `iperf3` **to the box, with no
 policy in force** — the ceiling a cap must sit under, never evidence that a cap
 is working.
+
+> **Every number below is guidance, not a benchmark.** They were taken on
+> different days, on different targets, in a room whose other occupants nobody
+> controls — one near-idle neighbour moved a measured downlink between 356 and
+> 717 Mbit/s here, and the environment drifts about 100 Mbit/s over 90 seconds
+> on its own. Two figures from different sections are therefore **not** a fair
+> comparison of two boxes, and a figure you cannot reproduce today is not
+> evidence that anything regressed.
+>
+> The exceptions are the comparisons that say they are controlled: the channel,
+> the width and the hub grids each hold everything constant but one variable and
+> were run back to back. Those are the ones to reason from. Re-measure your own
+> ceiling before quoting any of it, and quote the channel's busy time beside it.
 
 The "no policy in force" is load-bearing and was once written here as "to the
 box means unshaped", which is wrong in one direction. Repeat any of these with a
@@ -1392,11 +1527,13 @@ because downlink shaping sits on the client's own port and traffic from the box
 crosses it. Uplink is the direction that stays unshaped. See
 [Measuring it yourself](#measuring-it-yourself).
 
-**Every figure in this section was measured on the Pi**, on the parts listed
+**Every figure in this table was measured on the Pi**, on the parts listed
 above. The radio is the limit in almost all of them, so they carry over to the
 container host running the same adapter — see
 [Measured on the container host](#measured-on-the-container-host) for what was
-confirmed there.
+confirmed there, and
+[The same experiments on the Cudy](#the-same-experiments-on-the-cudy) for the
+one target whose radios are not those parts.
 
 | Link | Downlink | Uplink |
 |---|---|---|
@@ -1434,6 +1571,51 @@ are kept apart from the ceiling table rather than folded into it — the hub
 grid in particular is a single measurement repeated across two channels and two
 USB topologies, precisely because those two effects had been cancelling each
 other out, and reading any one of its four numbers alone will mislead.
+
+### The same experiments on the Cudy
+
+The width sweep and the channel comparison above, re-run on the fourth target's
+own `mt798x` radio on 2026-09-23 — same method, same MacBook, one run each, and
+the whole sweep cost **no client outages** because every channel change was
+announced. On the Pi this experiment drops every client at every step.
+
+| Channel | Width | Downlink | Uplink | Client signal | PHY tx/rx |
+|---|---|---|---|---|---|
+| 149 | 80 MHz | **576 Mbit/s** | **643 Mbit/s** | −44 dBm | 1200.9 / 1080.6 |
+| 149 | 40 MHz | 428 Mbit/s | 234 Mbit/s | −43 dBm | 573.5 / 300.0 |
+| 149 | 20 MHz | 227 Mbit/s | 117 Mbit/s | −43 dBm | 286.7 / 144.4 |
+| 36 | 80 MHz | 210 Mbit/s | 192 Mbit/s | −50 dBm | 1080.6 / 300.0 |
+| 36 | 20 MHz | 161 Mbit/s | 96 Mbit/s | −52 dBm | 286.7 / 144.4 |
+
+**AP-class silicon is not faster at carrying bytes.** 576 Mbit/s down at 80 MHz
+against the USB adapter's 536–691 on the Pi: the same ballpark, on a different
+chip in a different box. What the AP part buys is what it will do *while*
+carrying them — announce a channel change, honour a power setting, survey the
+band — none of which appears in a throughput table.
+
+**Width scales the same way, and holds up better in the middle.** 576 / 428 /
+227 across 80, 40 and 20 MHz, against the Pi's 691 / 379 / 198. Halving the
+width roughly halves the throughput on both, but 40 MHz kept 74% of the 80 MHz
+figure here where the Pi kept 55%.
+
+**The channel beat the hardware.** Same radio, same client, same width: 576 on
+channel 149 against 210 on channel 36, a factor of 2.7 — and the box's own
+listen-only radio had already said why, 3% busy against 56%, before anything
+moved. The contention is visible in rate control too: the client's transmit PHY
+collapsed from 1080.6 to 300.0 Mbit/s on the busy channel while its signal moved
+only 6 dB.
+
+**Do not read the uplink column as a hardware win.** 643 against the Pi's ~150
+is mostly the client: the MacBook held a 1080.6 Mbit/s receive PHY here where on
+the Pi's day it chose to transmit at 243.7. Different room, different afternoon.
+Only the downlink rows are close to like-for-like.
+
+**No clean 2.4 GHz figure.** Closing the 5 GHz BSS to leave the client one place
+to go sent it to the house network instead, twice, and an explicit join request
+did not bring it back — the same behaviour a ban shows, since neither covers
+SSIDs this box does not serve. The 2.4 GHz numbers in
+[`openwrt/CUDY-TR3000.md`](openwrt/CUDY-TR3000.md) were taken with three clients
+gathered onto one 20 MHz channel and are a worst case, not a ceiling.
 
 ### What a channel is worth
 
@@ -2793,7 +2975,7 @@ a surprise.
 below stops being contained: every host on that network inherits the ability to
 re-shape or black-hole every device behind the box. None of the items below are
 new bugs; what changes is that the containment argument they rest on evaporates.
-See the warning under [Hardware](#hardware).
+See [where to plug it in](#where-to-plug-it-in-and-what-a-shared-room-does-to-a-measurement).
 
 - **No login, and plain HTTP.** The interface on `:80` and ntopng on `:3000` have
   no authentication, and neither uses TLS — the box has no domain, so any
@@ -2972,6 +3154,12 @@ Report**, which is how 6 GHz access points are actually discovered. The
 ### What AP-class silicon would add, in order of what it changes
 
 Not throughput — **instruments**. Each of these was checked on this hardware.
+
+**Three of them stopped being hypothetical.** The
+[Cudy TR3000](#4-a-cudy-tr3000-as-a-whole-box) has `mt798x` radios, and the
+announced channel switch, live transmit power and scanning-while-serving below
+are all measured working there. What follows is written from the client parts'
+point of view, which is still where the Pi and the container stand.
 
 **Fixed MCS, or rate pinning.** `iw dev wlan-usb set bitrates he-mcs-5` returns
 `Invalid argument (-22)` here. That one gap is why `Policy.Rssi` and the whole
