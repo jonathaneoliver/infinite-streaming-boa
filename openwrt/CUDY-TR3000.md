@@ -315,15 +315,20 @@ registers a LuCI entry:
 Every radio the appliance had before was a client chip serving an access point.
 The MT7981 was built to be one, and five things follow from that.
 
+Measured means it was done on this box. Advertised means the driver says so and
+nothing here has exercised it -- a distinction worth keeping, since this whole
+document exists because `iw phy info` lists a channel switch on a radio that
+refuses one.
+
 | Capability | Cudy MT7981 | The Pi's radios |
 | --- | --- | --- |
-| 802.11h channel switch | **Works** — clients stay associated | `brcmfmac` never had it; `mt7921u` answers `err=-95` |
-| Transmit power, live | **Honoured** — ~7 dB per step, nobody reassociated | `mt7921u` reports 3.00 dBm whatever you ask |
-| Scan while beaconing | **Works** — 13 BSSes in 3 s, AP stayed up | `brcmfmac` yes; `mt7921u` needs the BSS down |
-| DFS radar detection | **Advertised**, ch 52–144 | Neither can serve there |
-| Access points (BSSes) per radio | **16** SSIDs on one radio, each with its own BSSID and settings, plus managed interfaces to 19 total | **One** |
-| 802.11ax PHY | 2x2 HE, 1200.9 Mbit/s at 80 MHz | 2x2 ax, as a client part |
-| Hardware forwarding | WED and PPE present | None |
+| 802.11h channel switch | **Measured** — clients stay associated | `brcmfmac` never had it; `mt7921u` answers `err=-95` |
+| Transmit power, live | **Measured** — ~7 dB per step, nobody reassociated | `mt7921u` reports 3.00 dBm whatever you ask |
+| Scan while beaconing | **Measured** — 13 BSSes in 3 s, AP stayed up | `brcmfmac` yes; `mt7921u` needs the BSS down |
+| 802.11ax PHY | **Measured** — 2x2 HE, 1200.9 Mbit/s at 80 MHz | 2x2 ax, as a client part |
+| DFS radar detection | **Advertised, UNTESTED** — ch 52–144 | Neither can serve there |
+| Access points (BSSes) per radio | **Advertised, UNTESTED** — 16 SSIDs on one radio, 19 interfaces total; one BSS is all this box has run | **One** |
+| Hardware forwarding | **Present, unused** — WED and PPE blocks exist | None |
 
 **"Access points per radio" is the driver's interface-combination limit**, and it
 is what lets one radio carry several BSSes at once -- separate SSIDs, each with
@@ -342,10 +347,13 @@ WPA2 -- compared with the radio, the channel and the room held constant. The
 `managed <= 19` half is what lets a `<phy>-scan` interface exist alongside a
 serving AP, which is what the scanner role uses.
 
-Three caveats. Each BSS beacons independently, so overhead grows with every SSID
-added. They all share one channel -- 16 access points, not 16 radios. And nothing
-here has run more than one BSS per radio: 16 is a published capability, not a
-measurement. The `mt7921u` is not worse in every respect either -- it reports
+**None of this has been tried on this box.** One BSS per radio is all it has ever
+run; 16 is a number the driver publishes, and the rest of this document is a
+sustained argument for not trusting those until they are exercised. Three things
+to expect when someone does. Each BSS beacons independently, so overhead grows
+with every SSID added. They all share one channel -- 16 access points, not 16
+radios. And the second BSS is where per-SSID settings stop being free: they are
+negotiated at association, so changing one rebuilds that BSS. The `mt7921u` is not worse in every respect either -- it reports
 `#channels <= 2` and can be on two channels at once, which an access point has no
 use for.
 
@@ -523,6 +531,7 @@ option holding them is a list that was being written as a single value.
 | USB `mt7921u` stays client-class | It refuses the channel switch, ignores transmit power, and cannot scan without dropping its BSS. On this box it is the contrast, not the workhorse |
 | DFS untested | The silicon advertises radar detection on 52–144, and 16 non-DFS channels are all the band plan currently offers. Whether it will actually serve there after a channel-availability check is unanswered |
 | 160 MHz untested | The radio advertises `Supported Channel Width: 160 MHz` and `HE160/5GHz`, and nothing here has run at that width. Everything measured was 80 MHz |
+| Multiple BSSes untested | The radio advertises 16 access points on one phy. This box has only ever run one per radio, so the airtime cost of a second SSID, and whether per-SSID 802.11k/v settings behave independently, are both unanswered |
 | No millisecond figure for a switch | "Kept the association" is not "lost no packets". A ping held across a switch would give the number; it has not been run |
 | Feed not yet exercised | The `aarch64_cortex-a53` packages are built and the workflow publishes them, but `apk add` straight from the Pages feed has not been done on this box — it was installed from a local build |
 
