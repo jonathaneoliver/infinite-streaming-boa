@@ -321,9 +321,33 @@ The MT7981 was built to be one, and five things follow from that.
 | Transmit power, live | **Honoured** — ~7 dB per step, nobody reassociated | `mt7921u` reports 3.00 dBm whatever you ask |
 | Scan while beaconing | **Works** — 13 BSSes in 3 s, AP stayed up | `brcmfmac` yes; `mt7921u` needs the BSS down |
 | DFS radar detection | **Advertised**, ch 52–144 | Neither can serve there |
-| Access points per radio | **16** (19 interfaces total) | One |
+| Access points (BSSes) per radio | **16** SSIDs on one radio, each with its own BSSID and settings, plus managed interfaces to 19 total | **One** |
 | 802.11ax PHY | 2x2 HE, 1200.9 Mbit/s at 80 MHz | 2x2 ax, as a client part |
 | Hardware forwarding | WED and PPE present | None |
+
+**"Access points per radio" is the driver's interface-combination limit**, and it
+is what lets one radio carry several BSSes at once -- separate SSIDs, each with
+its own BSSID, beacons, encryption and network binding, all time-sharing the one
+channel:
+
+```
+phy1, built-in mt798x:  #{ AP, mesh point } <= 16, #{ managed } <= 19,
+                        total <= 19, #channels <= 1
+phy3, USB mt7921u:      #{ AP } <= 1, total <= 3, #channels <= 2
+```
+
+The use for it here is an experiment the Pi cannot run: two SSIDs off the SAME
+radio with different settings -- 802.11k/v on one and off the other, WPA3 against
+WPA2 -- compared with the radio, the channel and the room held constant. The
+`managed <= 19` half is what lets a `<phy>-scan` interface exist alongside a
+serving AP, which is what the scanner role uses.
+
+Three caveats. Each BSS beacons independently, so overhead grows with every SSID
+added. They all share one channel -- 16 access points, not 16 radios. And nothing
+here has run more than one BSS per radio: 16 is a published capability, not a
+measurement. The `mt7921u` is not worse in every respect either -- it reports
+`#channels <= 2` and can be on two channels at once, which an access point has no
+use for.
 
 **"Scans while beaconing" needs a caveat, and it is the same one the channel
 switch needs.** The radio has one tuner — `#channels <= 1` — so it does not
