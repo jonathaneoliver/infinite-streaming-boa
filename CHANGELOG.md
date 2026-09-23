@@ -3,7 +3,8 @@
 All notable changes to boa are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); the version is stamped
 into the daemon at build time from the git tag (see `scripts/version.sh`), and a
-running box shows it in the footer of the web interface and prints it with
+running box shows it in the header of the web interface, linked to the
+project page, and prints it with
 `boad -version`.
 
 This is a bench appliance, not a certified instrument. The limitations below are
@@ -13,6 +14,159 @@ deliberate and documented so they are not mistaken for defects — see
 ## [Unreleased]
 
 Nothing yet.
+
+## [0.5.0] — 2026-09-23
+
+**boa stopped being a Raspberry Pi appliance, and its radios stopped refusing.**
+
+Every release before this one ran on client silicon with AP mode bolted on, and
+a long list of things the interface offered were things the hardware declined:
+a channel move was always an outage, transmit power was a setting the driver
+discarded, and surveying the band meant dropping everyone. That list was honest
+and it was also the ceiling on what the box could test.
+
+0.5.0 adds two ways to run it — **packages on an OpenWrt device**, and **a
+pocket router whose built-in radios are access-point parts** — and with the
+second, the refusals stop. A channel move is announced in the beacons and the
+clients follow it; transmit power is honoured live, so distance becomes
+something the box *imposes* rather than models; a radio surveys the band while
+still serving. All of it measured on one Cudy TR3000 over two days, with what
+did not work written down beside what did.
+
+21 pull requests.
+
+### Moving a radio without moving its clients
+
+A channel change now **announces** itself where the radio can do it (802.11h)
+and restarts where it cannot, falling back inside the same request — the
+operator asked for a channel, not for a mechanism — and the result reports which
+one happened rather than leaving it to be inferred from an outage figure.
+
+Measured: six announced switches on the Cudy's 5 GHz radio, every one
+`method: announce` with `outage_sec: 0`, and the box's own before-and-after
+station comparison counted **3 of 3 clients following** the last one — a
+MacBook, an iPhone and a Watch together. A forced teardown of the same radio
+cost 1.0 s and 1.1 s of service on two runs and **84.7 s** on a third, when the
+access point came back with no BSS and had to be rebuilt: the outage a restart
+costs is not a constant, which is the second reason the mechanism is stated.
+
+Which radios can announce is learned by **attempting**, never by asking.
+`iw phy info` lists `channel_switch` on the `mt7921u`, which refuses every form
+of it, so the capability bit returns the opposite of the truth. A refusal is
+recorded against the *driver* only when the failed attempt was an ordinary
+in-band move that the fallback then completed — the combination that proves the
+target was legal rather than the driver at fault.
+
+### Distance you can impose, not model
+
+Transmit power is set on the phy while the access point keeps serving. On the
+Cudy's built-in radios: 23 / 10 / 3 dBm moved a MacBook's received signal
+−38 / −48 / −55 dBm, about 7 dB a step, with nobody reassociated and no ping
+lost. Where a driver accepts the setting and discards it — the `mt7921u` reports
+3.00 dBm whatever you ask — the box catches that by reading the level back and
+**disables the control with the reason** rather than offering a slider that
+does nothing.
+
+It also produced the first real roaming measurement here. An iPhone one room
+away, walked down and back up in 2 dB steps, **left 5 GHz at 11 dBm** and
+**returned at 19 dBm**: 8 dB of hysteresis, so leaving and returning are two
+measurements rather than one threshold. It kept streaming across both moves.
+
+A pattern can drive it: a transmit-power lane, and a *txpower valley* preset
+that walks a radio down and back up while leaving the others alone.
+
+### A radio that only listens, from the interface
+
+Any radio can be switched to **listen-only** and back from its own row. It
+serves nobody and sweeps both bands continuously, which is where the band plan's
+colours come from — one pass saw 17 access points and 64 clients, and rated
+channel 36 at 56% busy against channel 149 at 3%.
+
+That reading then predicted the throughput: same radio, same client, same PHY,
+**164 Mbit/s down on channel 36 against 622 on 149**. The neighbourhood view
+moved out of one radio's fold into its own, since it was never about a
+particular radio.
+
+### Asking a client to move, in four escalating words
+
+`steer`, `warn`, `term` and `force` — one control with a mode rather than four
+buttons — on each radio row **and on each client's own card**. The same frame
+either way; the difference is how many clients receive it.
+
+Sending them one at a time to one device is the point. Measured 2026-09-23,
+three requests to a MacBook three seconds apart with nothing else changed: the
+plain steer came back `status_code=6` (declined), and the identical request
+carrying Disassociation Imminent came back `status_code=0` with the named radio
+as `target_bssid` — and it went there. **Only the sentence changed.**
+
+A honoured steer is still not a client that stays: none of the four writes a
+deny entry, and an iPhone that accepted a move to 2.4 GHz returned to 5 GHz of
+its own accord 23 seconds later. Placement that must persist is what `gather`
+is for.
+
+### Packaged, signed, and installable
+
+- **OpenWrt**, as two packages beside LuCI — `boa` and `luci-app-boa`, with a
+  **Services → infinite-streaming-boa** page — integrating with UCI, ubus and
+  procd, published as a **signed apk feed** on GitHub Pages for both
+  `aarch64_cortex-a76` (a Pi 5 on OpenWrt) and `aarch64_cortex-a53` (Filogic
+  routers such as the Cudy).
+- **Debian**, as `infinite-streaming-boa` in a signed apt repository, for a Pi
+  OS or Debian machine already set up as a bridge.
+- **`boa-setup check`**, a read-only walk of every prerequisite a device still
+  needs, printing each as OK, WARN or FAIL with the command that fixes it.
+
+### Changed
+
+- The running **version moved from the footer to the header**, where it is a
+  link to the project page: the two things wanted when reporting a result.
+- The README describes **four targets** rather than three, the Quickstart
+  chooses between them instead of walking one, and every measurement section
+  names the target and radio it was taken on.
+- Sections that describe a USB adapter no longer say "this box".
+
+### Fixed
+
+- **Making a second radio listen-only silently un-made the first.**
+  `boa.main.scan` is a list and was being written as a single value, so turning
+  one radio into an instrument dropped another out of the config — and taking
+  any one back to serving removed them all.
+- The neighbourhood fold, rack counts that froze, controls greyed out on a
+  target with no rfkill, and a scan-and-apply choice that was not remembered.
+- `boa` no longer stays pinned in apk's world after an install.
+
+### Measured on hardware
+
+Every headline figure in this release came off one Cudy TR3000 on 2026-09-22
+and 09-23, and the full record — including what could not be made to work — is
+in [`openwrt/CUDY-TR3000.md`](openwrt/CUDY-TR3000.md).
+
+| | |
+|---|---|
+| Announced channel switch | 3 of 3 clients followed; `outage_sec: 0` |
+| Forced restart, same radio | 1.0 s, 1.1 s, and once 84.7 s |
+| Transmit power | ~7 dB per step, nobody reassociated |
+| Roaming thresholds | left at 11 dBm, returned at 19 — 8 dB hysteresis |
+| Channel choice | 164 Mbit/s on ch 36 against 622 on ch 149 |
+| Wi-Fi through the bridge | 745 Mbit/s |
+| Scanning while serving | keeps its clients, and costs 18 consecutive pings |
+
+### Known limitations
+
+- **No silent power cut on OpenWrt.** Its kernel has no rfkill. The hardware can
+  still do it — `ip link set <ap-iface> down` takes the BSS off air with no
+  frame sent, and a MacBook took six seconds to notice — but there is no control
+  for it, and boa's own wedge watchdog rebuilds the BSS within seconds.
+- **DFS, 160 MHz and multiple BSSes are advertised and untested.** The Cudy's
+  radios claim radar detection on 52–144, `HE160/5GHz`, and 16 access points per
+  radio. Nothing here has exercised any of them.
+- **The Cudy is a router, not a small server.** Two Cortex-A53 cores, 485 MB of
+  RAM and a 44 MB writable overlay, with the cores 65% busy carrying
+  745 Mbit/s. No ntopng, no glances, little room for packages.
+- **No millisecond figure for an announced switch.** "Kept the association" is
+  not "lost no packets"; a ping held across a switch would give the number.
+- **The `aarch64_cortex-a53` feed has not been installed from.** The packages
+  are built and published; this box was installed from a local SDK build.
 
 ## [0.4.0] — 2026-09-14
 
@@ -844,7 +998,9 @@ device under test and no cooperation from either end.
 - **A rotating (private) MAC strands a device's policy and its measured ladder.**
   Pin the address on any device you control before a long measurement.
 
-[Unreleased]: https://github.com/jonathaneoliver/infinite-streaming-boa/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/jonathaneoliver/infinite-streaming-boa/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/jonathaneoliver/infinite-streaming-boa/compare/v0.4.0...v0.5.0
+[0.4.0]: https://github.com/jonathaneoliver/infinite-streaming-boa/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/jonathaneoliver/infinite-streaming-boa/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/jonathaneoliver/infinite-streaming-boa/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/jonathaneoliver/infinite-streaming-boa/releases/tag/v0.1.0
