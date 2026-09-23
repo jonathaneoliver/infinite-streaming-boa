@@ -1736,6 +1736,10 @@ the box moves under a third of what it does at 80, and the air is *busier*.
 
 ### What a hub costs a radio, separated from what the channel is worth
 
+> **Applies to USB radios only** — targets 1, 2 and 3, whose Wi-Fi arrives on a
+> USB adapter. The Cudy's radios are on the SoC's own bus, so it has no hub, no
+> port topology and none of this cost. Nothing in this section transfers to it.
+
 A radio behind a powered USB hub is **14% slower than the same model of adapter
 in a port directly on the Pi**, and that is separable from the channel it is on.
 
@@ -1819,6 +1823,14 @@ Three things qualify that:
 
 ### This box does not do OFDMA, and that bounds every figure above
 
+> **Measured on the `mt7921u` adapters** — targets 1, 2 and 3. The Cudy's
+> built-in radios are a different part on a different driver and are **not**
+> covered by the conclusion below: `mt7915e` exposes `muru_debug` and
+> `muru_stats` on this box, the very counters this section says the client part
+> lacks. Whether it actually serves multi-user transmissions is **untested** —
+> the acceptance test described here can now be run on hardware rather than
+> planned for hardware nobody has.
+
 802.11ax subdivides a channel in **frequency** as well as time: an 80 MHz
 channel is carved into Resource Units, and an access point can serve several
 clients **simultaneously in one transmission**, each on its own slice. That is
@@ -1826,7 +1838,8 @@ how a modern router gives a device a narrow effective channel without narrowing
 the radio, and it is why every 5 GHz neighbour here sits at the full 80 MHz
 rather than splitting the band.
 
-**boa does not do it**, and this is verifiable on the box rather than assumed:
+**boa does not ask for it on the USB adapters**, and this is verifiable on the
+box rather than assumed:
 
 ```sh
 # hostapd sets width and centre only -- no MU options are configured
