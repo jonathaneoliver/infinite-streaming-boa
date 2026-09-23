@@ -119,7 +119,7 @@ commands, because the four differ more in setup than in use.
 |---|---|---|
 | [1. Raspberry Pi 5, from an image](#1-a-raspberry-pi-5-from-an-image) | One card, nothing installed elsewhere | A dedicated, disposable bench box, with ntopng and glances |
 | [2. A Linux host, as a container](#2-a-linux-host-from-a-container) | Hardware you already have, nothing to flash | The fastest start, and PCIe slots for better radios later |
-| [3. An OpenWrt device, as packages](#3-an-openwrt-device-as-packages) | Two packages beside LuCI | A router or Pi that should stay an OpenWrt box |
+| [3. An OpenWrt device, as packages](#3-an-openwrt-device-as-packages) | Two packages beside LuCI — measured on target 1's own Pi and radios | A Pi or router that should stay an OpenWrt box |
 | [4. A Cudy TR3000](#4-a-cudy-tr3000-as-a-whole-box) | The same packages, on AP-class radios | Channel moves that drop nobody, and distance imposed rather than modelled |
 
 The Pi and the container read the same `.env`; both OpenWrt targets are
@@ -1053,6 +1053,21 @@ installs next to LuCI as two packages — `boa`, the daemon, and `luci-app-boa`,
 a **Services → infinite-streaming-boa** page that frames the interface — and
 OpenWrt keeps doing everything it already does: the bridge, the radios, hotplug,
 supervision, upgrades.
+
+**As measured here, this is target 1's hardware with a different owner.**
+Everything written about it was done on the same Raspberry Pi 5 and the same two
+`mt7921u` adapters, running OpenWrt 25.12.5 (`bcm27xx/bcm2712`) instead of the
+image. The radios therefore behave exactly as they do under target 1 — the same
+client parts, the same refusals — and what changes is who owns the plumbing: the
+image builds the bridge and writes the hostapd configs itself, where here netifd
+and UCI own them and boa writes its channel choices back into them. What you
+give up moving from 1 to 3 is ntopng and glances, which are not packaged for
+OpenWrt. What you gain is a box that is still a router, still upgradeable
+through opkg's successor, and still yours to use for something else.
+
+A different OpenWrt device works the same way — and if its radios are
+access-point parts rather than client ones, that is target 4, which is why the
+two are listed apart.
 
 ![boa inside LuCI on OpenWrt: the Services -> infinite-streaming-boa page
 framing boa's interface, with one iPhone's traffic on the charts and in the
