@@ -1239,6 +1239,18 @@ every Pi number in this document.
 | Wi-Fi adapter | [Panda Wireless PAU0F AXE3000 (mt7921u)](https://www.amazon.com/dp/B0D972VY9B?tag=jonathaneoliv-20) | Optional, and the single biggest change to what the box can test — see below. **A client part, and it does not do everything this box would like**: see [The radios here are client parts](#the-radios-here-are-client-parts-and-that-is-the-ceiling) |
 | Wired downstream | Any USB ethernet adapter — e.g. [UGREEN USB-C 2.5 GbE](https://www.amazon.com/dp/B0CD1FDKT1?tag=jonathaneoliv-20); the figures below are a Realtek RTL8156 at both ends | Becomes `lan0`. Optional. 2.5 GbE needs a SuperSpeed link end to end, and a USB-C part reaches the Pi's USB-A socket through a converter that is usually the weak point — see [The cable decides whether you get 2.5 GbE at all](#the-cable-decides-whether-you-get-25-gbe-at-all) |
 
+**Which of these the other targets share.** The **Wi-Fi adapters and the USB
+ethernet adapter are the same physical parts** on the Ubuntu container host —
+the container takes them off the host and into its own namespace, so anything
+that works on the Pi works there, and the hub constraint carries over with them
+(5 Gbit/s shared across three adapters, measured on both). The **board, the PSU
+and the card are the Pi's alone**: the container host brings its own x86_64
+machine, its own power and its own disk, so the 5 A supply note and
+`BOA_USB_MAX_CURRENT` do not apply to it — its radios are the same, but the
+power fault that shaped this list is not its problem. Its PCIe **Intel AX200** is
+the host's own card, not from this list. The **Cudy needs none of it**: two
+radios and both ethernet ports are built in.
+
 The product links above are Amazon affiliate links. **As an Amazon Associate I
 earn from qualifying purchases.** No part was chosen for that reason — each one
 is what the numbers in this document were measured on, and buying it anywhere
