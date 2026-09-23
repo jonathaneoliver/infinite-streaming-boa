@@ -1507,6 +1507,19 @@ renditions can be tested at all. Measured with `iperf3` **to the box, with no
 policy in force** — the ceiling a cap must sit under, never evidence that a cap
 is working.
 
+> **Every number below is guidance, not a benchmark.** They were taken on
+> different days, on different targets, in a room whose other occupants nobody
+> controls — one near-idle neighbour moved a measured downlink between 356 and
+> 717 Mbit/s here, and the environment drifts about 100 Mbit/s over 90 seconds
+> on its own. Two figures from different sections are therefore **not** a fair
+> comparison of two boxes, and a figure you cannot reproduce today is not
+> evidence that anything regressed.
+>
+> The exceptions are the comparisons that say they are controlled: the channel,
+> the width and the hub grids each hold everything constant but one variable and
+> were run back to back. Those are the ones to reason from. Re-measure your own
+> ceiling before quoting any of it, and quote the channel's busy time beside it.
+
 The "no policy in force" is load-bearing and was once written here as "to the
 box means unshaped", which is wrong in one direction. Repeat any of these with a
 **downlink** cap set and the same test returns the cap rather than the ceiling,
