@@ -3314,8 +3314,9 @@ scripts/docker-attach.sh    moves the adapters into the container's namespace
 
 ## Development
 
-Five loops, fastest first. Pick the slowest one you actually need. Loops 1 and 2
-are target-agnostic; loop 3 is the Pi and loop 4 the container.
+Six loops, fastest first. Pick the slowest one you actually need. Loops 1, 2
+and 6 are target-agnostic; loop 3 is the Pi, loop 4 the container, and loop 5
+either OpenWrt target — the Pi running it or the Cudy.
 
 ### 1. Interface only, no hardware — sub-second
 
@@ -3337,14 +3338,15 @@ reproduce on real hardware and therefore never get styled: a client associated
 but without an address yet, and a client configured but currently absent.
 Throughput responds to the sliders, so the controls feel live.
 
-### 2. Interface against a real Pi — sub-second, real data
+### 2. Interface against a real box — sub-second, real data
 
 ```sh
-./scripts/dev.sh infinite-streaming-boa.local
+./scripts/dev.sh infinite-streaming-boa.local   # or any target's address
 ```
 
-Same hot reload, but the API calls proxy to a running Pi. Note this is
-read-write: moving a slider really does condition that device's traffic.
+Same hot reload, but the API calls proxy to a running box — **any of the four**,
+since all of them serve the same API on the same port. Note this is read-write:
+moving a slider really does condition that device's traffic.
 
 ### 3. Full deploy to a Pi — about ten seconds
 
@@ -3385,7 +3387,29 @@ interface work does not need this loop either way.
 First-run setup is separate and documented in
 [Run it as a container on a Linux host](#run-it-as-a-container-on-a-linux-host).
 
-### 5. Driving a box from the terminal — `boactl`
+### 5. Full deploy to an OpenWrt box — under a minute
+
+```sh
+./scripts/openwrt-package.sh root@<device>                         # a Pi on OpenWrt
+SDK_IMAGE=openwrt/sdk:mediatek-filogic-25.12.5 \
+  ./scripts/openwrt-package.sh root@192.168.0.23                   # the Cudy
+```
+
+Cross-compiles the daemon with the interface embedded, has the OpenWrt SDK
+package and sign it, then installs both packages on the device and restarts the
+service. The SDK is x86-64 only, so on an arm64 workstation Docker emulates it —
+slower, though these packages compile nothing.
+
+**The SDK image is the target.** The default builds `aarch64_cortex-a76` for a
+Pi 5 on OpenWrt; the Filogic SDK builds `aarch64_cortex-a53` for the Cudy. Same
+static binary either way — only the package's architecture label differs, which
+is the whole reason a Pi-only feed would not install on the Cudy.
+
+There is no reflash step and no `.env`: an OpenWrt box is configured from UCI,
+so `/etc/config/boa` is the file that matters and `service boa reload` applies
+it.
+
+### 6. Driving a box from the terminal — `boactl`
 
 ```sh
 cd daemon && go build -ldflags "-X main.version=$(../scripts/version.sh)" \
@@ -3405,7 +3429,7 @@ boactl shape "Apple TV" -down 5 -delay 40 -loss 0.5
 boactl sweep "Apple TV" -service netflix  # measure its rendition ladder
 boactl pattern play "Apple TV" -name ramp_down   # and: pattern stop, pattern list
 boactl radio wlan-usb-46c7 scan           # free on the onboard radio
-boactl radio wlan-usb-46c7 channel -to 149  # DROPS every client on that radio
+boactl radio wlan-usb-46c7 channel -to 149  # announced where the radio can; -restart forces the outage
 boactl link "Apple TV" deauth             # and: disassoc, deadzone, steer, measure
 boactl events -follow > run.ndjson        # what HAPPENED, as it happens
 boactl history -window 10m -o run.csv     # what the link was DOING, per second
