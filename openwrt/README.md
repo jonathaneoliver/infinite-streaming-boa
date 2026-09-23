@@ -6,6 +6,12 @@ on the Raspberry Pi OS image. Measured on a Raspberry Pi 5 with OpenWrt 25.12.5
 
 ![boa inside LuCI: Services -> infinite-streaming-boa](../docs/images/openwrt-luci.png)
 
+This file is what any OpenWrt device needs.
+[`CUDY-TR3000.md`](CUDY-TR3000.md) is the other kind of document: what ONE
+specific box took, start to finish, with the LuCI path for every step and what
+its AP-class radios do that the Pi's cannot -- announced channel switches,
+transmit power that is honoured, scanning while serving.
+
 ## Prerequisite: a transparent bridge
 
 boa shapes uplink on the egress of the port cabled to the existing network,
