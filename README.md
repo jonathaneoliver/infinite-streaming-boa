@@ -1350,8 +1350,15 @@ channel itself: the radio moves and takes its clients with it.
   between a player and a network wherever that network happens to be.
 - **LuCI stays.** The router remains a router; boa installs beside it.
 
-**What it does not fix.** OpenWrt's kernel has no rfkill, so there is no silent
-power cut on this target. The advertised BSS Load needs a testing build of
+**What it does not fix.** OpenWrt's kernel has no rfkill, so the silent power
+cut is unavailable — the one impairment that tells a client nothing, where every
+other control announces itself and gets a reconnect in a second or two. It
+matters for exactly one question: what a player does in the tens of seconds it
+still believes it is connected. **On this target that question is mostly
+reachable another way**, and a better one: transmit power works here, so the
+link can be faded to 0 dBm in steps rather than cut in one binary move, and the
+client is told nothing either way. What is genuinely lost is the instant, total
+cut. The advertised BSS Load needs a testing build of
 hostapd. Its two Cortex-A53s are the throughput limit, not the radio. Flash is
 128 MB, so package space is finite. And DFS, 160 MHz width and multiple BSSes
 are all advertised by the silicon and **untested here**.
