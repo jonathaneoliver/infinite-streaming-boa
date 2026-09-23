@@ -19,7 +19,7 @@ real traffic in an afternoon.
 | --- | --- |
 | Model | Cudy TR3000 v1 (`cudy,tr3000-v1`) |
 | SoC | MediaTek MT7981B, 2 x ARM Cortex-A53 |
-| Memory / overlay | 486 MB RAM, 44 MB writable overlay (UBI) |
+| Memory / overlay | 485 MB RAM (353 MB available), 44 MB writable overlay with 31.6 MB free |
 | OpenWrt | 25.12.5 r33051-f5dae5ece4, `mediatek/filogic`, kernel 6.12.94 |
 | Radios | MT7981 built-in: `phy0` 2.4 GHz, `phy1` 5 GHz, both `mt798x-wmac` on one device path |
 | Ports | `eth0` 2.5 GbE (uplink), `eth1` 1 GbE (LAN) |
@@ -550,6 +550,22 @@ It also found two bugs that only appear on hardware, both in the way *back*: the
 toggle could not resolve its radio through netifd once the AP was down, and
 making a second radio listen-only silently un-made the first, because the config
 option holding them is a list that was being written as a single value.
+
+## What it will not host
+
+The radios are the reason to use this box and the CPU is the reason not to ask
+it for anything else. Two Cortex-A53 cores, 485 MB of RAM, and a 44 MB overlay
+of which 31.6 MB is free.
+
+boa fits: a 10.9 MB binary holding 18 MB resident, and the box idles around 0.3
+load with three clients associated. What does not fit is everything the Pi image
+carries beside it — ntopng and glances are absent here, and packaging is only
+half the reason; there is no flash for them and no CPU headroom to give them.
+The two cores were 65% busy carrying 745 Mbit/s through the bridge, which is the
+box doing its one job, not an idle machine waiting for more work.
+
+Plan for it as a router that runs boa. If the appliance also has to run
+something, that is what targets 1 and 2 are for.
 
 ## What still does not work
 

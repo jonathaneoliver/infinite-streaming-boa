@@ -1074,9 +1074,12 @@ the adapters alone.
 
 Choose it when the radios matter: when a test needs a channel to change under a
 running player without dropping it, when distance must be imposed rather than
-simulated, or when the box has to travel. Choose target 1 or 2 when you want
-ntopng and glances, which are not packaged for OpenWrt, or when you need more
-CPU than two Cortex-A53s.
+simulated, or when the box has to travel.
+
+**Do not choose it as a general-purpose appliance.** Two Cortex-A53s, 485 MB of
+RAM and a 44 MB writable overlay make it a router that runs boa, not a small
+server: no ntopng, no glances, little room for packages, and the CPU already
+65% busy at 745 Mbit/s. The Pi carries the extras; this carries the radios.
 
 [The Cudy TR3000 as a boa platform](#a-box-that-is-not-client-class-the-cudy-tr3000)
 has the buying case and the limits; [`openwrt/CUDY-TR3000.md`](openwrt/CUDY-TR3000.md)
@@ -1343,6 +1346,17 @@ channel itself: the radio moves and takes its clients with it.
   and fits in a coat pocket, which matters for a thing whose job is to sit
   between a player and a network wherever that network happens to be.
 - **LuCI stays.** The router remains a router; boa installs beside it.
+
+**It is a router, not a computer, and that is the real trade.** Measured on the
+box: **two Cortex-A53 cores**, **485 MB of RAM** and a **44 MB writable
+overlay** with 31.6 MB of it free. boa itself fits comfortably — a 10.9 MB
+binary holding 18 MB resident — but almost nothing else will. There is no
+ntopng and no glances here, and not only because they are unpackaged for
+OpenWrt: the flash has no room for them and the CPU has no headroom to spare.
+Those two cores were **65% busy carrying 745 Mbit/s**, so the box is near its
+limit doing the one job it exists for, and anything else you add competes with
+the conditioning rather than sitting beside it. Choose target 1 or 2 when the
+appliance should also run things.
 
 **What it does not fix.** OpenWrt's kernel has no rfkill, so boa offers no
 silent power cut on this target — the one impairment that tells a client
