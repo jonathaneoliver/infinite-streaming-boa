@@ -135,6 +135,24 @@ wrong.
 What was actually run on this unit, and the only route for the two steps LuCI
 cannot do.
 
+> **These commands were run by Claude Code over SSH, not typed by a person.**
+> Every one of them executed against this box during the session that produced
+> this file -- but they are written up here as a clean sequence, and the session
+> was not one. It had false starts, commands run in a different order, and
+> several that were corrected after they failed. Nobody has since run this list
+> top to bottom on a fresh box to confirm it works as a script.
+>
+> So read each line before you paste it, particularly the `uci delete` ones,
+> which remove configuration and are the only steps here that lose something.
+>
+> **The LuCI table above was not walked end to end either.** Its labels were
+> read out of this box's own LuCI files, and the browser was genuinely used for
+> the two firmware flashes and for setting the root password and SSH key -- the
+> rest of the configuration was done over SSH and then mapped to the page that
+> sets the same option. It is offered as the better route for a person because
+> it shows what it will do before doing it, not because it has been proved as a
+> sequence.
+
 **1. Stock, first contact.** Cable a machine to a **LAN** port, not WAN; stock
 firmware serves its admin page only on LAN. It answers at
 `http://192.168.10.1`. Set the admin password it asks for and note the stock
