@@ -545,6 +545,26 @@ something alarming that is not true, and only then take the choice away. A
 device that ignores the first may honour the second, and the difference is
 invisible unless the modes can be sent one at a time to one client.
 
+**A steer that is honoured is not a client that stays.** None of the four writes
+a deny entry, so nothing holds a client where it was sent, and a phone with a
+band preference simply exercises it again. Measured on an iPhone, 2026-09-23,
+from the box's own event log:
+
+```
+08:26:23  asked  phy1 -> phy0   accepted
+08:26:26  moved  -> 2.4GHz              honoured in 3 s
+08:26:49  moved  -> 5GHz                ITS OWN DECISION, 23 s later
+```
+
+The third line has no request before it — every operator action is logged as
+`asked`, and there is none — so the return is the phone's. Anything measuring
+"did this client honour the steer?" has to sample within seconds: a minute later
+this device reports the opposite of what happened.
+
+That is also the empirical case for what `gather` does differently. Placement
+that must persist needs the alternatives removed for as long as it matters;
+a request buys a few tens of seconds.
+
 None of them writes a deny-list entry — a steer that banned someone would be an
 eviction wearing a request's name. During this write-up the MacBook refused two
 polite steers and only moved when the alternatives were removed, which is the

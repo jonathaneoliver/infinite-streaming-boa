@@ -1114,6 +1114,14 @@ damages packets, never link state.
   is, so they are safe to aim at a single device; `force` disassociates and lets
   the client choose, so the response reports the mode that ran rather than
   letting a caller read the destination as a promise.
+- **A honoured steer is not a client that stays, and the interface must not
+  imply otherwise.** No steer mode writes a deny entry, so nothing holds a
+  client where it was sent. Measured 2026-09-23: an iPhone accepted a request
+  onto 2.4 GHz, moved in 3 seconds, and returned to 5 GHz of its own accord 23
+  seconds later, with no request preceding the return. A reading of "did this
+  device honour the steer?" is therefore only valid within seconds of sending
+  it. Placement that has to persist is what **gather** is for, and its pinned
+  deny lists are the difference.
 - **A radio can be told to claim it is busier than it is, and that is an
   impairment aimed at the client's decision rather than at its packets.** The
   802.11 **BSS Load** element carries a station count and a channel utilisation,
