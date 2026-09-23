@@ -1468,17 +1468,29 @@ every measurement above and the caveats on each.
 
 Distinct from the list of things the silicon **refuses**. These are implemented,
 or believed to work, and have never been confirmed doing their job on hardware.
-An unexercised feature is recorded as unexercised rather than assumed working.
+An unexercised feature is recorded as unexercised rather than assumed working —
+and struck off when it is exercised, which three of these were on 2026-09-22/23:
+
+- **RSSI-driven client behaviour.** The distance model still does not move real
+  signal, but transmit power does, and it is honoured on the Cudy's radios. An
+  iPhone walked down in 2 dB steps left 5 GHz at 11 dBm and came back at 19 —
+  a device reacting to its own RSSI, with 8 dB of hysteresis between the two
+  decisions. See [Power, distance and roaming](openwrt/CUDY-TR3000.md).
+- **Two radios carrying clients at once.** Both Cudy radios served clients
+  simultaneously throughout that day's work — 2 on `phy0` and 1 on `phy1` at the
+  point it was written down. Still unmeasured for *performance*: nobody has run
+  two loaded radios and looked at what they cost each other.
+- **WPA3/SAE and PMF.** The Cudy serves `sae-mixed`, and hostapd logged
+  `AP-STA-CONNECTED ... auth_alg=sae` for a real client. PMF comes with SAE.
+  Never configured on the Pi.
 
 | | Status |
 |---|---|
-| **A client accepting a steer onto 5 GHz** | The one direction ever seen to work is onto 2.4 GHz. A malformed operating class made every 5 GHz request describe a block that does not exist; it was fixed and **no client has been observed moving onto 5 GHz since** |
-| **Steer as a way to place a client** | Every recorded attempt on a real device was declined. An iPhone ignored a same-band request and refused a cross-band one, offering its own candidate list. Two Apple clients ignored an evict outright and had to be disassociated |
-| **RSSI-driven client behaviour** | The distance model does not move real signal, so a client's radio still reads an excellent link while the box reports it as distant. Anything that depends on a device *reacting to* its own RSSI has never been truly tested here |
-| **Per-station signal on the onboard Pi radio** | Absent from `iw station dump` entirely. The USB adapters report it, with per-antenna values, and the interface shows it |
-| **Two radios carrying clients at once** | Never measured on either target, despite the rack being the point |
-| **6 GHz** | The adapter is an AXE3000 and the phy offers 59 usable channels with AP mode. The box neither scans nor serves there |
-| **WPA3/SAE, PMF, 802.11r, mesh, multi-BSS** | Supported by hostapd or advertised by the phy; none configured |
+| **Steer as a way to place a client** | Still the honest summary, with one exception now on record. A MacBook declined two requests on 2026-09-23 and moved only when the alternatives were removed. But a Watch *did* act on a `term` request and land on the radio it named — silently, sending no 802.11v response at all, which is a client doing the right thing while telling you nothing |
+| **A client accepting a steer onto 5 GHz** | **Done, once.** The same Watch moved `phy3-ap0` (5 GHz) to `phy1-ap0` (5 GHz) after a request. The malformed operating class that once made every 5 GHz request describe a block that does not exist is fixed and stayed fixed |
+| **Per-station signal on the onboard Pi radio** | Absent from `iw station dump` entirely. The USB adapters report it, with per-antenna values, and the interface shows it. Unchanged |
+| **6 GHz** | The adapter is an AXE3000 and the phy offers 59 usable channels with AP mode. The box neither scans nor serves there, and neither Cudy radio is a 6 GHz part |
+| **802.11r, mesh, multi-BSS** | Supported by hostapd or advertised by the phy; none configured. The Cudy's radios advertise **16 access points each** and have never run more than one |
 | **Airtime fairness** | Measured, never enforced |
 
 **The steer rows are the ones worth dwelling on**, because they are easy to
