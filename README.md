@@ -158,6 +158,13 @@ own section: [Reaching the box](#reaching-the-box).
 
 ## What it does
 
+For **anyone building a mobile app or a Wi-Fi connected device** who needs to
+know how the client's relationship with the access point affects it, not only
+how much bandwidth it gets. Those are different questions, and until this box
+could drive its own radios only the second one was testable — see
+[Who this is for](#who-this-is-for-and-why-the-wi-fi-control-matters) for the
+bench practice that follows from it.
+
 - **Conditions each client independently** — rate, latency, jitter and loss, per
   device and per direction, live from a web interface. Both IPv4 and IPv6.
 - **Drives the timeline, not just a fixed cap.** A per-client *pattern* walks the
@@ -205,6 +212,47 @@ own section: [Reaching the box](#reaching-the-box).
   clients a measurement is watching. The `deauth +` variants send one
   deliberately — individually to associated stations on the way down, by
   broadcast on the way up to clients still holding a stale association.
+- **Turns a radio down, live, so distance is imposed rather than modelled.**
+  Transmit power is set on the phy while the access point keeps serving:
+  measured on an AP-class radio, 23 / 10 / 3 dBm moved a MacBook's received
+  signal about 7 dB a step with nobody reassociated and no ping lost. It is the
+  difference between a *simulated* distant client and one the room actually
+  treats as distant — an iPhone walked down this way left for the other band at
+  11 dBm and came back at 19, which is 8 dB of hysteresis nobody could have
+  guessed. Where a driver accepts the setting and discards it, the box catches
+  that by reading the level back and **disables the control with the reason**
+  rather than offering a slider that does nothing.
+- **Moves a radio's channel, and announces it where the radio can.** A band plan
+  shows every channel the radio may use, coloured by what a listening radio has
+  heard there, and picking a cell picks a channel *and* a width. On access-point
+  silicon the move is an 802.11h announcement: the clients are told and follow
+  it, still associated — measured, 3 of 3 of them — and the event log then says
+  how many actually did. On client-class parts the same button takes the access
+  point down and brings it back elsewhere, which drops everyone; the box tries
+  the announcement, falls back inside the same request, and **reports which one
+  happened** rather than leaving it to be inferred.
+- **Turns any radio into a listen-only instrument, and back.** A radio in scan
+  mode serves nobody and sweeps both bands continuously, which is where the band
+  plan's colours come from: 17 access points and 64 clients seen on one pass,
+  channel 36 at 56% busy against channel 149 at 3% — the reading that predicted
+  a 2.7x throughput difference before anything moved. It costs the serving
+  radios nothing, which surveying from a serving radio does not: that is a
+  three-second hole in its traffic, measured as 18 consecutive pings.
+- **Asks the client what it sees.** An 802.11k beacon request has one client
+  measure the box's *other* radios and report back — the only reading in the
+  whole box taken from the client's point of view rather than the access
+  point's. A client may decline, and a decline is reported as the result it is.
+- **Finds the breaking point on its own.** A sweep walks one streaming device up
+  a ladder of caps, starting from an unconditioned observation of what it is
+  actually doing, and records the rung where the player stopped keeping up. It
+  refuses to start against a device that is not streaming, because a ladder
+  measured against nothing is an empty ladder that looks like a result.
+- **Shapes the radio itself, not only the link.** PHY and power-save profiles,
+  RTS and fragmentation thresholds, and an advertised BSS Load for testing how a
+  client reacts to a busy-looking access point. These live in the beacon or are
+  negotiated at association, so each rebuilds the BSS and drops the clients on
+  that radio — the interface says so before the press. BSS Load needs a hostapd
+  built with testing options and is absent where that is missing.
 - **Stays invisible.** Clients keep their existing addresses on your existing
   subnet; the Pi is not a hop and does not appear in `traceroute`.
 - **Names devices from mDNS**, so the list reads as devices rather than MACs.
@@ -233,11 +281,6 @@ own section: [Reaching the box](#reaching-the-box).
   being enforced. See [Measuring it yourself](#measuring-it-yourself).
 
 ## Who this is for, and why the Wi-Fi control matters
-
-Anyone building **a mobile app, or a Wi-Fi connected device**, who needs to know
-how the client's relationship with the access point affects it — not only how
-much bandwidth it gets. Those are different questions, and until this box could
-drive its own radios only the second one was testable.
 
 **It is a bench tool for one engineer at a time.** That is a design position
 rather than a missing feature, and it decides a lot: there is no login on any
