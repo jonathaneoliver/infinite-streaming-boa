@@ -247,8 +247,8 @@ export function useDevice() {
   // A REQUEST -- the client decides, and whether it complies is the result
   // being looked for. The daemon resolves both radios, so nothing here needs
   // to know which band the client is on.
-  function linkSteer(mac: string) {
-    return send(`/api/devices/${mac}/link/steer`, 'POST', undefined);
+  function linkSteer(mac: string, mode = 'suggest') {
+    return send(`/api/devices/${mac}/link/steer?mode=${mode}`, 'POST', undefined);
   }
   // measure: ask this client to go and listen to the box's OTHER radios and
   // report what it hears (802.11k beacon request).

@@ -2546,6 +2546,13 @@ func (a *API) linkDisassoc(w http.ResponseWriter, r *http.Request) { a.linkEvent
 
 // linkSteer asks ONE client to move to the box's other radio (802.11v).
 //
+// `?mode=` carries the same four the radio-wide control has: `suggest` (the
+// default), `imminent`, `terminate` and `insist`. The first three ask and leave
+// a refusing client exactly where it is, which is what makes them safe to point
+// at a single device; `insist` disassociates one that has not left and lets it
+// choose where to land, so `to` is what it was asked for rather than where it
+// went.
+//
 // The per-client counterpart to the radio-wide steer on the bridge diagram, and
 // the more useful of the two: moving every client at once changes the whole
 // box, where the question worth asking is usually "what does THIS phone do when
@@ -2580,10 +2587,33 @@ func (a *API) linkSteer(w http.ResponseWriter, r *http.Request) {
 				"transition request needs another access point to name")
 		return
 	}
-	// steerSuggest: this control names the radio it is sending the client to,
-	// so a refusal has to leave it where it is. Forcing would send it wherever
-	// it liked while the interface said it had gone to the named one.
-	if err := a.e.SteerClient(mac, from, to, steerSuggest); err != nil {
+	// THE SAME FOUR THE RADIO HAS. This used to be steerSuggest and nothing
+	// else, reasoning that a control naming its destination must leave a
+	// refusing client where it is. That is true of three of the four modes and
+	// it is why they are worth having per client: "does THIS phone honour a
+	// transition request, and does escalating the wording change its mind" is a
+	// question about one device, and the radio-wide button cannot ask it
+	// without moving everybody.
+	//
+	// insist is the exception and keeps its own honesty: it disassociates a
+	// client that has not left, and the client then picks its own access point.
+	// The response says which mode ran, so a caller that asked for insist
+	// cannot read `to` as a promise.
+	modeName := strings.TrimSpace(r.URL.Query().Get("mode"))
+	mode, ok := steerModeParam[modeName]
+	if !ok {
+		writeErr(w, http.StatusBadRequest,
+			`mode must be "suggest", "imminent", "terminate" or "insist": the `+
+				`first three only ask and leave a refusing client where it is, `+
+				`and insist disassociates one that has not left after 5s`)
+		return
+	}
+	if mode == steerInsist {
+		// Same hazard as the radio-wide evict: a deny list left over from a
+		// gather can leave a disassociated client nothing to choose at all.
+		a.e.clearPins("superseded by a forced steer")
+	}
+	if err := a.e.SteerClient(mac, from, to, mode); err != nil {
 		writeErr(w, http.StatusBadGateway, err.Error())
 		return
 	}
@@ -2597,6 +2627,7 @@ func (a *API) linkSteer(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"mac": mac, "action": "steer", "from": from, "to": to,
+		"mode": mode.String(),
 	})
 }
 

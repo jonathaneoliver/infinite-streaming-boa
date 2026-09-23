@@ -187,6 +187,10 @@ bench practice that follows from it.
   be pushed around the box the way a real network pushes it around a building.
   Different controls, different promises:
 
+  All four are on the radio row, for everyone on that radio, **and on each
+  client's own card**, for one device — the same frame either way, and the only
+  way to ask whether escalation changes *this* phone's mind.
+
   | control | what it does | can the client refuse? |
   |---|---|---|
   | **steer** | asks one client, or every client on a radio, to move (802.11v BSS transition) | **yes** — and whether it does is the measurement |
@@ -1490,7 +1494,7 @@ and struck off when it is exercised, which three of these were on 2026-09-22/23:
 
 | | Status |
 |---|---|
-| **Steer as a way to place a client** | Still the honest summary, and now measured per mode on the Cudy: `steer` moved nobody, `warn` made 2 of 3 leave but not to the named radio, `term` moved a Watch **to the radio named** and was declined twice by a MacBook the same day, `force` always moves a client and lets it pick. One landing out of four modes. See [the per-mode table](openwrt/CUDY-TR3000.md) |
+| **Steer as a way to place a client** | **Escalation works where asking does not.** Measured per mode on 2026-09-23, three requests to one MacBook three seconds apart: plain `steer` came back `status_code=6` (declined), and the identical request carrying Disassociation Imminent came back `status_code=0` with the named radio as `target_bssid` — and it went there. Only the sentence changed. `force` still moves anyone and lets them pick. See [the per-mode table](openwrt/CUDY-TR3000.md) |
 | **A client accepting a steer onto 5 GHz** | **Done, once.** The same Watch moved `phy3-ap0` (5 GHz) to `phy1-ap0` (5 GHz) after a request. The malformed operating class that once made every 5 GHz request describe a block that does not exist is fixed and stayed fixed |
 | **Per-station signal on the onboard Pi radio** | Absent from `iw station dump` entirely. The USB adapters report it, with per-antenna values, and the interface shows it. Unchanged |
 | **6 GHz** | The adapter is an AXE3000 and the phy offers 59 usable channels with AP mode. The box neither scans nor serves there, and neither Cudy radio is a 6 GHz part |

@@ -15,6 +15,7 @@ import TrafficChart from './TrafficChart.vue';
 import OnAdapterStrip from './OnAdapterStrip.vue';
 import AdapterToken from './AdapterToken.vue';
 import { useViewportWidth } from '@/composables/useViewport';
+import { STEER_MODES, type SteerMode } from '@/composables/steerModes';
 
 const props = defineProps<{
   client: Client;
@@ -40,7 +41,7 @@ const emit = defineEmits<{
   linkDrop: [];
   linkNudge: [];
   linkDeadzone: [sec: number];
-  linkSteer: [];
+  linkSteer: [mode: SteerMode['mode']];
   linkMeasure: [];
   toggle: [];
   addSub: [];
@@ -413,10 +414,18 @@ function fireDeadzone() {
  * card changing, which is the thing actually worth watching -- and a device
  * that ignores transition requests is a finding, not a failure.
  */
-function fireSteer() {
-  emit('linkSteer');
-  flashLink('steer');
+function fireSteer(mode: SteerMode['mode']) {
+  emit('linkSteer', mode);
+  steerFlash.value = mode;
+  clearTimeout(steerFlashTimer);
+  steerFlashTimer = setTimeout(() => (steerFlash.value = null), 1400);
 }
+
+/** Which of the four was just sent, so only that button says "sent".
+ *  One shared flag would light the whole row and lose the one fact worth
+ *  showing: which wording this client was given. */
+const steerFlash = ref<SteerMode['mode'] | null>(null);
+let steerFlashTimer: ReturnType<typeof setTimeout> | undefined;
 
 /**
  * Ask the client what it can hear on the radios it is NOT using.
@@ -1363,13 +1372,16 @@ function fmtBytes(n: number): string {
            request has to NAME a destination access point, so on a box serving
            one radio there is nothing to offer and the button is absent rather
            than present-and-failing. -->
-      <button
-        v-if="client.steer_to"
-        class="ghost" :class="{ flash: linkFlash === 'steer' }" @click="fireSteer"
-        :title="`Ask this client to move to ${client.steer_to} (802.11v BSS transition). `
-          + `The link stays up and it may refuse — whether this device honours a `
-          + `transition request is the thing being tested.`"
-      >{{ linkFlash === 'steer' ? 'sent' : 'steer' }}</button>
+      <template v-if="client.steer_to">
+        <button
+          v-for="m in STEER_MODES" :key="m.mode"
+          class="ghost" :class="{ flash: steerFlash === m.mode }"
+          @click="fireSteer(m.mode)"
+          :title="`Ask this client to move to ${client.steer_to} (802.11v BSS transition). `
+            + m.says
+            + ` Whether this device honours it is the thing being tested.`"
+        >{{ steerFlash === m.mode ? 'sent' : m.label }}</button>
+      </template>
       <!-- Present whenever the client is associated, not only when there is
            somewhere to steer to: "what can you hear" is a question worth asking
            of a device on a one-radio box too, and the daemon answers with a

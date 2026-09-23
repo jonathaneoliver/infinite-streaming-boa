@@ -553,6 +553,13 @@ deauth. See issue #135.
 
 linkSteer asks ONE client to move to the box's other radio (802.11v).
 
+`?mode=` carries the same four the radio-wide control has: `suggest` (the
+default), `imminent`, `terminate` and `insist`. The first three ask and leave
+a refusing client exactly where it is, which is what makes them safe to point
+at a single device; `insist` disassociates one that has not left and lets it
+choose where to land, so `to` is what it was asked for rather than where it
+went.
+
 The per-client counterpart to the radio-wide steer on the bridge diagram, and
 the more useful of the two: moving every client at once changes the whole
 box, where the question worth asking is usually "what does THIS phone do when

@@ -3,6 +3,7 @@ import { computed, ref, watch } from 'vue';
 import type { BSSLoadState, IfaceInfo, ScanAP, Series } from '@/types';
 import { DEVELOPER } from '@/types';
 import { rackAdapters, isOpen, toggleAdapter } from '@/composables/useAdapters';
+import { STEER_MODES } from '@/composables/steerModes';
 import AdapterStack from '@/components/AdapterStack.vue';
 import type { useBridge } from '@/composables/useBridge';
 import AdapterToken from './AdapterToken.vue';
@@ -620,19 +621,7 @@ async function commitTx(r: IfaceInfo, dbm: number | 'auto') {
  * The warnings were measured on the Cudy's mt798x radio before being offered:
  * hostapd sends both and acts on neither.
  */
-const STEERS = [
-  { mode: 'suggest', label: 'steer',
-    says: 'Only a request: nobody is denied or disconnected, and a client that refuses stays here.' },
-  { mode: 'imminent', label: 'warn',
-    says: 'Says it is about to be dropped (Disassociation Imminent, no timer). It never is: '
-      + 'nothing follows the warning, and a client that refuses stays here.' },
-  { mode: 'terminate', label: 'term',
-    says: 'Says this access point is shutting down (BSS Termination Included). It does not: '
-      + 'the AP stays up, and a client that refuses stays here.' },
-  { mode: 'insist', label: 'force',
-    says: 'Warns it will be dropped in 5s, then disassociates any client still here, which '
-      + 'picks its own access point. No deny list, so it may come straight back.' },
-] as const;
+const STEERS = STEER_MODES;
 
 /**
  * What the row says beyond the token.
