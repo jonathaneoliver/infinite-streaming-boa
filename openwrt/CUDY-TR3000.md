@@ -552,28 +552,3 @@ option holding them is a list that was being written as a single value.
 | Multiple BSSes untested | The radio advertises 16 access points on one phy. This box has only ever run one per radio, so the airtime cost of a second SSID, and whether per-SSID 802.11k/v settings behave independently, are both unanswered |
 | No millisecond figure for a switch | "Kept the association" is not "lost no packets". A ping held across a switch would give the number; it has not been run |
 | Feed not yet exercised | The `aarch64_cortex-a53` packages are built and the workflow publishes them, but `apk add` straight from the Pages feed has not been done on this box — it was installed from a local build |
-
-## Traps, each of which cost an hour
-
-- **`boad` takes UDP :67 before dnsmasq at boot.** In router mode that killed
-  DHCP and DNS for every client until dnsmasq was restarted by hand. Bridge mode
-  avoids it because DHCP is off there, but the ordering bug is real and unfixed.
-- **DNS rebind protection blocks a name that resolves to a private address.** A
-  local service on a public hostname simply stopped resolving.
-  `uci add_list dhcp.@dnsmasq[0].rebind_domain=<your domain>`.
-- **`/usr/sbin` is not on the PATH of a non-login SSH shell.** `tc`, `bridge`
-  and `iw` all live there, so a bare invocation returns `command not found`,
-  which reads as a missing package. Worse with `2>/dev/null`: an empty result
-  passes for a real answer — no stations, no qdiscs, nothing wrong.
-- **`scp` needs `-O`.** OpenWrt has no `/usr/libexec/sftp-server`, so modern scp
-  fails with `Connection closed` until told to use the legacy protocol.
-- **The rescue address collides in `known_hosts`.** 192.168.1.1 is every
-  router's address; use `-o UserKnownHostsFile=/dev/null` rather than deleting an
-  entry that belongs to something else.
-- **LuCI caches its menu.** A newly installed app does not appear until
-  `/tmp/luci-indexcache.*` is cleared and rpcd restarted.
-- **Swapping wpad leaves it stopped.** Removing the basic package stops the
-  service; installing the full one does not start it. A `wifi reload` with no
-  hostapd running takes every AP down until it is started by hand.
-- **The 2.5 GbE port is only as fast as its peer.** It negotiated 1 Gbps here,
-  which quietly caps every "through the box" figure.
