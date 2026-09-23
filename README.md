@@ -1270,7 +1270,7 @@ every Pi number in this document.
 | Board | [Raspberry Pi 5 Model B, 4 GB](https://www.amazon.com/dp/B0CK3L9WD3?tag=jonathaneoliv-20) — or the cheaper [2 GB](https://www.amazon.com/dp/B0DDL91V2R?tag=jonathaneoliv-20), see below | A Pi 4 works; the onboard NIC must not be USB, which is why a Pi 3 does not — see the udev rule in `scripts/customize.sh` |
 | Power | [Official Raspberry Pi 27 W USB-C PSU](https://www.amazon.com/dp/B0CW7XCY75?tag=jonathaneoliv-20), or the [CanaKit 45 W USB-C PD supply](https://www.amazon.com/dp/B07H125ZRL?tag=jonathaneoliv-20) which also delivers 5 A | A SuperSpeed Wi-Fi adapter is a real load. **5 A is what `BOA_USB_MAX_CURRENT` needs** — under it the Pi 5 caps every USB port at 600 mA between them, which reads as a flaky adapter rather than a power problem. Check `vcgencmd get_throttled` reads `0x0` — and if it does not, or a radio keeps dropping off the bus, see [Power](#power) |
 | Storage | [SanDisk Ultra 16 GB microSDHC](https://www.amazon.com/dp/B074B4P7KD?tag=jonathaneoliv-20) | What was used, and enough — the finished image is ~4.6 GB. A 32 GB card costs little more and leaves room for `ntopng` data |
-| Wi-Fi adapter | [Panda Wireless PAU0F AXE3000 (mt7921u)](https://www.amazon.com/dp/B0D972VY9B?tag=jonathaneoliv-20) | Optional, and the single biggest change to what the box can test — see below. **A client part, and it does not do everything this box would like**: see [The radios here are client parts](#the-radios-here-are-client-parts-and-that-is-the-ceiling) |
+| Wi-Fi adapter | [Panda Wireless PAU0F AXE3000 (mt7921u)](https://www.amazon.com/dp/B0D972VY9B?tag=jonathaneoliv-20) | Optional, and the single biggest change to what the box can test — see below. **A client part, and it does not do everything this box would like**: see [the radios on targets 1, 2 and 3 are client parts](#the-radios-on-targets-1-2-and-3-are-client-parts-and-that-is-their-ceiling) |
 | Wired downstream | Any USB ethernet adapter — e.g. [UGREEN USB-C 2.5 GbE](https://www.amazon.com/dp/B0CD1FDKT1?tag=jonathaneoliv-20); the figures below are a Realtek RTL8156 at both ends | Becomes `lan0`. Optional. 2.5 GbE needs a SuperSpeed link end to end, and a USB-C part reaches the Pi's USB-A socket through a converter that is usually the weak point — see [The cable decides whether you get 2.5 GbE at all](#the-cable-decides-whether-you-get-25-gbe-at-all) |
 
 **Which of these the other targets share.** The **Wi-Fi adapters and the USB
@@ -1367,10 +1367,14 @@ the same constraint the Pi has and the same one the
 [powered hub figures](#what-a-hub-costs-a-radio-separated-from-what-the-channel-is-worth)
 below quantify.
 
-### The radios here are client parts, and that is the ceiling
+### The radios on targets 1, 2 and 3 are client parts, and that is their ceiling
 
-Every radio this box has ever run is a **station chip with AP mode bolted on**.
-Not one is an access-point part.
+Every radio the Pi and the container have ever run is a **station chip with AP
+mode bolted on**. Not one is an access-point part — which was true of the whole
+project until a box arrived whose radios are not, so read this as the ceiling on
+three targets rather than on the idea. The fourth is
+[the Cudy](#a-box-that-is-not-client-class-the-cudy-tr3000), and the difference
+is measured rather than argued.
 
 | Radio | Where | What it is |
 |---|---|---|
@@ -1821,13 +1825,12 @@ Three things qualify that:
   chassis reach 758 Mbit/s together, or desense each other, needs two
   iperf-capable clients and has not been tried.
 
-### This box does not do OFDMA, and that bounds every figure above
+### The `mt7921u` adapters do not do OFDMA, and that bounds every figure they produced
 
 > **Measured on the `mt7921u` adapters** — targets 1, 2 and 3. The Cudy's
 > built-in radios are a different part on a different driver and are **not**
-> covered by the conclusion below: `mt7915e` exposes `muru_debug` and
-> `muru_stats` on this box, the very counters this section says the client part
-> lacks. Whether it actually serves multi-user transmissions is **untested** —
+> covered by the conclusion below: on the Cudy, `mt7915e` exposes `muru_debug`
+> and `muru_stats`, the very counters this section says the client part lacks. Whether it actually serves multi-user transmissions is **untested** —
 > the acceptance test described here can now be run on hardware rather than
 > planned for hardware nobody has.
 
@@ -1837,6 +1840,9 @@ clients **simultaneously in one transmission**, each on its own slice. That is
 how a modern router gives a device a narrow effective channel without narrowing
 the radio, and it is why every 5 GHz neighbour here sits at the full 80 MHz
 rather than splitting the band.
+
+**"This box" below means the `mt7921u` adapter**, not the appliance: three of
+the four targets serve from one, and the fourth does not.
 
 **boa does not ask for it on the USB adapters**, and this is verifiable on the
 box rather than assumed:
@@ -1868,7 +1874,7 @@ this is a plausible contributor to the 72% figure at 80 MHz.
 **Two consequences, and they pull in opposite directions.**
 
 Every number in this section describes a **purely time-shared radio**, because
-that is the only kind this box has. Nothing here was ever going to show OFDMA,
+that is the only kind the `mt7921u` is. Nothing here was ever going to show OFDMA,
 so the ladder and the two-radio arithmetic are sound for what they measured —
 and their scope is now a measured fact rather than an assumption.
 
@@ -3145,7 +3151,7 @@ An AP-class part with DFS would have five more.
 
 | | Status | Why |
 |---|---|---|
-| **OFDMA / MU-MIMO scheduling** | not done | Driver, and specific to this chip. The hardware advertises HE and `Full Bandwidth UL MU-MIMO`, but `mt7921` exposes no MU counters and every frame is single-user. `mt7915` does expose them — see [above](#this-box-does-not-do-ofdma-and-that-bounds-every-figure-above) |
+| **OFDMA / MU-MIMO scheduling** | not done | Driver, and specific to this chip. The hardware advertises HE and `Full Bandwidth UL MU-MIMO`, but `mt7921` exposes no MU counters and every frame is single-user. `mt7915` does expose them — see [above](#the-mt7921u-adapters-do-not-do-ofdma-and-that-bounds-every-figure-they-produced) |
 | **160 MHz channels** | not possible | Hardware. `iw phy` lists no 160 MHz capability on either adapter |
 | **6 GHz (Wi-Fi 6E)** | **not implemented** | **Ours.** The adapter is an AX**E**3000 and the PHY offers 59 usable 6 GHz channels with AP mode among its HE Iftypes. boa neither scans nor serves there because `scanFreqs()` and `apChannels` stop at 5 GHz |
 | **Mesh / 802.11s** | not used | Ours. Both adapters list `mesh point` among their interface modes; nothing here builds on it |
