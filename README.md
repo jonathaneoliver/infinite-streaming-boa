@@ -25,12 +25,13 @@ page: move one to another channel, take its access point down, deauthenticate or
 disassociate a device, or push it onto a different radio. Conditioning the link
 and disturbing the radio are separate axes, and a run can use either or both.
 
-It runs on **any of three targets, on equal terms**: a Raspberry Pi 5 flashed
-from an image, a container on an ordinary x86_64 Linux host, or a pair of
-packages on an OpenWrt device. The same daemon binary and the same interface
-serve all three; on OpenWrt one flag, `-openwrt`, keeps OpenWrt's own
-configuration in step with what boa does — see
-[Three ways to run it](#three-ways-to-run-it).
+It runs on **any of four targets, on equal terms**: a Raspberry Pi 5 flashed
+from an image, a container on an ordinary x86_64 Linux host, packages on an
+OpenWrt device, or a Cudy TR3000 — a pocket router whose built-in radios are
+access-point parts rather than client chips, which is the one target where a
+channel move costs nothing. The same daemon binary and the same interface serve
+all four; on OpenWrt one flag, `-openwrt`, keeps OpenWrt's own configuration in
+step with what boa does — see [Four ways to run it](#four-ways-to-run-it).
 
 It is a **transparent bridge**, not a router. Devices under test keep their
 normal addresses on your normal network, discovery protocols keep working, and
@@ -110,9 +111,9 @@ delay, jitter and loss lanes unused in this run.
 
 ## Quickstart
 
-Three targets, and none is the reference — see
-[Three ways to run it](#three-ways-to-run-it) for which to pick. The Pi and the
-container read the same `.env`; OpenWrt is configured from UCI.
+Four targets, and none is the reference — see
+[Four ways to run it](#four-ways-to-run-it) for which to pick. The Pi and the
+container read the same `.env`; both OpenWrt targets are configured from UCI.
 
 **A Linux host you already have** (x86_64, two USB adapters, nothing to flash):
 
@@ -185,7 +186,7 @@ own section: [Reaching the box](#reaching-the-box).
 
 **Running it**
 
-- [Three ways to run it](#three-ways-to-run-it) — the Pi, the container and OpenWrt, on equal terms
+- [Four ways to run it](#four-ways-to-run-it) — the Pi, the container, OpenWrt, and the one box with AP-class radios
 - [Hardware](#hardware) — parts, RAM, host requirements, and what the radios cannot do
 - [Build an image](#build-an-image) · [Run it as a container](#run-it-as-a-container-on-a-linux-host) · [Run it on OpenWrt](openwrt/README.md)
 - [Reaching the box](#reaching-the-box) · [Configuration](#configuration) · [Security](#security)
@@ -909,12 +910,13 @@ on `:8474` lets a test set up and tear down its own faults, and its toxics —
 netem cannot produce. For proving a service survives a flaky dependency in CI,
 it is the right tool and this one is not.
 
-## Three ways to run it
+## Four ways to run it
 
 boa runs on a Raspberry Pi 5 flashed from an image, as a container on an
-ordinary x86_64 Linux host, or as packages on an OpenWrt device. **None is the
-reference and none is a port.** The same `boad` binary and the same embedded
-interface serve all three. The container reuses even `radioplan`, copied out of
+ordinary x86_64 Linux host, as packages on an OpenWrt device, or on a Cudy
+TR3000 — which is an OpenWrt device too, and gets its own entry because its
+radios are not client parts. **None is the reference and none is a port.** The
+same `boad` binary and the same embedded interface serve all four. The container reuses even `radioplan`, copied out of
 the Pi overlay unchanged, so a channel plan made on one cannot drift from a plan
 made on the other. The only code that runs on one target and not the others is
 behind `boad -openwrt`, which OpenWrt's init script passes and nothing infers:
@@ -926,7 +928,7 @@ itself, the hostapd configs, hotplug handling, and process supervision. The Pi
 takes them from the distribution. The container brings its own. OpenWrt
 already has all four.
 
-| | Raspberry Pi 5 | Linux container | OpenWrt |
+| | Raspberry Pi 5 | Linux container | OpenWrt (either) |
 |---|---|---|---|
 | Install | Flash an image, once | `scripts/docker-deploy.sh <host>` | `scripts/openwrt-package.sh <device>`: two signed apk packages |
 | Update the daemon | `scripts/deploy.sh`, ~10 s | `scripts/docker-deploy.sh`, rebuild and restart | The same script, ~20 s, upgrading only boa's packages |
@@ -938,6 +940,10 @@ already has all four.
 | Interface | `:80` | `:8080` on the host | `:8080`, `:8443` over https, and a LuCI page |
 | ntopng and glances | Included | Absent by decision; the interface offers to start them and says why it cannot | Absent: not packaged for OpenWrt |
 | Host is left | Dedicated to boa | Still itself, with its NIC bridged and the USB adapters given away | Still a working OpenWrt device, now a bridge |
+
+The OpenWrt column covers targets 3 and 4 together: they install the same two
+packages the same way, and differ in what the radios underneath can do.
+That difference is the whole reason the Cudy has its own entry.
 
 Throughput is comparable so far, which is the point of listing both. These are
 separate machines with separate radios, so read the table as "neither target is
@@ -1051,6 +1057,37 @@ built for arm64 on 25.12 only.
 
 See [`openwrt/README.md`](openwrt/README.md) for preparing the device, the
 packages, configuration, and every control as measured.
+
+### 4. A Cudy TR3000, as a whole box
+
+Mechanically this is target 3 — the same two packages, the same UCI
+configuration, the same LuCI page. It is listed separately because of what is
+underneath: **`mt798x` radios, which are access-point silicon**, where every
+other target in this repository runs client chips with AP mode bolted on.
+
+That distinction is not a specification detail. It is the difference between a
+channel move that costs an outage and one that costs nothing, measured on this
+hardware: the access point announces the switch in its beacons and the clients
+follow it, 3 of 3 of them, still associated. Transmit power is honoured live to
+about 7 dB a step, so distance becomes something the box imposes rather than
+models. The radio surveys the band while it is still serving. None of those work
+on the Pi's radios, and two of them fail on the USB adapters after reporting
+success.
+
+It also has two ethernet ports, so it bridges with no USB NIC — which removes
+the largest single source of flakiness in the Pi build — and it costs less than
+the adapters alone.
+
+Choose it when the radios matter: when a test needs a channel to change under a
+running player without dropping it, when distance must be imposed rather than
+simulated, or when the box has to travel. Choose target 1 or 2 when you want
+ntopng and glances, which are not packaged for OpenWrt, or when you need more
+CPU than two Cortex-A53s.
+
+[The Cudy TR3000 as a boa platform](#a-box-that-is-not-client-class-the-cudy-tr3000)
+has the buying case and the limits; [`openwrt/CUDY-TR3000.md`](openwrt/CUDY-TR3000.md)
+is the full record of what one unit took, from stock firmware to serving
+traffic, with every measurement above.
 
 ## Hardware
 
@@ -1271,6 +1308,49 @@ than the global one, and it is not final the moment the phy lands in the
 container's namespace — the channel plan was correct against what it could see
 and wrong a second later. The entrypoint waits for the channel set to stop
 moving because of it.
+
+### A box that is not client-class: the Cudy TR3000
+
+**The exception to everything above, and the cheapest way to run boa on real
+access-point silicon.** A pocket travel router — [Cudy TR3000][cudy] — whose two
+built-in radios are `mt798x`, the AP side of the same `mt76` family whose client
+sibling is in the USB adapters here.
+
+It is the only hardware in this repository where the ceiling in the section
+above does not apply, and the difference is measured rather than claimed:
+
+| | On the Cudy's built-in radios | On the client parts |
+|---|---|---|
+| Channel move | **Announced.** 3 of 3 clients followed; no outage | The AP vanishes and reappears; everyone rejoins |
+| Transmit power | **Honoured**, ~7 dB per step, live, nobody dropped | `mt7921u` reports 3.00 dBm whatever you ask |
+| Scan while serving | **Keeps its clients** (costs ~3 s of silence) | `mt7921u` must take the BSS down |
+| Throughput through the bridge | **745 Mbit/s** Wi-Fi, 929 wired | — |
+
+**Why it suits this project specifically**, beyond the radios:
+
+- **Two ethernet ports, so it bridges with no USB NIC.** 2.5 GbE and 1 GbE built
+  in. That removes the single largest source of flakiness on the Pi build — USB
+  ethernet adapters, the powered hub they need, and the
+  [PSU current cap](#parts-for-the-pi-build) that silently throttles them.
+- **It is already an OpenWrt target.** `mediatek/filogic` on 25.12, which is the
+  release that uses `apk`, which is what the package feed publishes. No image to
+  build, no SD card to write.
+- **One mains-powered box** replaces a Pi, two USB dongles, a hub and a PSU —
+  and fits in a coat pocket, which matters for a thing whose job is to sit
+  between a player and a network wherever that network happens to be.
+- **LuCI stays.** The router remains a router; boa installs beside it.
+
+**What it does not fix.** OpenWrt's kernel has no rfkill, so there is no silent
+power cut on this target. The advertised BSS Load needs a testing build of
+hostapd. Its two Cortex-A53s are the throughput limit, not the radio. Flash is
+128 MB, so package space is finite. And DFS, 160 MHz width and multiple BSSes
+are all advertised by the silicon and **untested here**.
+
+[`openwrt/CUDY-TR3000.md`](openwrt/CUDY-TR3000.md) is the whole record: what one
+unit took from stock firmware to serving traffic, in LuCI and at a shell, with
+every measurement above and the caveats on each.
+
+[cudy]: https://openwrt.org/toh/cudy/tr3000
 
 ### Wi-Fi features not yet exercised
 
