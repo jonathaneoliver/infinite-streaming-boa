@@ -17,23 +17,41 @@ Nothing yet.
 
 ## [0.5.0] — 2026-09-23
 
-**boa stopped being a Raspberry Pi appliance, and its radios stopped refusing.**
+**boa installs on a router now — and on a router's own radios, it stops being
+told no.**
 
-Every release before this one ran on client silicon with AP mode bolted on, and
-a long list of things the interface offered were things the hardware declined:
-a channel move was always an outage, transmit power was a setting the driver
-discarded, and surveying the band meant dropping everyone. That list was honest
-and it was also the ceiling on what the box could test.
+Until this release boa needed hardware of its own: a Raspberry Pi flashed from
+an image, or a Linux host running a container. 0.5.0 makes it **two packages you
+install beside LuCI** on an OpenWrt device, from a signed feed, integrated with
+UCI, ubus and procd — so the box that conditions your test clients can be the
+router that was already serving them.
 
-0.5.0 adds two ways to run it — **packages on an OpenWrt device**, and **a
-pocket router whose built-in radios are access-point parts** — and with the
-second, the refusals stop. A channel move is announced in the beacons and the
-clients follow it; transmit power is honoured live, so distance becomes
-something the box *imposes* rather than models; a radio surveys the band while
-still serving. All of it measured on one Cudy TR3000 over two days, with what
-did not work written down beside what did.
+That change is what made the second one reachable. Every release before this ran
+on client silicon with AP mode bolted on, and a long list of things the
+interface offered were things the hardware declined: a channel move was always
+an outage, transmit power was a setting the driver discarded, surveying the band
+meant dropping everyone. Installing on a router means installing on **access-
+point silicon**, and there the refusals stop. A channel move is announced in the
+beacons and the clients follow it; transmit power is honoured live, so distance
+becomes something the box *imposes* rather than models; a radio surveys the band
+while still serving.
+
+All of it measured on one Cudy TR3000 over two days, with what did not work
+written down beside what did.
 
 21 pull requests.
+
+### Two packages, beside LuCI
+
+- **OpenWrt**, as two packages beside LuCI — `boa` and `luci-app-boa`, with a
+  **Services → infinite-streaming-boa** page — integrating with UCI, ubus and
+  procd, published as a **signed apk feed** on GitHub Pages for both
+  `aarch64_cortex-a76` (a Pi 5 on OpenWrt) and `aarch64_cortex-a53` (Filogic
+  routers such as the Cudy).
+- **Debian**, as `infinite-streaming-boa` in a signed apt repository, for a Pi
+  OS or Debian machine already set up as a bridge.
+- **`boa-setup check`**, a read-only walk of every prerequisite a device still
+  needs, printing each as OK, WARN or FAIL with the command that fixes it.
 
 ### Moving a radio without moving its clients
 
@@ -103,18 +121,6 @@ A honoured steer is still not a client that stays: none of the four writes a
 deny entry, and an iPhone that accepted a move to 2.4 GHz returned to 5 GHz of
 its own accord 23 seconds later. Placement that must persist is what `gather`
 is for.
-
-### Packaged, signed, and installable
-
-- **OpenWrt**, as two packages beside LuCI — `boa` and `luci-app-boa`, with a
-  **Services → infinite-streaming-boa** page — integrating with UCI, ubus and
-  procd, published as a **signed apk feed** on GitHub Pages for both
-  `aarch64_cortex-a76` (a Pi 5 on OpenWrt) and `aarch64_cortex-a53` (Filogic
-  routers such as the Cudy).
-- **Debian**, as `infinite-streaming-boa` in a signed apt repository, for a Pi
-  OS or Debian machine already set up as a bridge.
-- **`boa-setup check`**, a read-only walk of every prerequisite a device still
-  needs, printing each as OK, WARN or FAIL with the command that fixes it.
 
 ### Changed
 
