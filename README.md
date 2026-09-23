@@ -132,6 +132,7 @@ own section: [Reaching the box](#reaching-the-box).
 ## Contents
 
 - [What it does](#what-it-does) — the feature list
+- [Where to plug it in](#where-to-plug-it-in-and-what-a-shared-room-does-to-a-measurement) — **read before cabling it**, and what a shared room does to a measurement
 - [Who this is for](#who-this-is-for-and-why-the-wi-fi-control-matters), and why the Wi-Fi control matters
 - [Saving and restoring a configuration](#saving-and-restoring-a-configuration)
 - [The controls, one by one](#the-controls-one-by-one) — presets, distance, radio impairment, the charts
@@ -179,7 +180,7 @@ bench practice that follows from it.
   control interface, so the buttons only appear when it can act. **Do not run
   these inside a building with wireless IPS containment** — it transmits the
   same deauthentication frames uninvited, and a run cannot tell its drops from
-  yours. See the warning under [Hardware](#hardware).
+  yours. See [where to plug it in](#where-to-plug-it-in-and-what-a-shared-room-does-to-a-measurement).
 - **Moves clients between its radios, and is honest about which moves are
   guaranteed.** The box serves one SSID from every radio it has, so a client can
   be pushed around the box the way a real network pushes it around a building.
@@ -279,6 +280,77 @@ bench practice that follows from it.
   shaping lives, so it reports the link. The *download* leaves by the client's
   own port, which is exactly where downlink shaping sits, so it reports the cap
   being enforced. See [Measuring it yourself](#measuring-it-yourself).
+
+## Where to plug it in, and what a shared room does to a measurement
+
+### ⚠️ Put `eth0` on your own network, never a corporate LAN
+
+A transparent bridge putting many MACs onto one switch port is, to enterprise
+network security, indistinguishable from the thing that security exists to
+stop. Cable the WAN port to your own upstream, a home router, or a lab VLAN.
+
+- **Port security / 802.1X** err-disables the port on seeing a second MAC.
+  That usually needs a network admin to clear, so the person who plugged the
+  box in cannot undo it.
+- **BPDU guard and DHCP snooping** exist to stop exactly this: an unexpected
+  layer-2 device on the port, and — since clients here depend on upstream
+  DHCP crossing the bridge — exactly the traffic snooping blocks.
+- **Wireless IDS** sees an unknown BSSID bridging to the wired side, which is
+  the textbook rogue-AP signature.
+
+**And it corrupts your measurements, which is the part that wastes an
+afternoon.** Wireless IPS *containment* works by transmitting deauthentication
+frames at the rogue AP's clients — so a corporate WIPS produces, uninvited and
+untimed, the same impairment this box produces deliberately. A run inside a
+contained office shows association drops that look like your pattern firing
+and are not, with nothing on the box able to tell the two apart. See
+[Security](#security) for what else stops being true there.
+
+**If you need these features at work, put the box on an isolated lab network
+— and know that a VLAN isolates your bridge, not the air.** The wired side is
+a policy problem with a policy answer; the radio side is a physics problem
+that no network configuration touches. Offices are awash in Wi-Fi, and an
+office belonging to a company that *builds streaming devices* is the worst
+case there is: every desk carries test hardware, most of it associated to
+something, much of it on 2.4 GHz.
+
+That is not a small correction to a measurement. Airtime is shared, so one
+near-idle 802.11n client moved a measured downlink between **356 and
+717 Mbit/s** on this box while transferring 4 KB of its own traffic — a
+station linked at 65 Mbit/s holds the channel roughly 18× longer per byte
+than an 802.11ax one. A room full of them is not a quieter version of that
+effect; it is the same effect, continuously, from devices you do not control
+and cannot quiesce.
+
+### Measuring in a room you do not control
+
+What actually helps, in order:
+
+- **Use the wired downstream port when the radio is not the subject.** It is
+  repeatable to within 1%; nothing over the air comes close.
+- **Check how busy your channel actually is**, with
+  `GET /api/bridge/radios/<iface>/survey`. It reports `busy_ms` against
+  `active_ms` for the **operating channel only** — a radio that is beaconing
+  never visits the others, so their counters read zero and are omitted. Cheap,
+  non-disruptive, and the number to quote beside a result.
+- **To pick a better channel, use `scan and move to the quietest`**, which
+  rates candidates on *measured airtime* rather than on a count of visible
+  networks — the distinction that matters when one loud neighbour beats five
+  idle ones. It **takes the radio down and back up**, so it cannot be done
+  mid-run and it will disconnect that radio's clients. Do it before a run,
+  never during one.
+- **Prefer UNII-3 (149–165) and 80 MHz**, and treat 2.4 GHz in an office as
+  unusable for measurement rather than merely busy.
+- **Re-survey between runs of an A/B.** The environment drifts on its own; the
+  0.1.0 notes recorded the radio baseline moving ~100 Mbit/s over 90 s, which
+  is larger than most effects worth measuring.
+- **Capture the box's own event log alongside every run**, so a drop you did
+  not cause is at least visible as one you did not cause.
+
+**Both halves of this apply to every target.** The wired warning is about what a
+bridge looks like to a switch, and the radio warning is about who else is using
+the air — neither cares whether the daemon is running from an image, a
+container, or packages on a router.
 
 ## Who this is for, and why the Wi-Fi control matters
 
@@ -684,7 +756,7 @@ of them, and the least faithful.
 **1. A programmable step attenuator, in an RF-shielded enclosure.** What a device
 lab uses, and better than the other two in every way that matters to a
 measurement: the level is calibrated in dB, it repeats exactly, and the enclosure
-removes the neighbours — which, per the warning under [Hardware](#hardware), is
+removes the neighbours — which, per [where to plug it in](#where-to-plug-it-in-and-what-a-shared-room-does-to-a-measurement), is
 most of what makes testing over the air hard. It also costs thousands, needs coax
 to antenna ports many consumer devices do not have, and puts the device in a
 metal box where nobody can see the screen or touch it.
@@ -1146,71 +1218,12 @@ traffic, with every measurement above.
 
 ## Hardware
 
-> ### ⚠️ Put `eth0` on your own network, never a corporate LAN
->
-> A transparent bridge putting many MACs onto one switch port is, to enterprise
-> network security, indistinguishable from the thing that security exists to
-> stop. Cable the WAN port to your own upstream, a home router, or a lab VLAN.
->
-> - **Port security / 802.1X** err-disables the port on seeing a second MAC.
->   That usually needs a network admin to clear, so the person who plugged the
->   box in cannot undo it.
-> - **BPDU guard and DHCP snooping** exist to stop exactly this: an unexpected
->   layer-2 device on the port, and — since clients here depend on upstream
->   DHCP crossing the bridge — exactly the traffic snooping blocks.
-> - **Wireless IDS** sees an unknown BSSID bridging to the wired side, which is
->   the textbook rogue-AP signature.
->
-> **And it corrupts your measurements, which is the part that wastes an
-> afternoon.** Wireless IPS *containment* works by transmitting deauthentication
-> frames at the rogue AP's clients — so a corporate WIPS produces, uninvited and
-> untimed, the same impairment this box produces deliberately. A run inside a
-> contained office shows association drops that look like your pattern firing
-> and are not, with nothing on the box able to tell the two apart. See
-> [Security](#security) for what else stops being true there.
->
-> **If you need these features at work, put the box on an isolated lab network
-> — and know that a VLAN isolates your bridge, not the air.** The wired side is
-> a policy problem with a policy answer; the radio side is a physics problem
-> that no network configuration touches. Offices are awash in Wi-Fi, and an
-> office belonging to a company that *builds streaming devices* is the worst
-> case there is: every desk carries test hardware, most of it associated to
-> something, much of it on 2.4 GHz.
->
-> That is not a small correction to a measurement. Airtime is shared, so one
-> near-idle 802.11n client moved a measured downlink between **356 and
-> 717 Mbit/s** on this box while transferring 4 KB of its own traffic — a
-> station linked at 65 Mbit/s holds the channel roughly 18× longer per byte
-> than an 802.11ax one. A room full of them is not a quieter version of that
-> effect; it is the same effect, continuously, from devices you do not control
-> and cannot quiesce.
->
-> What actually helps, in order:
->
-> - **Use the wired downstream port when the radio is not the subject.** It is
->   repeatable to within 1%; nothing over the air comes close.
-> - **Check how busy your channel actually is**, with
->   `GET /api/bridge/radios/<iface>/survey`. It reports `busy_ms` against
->   `active_ms` for the **operating channel only** — a radio that is beaconing
->   never visits the others, so their counters read zero and are omitted. Cheap,
->   non-disruptive, and the number to quote beside a result.
-> - **To pick a better channel, use `scan and move to the quietest`**, which
->   rates candidates on *measured airtime* rather than on a count of visible
->   networks — the distinction that matters when one loud neighbour beats five
->   idle ones. It **takes the radio down and back up**, so it cannot be done
->   mid-run and it will disconnect that radio's clients. Do it before a run,
->   never during one.
-> - **Prefer UNII-3 (149–165) and 80 MHz**, and treat 2.4 GHz in an office as
->   unusable for measurement rather than merely busy.
-> - **Re-survey between runs of an A/B.** The environment drifts on its own; the
->   0.1.0 notes recorded the radio baseline moving ~100 Mbit/s over 90 s, which
->   is larger than most effects worth measuring.
-> - **Capture the box's own event log alongside every run**, so a drop you did
->   not cause is at least visible as one you did not cause.
-
-The warning above applies to **both targets**. A transparent bridge is a
-transparent bridge whether the daemon is running on a Pi or in a container, and
-a corporate switch port objects to it identically.
+Where this box may be plugged in is a **safety** question before it is a parts
+question — see
+[Where to plug it in, and what a shared room does to a measurement](#where-to-plug-it-in-and-what-a-shared-room-does-to-a-measurement),
+which applies to every target: a transparent bridge is a transparent bridge
+whether the daemon runs on a Pi, in a container or on a router, and a corporate
+switch port objects to it identically.
 
 ### Parts for the Pi build
 
@@ -1262,7 +1275,8 @@ An earlier reading of this same box put ntopng at 278 MB and the total at
 539 MB. Nothing was done to it in between; it simply ran for longer, which is
 the caveat below arriving on schedule rather than a separate measurement.
 
-One caveat before buying the smaller board. Nothing bounds ntopng's growth:
+One caveat before buying the smaller board — the Pi 5 ships in 2, 4, 8 and
+16 GB, so the choice here is 2 against 4. Nothing bounds ntopng's growth:
 its config sets no memory limit and redis runs with `maxmemory 0`. It holds
 per-host and per-flow state, so any figure here is a floor measured on a quiet
 segment, not a ceiling. On a busy network over days it will be larger. If you
@@ -1272,9 +1286,6 @@ bigger board — unbounded growth eventually fills a 16 GB card whatever the RAM
 glances has no such problem: it holds a short in-memory window and persists
 nothing, so its 72 MB is flat and it writes nothing to the card. That last part
 is worth having deliberately on an appliance that boots from SD.
-
-There is **no 3 GB Pi 5**; that variant is a Pi 4. The Pi 5 ships in 2, 4, 8
-and 16 GB.
 
 ### Requirements for the container host
 
@@ -2922,7 +2933,7 @@ a surprise.
 below stops being contained: every host on that network inherits the ability to
 re-shape or black-hole every device behind the box. None of the items below are
 new bugs; what changes is that the containment argument they rest on evaporates.
-See the warning under [Hardware](#hardware).
+See [where to plug it in](#where-to-plug-it-in-and-what-a-shared-room-does-to-a-measurement).
 
 - **No login, and plain HTTP.** The interface on `:80` and ntopng on `:3000` have
   no authentication, and neither uses TLS — the box has no domain, so any
