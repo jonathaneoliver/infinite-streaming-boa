@@ -528,15 +528,22 @@ buttons. Measured against a MacBook, an iPhone and a Watch:
 
 | Mode | What the frame carries | Did the client move? | To the radio named? |
 | --- | --- | --- | --- |
-| `steer` | A plain transition request | **No.** Nobody moved. Mac `status_code=1`, iPhone `status_code=7` | — |
-| `warn` | Disassociation Imminent, no timer | **Partly.** Nobody was disassociated — a Mac held 16 s — but 2 of 3 left on their own | **No.** The Mac went to 2.4 GHz |
-| `term` | BSS Termination Included | **Sometimes.** A Watch moved off `phy3`; a MacBook declined twice the same day | **Once.** The Watch landed on `phy1-ap0`, the radio named, and sent no 802.11v response at all |
+| `steer` | A plain transition request | **No.** Declined every time. Mac `status_code=6` and `=1`, iPhone `status_code=7` | — |
+| `warn` | Disassociation Imminent, no timer | **Yes, once escalated.** The same MacBook that had just refused a plain steer answered `status_code=0` | **Yes.** `target_bssid` was the named radio's, and it went there |
+| `term` | BSS Termination Included | **Yes.** MacBook `status_code=0`; a Watch moved off `phy3` on an earlier run | **Yes**, both times |
 | `force` | Disassociation Imminent with a timer, then disassociates | **Always.** The client is put off the radio and rejoins | **Its choice.** The Mac happened to land where it was sent |
 
-Read the last column, not the third. Three of the four can make a client leave;
-only one of them has ever put a client *where it was sent*, and that one did it
-without answering the request — so even the success was invisible to everything
-except a station dump taken afterwards.
+**Escalating the wording changed the client's mind, and that is the finding.**
+Measured 2026-09-23, three requests to one MacBook three seconds apart: the
+plain steer came back `status_code=6`, and the identical request carrying
+Disassociation Imminent came back `status_code=0` with `target_bssid` set to the
+radio it was sent to — which is where it went. Nothing about the radios, the
+signal or the destination changed between them. Only the sentence did.
+
+So the useful control is not "steer" alone but the ladder: ask, then say
+something alarming that is not true, and only then take the choice away. A
+device that ignores the first may honour the second, and the difference is
+invisible unless the modes can be sent one at a time to one client.
 
 None of them writes a deny-list entry — a steer that banned someone would be an
 eviction wearing a request's name. During this write-up the MacBook refused two
