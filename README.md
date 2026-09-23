@@ -1321,10 +1321,20 @@ above does not apply, and the difference is measured rather than claimed:
 
 | | On the Cudy's built-in radios | On the client parts |
 |---|---|---|
-| Channel move | **Announced.** 3 of 3 clients followed; no outage | The AP vanishes and reappears; everyone rejoins |
+| Channel move | **Announced.** 3 of 3 clients followed; no outage | Refused, so the AP is taken down and brought back; everyone rejoins |
 | Transmit power | **Honoured**, ~7 dB per step, live, nobody dropped | `mt7921u` reports 3.00 dBm whatever you ask |
 | Scan while serving | **Keeps its clients** (costs ~3 s of silence) | `mt7921u` must take the BSS down |
 | Throughput through the bridge | **745 Mbit/s** Wi-Fi, 929 wired | — |
+
+**On the client parts, moving a client and moving a radio are different
+problems**, and the second row of that table is only the first of them. A radio
+can be moved — CSA is refused, so its access point goes down and comes back
+elsewhere and everyone rejoins. Moving a *client* to another channel means
+moving it to the other radio, and there a steer is a request the device may
+simply decline: 802.11 has no frame that places a station on a BSS. That is why
+[gather and evict](#the-controls-one-by-one) remove the alternatives with a deny
+list rather than asking. On the Cudy neither workaround is needed for the
+channel itself: the radio moves and takes its clients with it.
 
 **Why it suits this project specifically**, beyond the radios:
 
