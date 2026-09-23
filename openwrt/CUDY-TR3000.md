@@ -526,12 +526,17 @@ hears.
 and the interface offers all four as one control with a mode rather than four
 buttons. Measured against a MacBook, an iPhone and a Watch:
 
-| Mode | What the frame carries | What the clients did |
-| --- | --- | --- |
-| `steer` | A plain transition request | All stayed. Mac `status_code=1`, iPhone `status_code=7` |
-| `warn` | Disassociation Imminent, no timer | hostapd never disassociated anyone (a Mac held 16 s). Two of three left on their own — and not to the AP named |
-| `term` | BSS Termination Included | The AP stayed `ENABLED`. The one client that left went to 2.4 GHz, not where it was sent |
-| `force` | Disassociation Imminent with a timer | Moves the client. It picks where it lands |
+| Mode | What the frame carries | Did the client move? | To the radio named? |
+| --- | --- | --- | --- |
+| `steer` | A plain transition request | **No.** Nobody moved. Mac `status_code=1`, iPhone `status_code=7` | — |
+| `warn` | Disassociation Imminent, no timer | **Partly.** Nobody was disassociated — a Mac held 16 s — but 2 of 3 left on their own | **No.** The Mac went to 2.4 GHz |
+| `term` | BSS Termination Included | **Sometimes.** A Watch moved off `phy3`; a MacBook declined twice the same day | **Once.** The Watch landed on `phy1-ap0`, the radio named, and sent no 802.11v response at all |
+| `force` | Disassociation Imminent with a timer, then disassociates | **Always.** The client is put off the radio and rejoins | **Its choice.** The Mac happened to land where it was sent |
+
+Read the last column, not the third. Three of the four can make a client leave;
+only one of them has ever put a client *where it was sent*, and that one did it
+without answering the request — so even the success was invisible to everything
+except a station dump taken afterwards.
 
 None of them writes a deny-list entry — a steer that banned someone would be an
 eviction wearing a request's name. During this write-up the MacBook refused two

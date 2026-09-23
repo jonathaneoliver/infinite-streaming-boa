@@ -1486,7 +1486,7 @@ and struck off when it is exercised, which three of these were on 2026-09-22/23:
 
 | | Status |
 |---|---|
-| **Steer as a way to place a client** | Still the honest summary, with one exception now on record. A MacBook declined two requests on 2026-09-23 and moved only when the alternatives were removed. But a Watch *did* act on a `term` request and land on the radio it named — silently, sending no 802.11v response at all, which is a client doing the right thing while telling you nothing |
+| **Steer as a way to place a client** | Still the honest summary, and now measured per mode on the Cudy: `steer` moved nobody, `warn` made 2 of 3 leave but not to the named radio, `term` moved a Watch **to the radio named** and was declined twice by a MacBook the same day, `force` always moves a client and lets it pick. One landing out of four modes. See [the per-mode table](openwrt/CUDY-TR3000.md) |
 | **A client accepting a steer onto 5 GHz** | **Done, once.** The same Watch moved `phy3-ap0` (5 GHz) to `phy1-ap0` (5 GHz) after a request. The malformed operating class that once made every 5 GHz request describe a block that does not exist is fixed and stayed fixed |
 | **Per-station signal on the onboard Pi radio** | Absent from `iw station dump` entirely. The USB adapters report it, with per-antenna values, and the interface shows it. Unchanged |
 | **6 GHz** | The adapter is an AXE3000 and the phy offers 59 usable channels with AP mode. The box neither scans nor serves there, and neither Cudy radio is a 6 GHz part |
