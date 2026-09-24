@@ -15,7 +15,7 @@ deliberate and documented so they are not mistaken for defects — see
 
 Nothing yet.
 
-## [0.5.0] — 2026-09-23
+## [0.5.0] — 2026-09-24
 
 **boa installs on a router now — and on a router's own radios, it stops being
 told no.**
@@ -39,7 +39,7 @@ while still serving.
 All of it measured on one Cudy TR3000 over two days, with what did not work
 written down beside what did.
 
-21 pull requests.
+27 pull requests.
 
 ### Two packages, beside LuCI
 
@@ -50,8 +50,28 @@ written down beside what did.
   routers such as the Cudy).
 - **Debian**, as `infinite-streaming-boa` in a signed apt repository, for a Pi
   OS or Debian machine already set up as a bridge.
+- **x86_64**, so a PC or a virtual machine is a target as well. Verified on an
+  OpenWrt 25.12.5 guest: a transparent bridge with a real DHCP lease, an
+  `mt7921u` access point, `kmod-netem` and `kmod-ifb` loading against a real
+  OpenWrt kernel, and **871 Mbit/s through the bridge**. The package no longer
+  declares an architecture it does not need, and the feed publishes all three.
+
+  The generic x86 image ships **no USB ethernet and no USB Wi-Fi drivers**, so
+  an adapter there needs its `kmod-` package before it exists at all. The Pi
+  and the Cudy never notice, because theirs are in the image.
 - **`boa-setup check`**, a read-only walk of every prerequisite a device still
   needs, printing each as OK, WARN or FAIL with the command that fixes it.
+- **`boa-setup convert`**, which does the bridge conversion that `check` used
+  only to describe: the `wan` device becomes a `br-lan` port, `lan` takes DHCP,
+  the DHCP server goes off, the old address is **kept as a rescue interface**,
+  and every AP joins the bridge. `--dry-run` shows the whole plan; a converted
+  box reports there is nothing to do; radios are left alone, because enabling
+  one needs credentials this will not invent.
+
+  Asked for, never automatic. The obvious home was a `uci-defaults` script so a
+  fresh install arrives as a bridge — and OpenWrt runs those **at install
+  time**, so `apk add luci-app-boa` on a router somebody was using would delete
+  its `wan` over the SSH session doing the installing.
 
 ### Moving a radio without moving its clients
 
@@ -152,6 +172,25 @@ is for.
 - The neighbourhood fold, rack counts that froze, controls greyed out on a
   target with no rfkill, and a scan-and-apply choice that was not remembered.
 - `boa` no longer stays pinned in apk's world after an install.
+- **The daemon followed a snapshot of its ports taken when it started.** The
+  init script worked the lists out and passed them on the command line, so a
+  radio or a bridge port appearing afterwards was never noticed. The visible
+  symptom was an access point reported as NOT SERVING with clients associated
+  to it, because the "is this one of ours" test ran against a list that was
+  empty whenever the ports were not named. boad now follows the bridge, and an
+  explicit `-wlan` still pins it.
+- **boa's DNAT rewrote other containers' traffic.** The rule matched a port
+  with no destination at all, and bridged Docker traffic traverses nat
+  PREROUTING — so an unrelated service on the same port answered its own
+  siblings with boa's interface. It is now scoped to destinations that are
+  addresses of the host, lives in its own chain, and **is removed when the
+  container exits**, which it never was: stopping boa used to leave the port
+  black-holed for everything else on the machine.
+- **The LuCI page framed whatever answered on boa's port at the browser's own
+  hostname**, which is wrong behind a tunnel, a published container port or a
+  proxy — it once framed an unrelated application under boa's heading. It now
+  states the whole URL and reports an unreachable one instead of a blank
+  frame.
 
 ### Measured on hardware
 
