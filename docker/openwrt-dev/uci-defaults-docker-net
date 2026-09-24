@@ -1,0 +1,46 @@
+#!/bin/sh
+# Put OpenWrt back on the address Docker assigned, and give boa a bridge.
+#
+# Runs after config_generate, which is the only point where this sticks. netifd
+# would otherwise apply the stock 192.168.1.1 on br-lan and the container would
+# lose its route out, leaving published ports pointing at nothing.
+. /etc/docker-net.env 2>/dev/null || exit 1
+[ -n "${DOCKER_IP:-}" ] || exit 1
+
+# eth0 is Docker's, and is NOT a bridge port. The stock config enslaves it to
+# br-lan, which is what takes the address away.
+uci -q delete network.@device[0]
+uci -q delete network.lan
+uci set network.lan=interface
+uci set network.lan.device='eth0'
+uci set network.lan.proto='static'
+uci set network.lan.ipaddr="$DOCKER_IP"
+[ -n "${DOCKER_GW:-}" ] && uci set network.lan.gateway="$DOCKER_GW"
+uci add_list network.lan.dns='1.1.1.1'
+
+# br-lan exists for boa: it is the bridge the daemon conditions on, and the
+# radios and client ports are added to it by the attach script. Empty here --
+# nothing is moved in until the host does it, and boa needs the bridge to exist
+# before it starts or it comes up with nothing to work on.
+uci set network.boabr=device
+uci set network.boabr.name='br-lan'
+uci set network.boabr.type='bridge'
+# bridge_empty, or netifd does not create a bridge that has no ports yet -- and
+# this one has none until the attach script moves a radio or a NIC in. Without
+# it the attach fails at the first `ip link set ... master br-lan` with
+# "Device does not exist", which reads as a broken script rather than a bridge
+# that was never brought up.
+uci set network.boabr.bridge_empty='1'
+uci set network.boaif=interface
+uci set network.boaif.device='br-lan'
+uci set network.boaif.proto='none'
+
+# No DHCP server. This container is a guest on Docker's bridge, not the
+# authority for it, and its br-lan is bridged to a real LAN that already has
+# one. Serving leases on either would be #329 one layer up.
+uci -q set dhcp.lan.ignore='1'
+uci -q set dhcp.lan.ra='disabled'
+uci -q set dhcp.lan.dhcpv4='disabled'
+
+uci commit
+exit 0
