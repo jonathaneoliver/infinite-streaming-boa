@@ -42,6 +42,7 @@ endef
 define Package/luci-app-boa/install
 	$(INSTALL_DIR) $(1)/www/luci-static/resources/view/boa
 	$(INSTALL_DATA) $(BOA_FILES)/www/luci-static/resources/view/boa/boa.js $(1)/www/luci-static/resources/view/boa/boa.js
+	$(INSTALL_DATA) $(BOA_FILES)/www/luci-static/resources/view/boa/wizard.js $(1)/www/luci-static/resources/view/boa/wizard.js
 	$(INSTALL_DIR) $(1)/usr/share/luci/menu.d
 	$(INSTALL_DATA) $(BOA_FILES)/usr/share/luci/menu.d/luci-app-boa.json $(1)/usr/share/luci/menu.d/luci-app-boa.json
 	$(INSTALL_DIR) $(1)/usr/share/rpcd/acl.d
