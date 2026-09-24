@@ -73,3 +73,30 @@ and documented so they are not rediscovered.
   boa rather than competing with it.
 - **A truly global downlink budget conflicts with client-port pacing.** See
   *Shared bottleneck budget* above.
+- **The container host's onboard AX200 cannot be given to a virtual machine**,
+  though the container takes it happily. The two deployments reach a radio by
+  different mechanisms, and only one of them is free.
+
+  A container shares the host's kernel, so `docker-attach.sh` moves the card
+  with `iw phy <phy> set netns` — the card never leaves the kernel and no
+  address isolation is involved. That is how `SCAN_IF` hands the AX200 over as
+  a listen-only instrument, which is worth doing because #279's finding is about
+  TRANSMITTING: a radio may still receive in the world domain, and one scan
+  heard 15 access points across both bands (#288).
+
+  A guest needs the device itself, which means VFIO, and VFIO can only hand over
+  a whole IOMMU group. Measured 2026-09-24 on the container host: the AX200 at
+  `05:00.0` shares **IOMMU group 8** with the chipset USB 3.1 controller, the
+  SATA controller, a Samsung NVMe and a Realtek RTL8125 2.5GbE NIC. Passing the
+  radio would mean passing the host's storage and USB with it.
+
+  Accepted rather than worked around: the only escape is an ACS-override kernel
+  patch, which defeats the isolation guarantee that makes passthrough safe, on a
+  machine that also runs unrelated containers. The asymmetry that makes this
+  confusing is worth stating plainly — **USB passthrough is not VFIO**. QEMU
+  emulates a host controller and forwards the device over usbfs, so an `mt7921u`
+  dongle passes to the same guest without the IOMMU being consulted at all.
+
+  So a VM target scans with a USB adapter or with its own serving radio (~1.3 s
+  off channel per sweep, which `boa-setup check` already reports). The AX200
+  remains available to the container deployment, which is unaffected.
