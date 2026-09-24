@@ -211,7 +211,7 @@ func (s *bssLoadStore) save() error {
 // abort a boot over -- but it must not pass silently, because the thing being
 // asserted is whether the box is telling the truth.
 func (e *Engine) assertBSSLoad() {
-	for _, w := range e.cfg.WlanPorts {
+	for _, w := range e.WlanPorts() {
 		if e.radioReady(w) != nil {
 			continue
 		}
@@ -489,8 +489,8 @@ func (e *Engine) reapplyBSSLoad() {
 	// a second reason: a corrected figure is a MEASUREMENT, so re-sending it is
 	// how it stays current rather than merely how it survives a restart. This
 	// loop is the refresh.
-	ifaces := make([]string, 0, len(e.cfg.WlanPorts))
-	for _, w := range e.cfg.WlanPorts {
+	ifaces := make([]string, 0, len(e.WlanPorts()))
+	for _, w := range e.WlanPorts() {
 		if ov := e.bssOverride(w); ov.On || ov.Fix {
 			ifaces = append(ifaces, w)
 		}

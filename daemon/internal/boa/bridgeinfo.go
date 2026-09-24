@@ -513,12 +513,17 @@ func (e *Engine) buildBridgeState() BridgeInfo {
 	// different moment for no gain.
 	airSeen := e.airtimeSeen()
 
+	// Hoisted: the port lists are looked up once per pass rather than once per
+	// interface, and every interface in a pass is then classified against the
+	// same answer.
+	effCfg := e.effectiveConfig()
+
 	for _, name := range netInterfaces() {
 		if name == "lo" {
 			continue // not a bridge port, and nothing to draw
 		}
 		in := readIface(name)
-		in.Role = ifaceRole(name, in, e.cfg)
+		in.Role = ifaceRole(name, in, effCfg)
 		// A bridge reports a speed -- br-lan reads 1000 -- and it describes
 		// nothing: the bridge spans an 80MHz radio and a gigabit port at once,
 		// so the number is neither of them. Dropped rather than displayed with
@@ -546,7 +551,13 @@ func (e *Engine) buildBridgeState() BridgeInfo {
 				in.TxPower = e.readTxPower(name, in.Radio.Driver)
 				in.ChanSwitch = e.chanSwitchAbility(in.Radio.Driver)
 			}
-			in.Serving = e.cfg.IsWlan(name)
+			// AGAINST THE EFFECTIVE LIST, not argv. This read `e.cfg.IsWlan`,
+			// which is empty whenever the ports were not named on the command
+			// line -- so a discovered radio serving real clients was reported
+			// as not serving, and the interface said NOT SERVING beside an
+			// access point with stations associated to it. That is the exact
+			// symptom of #366.
+			in.Serving = effCfg.IsWlan(name)
 			in.AirtimePerClient, in.AirtimeCapKnown = airSeen[name]
 			// A scanner is never promoted to RoleAP, even if hostapd answers
 			// for it. It can: a config left behind by an earlier plan, or a
@@ -604,7 +615,7 @@ func (e *Engine) buildBridgeState() BridgeInfo {
 	// reported "has taken no reading yet" for ever -- measured on the container
 	// host 2026-09-11, with the successful scans sitting in the activity log at
 	// the same moment.
-	bi.Notes = bridgeNotes(bi, e.cfg)
+	bi.Notes = bridgeNotes(bi, effCfg)
 	// What each radio has been told to CLAIM about its congestion, beside the
 	// floor of what it is really doing. Both, always: a control that can lie is
 	// only safe while the truth is on screen next to it.
@@ -693,10 +704,33 @@ func bridgeNotes(bi BridgeInfo, cfg Config) []Notice {
 			continue
 		}
 		if in.AP != nil && in.AP.Enabled {
-			out = append(out, Notice{"error", fmt.Sprintf(
-				"%s is serving an access point but the daemon watches %s. "+
-					"Clients on %s are NOT conditioned and do not appear in the device list.",
-				in.Name, strings.Join(cfg.WlanPorts, ", "), in.Name)})
+			// WATCHED OR NOT, and the difference is the whole message.
+			//
+			// This used to say "the daemon watches <list>" unconditionally,
+			// which was true while the list came from argv and a radio that
+			// appeared later could never be in it. Now that the list follows
+			// the bridge (#366), an unwatched radio is rare and a watched one
+			// that is not serving is the common case -- and the old wording
+			// then read "phy6-ap0 is serving an access point but the daemon
+			// watches phy6-ap0", which is nonsense that invites the operator
+			// to go looking for a configuration problem that is not there.
+			watched := false
+			for _, w := range cfg.WlanPorts {
+				if w == in.Name {
+					watched = true
+					break
+				}
+			}
+			if watched {
+				out = append(out, Notice{"warn", fmt.Sprintf(
+					"%s has an access point configured and enabled, but is not "+
+						"serving. Its clients cannot reach the network.", in.Name)})
+			} else {
+				out = append(out, Notice{"error", fmt.Sprintf(
+					"%s is serving an access point but the daemon watches %s. "+
+						"Clients on %s are NOT conditioned and do not appear in the device list.",
+					in.Name, strings.Join(cfg.WlanPorts, ", "), in.Name)})
+			}
 			continue
 		}
 		if in.Up {

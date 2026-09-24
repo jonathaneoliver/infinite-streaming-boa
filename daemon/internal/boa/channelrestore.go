@@ -100,7 +100,7 @@ func (e *Engine) restoreChannels() {
 	if e.cfg.Demo {
 		return
 	}
-	for _, iface := range e.cfg.WlanPorts {
+	for _, iface := range e.WlanPorts() {
 		pref, ok := e.chp.Get(iface)
 		if !ok {
 			continue

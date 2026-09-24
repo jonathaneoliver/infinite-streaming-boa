@@ -1557,7 +1557,7 @@ func (a *API) getAdapterPattern(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{"pattern": nil})
 		return
 	}
-	have := a.e.Config().WlanPorts
+	have := a.e.WlanPorts()
 	if next, notes, changed := reconcileAdapterPattern(p, have); changed {
 		if err := a.e.PatternStore().Put(next); err != nil {
 			// Reported, not swallowed: the operator would otherwise be editing a
@@ -1647,7 +1647,7 @@ func (a *API) playAdapterPattern(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	serving := 0
-	for _, iface := range a.e.Config().WlanPorts {
+	for _, iface := range a.e.WlanPorts() {
 		if a.e.RadioServing(iface) {
 			serving++
 		}
@@ -1682,7 +1682,7 @@ func (a *API) stopAdapterPattern(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var pending []string
-	for _, iface := range a.e.Config().WlanPorts {
+	for _, iface := range a.e.WlanPorts() {
 		if on, known := radioPowered(iface); known && !on {
 			pending = append(pending, iface)
 		}
