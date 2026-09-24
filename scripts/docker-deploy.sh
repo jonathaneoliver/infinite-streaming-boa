@@ -101,7 +101,8 @@ tar -C "$REPO" -czf - docker overlay scripts/docker-attach.sh scripts/docker-hos
 
 # --- host-side plumbing ------------------------------------------------------
 log "installing the attach helpers on $HOST"
-ssh "$HOST" "sudo install -m 0755 $REMOTE_DIR/scripts/docker-attach.sh /usr/local/sbin/boa-attach \
+ssh "$HOST" "sudo install -m 0755 $REMOTE_DIR/scripts/docker-detach.sh /usr/local/sbin/boa-detach \
+  && sudo install -m 0755 $REMOTE_DIR/scripts/docker-attach.sh /usr/local/sbin/boa-attach \
   && sudo install -m 0755 $REMOTE_DIR/docker/boa-attach-watch /usr/local/sbin/boa-attach-watch \
   && sudo install -m 0644 $REMOTE_DIR/docker/boa-attach.service /etc/systemd/system/boa-attach.service \
   && sudo systemctl daemon-reload"

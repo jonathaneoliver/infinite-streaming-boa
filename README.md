@@ -1211,7 +1211,7 @@ cp .env.example .env      # set AP_SSID_DOCKER, AP_PASSWORD, AP_COUNTRY
 scripts/docker-deploy.sh <host> --setup-network
 ```
 
-Then open `http://<host>:8080/`. Later deploys drop `--setup-network` and take
+Then open `http://<host>:18080/`. Later deploys drop `--setup-network` and take
 about a minute. See
 [Run it as a container on a Linux host](#run-it-as-a-container-on-a-linux-host)
 for the walkthrough, including what it installs on the host and how to undo it.
@@ -2839,13 +2839,22 @@ the bridge coming up and an access point starting on each radio.
 ### 3. Use it
 
 ```
-http://<host>:8080/
+http://<host>:18080/
 ```
 
 The container publishes no Docker ports, because it owns an otherwise empty
 network namespace and there is no interface for Docker to bind. The attach step
-installs a DNAT from port 8080 on the host to the container's management
-address instead. That management path is a private veth pair, deliberately
+installs a DNAT from port 18080 on the host to the container's management
+address instead, **scoped to destinations that are addresses of the host
+itself**. Without that scope the rule rewrote container-to-container traffic on
+every Docker network on the machine, because bridged Docker traffic traverses
+nat PREROUTING too -- an unrelated service on the same port answered with boa's
+interface to its own siblings (#329). The port moved off 8080 for the same
+reason: it is the default alt-HTTP port for a great many containerised
+services, so a collision there is near-certain on a shared host.
+
+Stopping the container removes the rules again. They used to outlive it, which
+turned a hijacked port into a black-holed one. That management path is a private veth pair, deliberately
 independent of the bridge having taken a DHCP lease, so the interface is still
 reachable when the uplink is unplugged.
 

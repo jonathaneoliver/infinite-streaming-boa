@@ -12,6 +12,7 @@
 set -u
 
 ATTACH=${ATTACH:-/usr/local/sbin/boa-attach}
+DETACH=${DETACH:-/usr/local/sbin/boa-detach}
 CONTAINER=${CONTAINER:-boa}
 
 log() { echo "boa-attach-watch: $*" >&2; }
@@ -29,14 +30,29 @@ log "watching for $CONTAINER to start"
 # exited immediately, systemd restarted the unit, and it exited again: 882
 # restarts in an hour, each one re-running the attach. Measured on 2026-09-09.
 #
-# The value is not used for anything; only the arrival of a line matters. It is
-# printed rather than dropped so that a future format break shows up in the
-# journal as wrong text instead of as this same silent hot loop.
-docker events --filter "container=$CONTAINER" --filter event=start --format '{{.Action}}' |
-while read -r _ev; do
-  sleep 1
-  log "$CONTAINER started; attaching"
-  "$ATTACH" || log "attach failed"
+# The action IS used now: this watches both ends of the container's life.
+# Watching only `start` was the second half of issue #329 -- everything attach
+# put on the host outlived the container, so stopping boa left a DNAT pointing
+# at an address that no longer answered and a port black-holed for every other
+# container on the machine.
+docker events --filter "container=$CONTAINER" \
+    --filter event=start --filter event=die --format '{{.Action}}' |
+while read -r ev; do
+  case "$ev" in
+    start)
+      sleep 1
+      log "$CONTAINER started; attaching"
+      "$ATTACH" || log "attach failed"
+      ;;
+    die)
+      # `die` rather than `stop`: it fires however the container ended --
+      # stopped, killed, crashed, or taken down by its own healthcheck. A
+      # teardown that only runs on a polite stop is not a teardown.
+      log "$CONTAINER exited; detaching"
+      "$DETACH" || log "detach failed"
+      ;;
+    *) log "unexpected event '$ev'" ;;
+  esac
 done
 
 # A floor on how fast this unit can come back, so a broken event stream degrades
