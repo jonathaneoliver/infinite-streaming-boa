@@ -4,6 +4,22 @@ Runs `boad` on an OpenWrt device as a procd service, next to LuCI, instead of
 on the Raspberry Pi OS image. Measured on a Raspberry Pi 5 with OpenWrt 25.12.5
 (`bcm27xx/bcm2712`) and two MT7961 (`mt7921u`) USB adapters.
 
+Feeds are published for three architectures, and the install snippet below
+picks the right one from the device's own `DISTRIB_ARCH`:
+
+| Architecture | Devices |
+|---|---|
+| `aarch64_cortex-a76` | Raspberry Pi 5 |
+| `aarch64_cortex-a53` | MT7981/MT7986 routers — Cudy TR3000, GL.iNet MT3000 |
+| `x86_64` | a PC, or a virtual machine |
+
+**x86 needs its drivers installing by hand**, which the other two do not: the
+Pi's and the Cudy's radios and NICs are in their images, and the generic x86
+image ships neither USB ethernet nor USB Wi-Fi drivers. A `mt7921u` adapter
+needs `kmod-mt7921u`, an RTL8153 needs `kmod-usb-net-rtl8152`, and without them
+the adapter is simply absent while `boa-setup check` still reports boa's
+dependencies as installed. See #368.
+
 ![boa inside LuCI: Services -> infinite-streaming-boa](../docs/images/openwrt-luci.png)
 
 This file is what any OpenWrt device needs.
