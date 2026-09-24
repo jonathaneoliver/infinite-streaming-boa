@@ -4,6 +4,8 @@
 #
 #   boa-setup check      read-only: every prerequisite, OK / WARN / FAIL,
 #                        with the command that fixes each one
+#   boa-setup convert    turn a stock router into the transparent bridge boa
+#                        needs. Asked for, never automatic: see cmd_convert.
 #
 # `check` changes nothing -- no uci set, no reload, no restart -- so it is safe
 # to run on a router carrying traffic. It exits 1 if anything failed.
@@ -329,6 +331,118 @@ check_service() {
 	[ "$health" = true ] && ok "answering on :$port" || fail "not answering on :$port"
 }
 
+# --- convert -----------------------------------------------------------------
+#
+# EXPLICIT, AND NEVER AUTOMATIC. The obvious home for this is a uci-defaults
+# script shipped in the package, so a fresh install arrives as a bridge. It is
+# the wrong home: OpenWrt runs a package's uci-defaults scripts AT INSTALL TIME
+# (default_postinst in /lib/functions.sh), not only on a first boot. So
+# `apk add luci-app-boa` on a router somebody is using would delete its wan,
+# switch lan to DHCP and turn off its DHCP server -- quite possibly over the
+# SSH session doing the installing.
+#
+# A fresh flash and a working router are not distinguishable from the config:
+# both have lan on 192.168.1.1 with a wan and a DHCP server. So the operator
+# asks for this, or it does not happen.
+cmd_convert() {
+	local dry="" gw uplink oldaddr p
+	[ "${1:-}" = "--dry-run" ] && dry=1
+
+	# Already a bridge? Say so and stop. Running this twice must be harmless.
+	if [ "$(uci -q get network.lan.proto)" = dhcp ] && [ -z "$(uci -q get network.wan)" ]; then
+		echo "Already a transparent bridge: lan is dhcp and there is no wan. Nothing to do."
+		return 0
+	fi
+
+	# The uplink is the wan device, because this is still a router. After the
+	# conversion that same device becomes a br-lan port and boa shapes on it.
+	uplink="$(uci -q get network.wan.device)"
+	[ -n "$uplink" ] || uplink="$(uci -q get network.wan.ifname)"
+	if [ -z "$uplink" ]; then
+		echo "Cannot find the uplink: network.wan names no device." >&2
+		echo "This does not look like a stock OpenWrt router, so nothing has been changed." >&2
+		echo "Convert it by hand -- see openwrt/README.md, 'Prerequisite: a transparent bridge'." >&2
+		return 1
+	fi
+
+	gw="$(ip -4 route show default 2>/dev/null | awk '{ print $3; exit }')"
+	[ -n "$gw" ] || echo "Warning: no default route yet; converting anyway, but the bridge will need one." >&2
+
+	oldaddr="$(uci -q get network.lan.ipaddr)"
+
+	cat <<EOF
+
+boa-setup convert -- this device becomes a transparent bridge.
+
+  uplink port      $uplink   (moves from wan into br-lan)
+  lan              static${oldaddr:+ $oldaddr} -> dhcp, from the upstream router
+  rescue address   ${oldaddr:-192.168.1.1} stays on br-lan, so the device is
+                   still reachable if the lease moves
+  DHCP server      off: the upstream router becomes the only one
+
+THIS WILL INTERRUPT THE NETWORK for a few seconds, and the device's address
+will change to whatever the upstream router hands it. If you are connected
+over the uplink, reconnect on the rescue address.
+
+EOF
+	if [ -n "$dry" ]; then
+		echo "--dry-run: nothing changed."
+		return 0
+	fi
+
+	# br-lan gains the uplink port; wan goes away entirely.
+	uci add_list network.@device[0].ports="$uplink" 2>/dev/null ||
+		uci add_list network.@device[-1].ports="$uplink"
+	uci set network.lan.proto='dhcp'
+	uci -q delete network.lan.ipaddr
+	uci -q delete network.lan.netmask
+	uci -q delete network.wan
+	uci -q delete network.wan6
+
+	# The old lan address is kept as a rescue interface rather than discarded:
+	# it is the address written on the box's label and in the operator's notes.
+	uci set network.rescue=interface
+	uci set network.rescue.device='br-lan'
+	uci set network.rescue.proto='static'
+	uci set network.rescue.ipaddr="${oldaddr:-192.168.1.1}"
+	# netmask ONLY when the address is not already in CIDR form. OpenWrt writes
+	# `192.168.1.1/24` into lan.ipaddr on a current release, and setting both
+	# leaves two statements of the same thing that can disagree later.
+	case "${oldaddr:-192.168.1.1}" in
+		*/*) uci -q delete network.rescue.netmask ;;
+		*)   uci set network.rescue.netmask="$(uci -q get network.lan.netmask || echo 255.255.255.0)" ;;
+	esac
+
+	uci set dhcp.lan.ignore='1'
+	uci set dhcp.lan.ra='disabled'
+	uci set dhcp.lan.dhcpv4='disabled'
+	uci set dhcp.lan.dhcpv6='disabled'
+
+	# Every AP joins the bridge, so a client lands on the real network. The
+	# radios themselves are left exactly as they are: enabling one needs an
+	# SSID and a passphrase, and this script will not invent credentials.
+	for p in $(uci -q show wireless | sed -n 's/^wireless\.\([^.=]*\)=wifi-iface$/\1/p'); do
+		[ "$(uci -q get wireless.$p.mode)" = ap ] && uci set wireless.$p.network='lan'
+	done
+
+	# boa's own config may not exist yet -- converting first and installing boa
+	# afterwards is a perfectly reasonable order, and `uci set` on a missing
+	# config file fails with "Entry not found" rather than creating one.
+	if [ -f /etc/config/boa ]; then
+		uci set boa.main.wan="$uplink"
+		uci commit boa
+	else
+		echo "Note: /etc/config/boa does not exist yet. After installing boa, set"
+		echo "      uci set boa.main.wan=$uplink && uci commit boa"
+	fi
+
+	uci commit network; uci commit dhcp; uci commit wireless
+	echo "Committed. Restarting the network -- the connection will drop briefly."
+	( sleep 1; /etc/init.d/network restart; sleep 6; /etc/init.d/dnsmasq restart ) >/dev/null 2>&1 &
+	echo "Then: boa-setup check"
+	return 0
+}
+
 cmd_check() {
 	printf 'boa-setup check -- read-only; nothing is changed\n'
 	check_access
@@ -344,9 +458,13 @@ cmd_check() {
 }
 
 case "${1:-}" in
-	check) cmd_check ;;
+	check)   cmd_check ;;
+	convert) cmd_convert "${2:-}" ;;
 	*)
-		echo "usage: boa-setup check" >&2
-		echo "  check   read-only: what this device still needs before boa can run on it" >&2
+		echo "usage: boa-setup check | convert [--dry-run]" >&2
+		echo "  check     read-only: what this device still needs before boa can run on it" >&2
+		echo "  convert   turn a stock OpenWrt router into the transparent bridge boa needs." >&2
+		echo "            Interrupts the network and changes the device's address. Never" >&2
+		echo "            runs on its own -- see the comment above cmd_convert for why." >&2
 		exit 2 ;;
 esac
