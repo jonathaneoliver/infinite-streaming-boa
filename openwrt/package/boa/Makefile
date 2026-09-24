@@ -27,8 +27,18 @@ define Package/boa
   CATEGORY:=Network
   TITLE:=Per-device link conditioner for a bridged access point
   URL:=https://github.com/jonathaneoliver/infinite-streaming-boa
-  # boad is built for linux/arm64 only; see scripts/openwrt-package.sh.
-  DEPENDS:=@aarch64 +tc-full +kmod-netem +kmod-ifb +kmod-sched-core \
+  # NO ARCHITECTURE GATE. This carried `@aarch64`, which was true of every
+  # target that had shipped and stopped being true the moment an x86 SDK was
+  # used: the package built, installed and ran on an OpenWrt x86-64 guest on
+  # 2026-09-24, with `boad` serving and kmod-netem loading against a real
+  # OpenWrt kernel. scripts/openwrt-package.sh derives boad's architecture from
+  # the SDK, so the binary and the label agree wherever this is built.
+  #
+  # NO DRIVER DEPENDENCIES EITHER, and that is a gap rather than a decision --
+  # see #368. A device's own NIC and radio drivers are in the image on the Pi
+  # and the Cudy, and absent on x86, where boa installs cleanly onto a box that
+  # cannot see its adapters.
+  DEPENDS:=+tc-full +kmod-netem +kmod-ifb +kmod-sched-core \
 	+kmod-nft-bridge +ip-full +ip-bridge +iw +iperf3
 endef
 

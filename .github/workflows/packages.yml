@@ -44,9 +44,11 @@ env:
   # differs, and apk refuses a package whose label is not the device's.
   #   bcm27xx-bcm2712  Raspberry Pi 5
   #   mediatek-filogic MT7981/MT7986 routers: Cudy TR3000, GL.iNet MT3000, ...
+  #   x86-64           a PC, or a virtual machine
   OPENWRT_TARGETS: >-
     bcm27xx-bcm2712:aarch64_cortex-a76
     mediatek-filogic:aarch64_cortex-a53
+    x86-64:x86_64
 
 jobs:
   build:
