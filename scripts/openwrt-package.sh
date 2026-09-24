@@ -11,7 +11,10 @@
 #   SDK_IMAGE=openwrt/sdk:mediatek-filogic-25.12.5 ./scripts/openwrt-package.sh
 #
 # builds aarch64_cortex-a53, for MediaTek Filogic routers such as the Cudy
-# TR3000. boad is the same static arm64 binary either way.
+# TR3000, and an x86-64 SDK builds for a PC or a virtual machine. boad is
+# cross-compiled to match the SDK -- see the case below, and do not assume
+# arm64: this line used to say the binary was the same either way, and it was
+# only true while every target happened to be arm64.
 #
 # boad is cross-compiled here, as deploy.sh does, with the interface embedded;
 # the OpenWrt SDK then only packages and signs. The SDK is x86-64 only, so on
@@ -30,6 +33,23 @@ die()  { printf '\033[31merror:\033[0m %s\n' "$*" >&2; exit 1; }
 
 SDK_IMAGE="${SDK_IMAGE:-openwrt/sdk:bcm27xx-bcm2712-25.12.5}"
 TARGET="${1:-}"
+
+# THE BINARY'S ARCHITECTURE FOLLOWS THE SDK, and it has to be derived rather
+# than assumed. This was `GOARCH=arm64`, hardcoded, which was accidentally
+# right for every target that has ever shipped -- bcm2712 and filogic are both
+# arm64 -- and silently wrong the first time an x86 SDK was passed: the package
+# is LABELLED x86_64 by the SDK and carries an arm64 boad, so it installs
+# cleanly and dies with "exec format error" on first start. Measured 2026-09-23.
+#
+# Unrecognised is fatal, not a guess. A default here would reintroduce exactly
+# the failure above for the next new target.
+case "$SDK_IMAGE" in
+  *x86-64*)                 GOARCH=amd64 ;;
+  *aarch64*|*bcm2712*|*filogic*|*armsr-armv8*|*mvebu-cortexa72*)
+                            GOARCH=arm64 ;;
+  *)  die "cannot tell which architecture $SDK_IMAGE builds for; add it to the
+case in $0 rather than letting the binary and the package label disagree" ;;
+esac
 KEYS=cache/openwrt-keys
 BUILD=cache/openwrt-build
 OUT=dist/openwrt
@@ -47,11 +67,15 @@ BOA_VERSION="$(printf '%s' "$VER" | sed -E 's/^v//; s/[^0-9.].*$//')"
 BOA_RELEASE="${BOA_RELEASE:-$(date -u +%Y%m%d%H%M)}"
 
 log "Building interface"
-( cd ui && { [ -d node_modules ] || npm install --silent; } && npm run build --silent )
+# npm ci, not a test for the DIRECTORY. The guard was `[ -d node_modules ]
+# || npm install`, which skips the install whenever one has ever run -- so a
+# newly declared dependency is never fetched and the build fails on a module
+# that IS in package.json. d3-sankey did exactly this on 2026-09-23.
+( cd ui && npm ci --silent && npm run build --silent )
 
 mkdir -p "$BUILD" "$OUT"
-log "Building boad $VER for linux/arm64"
-( cd daemon && CGO_ENABLED=0 GOOS=linux GOARCH=arm64 \
+log "Building boad $VER for linux/$GOARCH"
+( cd daemon && CGO_ENABLED=0 GOOS=linux GOARCH="$GOARCH" \
     go build -trimpath -ldflags="-s -w -X main.version=${VER}" -o "../$BUILD/boad" . )
 
 if [ ! -f "$KEYS/private-key.pem" ]; then
