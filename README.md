@@ -2121,6 +2121,124 @@ lsusb -t                             # the adapter's line: 5000M good, 480M not
 lsusb -v -d 0e8d:7961 | grep bcdUSB  # 3.20 good, 2.10 means High-Speed only
 ```
 
+### What the box itself costs in latency
+
+Every figure above is throughput. This is the other half: what being in the path
+costs when **nothing is being conditioned**, which bounds how small a configured
+delay can be and still mean something.
+
+Measured on the Cudy TR3000, 23 September 2026, from one MacBook to one Ubuntu
+host, `ping` at 10 packets per second, no loss on any leg. The wired legs used
+two different USB adapters, because "direct" and "through the bridge" are
+necessarily different cables — see the control below.
+
+| Path | min | avg | max | stddev |
+|---|---|---|---|---|
+| Wired, direct to the switch | 0.301 | 0.561 | 1.233 | 0.156 |
+| Wired, through the bridge | 0.404 | 0.974 | **8.177** | 0.821 |
+| Wi-Fi via boa's own AP | **2.273** | 11.543 | 90.583 | 20.111 |
+| Wi-Fi via the house router | **2.464** | 12.430 | 95.010 | 20.199 |
+
+**On the wire the bridge costs about 0.1 ms, and the number that matters is the
+tail.** A tenth of a millisecond of added floor is nothing. What the bridge
+actually adds is *jitter*: the direct path never exceeded 1.2 ms across 500
+packets, while the bridged path reached 8 ms. Repeating the pair against the
+house router rather than the Ubuntu host gave the same shape — +0.08 ms at the
+floor, a 7 ms maximum — so it is the bridge and not the destination. For a box
+whose job is to impose known conditions, that noise floor is the honest caveat
+on any configured delay below about 10 ms.
+
+**The adapter confound was checked and runs the wrong way.** The two wired legs
+cannot use the same NIC, so both were also pinged against the box's own stack:
+the adapter on the bridged side answered at 0.381 ms against the direct side's
+0.429 ms. The "through the bridge" adapter is the *faster* of the two, so these
+figures understate the bridge rather than flattering it.
+
+**Over the air, none of it is visible.** Wi-Fi's own floor is 2.3 ms — about
+seven times the entire bridged wired round-trip — and its tail reaches 90 ms on
+*both* access points equally, so it is a property of the link and not of the
+bridge. Read the min column and not the average: with a standard deviation of
+20 ms those averages are not stable statistics.
+
+**What produces that tail is NOT established, and the first draft of this
+section said it was.** It claimed power save. Power save is certainly part of
+it, and the direction asymmetry proves as much — pinging the same client from
+the box, where it is a responder with no reason to be awake, is markedly worse
+than pinging outward from it:
+
+| Direction | min | avg | max | deviation |
+|---|---|---|---|---|
+| Client → box, the client initiates and must be awake | 1.895 | 10.502 | 90.113 | 19.251 |
+| Box → client, the client may sleep | 1.770 | **23.431** | **268.213** | 43.229 |
+
+Twice as bad on average and three times as bad at the tail is the signature of
+an access point buffering for a sleeping station. But **the tail does not
+disappear when the client initiates**, and a 90 ms hole in packets a client
+asked for cannot be explained by "the AP could not reach it". Something else is
+also happening — a client setting the power-management bit immediately after
+transmitting, or going off-channel to scan for roaming candidates, are both
+plausible and neither was isolated here.
+
+Worth knowing before anyone tries to settle it from the box: `iw station dump`
+on `mt798x-wmac` reports `authorized` and `WMM/WME` and **no power-save flag at
+all**, so the access point cannot tell you whether a client is asleep.
+
+**And ICMP is the wrong instrument for a streaming client.** A sparse ping of an
+idle device is close to the worst case you can construct for power save: the
+client has nothing of its own to wake for. An HLS player at steady state *does*
+sleep — it fetches one segment per segment duration and idles for the rest — but
+the sleep costs it little, because the *client* initiates each fetch, wakes
+itself to send the request, and stays awake through the response. The tail
+measured here lands on unsolicited traffic, which segment fetches are not. What
+a player actually feels is better measured by the fetches themselves.
+
+On that floor boa was marginally **faster** than the house router, 2.27 ms
+against 2.46 ms, while serving a substantially worse link: −48 dBm on an 80 MHz
+channel at 1200 Mbit/s PHY, against the router's −32 dBm on 160 MHz at 2401.
+Sixteen decibels and twice the width bought no latency. Whatever this box gives
+up in RF, it does not give up in forwarding — which is the measured form of the
+claim made [above](#how-the-conditioning-works), that conditioning is additive
+on a variable radio baseline rather than absolute.
+
+Two caveats. The HTB root qdiscs were attached throughout with nothing
+configured on them, so this is boa idle rather than a bare Linux bridge; and the
+two Wi-Fi legs ran minutes apart on different link parameters, so only the min
+column is a fair comparison between them.
+
+### An announced channel move is seamless, and still costs a client a second
+
+[Channel moves are announced](#channel-manipulation-what-client-class-silicon-will-not-do)
+on hardware that can do it, and the association survives — 23 of 24 client
+crossings kept it. That is not the same as the traffic surviving.
+
+Measured on the Cudy, 23 September 2026, pinging an associated client at 100 Hz
+from the box across five moves driven through `POST .../move-channel`, with the
+gap attributed to the moment of the request rather than taken as the largest in
+the window. In all five the two were the same gap.
+
+| Move | Gap in traffic | What the box reported |
+|---|---|---|
+| ch 40 → 149 | 555 ms | `outage_sec: 0` |
+| ch 149 → 40 | 1185 ms | `outage_sec: 0` |
+| ch 40 → 149 | 967 ms | `outage_sec: 0` |
+| ch 40 → 149 | 855 ms | `outage_sec: 0` |
+| ch 149 → 40 | 395 ms | `outage_sec: 0` |
+
+A baseline of 1000 pings with no move running had a single 20 ms gap, so this is
+not ambient Wi-Fi jitter. Forcing `mode=restart` on the same radio reported 1.26
+and 1.14 seconds and measured client gaps of 4.0 and 23.2 seconds, the longer of
+which also lost a station that did not return.
+
+**Both numbers are true to their definitions and both mislead.** `outage_sec`
+measures how long the *access point* was out of service, which for an announced
+move is genuinely zero, because the BSS never goes down. What a client
+experiences is a different quantity and it is not zero. A second of nothing is a
+buffer event for a video player, which is the only reader this box has.
+
+So: an announced move is worth having — it is half a second against six, and it
+keeps the association — but "no outage" is the AP's point of view, not the
+client's.
+
 ### Measuring it yourself
 
 `iperf3` runs on the box already. From a Mac **joined to the box's SSID**:
