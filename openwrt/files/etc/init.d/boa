@@ -12,23 +12,6 @@ USE_PROCD=1
 
 PROG=/usr/libexec/boa/boad
 
-# bridge_ports <bridge> <wan> <kind>: bridge members that are Wi-Fi (kind=wlan)
-# or wired and not the wan port (kind=lan), space-separated.
-bridge_ports() {
-	local br="$1" wan="$2" kind="$3" p out=""
-	for p in /sys/class/net/"$br"/brif/*; do
-		[ -e "$p" ] || continue
-		p="${p##*/}"
-		[ "$p" = "$wan" ] && continue
-		if [ -e /sys/class/net/"$p"/phy80211 ]; then
-			[ "$kind" = wlan ] && out="$out $p"
-		else
-			[ "$kind" = lan ] && out="$out $p"
-		fi
-	done
-	echo "${out# }"
-}
-
 start_service() {
 	local enabled addr bridge wan wlan lan scan state iperf tls_addr tls_cert tls_key
 
@@ -48,8 +31,13 @@ start_service() {
 	config_get tls_cert main tls_cert '/etc/uhttpd.crt'
 	config_get tls_key  main tls_key  '/etc/uhttpd.key'
 
-	[ -n "$wlan" ] || wlan="$(bridge_ports "$bridge" "$wan" wlan)"
-	[ -n "$lan" ]  || lan="$(bridge_ports "$bridge" "$wan" lan)"
+	# NOT WORKED OUT HERE ANY MORE. This used to call bridge_ports() and pass
+	# the result on the command line, which is a snapshot taken at exec time:
+	# a radio or a port that appeared afterwards was never noticed, and boa
+	# showed less than the box had until someone restarted it. Empty is passed
+	# through, and boad rediscovers the bridge's members as it goes -- see
+	# daemon/internal/boa/ports.go and issue #366. Naming them in
+	# /etc/config/boa still pins them.
 
 	mkdir -p "${state%/*}"
 

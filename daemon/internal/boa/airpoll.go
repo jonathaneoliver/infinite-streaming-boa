@@ -115,7 +115,7 @@ func (e *Engine) airScanOnce() {
 	// the access point taken down. This is how the box discovers which of its
 	// radios is the cheap one without gambling a roomful of clients to find out,
 	// and it happens at most once per radio: the outcome is recorded either way.
-	for _, w := range e.cfg.WlanPorts {
+	for _, w := range e.WlanPorts() {
 		if e.scanCostKnown(w) || !e.radioIdle(w) {
 			continue
 		}
@@ -175,7 +175,7 @@ func (e *Engine) freeScanner() string {
 	}
 	e.mu.RLock()
 	defer e.mu.RUnlock()
-	for _, w := range e.cfg.WlanPorts {
+	for _, w := range e.WlanPorts() {
 		if e.scanFree[w] {
 			return w
 		}

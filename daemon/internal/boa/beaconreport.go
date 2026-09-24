@@ -370,7 +370,7 @@ type beaconTarget struct {
 // with one the client made -- two different quantities at two ends of the link.
 func (e *Engine) beaconTargets(exclude string) []beaconTarget {
 	var out []beaconTarget
-	for _, w := range e.cfg.WlanPorts {
+	for _, w := range e.WlanPorts() {
 		if w == exclude || !hostapdAvailable(w) {
 			continue
 		}
@@ -489,7 +489,7 @@ func (e *Engine) askBeacon(on, mac string, t beaconTarget) (int, error) {
 // than dropped -- a client naming a neighbour's access point is telling us what
 // it would rather be on, which is the same question this feature exists to ask.
 func (e *Engine) noteBeaconReport(mac string, br BeaconReport) {
-	for _, w := range e.cfg.WlanPorts {
+	for _, w := range e.WlanPorts() {
 		if strings.EqualFold(radioBSSID(w), br.BSSID) {
 			br.Iface = w
 			break

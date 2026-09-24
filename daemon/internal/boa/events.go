@@ -250,7 +250,7 @@ func (e *Engine) radioSummary(iface string) string {
 // where it was asked to. Everything done through the interface records itself
 // and then calls syncRadioState, so it is not reported twice.
 func (e *Engine) noteRadioChanges() {
-	for _, w := range e.cfg.WlanPorts {
+	for _, w := range e.WlanPorts() {
 		now := e.radioSummary(w)
 		if was := e.setRadioState(w, now); was != "" && was != now {
 			e.logEvent(EventRadio, w, "", "%s changed: %s → %s", w, was, now)
@@ -305,7 +305,7 @@ func (e *Engine) apServiceState(iface string) string {
 // cycle passes through "off", and notePower has already said so in the operator's
 // own terms; repeating it here would double every press of the button.
 func (e *Engine) noteAPServing() {
-	for _, w := range e.cfg.WlanPorts {
+	for _, w := range e.WlanPorts() {
 		now := e.apServiceState(w)
 		was := e.setAPServing(w, now)
 		if was == "" || was == now {

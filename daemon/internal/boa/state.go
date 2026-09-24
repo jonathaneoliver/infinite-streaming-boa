@@ -228,6 +228,9 @@ const retriesUnsupportedAfter = 100_000
 type Engine struct {
 	mu    sync.RWMutex
 	cfg   Config
+	// ports is the effective port list, rediscovered rather than taken from
+	// argv once. See ports.go and issue #366.
+	ports portCache
 	sh    *Shaper
 	st    *Store
 	pat   *PatternStore
@@ -1152,7 +1155,7 @@ func (e *Engine) tick() {
 		// listed with no port, which is the honest answer: present on the
 		// network, not on a radio, and not shapeable until something says where
 		// it is.
-		if e.cfg.IsWlan(bp.Port) {
+		if e.isWlanNow(bp.Port) {
 			continue
 		}
 		merged[mac] = &acc{medium: bp.Medium, port: bp.Port, present: true}
@@ -1209,7 +1212,7 @@ func (e *Engine) tick() {
 		// table across a roam or a power-save transition, and flapping the list
 		// would be worse than a stale entry. The device stays LISTED either
 		// way; only "present" changes.
-		if e.cfg.IsWlan(sn.Port) {
+		if e.isWlanNow(sn.Port) {
 			// TOLD beats inferred. The grace below exists because absence from
 			// the station table is ambiguous; an explicit disconnect is not, so
 			// a client hostapd has reported leaving is dropped at once rather
@@ -1232,7 +1235,7 @@ func (e *Engine) tick() {
 			continue // not on a port of ours: upstream, or not yet placed
 		}
 		medium := "wired"
-		if e.cfg.IsWlan(sn.Port) {
+		if e.isWlanNow(sn.Port) {
 			medium = "wifi"
 		}
 		merged[mac] = &acc{medium: medium, port: sn.Port, present: true}
