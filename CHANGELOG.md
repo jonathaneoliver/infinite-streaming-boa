@@ -68,6 +68,18 @@ cost 1.0 s and 1.1 s of service on two runs and **84.7 s** on a third, when the
 access point came back with no BSS and had to be rebuilt: the outage a restart
 costs is not a constant, which is the second reason the mechanism is stated.
 
+**`outage_sec: 0` is the access point's view, and not the client's.** It is how
+long the BSS was down, which for an announced switch is genuinely zero — the
+BSS never goes down. What a client experiences is a different quantity, and it
+was measured afterwards, on 2026-09-23: pinging an associated client at 100 Hz
+across five announced moves, the gap in its traffic was **395 to 1185 ms**,
+against a baseline of one 20 ms gap in a thousand pings with no move running.
+
+So an announced move is worth having — half a second against six, and the
+association survives where a restart destroys it — but it is not free, and a
+second of nothing is a buffer event for the video player this box exists to
+test. The README's performance chapter carries the per-move figures.
+
 Which radios can announce is learned by **attempting**, never by asking.
 `iw phy info` lists `channel_switch` on the `mt7921u`, which refuses every form
 of it, so the capability bit returns the opposite of the truth. A refusal is
@@ -149,7 +161,7 @@ in [`openwrt/CUDY-TR3000.md`](openwrt/CUDY-TR3000.md).
 
 | | |
 |---|---|
-| Announced channel switch | 3 of 3 clients followed; `outage_sec: 0` |
+| Announced channel switch | 3 of 3 clients followed; the BSS never went down, and the client lost 0.4–1.2 s of traffic |
 | Forced restart, same radio | 1.0 s, 1.1 s, and once 84.7 s |
 | Transmit power | ~7 dB per step, nobody reassociated |
 | Roaming thresholds | left at 11 dBm, returned at 19 — 8 dB hysteresis |
