@@ -2156,9 +2156,41 @@ figures understate the bridge rather than flattering it.
 
 **Over the air, none of it is visible.** Wi-Fi's own floor is 2.3 ms — about
 seven times the entire bridged wired round-trip — and its tail reaches 90 ms on
-*both* access points equally, which is power save, not the bridge. Read the min
-column and not the average: with a standard deviation of 20 ms those averages
-are not stable statistics.
+*both* access points equally, so it is a property of the link and not of the
+bridge. Read the min column and not the average: with a standard deviation of
+20 ms those averages are not stable statistics.
+
+**What produces that tail is NOT established, and the first draft of this
+section said it was.** It claimed power save. Power save is certainly part of
+it, and the direction asymmetry proves as much — pinging the same client from
+the box, where it is a responder with no reason to be awake, is markedly worse
+than pinging outward from it:
+
+| Direction | min | avg | max | deviation |
+|---|---|---|---|---|
+| Client → box, the client initiates and must be awake | 1.895 | 10.502 | 90.113 | 19.251 |
+| Box → client, the client may sleep | 1.770 | **23.431** | **268.213** | 43.229 |
+
+Twice as bad on average and three times as bad at the tail is the signature of
+an access point buffering for a sleeping station. But **the tail does not
+disappear when the client initiates**, and a 90 ms hole in packets a client
+asked for cannot be explained by "the AP could not reach it". Something else is
+also happening — a client setting the power-management bit immediately after
+transmitting, or going off-channel to scan for roaming candidates, are both
+plausible and neither was isolated here.
+
+Worth knowing before anyone tries to settle it from the box: `iw station dump`
+on `mt798x-wmac` reports `authorized` and `WMM/WME` and **no power-save flag at
+all**, so the access point cannot tell you whether a client is asleep.
+
+**And ICMP is the wrong instrument for a streaming client.** A sparse ping of an
+idle device is close to the worst case you can construct for power save: the
+client has nothing of its own to wake for. An HLS player at steady state *does*
+sleep — it fetches one segment per segment duration and idles for the rest — but
+the sleep costs it little, because the *client* initiates each fetch, wakes
+itself to send the request, and stays awake through the response. The tail
+measured here lands on unsolicited traffic, which segment fetches are not. What
+a player actually feels is better measured by the fetches themselves.
 
 On that floor boa was marginally **faster** than the house router, 2.27 ms
 against 2.46 ms, while serving a substantially worse link: −48 dBm on an 80 MHz
