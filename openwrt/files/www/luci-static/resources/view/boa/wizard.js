@@ -113,6 +113,9 @@ return view.extend({
 		var pw2     = E('input', { 'type': 'password', 'class': 'cbi-input-password' });
 
 		var status = E('div', {});
+		// Assigned below, referenced by the apply handler, which swaps the
+		// whole form out for a summary once it has run.
+		var container;
 
 		var apply = E('button', { 'class': 'cbi-button cbi-button-apply important', 'click': function(ev) {
 			ev.target.blur();
@@ -191,14 +194,43 @@ return view.extend({
 				})
 				.then(function() {
 					ui.hideModal();
-					status.appendChild(E('div', { 'class': 'alert-message success' }, [
-						E('p', {}, [ _('Applied. "%s" is being brought up on every radio.').format(s) ]),
-						E('p', {}, [ pw.value.length
-							? _('The root password is set. The next login will ask for it.')
-							: _('The root password was left as it is.') ]),
-						E('p', {}, [ _('Confirm it from a shell with: boa-setup check') ])
-					]));
+					var setPw = pw.value.length > 0;
 					pw.value = pw2.value = key.value = key2.value = '';
+
+					// THE FORM DOES NOT COME BACK. Left in place it reads as
+					// though nothing happened: every field still filled, Apply
+					// still primed, and a green box underneath that is easy to
+					// miss. This is a first-run page, so once it has run it
+					// says so and gets out of the way.
+					var done = E('div', { 'class': 'cbi-map' }, [
+						E('h2', {}, [ _('boa setup') ]),
+						E('div', { 'class': 'alert-message success' }, [
+							E('p', {}, [ E('strong', {}, [ _('Done.') ]), ' ',
+								_('"%s" is up on %d radio(s), with 802.11k and BSS transition on.').format(s, aps.length) ]),
+							E('p', {}, [ c.length
+								? _('Country %s: DFS channels, 2.4 GHz ch 12/13 and the higher power limits are available.').format(c)
+								: _('No country set, so the radios run on the world domain: no DFS, and 20 dBm.') ]),
+							E('p', {}, [ setPw
+								? _('The root password is set. The next login will ask for it — including SSH, which until now accepted a blank one.')
+								: _('The root password was NOT changed. This device still lets anyone on the LAN log in.') ])
+						]),
+						E('div', { 'class': 'cbi-page-actions' }, [
+							E('a', { 'class': 'cbi-button cbi-button-apply important',
+							         'href': '/cgi-bin/luci/admin/services/boa' }, [ _('Open boa') ]),
+							' ',
+							E('button', { 'class': 'cbi-button', 'click': function() {
+								window.location.reload();
+							} }, [ _('Change these settings') ])
+						])
+					]);
+					container.parentNode.replaceChild(done, container);
+
+					// The change indicator is client-side and was set by
+					// uci.save(). uci.apply() committed, but nothing told the
+					// indicator, so it sits there claiming unsaved changes that
+					// no longer exist. This is what LuCI's own code does after a
+					// programmatic save.
+					try { ui.changes.init(); } catch (e) {}
 				})
 				.catch(function(e) {
 					ui.hideModal();
@@ -212,7 +244,7 @@ return view.extend({
 				});
 		} }, [ _('Apply') ]);
 
-		return E('div', { 'class': 'cbi-map' }, [
+		container = E('div', { 'class': 'cbi-map' }, [
 			E('h2', {}, [ _('boa setup') ]),
 			E('div', { 'class': 'cbi-map-descr' }, [
 				_('The first-run settings a device needs before it can serve clients for boa to condition.'), ' ',
@@ -246,6 +278,8 @@ return view.extend({
 			E('div', { 'class': 'cbi-page-actions' }, [ apply ]),
 			status
 		]);
+
+		return container;
 	},
 
 	handleSaveApply: null,
