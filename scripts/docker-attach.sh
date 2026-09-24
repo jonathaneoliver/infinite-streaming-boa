@@ -84,7 +84,12 @@ usb_net_devices() {
 MGMT_HOST_IP=${MGMT_HOST_IP:-10.123.0.1}
 MGMT_CONT_IP=${MGMT_CONT_IP:-10.123.0.2}
 MGMT_PREFIX=30
-UI_PORT=${UI_PORT:-8080}
+# NOT 8080. It is the default alt-HTTP port for a great many containerised
+# services, so on a shared host a collision is near-certain -- see #329, where
+# the unscoped rule below met exactly that. Scoping the rule is the real fix;
+# moving the port means a collision, when one happens, is a refused bind rather
+# than two services quietly sharing a number.
+UI_PORT=${UI_PORT:-18080}
 
 log() { echo "boa-attach: $*" >&2; }
 die() { log "FATAL: $*"; exit 1; }
@@ -297,20 +302,42 @@ done
 # The container has no published ports: it runs with its own namespace and
 # nothing Docker manages, so `-p` has nothing to bind. A DNAT gives the web
 # interface a door on the host's own address instead.
-if ! iptables -t nat -C PREROUTING -p tcp --dport "$UI_PORT" -j DNAT \
-        --to-destination "$MGMT_CONT_IP:80" 2>/dev/null; then
-  iptables -t nat -A PREROUTING -p tcp --dport "$UI_PORT" -j DNAT \
+#
+# SCOPED TO HOST-LOCAL DESTINATIONS, and that word is the whole of issue #329.
+# This rule was `--dport $UI_PORT -j DNAT` with no destination match at all.
+# Bridged Docker traffic traverses nat PREROUTING, so it rewrote
+# CONTAINER-TO-CONTAINER traffic on every Docker network on the host, not only
+# traffic addressed here. Measured 2026-09-14: an unrelated service on :8080
+# answered with boa's interface to its own sibling containers, ~25,000 packets
+# matched, and a dashboard broke from the moment boa started.
+#
+# `-m addrtype --dst-type LOCAL` is the fix: a packet for another container is
+# addressed to that container, which is not a local address, so it no longer
+# matches. A packet genuinely addressed to this host still does.
+#
+# IN ITS OWN CHAIN, so teardown cannot drift from setup. Removing a rule means
+# repeating its every argument exactly; removing a chain does not, and a rule
+# that outlives the container it points at is the second half of #329.
+boa_nat_chain() {
+  iptables -t nat -N BOA-DNAT 2>/dev/null || true
+  iptables -t nat -F BOA-DNAT
+  iptables -t nat -A BOA-DNAT -p tcp --dport "$UI_PORT" -j DNAT \
     --to-destination "$MGMT_CONT_IP:80"
-fi
-# And from the host itself, which never passes through PREROUTING.
-if ! iptables -t nat -C OUTPUT -p tcp -o lo --dport "$UI_PORT" -j DNAT \
-        --to-destination "$MGMT_CONT_IP:80" 2>/dev/null; then
-  iptables -t nat -A OUTPUT -p tcp -o lo --dport "$UI_PORT" -j DNAT \
-    --to-destination "$MGMT_CONT_IP:80"
-fi
-if ! iptables -C DOCKER-USER -d "$MGMT_CONT_IP" -p tcp --dport 80 -j ACCEPT 2>/dev/null; then
-  iptables -I DOCKER-USER -d "$MGMT_CONT_IP" -p tcp --dport 80 -j ACCEPT
-fi
+  iptables -t nat -C PREROUTING -m addrtype --dst-type LOCAL -j BOA-DNAT 2>/dev/null ||
+    iptables -t nat -A PREROUTING -m addrtype --dst-type LOCAL -j BOA-DNAT
+  # And from the host itself, which never passes through PREROUTING.
+  iptables -t nat -C OUTPUT -o lo -m addrtype --dst-type LOCAL -j BOA-DNAT 2>/dev/null ||
+    iptables -t nat -A OUTPUT -o lo -m addrtype --dst-type LOCAL -j BOA-DNAT
+}
+boa_filter_chain() {
+  iptables -N BOA-FILTER 2>/dev/null || true
+  iptables -F BOA-FILTER
+  iptables -A BOA-FILTER -d "$MGMT_CONT_IP" -p tcp --dport 80 -j ACCEPT
+  iptables -C DOCKER-USER -j BOA-FILTER 2>/dev/null ||
+    iptables -I DOCKER-USER -j BOA-FILTER
+}
+boa_nat_chain
+boa_filter_chain
 
 log "attached. Interfaces now in the container:"
 in_ns ip -br link | sed 's/^/  /' >&2
