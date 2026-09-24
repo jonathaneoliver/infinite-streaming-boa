@@ -4,6 +4,10 @@
 #
 #   boa-setup check      read-only: every prerequisite, OK / WARN / FAIL,
 #                        with the command that fixes each one
+#   boa-setup wizard     the first-run questions -- SSID, passphrase, country,
+#                        root password -- asked once, over the wired LAN. The
+#                        same ground as the LuCI page, for a device with no
+#                        LuCI on it (the Pi image, the container, x86).
 #   boa-setup convert    turn a stock router into the transparent bridge boa
 #                        needs. Asked for, never automatic: see cmd_convert.
 #   boa-setup install-drivers
@@ -646,6 +650,190 @@ cmd_install_wpad() {
 	return 0
 }
 
+# --- wizard ------------------------------------------------------------------
+#
+# The first-boot questions, asked once, over the wired LAN.
+#
+# OVER THE WIRE IS NOT A CHOICE. A device fresh from a flash ships both
+# wifi-ifaces with `option disabled '1'`, so there is no access point to join --
+# measured on a factory-reset Cudy TR3000, 2026-09-24: 0 wireless interfaces and
+# no hostapd running. Wi-Fi cannot be configured over Wi-Fi here, and the LAN
+# port is the way in (`br-lan` holds only the lan port at that stage).
+#
+# NOT A uci-defaults SCRIPT, for the reason spelled out above cmd_convert:
+# OpenWrt runs those AT INSTALL TIME as well as on a first boot, so a wizard
+# there would reconfigure a router somebody is using. A boot-time script also
+# has no terminal to ask from. So the operator runs this, and it asks.
+#
+# WHAT IT ASKS FOR, in the order that matters:
+#
+#  - The root password. A fresh box has NONE: on the same reset device, ssh
+#    logged in with no password at all and ubus accepted {"password":""}. This
+#    is the most valuable thing here, and it is what `check` fails on.
+#  - The SSID, defaulting to the board name and the last two octets of the LAN
+#    MAC. A MAC is in every beacon, so a name built from it gives nothing away.
+#  - The passphrase. NEVER derived from the MAC, for exactly that reason --
+#    a derived key is readable by anyone in radio range.
+#  - The country, OPTIONAL. Measured on the same box: with no country set
+#    anywhere and the regulatory domain at 00, both radios came up ENABLED,
+#    2.4 GHz ch 1 and 5 GHz ch 40, capped at 20 dBm. A country is worth having
+#    -- it unlocks DFS, ch 12/13 and 3-6 dB -- but it is not a prerequisite,
+#    and a wrong one is a regulatory answer, so this offers and never guesses.
+#
+# It also turns on ieee80211k and bss_transition per AP. Those are not cosmetic
+# here: without them `measure` is refused and `steer` fails, which is most of
+# what boa does to a radio, and `check` warns about each one separately.
+default_ssid() {
+	local m mac
+	m="$(awk '{print tolower($1)}' /tmp/sysinfo/model 2>/dev/null | tr -cd 'a-z0-9')"
+	[ -n "$m" ] || m=boa
+	mac="$(cat /sys/class/net/br-lan/address 2>/dev/null ||
+	       cat /sys/class/net/eth0/address 2>/dev/null)"
+	mac="$(printf '%s' "$mac" | tr -d ':' | tr 'A-Z' 'a-z' | sed 's/.*\(....\)$/\1/')"
+	[ -n "$mac" ] && printf '%s-%s' "$m" "$mac" || printf '%s' "$m"
+}
+
+ask() {
+	local p="$1" d="$2" a
+	[ -n "$d" ] && printf '%s [%s]: ' "$p" "$d" >&2 || printf '%s: ' "$p" >&2
+	read -r a
+	[ -n "$a" ] || a="$d"
+	printf '%s' "$a"
+}
+
+cmd_wizard() {
+	local dry="" ssid key key2 country cur ifaces devs i d n=0
+	[ "${1:-}" = "--dry-run" ] && dry=1
+
+	# Refused rather than half-done: without a terminal every prompt would take
+	# its default silently, and the operator would be told a box was configured
+	# with an SSID and no passphrase that nobody chose.
+	[ -t 0 ] || { echo "boa-setup wizard has to be run interactively (it asks questions)." >&2
+	              echo "Open an ssh session to the device and run it there." >&2; return 1; }
+
+	ifaces="$(uci -q show wireless | sed -n 's/^wireless\.\([^.=]*\)=wifi-iface$/\1/p')"
+	devs="$(uci -q show wireless | sed -n 's/^wireless\.\([^.=]*\)=wifi-device$/\1/p')"
+	[ -n "$devs" ] || { echo "No radios in /etc/config/wireless: nothing to configure." >&2; return 1; }
+
+	echo "boa-setup wizard -- what this device needs before it can serve clients."
+	echo "Blank keeps the value in brackets. Ctrl-C leaves everything unchanged."
+	echo
+
+	cur="$(uci -q get wireless.$(echo "$ifaces" | head -1).ssid)"
+	[ -z "$cur" ] || [ "$cur" = OpenWrt ] && cur="$(default_ssid)"
+	ssid="$(ask 'Wi-Fi network name (SSID)' "$cur")"
+	case "${#ssid}" in 0) echo "An SSID is required." >&2; return 1 ;; esac
+	[ "${#ssid}" -gt 32 ] && { echo "An SSID is at most 32 characters." >&2; return 1; }
+
+	echo "Passphrase: 8-63 characters, or empty for an open network."
+	printf 'Wi-Fi passphrase: ' >&2; read -s -r key; printf '\n' >&2
+	if [ -n "$key" ]; then
+		[ "${#key}" -lt 8 ] || [ "${#key}" -gt 63 ] && {
+			echo "A WPA passphrase is 8 to 63 characters." >&2; return 1; }
+		printf 'Again: ' >&2; read -s -r key2; printf '\n' >&2
+		[ "$key" = "$key2" ] || { echo "They do not match." >&2; return 1; }
+	else
+		echo "  (open network -- anyone in range can join and boa will shape them)"
+	fi
+
+	echo
+	echo "Country unlocks DFS channels, 2.4 GHz ch 12/13 and 3-6 dB of power."
+	echo "Leave it empty and the radios still work, on the world domain's"
+	echo "channels at 20 dBm. A wrong one is a regulatory answer, so it is asked."
+	country="$(ask 'Country code (GB, US, DE, ... or empty)' "$(uci -q get wireless.$(echo "$devs" | head -1).country)")"
+	country="$(printf '%s' "$country" | tr 'a-z' 'A-Z')"
+	case "$country" in
+		'') ;;
+		00) echo "'00' is not a country: hostapd rejects it as an invalid country_code." >&2
+		    echo "Leave it empty instead -- that is the world domain, and it works." >&2; return 1 ;;
+		[A-Z][A-Z]) ;;
+		*)  echo "A country code is two letters." >&2; return 1 ;;
+	esac
+
+	echo
+	echo "About to set, on every access point on this device:"
+	echo "  SSID:       $ssid"
+	echo "  Encryption: $( [ -n "$key" ] && echo 'psk2 (WPA2)' || echo 'none (open)' )"
+	echo "  Country:    ${country:-<unset -- world domain>}"
+	echo "  Also:       radios enabled, ieee80211k and bss_transition on,"
+	echo "              LuCI's check-for-firmware-upgrades popup turned off"
+	[ "$(ask 'Apply' 'yes')" = yes ] || { echo "Nothing changed."; return 0; }
+
+	for i in $ifaces; do
+		[ "$(uci -q get wireless.$i.mode)" = ap ] || continue
+		n=$((n + 1))
+		[ -n "$dry" ] && { echo "  uci set wireless.$i.ssid='$ssid' (+encryption, key, 11k/v, disabled=0)"; continue; }
+		uci set wireless.$i.ssid="$ssid"
+		uci set wireless.$i.disabled=0
+		uci set wireless.$i.ieee80211k=1
+		uci set wireless.$i.bss_transition=1
+		if [ -n "$key" ]; then
+			uci set wireless.$i.encryption=psk2
+			uci set wireless.$i.key="$key"
+		else
+			uci set wireless.$i.encryption=none
+			uci -q delete wireless.$i.key
+		fi
+	done
+	[ "$n" -gt 0 ] || { echo "No access-point interfaces found to configure." >&2; return 1; }
+
+	for d in $devs; do
+		[ -n "$dry" ] && { echo "  uci set wireless.$d.country='$country' (+disabled=0)"; continue; }
+		uci -q delete wireless.$d.disabled
+		if [ -n "$country" ]; then uci set wireless.$d.country="$country"
+		# An empty answer means the world domain, which is what an ABSENT option
+		# gives. A literal '00' written here is what hostapd refuses to parse, so
+		# the option is deleted rather than blanked.
+		else uci -q delete wireless.$d.country; fi
+	done
+
+	if [ -n "$dry" ]; then
+		echo "  uci commit wireless && wifi"
+		[ -z "$(uci -q get attendedsysupgrade.client.login_check_for_upgrades)" ] &&
+			echo "  uci set attendedsysupgrade.client.login_check_for_upgrades='0'"
+		echo "  passwd   (asked for separately, interactively)"
+		echo "--dry-run: nothing changed."
+		return 0
+	fi
+
+	uci commit wireless
+	echo "Reloading Wi-Fi..."
+	wifi
+	echo "Configured $n access point(s)."
+
+	# LuCI's firmware-upgrade dialog, which asks on EVERY Status -> Overview
+	# load until it is answered once. It is driven by the preference being
+	# UNSET, not by checking being enabled -- 0 is "do not check", 1 is "check
+	# and notify", and absent is "ask me again". A factory-reset box is absent,
+	# so the popup is the default experience and the `Close` button dismisses
+	# it without recording anything.
+	#
+	# Off, because answering yes has LuCI fetch .versions.json, a profiles.json
+	# and the sysupgrade API from the downloads site every time that page is
+	# opened, and a box sitting on a bench conditioning traffic should not make
+	# outbound calls nobody asked for. Only when UNSET: an operator who turned
+	# checking on meant it.
+	if [ -z "$(uci -q get attendedsysupgrade.client.login_check_for_upgrades)" ]; then
+		uci set attendedsysupgrade.client.login_check_for_upgrades='0'
+		uci commit attendedsysupgrade
+		echo "Turned off LuCI's check-for-firmware-upgrades popup."
+	fi
+
+	# LAST, and on purpose: it replaces this session's own credentials. Anything
+	# that failed above is still fixable over the ssh session that is open.
+	case "$(awk -F: '$1 == "root" { print $2 }' /etc/shadow 2>/dev/null)" in
+		''|'*'|'!')
+			echo
+			echo "This device has no root password: anyone on the LAN can log in."
+			passwd root ;;
+		*)  echo "root already has a password (change it with: passwd)" ;;
+	esac
+
+	echo
+	echo "Done. Check it with: boa-setup check"
+	return 0
+}
+
 # --- convert -----------------------------------------------------------------
 #
 # EXPLICIT, AND NEVER AUTOMATIC. The obvious home for this is a uci-defaults
@@ -950,10 +1138,15 @@ case "${1:-}" in
 	plan-channels) cmd_plan_channels "${2:-}" ;;
 	install-drivers) cmd_install_drivers "${2:-}" ;;
 	install-wpad)    shift; cmd_install_wpad "$@" ;;
+	wizard)  cmd_wizard "${2:-}" ;;
 	*)
-		echo "usage: boa-setup check | convert [--dry-run] | plan-channels [--dry-run]" >&2
-		echo "                | install-drivers [--dry-run] | install-wpad [--dry-run] [--force]" >&2
+		echo "usage: boa-setup check | wizard [--dry-run] | convert [--dry-run]" >&2
+		echo "                | plan-channels [--dry-run] | install-drivers [--dry-run]" >&2
+		echo "                | install-wpad [--dry-run] [--force]" >&2
 		echo "  check          read-only: what this device still needs before boa can run on it" >&2
+		echo "  wizard         ask for the SSID, passphrase, country and root password a fresh" >&2
+		echo "                 device needs, and set them. Over the wired LAN: a fresh device" >&2
+		echo "                 has its radios disabled, so there is no network to join." >&2
 		echo "  convert        turn a stock OpenWrt router into the transparent bridge boa needs." >&2
 		echo "                 Interrupts the network and changes the device's address. Never" >&2
 		echo "                 runs on its own -- see the comment above cmd_convert for why." >&2
