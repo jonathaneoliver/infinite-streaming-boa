@@ -6,6 +6,9 @@
 #                        with the command that fixes each one
 #   boa-setup convert    turn a stock router into the transparent bridge boa
 #                        needs. Asked for, never automatic: see cmd_convert.
+#   boa-setup install-wpad
+#                        replace the stock wpad-basic with the full build, so
+#                        steer and measure work. Refuses while APs are up.
 #   boa-setup install-drivers
 #                        install the kmod packages for USB adapters that have
 #                        no driver -- what `check` describes, done.
@@ -200,11 +203,10 @@ check_hostapd() {
 		ok "$full: 802.11k/v commands available"
 	elif [ -n "$basic" ]; then
 		fail "$basic has no BSS transition management: steer fails, measure is refused"
-		fix "apk del $basic && apk add wpad-mbedtls && /etc/init.d/wpad enable && /etc/init.d/wpad start"
-		fix "start wpad BEFORE any wifi reload: the swap leaves it stopped, and a reload then brings no AP up"
+		fix "boa-setup install-wpad"
 	else
 		fail "no wpad installed: nothing can run an access point"
-		fix "apk add wpad-mbedtls"
+		fix "boa-setup install-wpad"
 	fi
 	if ubus list hostapd >/dev/null 2>&1; then
 		ok "hostapd is running"
@@ -603,6 +605,110 @@ cmd_install_drivers() {
 	return 0
 }
 
+# --- install-wpad ------------------------------------------------------------
+#
+# The swap `check` prints, done -- on the box where it is safe to do it.
+#
+# A stock image ships wpad-basic-mbedtls, which has no BSS transition
+# management: steer fails and measure is refused. Every clean install so far has
+# needed the same two commands typed by hand.
+#
+# IT CANNOT BE A DEPENDS, which is the obvious fix and does not work. The wpad
+# variants declare a mutual `conflicts`, because each provides hostapd and
+# wpa-supplicant, so apk will never replace one with the other to satisfy an
+# add. Measured on a factory-reset Cudy TR3000, OpenWrt 25.12.5, 2026-09-24:
+#
+#   # apk add wpad-mbedtls
+#   ERROR: unable to select packages:
+#     wpad-basic-mbedtls-...-r2:
+#       conflicts: wpad-mbedtls-...-r2[hostapd=...-r2]
+#
+# A stock image adds a second reason on top: it ships both wpad-basic and
+# hostapd-common at -r1 while the feed carries -r2, and kmod-mac80211 depends
+# on hostapd-common, so apk will not upgrade it to satisfy an add either. Both
+# reasons dissolve the same way -- remove the basic variant first, which frees
+# the upgrade as well as the conflict:
+#
+#   (1/2) Upgrading hostapd-common (...-r1 -> ...-r2)
+#   (2/2) Installing wpad-mbedtls (...-r2)
+#
+# So `DEPENDS:=+wpad-mbedtls` would not give boa the full hostapd -- it would
+# make boa uninstallable. This has to be a sequence. Checked at matching
+# revisions too, where only the conflict remains: the add still fails.
+#
+# NOT WHILE ACCESS POINTS ARE UP. The del stops the service running every AP on
+# the box, and if anything reloads wifi before wpad is started again they all
+# stay down. On a stock image that risk is absent: both wifi-ifaces ship
+# `disabled '1'`, so a fresh box is serving nothing and there is nothing to
+# interrupt -- measured on the same box, 0 wireless interfaces and no hostapd
+# before the swap and after it. That is the case this automates. A box already
+# carrying clients is the case that still wants a human, and says so.
+running_aps() { ubus list 2>/dev/null | grep -c '^hostapd\.'; }
+
+cmd_install_wpad() {
+	local dry="" force="" basic="" full="" p aps
+	for p in "$@"; do
+		case "$p" in
+			--dry-run) dry=1 ;;
+			--force)   force=1 ;;
+		esac
+	done
+
+	for p in $(apk info 2>/dev/null | grep -E '^wpad'); do
+		case "$p" in
+			wpad-basic*|wpad-mini*) basic="$p" ;;
+			*)                      full="$p" ;;
+		esac
+	done
+
+	if [ -n "$full" ]; then
+		echo "Nothing to do: $full is installed, and has the 802.11k/v commands."
+		return 0
+	fi
+
+	aps="$(running_aps)"; aps="${aps:-0}"
+	if [ -n "$basic" ] && [ "$aps" -gt 0 ] && [ -z "$force" ]; then
+		echo "$basic is installed, and $aps access point(s) are running." >&2
+		echo "Swapping it stops hostapd: every one of them goes down, and stays down" >&2
+		echo "if anything reloads wifi before wpad is started again. Re-run with" >&2
+		echo "--force to accept that, or do it when the box is serving nobody." >&2
+		return 1
+	fi
+
+	[ -n "$basic" ] && echo "apk del $basic"
+	echo "apk add wpad-mbedtls"
+	echo "/etc/init.d/wpad enable && /etc/init.d/wpad start"
+	if [ -n "$dry" ]; then
+		echo "--dry-run: nothing installed."
+		return 0
+	fi
+
+	if [ -n "$basic" ]; then
+		apk del "$basic" || { echo "could not remove $basic; nothing changed" >&2; return 1; }
+	fi
+	# From here the box has NO wpad at all, so a failure below leaves it unable
+	# to run an access point. Said plainly rather than left to be discovered as
+	# radios that never come up.
+	apk add wpad-mbedtls || {
+		echo "wpad-mbedtls did not install, and $basic is already removed: this box" >&2
+		echo "cannot run an access point until it does. Fix the network, then:" >&2
+		echo "  boa-setup install-wpad" >&2
+		return 1
+	}
+	# BEFORE anything reloads wifi -- the ordering trap above.
+	/etc/init.d/wpad enable
+	/etc/init.d/wpad start
+	echo
+	# Measured 2026-09-24: starting wpad brings every configured access point
+	# back by itself -- an AP up before the swap was ENABLED again after it,
+	# with no wifi reload. Said conditionally rather than promised, because the
+	# one time an AP did NOT come back was a reload racing the start.
+	echo "Installed and started. Configured access points come back with it;"
+	echo "if one did not, bring it up with: wifi up <radio>"
+	echo "Check with: boa-setup check"
+	return 0
+}
+
 # --- convert -----------------------------------------------------------------
 #
 # EXPLICIT, AND NEVER AUTOMATIC. The obvious home for this is a uci-defaults
@@ -906,9 +1012,10 @@ case "${1:-}" in
 	convert) cmd_convert "${2:-}" ;;
 	plan-channels) cmd_plan_channels "${2:-}" ;;
 	install-drivers) cmd_install_drivers "${2:-}" ;;
+	install-wpad)    shift; cmd_install_wpad "$@" ;;
 	*)
 		echo "usage: boa-setup check | convert [--dry-run] | plan-channels [--dry-run]" >&2
-		echo "                | install-drivers [--dry-run]" >&2
+		echo "                | install-drivers [--dry-run] | install-wpad [--dry-run] [--force]" >&2
 		echo "  check          read-only: what this device still needs before boa can run on it" >&2
 		echo "  convert        turn a stock OpenWrt router into the transparent bridge boa needs." >&2
 		echo "                 Interrupts the network and changes the device's address. Never" >&2

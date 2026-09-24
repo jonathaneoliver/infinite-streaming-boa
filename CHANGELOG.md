@@ -27,6 +27,20 @@ deliberate and documented so they are not mistaken for defects — see
   it arrives on PCIe. PCI radios are enumerated before the USB ones, since a card
   in a slot is the serving radio on such a host and the dongles are spares.
 
+- **`boa-setup install-wpad`**, which replaces the stock `wpad-basic-mbedtls`
+  with the full build so `steer` and `measure` work. Every clean install had
+  needed the same two commands by hand.
+
+  It refuses while any access point is running, because the swap stops the
+  service that serves them, and takes `--force` to say you accept that. A
+  device fresh from a flash has nothing to refuse over: both `wifi-iface`s
+  ship `option disabled '1'`, so it is serving nobody.
+
+  This cannot be a package dependency. The wpad variants declare a mutual
+  `conflicts`, each providing `hostapd` and `wpa-supplicant`, so
+  `DEPENDS:=+wpad-mbedtls` would not install the full hostapd beside the basic
+  one — it would make boa uninstallable on a stock image.
+
 ### Fixed
 
 - **`scripts/docker-detach.sh` was never shipped to the target**, so the undo step
