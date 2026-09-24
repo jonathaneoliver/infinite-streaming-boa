@@ -1,4 +1,16 @@
 {
+	"admin/services/boa_wizard": {
+		"title": "boa setup",
+		"order": 9,
+		"action": {
+			"type": "view",
+			"path": "boa/wizard"
+		},
+		"depends": {
+			"acl": [ "luci-app-boa-wizard" ]
+		}
+	},
+
 	"admin/services/boa": {
 		"title": "infinite-streaming-boa",
 		"order": 10,

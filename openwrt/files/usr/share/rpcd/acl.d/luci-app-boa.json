@@ -4,5 +4,25 @@
 		"read": {
 			"uci": [ "boa" ]
 		}
+	},
+
+	"luci-app-boa-wizard": {
+		"description": "Set a device's Wi-Fi and root password from the boa setup page",
+		"read": {
+			"uci": [ "wireless", "attendedsysupgrade" ],
+			"ubus": {
+				"system": [ "board" ],
+				"luci-rpc": [ "getNetworkDevices" ]
+			}
+		},
+		"write": {
+			"uci": [ "wireless", "attendedsysupgrade" ],
+			"ubus": {
+				"luci": [ "setPassword" ]
+			},
+			"file": {
+				"/sbin/wifi": [ "exec" ]
+			}
+		}
 	}
 }
