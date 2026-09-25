@@ -117,3 +117,29 @@ func TestTheWrittenListIsTheListThatIsReadBack(t *testing.T) {
 		t.Fatalf("round trip lost a port: %v -> %q -> %v", ports, strings.Join(ports, " "), back)
 	}
 }
+
+// #387: a configured scanner that is absent must be SAID, not just missed.
+//
+// The box keeps serving and conditioning when its listen-only radio goes away,
+// so nothing an operator would notice breaks -- measured on a Cudy TR3000,
+// 2026-09-25, where the only thing that reported it was `boa-setup check` from
+// a shell, while the interface showed an empty neighbourhood for no stated
+// reason.
+func TestMissingPortsNamesOnlyTheAbsentOnes(t *testing.T) {
+	present := map[string]bool{"phy2-scan": true}
+	exists := func(n string) bool { return present[n] }
+
+	got := missingPorts([]string{"phy2-scan", "phy3-scan", ""}, exists)
+
+	if len(got) != 1 || got[0] != "phy3-scan" {
+		t.Errorf("missingPorts() = %v, want [phy3-scan]: the present one is fine and the empty entry is not a port", got)
+	}
+}
+
+// The inverse: with nothing configured there is nothing to report, so a box
+// that never had a scanner does not grow a warning about one.
+func TestNoScanPortsMeansNoComplaint(t *testing.T) {
+	if got := missingPorts(nil, func(string) bool { return true }); len(got) != 0 {
+		t.Errorf("missingPorts() = %v, want none when none are configured", got)
+	}
+}
