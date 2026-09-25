@@ -773,21 +773,63 @@ cmd_wizard() {
 	# derived or generated -- never invented. See cmd_firstrun for what is
 	# deliberately left alone: the root password, and convert.
 	if [ "${1:-}" = "--defaults" ]; then
-		ssid="$(default_ssid)"
+		local conf="" rootpw="" doconv="" src="generated"
+		conf="$(firstrun_conf_find)" && src="$conf"
+		if [ -n "$conf" ]; then
+			ssid="$(firstrun_conf_get ssid "$conf")"
+			key="$(firstrun_conf_get key "$conf")"
+			country="$(firstrun_conf_get country "$conf" | tr 'a-z' 'A-Z')"
+			rootpw="$(firstrun_conf_get root_password "$conf")"
+			doconv="$(firstrun_conf_get convert "$conf")"
+		fi
+		[ -n "$ssid" ] || ssid="$(default_ssid)"
 		# /dev/urandom through tr, because a box this fresh has no openssl and
 		# no password manager. 16 characters from an unambiguous alphabet: it
 		# gets read off a screen and typed into a phone.
-		key="$(tr -dc 'abcdefghjkmnpqrstuvwxyz23456789' < /dev/urandom | head -c 16)"
-		country=""
+		[ -n "$key" ] || key="$(tr -dc 'abcdefghjkmnpqrstuvwxyz23456789' < /dev/urandom | head -c 16)"
+		case "$country" in
+			00) echo "firstrun: country '00' is not a country; hostapd rejects it. Ignoring." >&2
+			    country="" ;;
+			''|[A-Z][A-Z]) ;;
+			*)  echo "firstrun: country '$country' is not two letters. Ignoring." >&2
+			    country="" ;;
+		esac
+
 		apply_wizard "$ssid" "$key" "$country" || return 1
-		firstrun_note "ran unattended $(date '+%Y-%m-%d %H:%M')
-  SSID:       $ssid
-  passphrase: $key
-  country:    none -- the world domain, 20 dBm, no DFS
-  root password NOT set, and the bridge NOT converted: both need a person.
+
+		# THE TWO A BOX MAY NOT DECIDE, done here only because a person wrote
+		# them down. Without the file they stay undone and check keeps saying so.
+		if [ -n "$rootpw" ]; then
+			if printf '%s\n%s\n' "$rootpw" "$rootpw" | passwd root >/dev/null 2>&1; then
+				rootpw="set from $src"
+			else
+				rootpw="FAILED to set -- the box is still open"
+			fi
+		else
+			rootpw="not set: no root_password given, so anyone on the LAN can log in"
+		fi
+
+		firstrun_note "ran unattended $(date '+%Y-%m-%d %H:%M'), from $src
+  SSID:          $ssid
+  passphrase:    $key
+  country:       ${country:-none -- the world domain, 20 dBm, no DFS}
+  root password: $rootpw
   Change any of it: boa-setup wizard, or Services -> boa setup"
+
+		# Removed once read: it carries a password in clear, and what it did is
+		# recorded above instead.
+		[ -n "$conf" ] && rm -f "$conf"
+
 		echo "No one set this box up, so it brought itself up:"
 		sed 's/^/  /' "$FIRSTRUN_STATE"
+
+		case "$doconv" in
+			1|y|yes|true)
+				echo
+				echo "convert=yes in $src: turning this into a transparent bridge."
+				cmd_convert ;;
+			*) [ -n "$conf" ] && echo "  the bridge was NOT converted (set convert=yes to ask for it)" ;;
+		esac
 		return 0
 	fi
 
@@ -955,6 +997,47 @@ apply_wizard() {
 #    derived from the MAC, which is in every beacon.
 #  - No country, so the world domain applies -- measured: both bands come up at
 #    20 dBm. Guessing a country is a regulatory answer, not a default.
+# A FILE THE OWNER WROTE, which is different from a default the box invented.
+#
+# This is what lets an unattended first boot finish the job. Everything the
+# wizard asks can be answered here, INCLUDING the two things a box may not
+# decide for itself -- the root password, and whether to convert -- because a
+# file is a person's instruction, not a guess.
+#
+# Looked for in the order below. /boot is first because on x86 and the Pi the
+# partition is mountable from another machine, so the file can be dropped in
+# before the device has ever been switched on -- the same trick as a Pi's
+# userconf. On a device with no removable media it is baked into the image, or
+# copied over before the first boot.
+#
+# Keys, all optional:
+#
+#	ssid=bench-3
+#	key=a passphrase, 8-63 characters
+#	country=GB              omit for the world domain
+#	root_password=...       omitted leaves the box open, and check keeps failing
+#	convert=yes             turn the device into a transparent bridge
+#
+# Anything absent falls back to what the box would have chosen on its own. The
+# file is REMOVED once read, because it carries a password in clear and its
+# work is done -- what it did is recorded in the firstrun state instead.
+FIRSTRUN_CONF_PATHS="/boot/boa-firstrun.conf /etc/boa-firstrun.conf"
+
+# Reads one key, never sourcing the file: it is data somebody dropped on a
+# partition, and `.` would run whatever was in it as root.
+firstrun_conf_get() {
+	local f="$2"
+	sed -n "s/^[[:space:]]*$1[[:space:]]*=[[:space:]]*//p" "$f" 2>/dev/null | head -1
+}
+
+firstrun_conf_find() {
+	local f
+	for f in $FIRSTRUN_CONF_PATHS; do
+		[ -r "$f" ] && { echo "$f"; return 0; }
+	done
+	return 1
+}
+
 FIRSTRUN_STATE=/etc/infinite-streaming-boa/firstrun
 FIRSTRUN_WAIT=120
 
