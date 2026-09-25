@@ -28,6 +28,22 @@ installed() { apk info -e "$1" >/dev/null 2>&1; }
 in_bridge() { [ -e "/sys/class/net/br-lan/brif/$1" ]; }
 is_wifi()   { [ -e "/sys/class/net/$1/phy80211" ]; }
 
+# The interface's 802.11 type, as the kernel has it: managed, AP, monitor.
+iface_type() { iw dev "$1" info 2>/dev/null | awk '$1 == "type" { print $2; exit }'; }
+
+# Whether an interface can enumerate networks, which is not the same as being a
+# radio. A monitor interface can survey the one channel it is parked on and
+# nothing else; `iw scan` on one returns `Not supported (-95)`. Asked of the
+# type rather than by running a scan, because a scan takes seconds, moves the
+# radio off channel, and `check` is read-only and safe on a box carrying
+# traffic -- which is load-bearing and stays that way.
+can_scan() {
+	case "$(iface_type "$1")" in
+		managed|AP|'') return 0 ;;   # unknown: reported elsewhere, not guessed at here
+		*)             return 1 ;;
+	esac
+}
+
 # --- 1. Access ---------------------------------------------------------------
 check_access() {
 	section "Access"
@@ -295,8 +311,17 @@ check_boa_config() {
 			fail "boa.main.scan is $scan, which is not a radio"
 		elif in_bridge "$scan"; then
 			fail "boa.main.scan is $scan, which is serving clients: every scan takes it off channel"
+		elif ! can_scan "$scan"; then
+			# THE POINT OF A SCAN RADIO IS THAT IT SCANS, and existing and not
+			# serving does not establish that. Measured on a Cudy TR3000,
+			# 2026-09-25: a monitor-mode interface passed every test above and
+			# answered `command failed: Not supported (-95)` to every scan, so
+			# boa had a scanner that produced no sweeps, the neighbourhood view
+			# stayed empty, and check reported 0 failed throughout. See #384.
+			fail "boa.main.scan is $scan, which cannot scan: $(iface_type "$scan") interfaces do not support it"
+			fix "give the radio a managed interface instead -- boa's own 'scan only' button does this"
 		else
-			ok "boa.main.scan = $scan, a radio that serves nobody"
+			ok "boa.main.scan = $scan, a radio that serves nobody and can scan"
 		fi
 	elif [ -n "$spare" ]; then
 		warn "no scan radio set, so boa scans with a radio that serves clients; $spare serves nobody"
@@ -345,7 +370,7 @@ check_service() {
 # both have lan on 192.168.1.1 with a wan and a DHCP server. So the operator
 # asks for this, or it does not happen.
 cmd_convert() {
-	local dry="" gw uplink oldaddr p
+	local dry="" gw uplink oldaddr p restart_boa=""
 	[ "${1:-}" = "--dry-run" ] && dry=1
 
 	# Already a bridge? Say so and stop. Running this twice must be harmless.
@@ -431,6 +456,20 @@ EOF
 	if [ -f /etc/config/boa ]; then
 		uci set boa.main.wan="$uplink"
 		uci commit boa
+		# AND RESTARTED, because boad reads the uplink once, at exec.
+		#
+		# Writing the config is not enough: boad keeps whatever -wan it was
+		# started with, and every conversion MOVES the uplink -- a stock router
+		# has it on its own port, and converting makes that port a bridge
+		# member. So the default path left the daemon pointing at the old one.
+		#
+		# It does not look like a failure, which is why it survived a release.
+		# Measured on a Cudy TR3000, 2026-09-25: with boad still on `-wan eth1`
+		# after convert set eth0, boa classified the real uplink as a CLIENT
+		# port and listed 20 clients on it -- the upstream router among them --
+		# while the two radios showed no clients and a phone was associated to
+		# one of them. Internally consistent, entirely wrong. See #383.
+		restart_boa=1
 	else
 		echo "Note: /etc/config/boa does not exist yet. After installing boa, set"
 		echo "      uci set boa.main.wan=$uplink && uci commit boa"
@@ -438,7 +477,13 @@ EOF
 
 	uci commit network; uci commit dhcp; uci commit wireless
 	echo "Committed. Restarting the network -- the connection will drop briefly."
-	( sleep 1; /etc/init.d/network restart; sleep 6; /etc/init.d/dnsmasq restart ) >/dev/null 2>&1 &
+	# boa goes with it, and AFTER the network, so it reads the bridge as it
+	# will be rather than as it was. Only when boa is actually installed and
+	# enabled: converting first and installing later is a supported order.
+	( sleep 1; /etc/init.d/network restart; sleep 6; /etc/init.d/dnsmasq restart
+	  [ -n "$restart_boa" ] && [ -x /etc/init.d/boa ] && /etc/init.d/boa restart
+	) >/dev/null 2>&1 &
+	[ -n "$restart_boa" ] && echo "boa restarts with it, so it picks up the new uplink."
 	echo "Then: boa-setup check"
 	return 0
 }
