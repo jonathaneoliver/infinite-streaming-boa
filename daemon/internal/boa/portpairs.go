@@ -163,7 +163,22 @@ func (e *Engine) syncPairRules(ports []string) error {
 // no flow diagram -- but it says so rather than showing an empty figure that
 // looks like idleness.
 func (e *Engine) portPairs(now time.Time) []PortPair {
-	ports := e.cfg.bridgePorts()
+	// THE EFFECTIVE LIST, NOT ARGV, for the reason effectiveConfig exists: the
+	// OpenWrt init script passes an empty -wlan and -lan, so against e.cfg this
+	// is just the uplink, falls straight through the len < 2 return below, and
+	// the flow figure is empty on EVERY OpenWrt device. Same root cause as
+	// caps.radio in #381, one consumer further on.
+	//
+	// The second effect was the quieter one: syncPairRules is only reached past
+	// that return, so the table kept whatever rules a boad with flags last
+	// built and nothing said so. Measured on the x86-64 guest 2026-09-25 --
+	// rules still naming a port removed from the bridge an hour earlier, none
+	// for the radio that had been serving since, and 875 MB counted against a
+	// pair the interface never drew. See #395.
+	//
+	// Safe against the deadlock noted above: effectiveConfig takes e.ports.mu,
+	// which is not e.mu.
+	ports := e.effectiveConfig().bridgePorts()
 	if len(ports) < 2 {
 		return nil
 	}

@@ -151,3 +151,47 @@ func TestPrimaryWlanFollowsDiscoveryWhenArgvIsEmpty(t *testing.T) {
 		t.Errorf("primaryWlanNow() = %q with an explicit -wlan, want phy1-ap0", got)
 	}
 }
+
+// #395: the pair counters are one more consumer, and the one #381 missed.
+//
+// portPairs returns nil below two ports, and Pairs is `omitempty`, so an
+// argv-derived list on OpenWrt drops the key from the snapshot entirely and the
+// interface hides the flow figure -- while nftables goes on counting into rules
+// for a port set that stopped existing, because syncPairRules is only reached
+// past that same return.
+//
+// Measured on the x86-64 guest 2026-09-25: no pairs at all with the flags
+// empty, 12 pairs and 96 Mbps on eth1->phy4-ap0 the moment they were filled in,
+// and rules still naming a port removed from the bridge an hour earlier.
+func TestPairPortsFollowTheBridgeWhenArgvIsEmpty(t *testing.T) {
+	root := fakeBridge(t, "br-lan", map[string]bool{
+		"eth0":     false, // the uplink
+		"eth1":     false, // a wired client port
+		"phy0-ap0": true,
+		"phy1-ap0": true,
+		"scan0":    true, // listen-only: forwards nothing, must stay out
+	})
+	t.Setenv("BOA_SYSFS_ROOT", root)
+
+	// Exactly what the OpenWrt init script passes: no -wlan, no -lan.
+	e := &Engine{cfg: Config{Bridge: "br-lan", WANPort: "eth0", ScanPorts: []string{"scan0"}}}
+
+	if got := e.cfg.bridgePorts(); len(got) >= 2 {
+		t.Fatalf("cfg.bridgePorts() = %v -- this test means nothing unless argv alone gives fewer than two", got)
+	}
+	got := e.effectiveConfig().bridgePorts()
+	if len(got) < 2 {
+		t.Fatalf("effectiveConfig().bridgePorts() = %v, want the uplink and the bridge's ports: below two, portPairs returns nil and the flow figure disappears", got)
+	}
+	want := map[string]bool{"eth0": true, "eth1": true, "phy0-ap0": true, "phy1-ap0": true}
+	if len(got) != len(want) {
+		t.Errorf("bridgePorts() = %v, want exactly the %d ports a frame can be forwarded between", got, len(want))
+	}
+	for _, p := range got {
+		if p == "scan0" {
+			t.Errorf("bridgePorts() = %v, want no listen-only radio: it has no hostapd bridge= line, forwards nothing, and a pair naming it could only ever read zero", got)
+		} else if !want[p] {
+			t.Errorf("bridgePorts() = %v, unexpected port %q", got, p)
+		}
+	}
+}
