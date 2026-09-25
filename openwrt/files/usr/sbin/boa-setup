@@ -62,6 +62,12 @@ check_access() {
 # --- 2. Drivers --------------------------------------------------------------
 # Adapters boa has been run with, and the package that drives each. Anything
 # else is reported, never guessed at.
+#
+# BOTH BUSES. This walked only USB until 2026-09-25, and the heading said so,
+# which made a PCIe radio with no driver invisible: the section printed the one
+# USB dongle, said nothing at all about an MT7915E sitting undriven beside it,
+# and finished "no USB devices" on a box whose two working radios were both
+# PCIe. Measured on the x86-64 guest. See #391.
 known_usb() {
 	case "$1" in
 		0e8d:7961) echo "wifi kmod-mt7921u kmod-mt7921-firmware|MediaTek MT7921AU (Wi-Fi 6)" ;;
@@ -72,32 +78,83 @@ known_usb() {
 	esac
 }
 
+# The same table for PCI, keyed the same way. The firmware is a separate
+# package here as it is for the USB parts, and installing the kmod without it
+# leaves the driver probing and failing -- measured on the guest, a bare
+# `apk add kmod-mt7915e` gave "Direct firmware load ... failed with error -2"
+# and then "probe ... failed with error -12", which reads like dead hardware.
+known_pci() {
+	case "$1" in
+		14c3:7915) echo "wifi kmod-mt7915e kmod-mt7915-firmware|MediaTek MT7915E (Wi-Fi 6)" ;;
+		14c3:7906) echo "wifi kmod-mt7915e kmod-mt7915-firmware|MediaTek MT7916AN (Wi-Fi 6)" ;;
+		14c3:7925) echo "wifi kmod-mt7925e kmod-mt7925-firmware|MediaTek MT7925E (Wi-Fi 7)" ;;
+		168c:003e) echo "wifi kmod-ath10k-ct ath10k-firmware-qca6174-ct|Qualcomm QCA6174 (Wi-Fi 5)" ;;
+		10ec:8125) echo "eth kmod-r8169|Realtek RTL8125 (2.5 GbE)" ;;
+	esac
+}
+
+# One report for one adapter, whichever bus it came off.
+#   $1 id  $2 where  $3 driver or empty  $4 table output or empty  $5 product
+report_adapter() {
+	local id="$1" where="$2" drv="$3" info="$4" prod="$5" pkgs name
+	if [ -n "$info" ]; then
+		pkgs="${info#* }"; pkgs="${pkgs%%|*}"; name="${info#*|}"
+		if [ -n "$drv" ]; then
+			ok "$name at $where: driver $drv"
+		else
+			fail "$name at $where has no driver"
+			fix "apk add $pkgs"
+		fi
+	elif [ -n "$drv" ]; then
+		note "$id $prod at $where: driver $drv (not an adapter boa has been tested with)"
+	else
+		warn "$id $prod at $where has no driver, and boa knows no package for it"
+	fi
+}
+
 check_drivers() {
-	section "USB adapters and drivers"
-	local d id info kind pkgs name drv seen=0
+	section "Adapters and drivers"
+	local d id drv seen=0 cls info
 	for d in /sys/bus/usb/devices/*; do
 		[ -f "$d/idVendor" ] || continue
 		# Hubs, and the root hubs of the controllers themselves.
 		[ "$(cat "$d/bDeviceClass")" = 09 ] && continue
 		id="$(cat "$d/idVendor"):$(cat "$d/idProduct")"
 		drv="$(basename "$(readlink "$d/${d##*/}:1.0/driver" 2>/dev/null)" 2>/dev/null)"
-		info="$(known_usb "$id")"
 		seen=1
-		if [ -n "$info" ]; then
-			kind="${info%% *}"; pkgs="${info#* }"; pkgs="${pkgs%%|*}"; name="${info#*|}"
-			if [ -n "$drv" ]; then
-				ok "$name at ${d##*/}: driver $drv"
-			else
-				fail "$name at ${d##*/} has no driver"
-				fix "apk add $pkgs"
-			fi
-		elif [ -n "$drv" ]; then
-			note "$id $(cat "$d/product" 2>/dev/null) at ${d##*/}: driver $drv (not an adapter boa has been tested with)"
-		else
-			warn "$id $(cat "$d/product" 2>/dev/null) at ${d##*/} has no driver, and boa knows no package for it"
-		fi
+		report_adapter "$id" "usb ${d##*/}" "$drv" "$(known_usb "$id")" \
+			"$(cat "$d/product" 2>/dev/null)"
 	done
-	[ "$seen" = 1 ] || warn "no USB devices: boa's tested radios and 2.5 GbE ports are all USB"
+	# NETWORK DEVICES ONLY, because every PCI device is here -- bridges, the
+	# SATA controller, the GPU -- and printing them would bury the lines that
+	# matter.
+	#
+	# THE CLASS ALONE IS NOT ENOUGH, which cost a round of this. sysfs `class`
+	# is 0xCCSSPP, and 0x02 is network. But the MT7915E reports **0x000280** --
+	# class 00, "unclassified", which is what lspci prints as "Unclassified
+	# device [0002]". Measured on the x86-64 guest, 2026-09-25: filtering on
+	# 0x02* found the three virtio NICs and silently skipped the radio, which
+	# is the exact blindness this change exists to remove.
+	#
+	# So three ways in, and a part only has to satisfy one: the class says
+	# network, OR boa knows the id, OR the kernel has already bound it as a net
+	# or 802.11 device. The middle one is what catches a KNOWN radio with no
+	# driver, which is the case worth reporting and the one with no kernel
+	# evidence to go on.
+	for d in /sys/bus/pci/devices/*; do
+		[ -f "$d/class" ] || continue
+		cls="$(cat "$d/class")"
+		id="$(sed 's/^0x//' "$d/vendor"):$(sed 's/^0x//' "$d/device")"
+		info="$(known_pci "$id")"
+		case "$cls" in
+			0x02*) ;;
+			*) [ -n "$info" ] || [ -d "$d/net" ] || [ -d "$d/ieee80211" ] || continue ;;
+		esac
+		drv="$(basename "$(readlink "$d/driver" 2>/dev/null)" 2>/dev/null)"
+		seen=1
+		report_adapter "$id" "pci ${d##*/}" "$drv" "$info" ""
+	done
+	[ "$seen" = 1 ] || warn "no network adapters on either bus: boa needs a radio to do anything"
 }
 
 # --- 3. hostapd --------------------------------------------------------------
@@ -155,6 +212,36 @@ radio_ifname() {
 	done
 }
 
+# Whether wifi-device $1's HARDWARE is on the bus at all, by the same path match.
+#
+# A uci wifi-device outlives the adapter it describes: `wifi config` writes one
+# per radio it finds, and unplugging the radio leaves the section behind. That
+# is NOT a fault. On a box where dongles come and go it is the normal state,
+# and on somebody else's box it says only that they do not own the adapter this
+# one was configured with -- so a radio whose hardware is absent is reported at
+# `note` and nothing louder.
+#
+# The box being genuinely dead is still caught, by the "no access point is
+# serving" fail at the end of check_wifi: that counts what is actually up, so
+# demoting the per-radio line cannot hide a box with no radio at all.
+radio_hw_present() {
+	local path p
+	path="$(uci -q get wireless.$1.path)"
+	# No path at all: nothing to match on, so do not claim it is missing.
+	[ -n "$path" ] || return 0
+	# DBDC: one device, several phys, and OpenWrt selects between them with a
+	# `+1`/`+2` suffix that is NOT part of the sysfs path. Strip it or the
+	# second half of every dual-band part reads as absent -- measured
+	# 2026-09-25 on an MT7915E whose 5 GHz radio was serving at the time.
+	case "$path" in *+[0-9]) path="${path%+*}" ;; esac
+	for p in /sys/class/ieee80211/*; do
+		case "$(readlink -f "$p/device")" in
+			*"$path") return 0 ;;
+		esac
+	done
+	return 1
+}
+
 check_wifi() {
 	section "Wi-Fi"
 	local r band country dis serving=0 i dev mode ifname st k v
@@ -190,11 +277,30 @@ check_wifi() {
 		[ "$mode" = ap ] || continue
 		[ "$(uci -q get wireless.$i.disabled)" = 1 ] && { note "$i on $dev is disabled"; continue; }
 		[ "$(uci -q get wireless.$dev.disabled)" = 1 ] && continue
+		# THE ADAPTER FIRST, before anything is asserted about it. A wifi-device
+		# for hardware that is not on the bus is an unplugged dongle, which is
+		# ordinary rather than broken -- see radio_hw_present.
+		if ! radio_hw_present "$dev"; then
+			note "$dev is configured but its adapter is not present: $(uci -q get wireless.$dev.path)"
+			continue
+		fi
 		ifname="$(ubus call network.wireless status 2>/dev/null |
 			jsonfilter -e "@.$dev.interfaces[@.section='$i'].ifname" 2>/dev/null)"
 		if [ -z "$ifname" ]; then
+			# The adapter IS here, so this one is a real failure to start.
 			fail "$i on $dev is configured but has no interface: the AP did not come up"
 			fix "logread -e hostapd; wifi up $dev"
+			continue
+		fi
+		# NETIFD NAMED IT, WHICH DOES NOT MEAN THE KERNEL HAS IT. netifd keeps
+		# an interface for a radio that has gone, and hostapd keeps a ubus
+		# object answering ENABLED for it -- measured on the x86-64 guest after
+		# a USB radio was pulled, where check reported the interface as serving
+		# and then failed the box for a bridge fault it could not possibly have
+		# had. Everything below reads the kernel, so stop here instead. See #393.
+		if [ ! -e "/sys/class/net/$ifname" ]; then
+			note "$dev still names $ifname, which the kernel does not have: the adapter has gone and netifd has not caught up"
+			fix "wifi up $dev (or remove wireless.$dev if the adapter is not coming back)"
 			continue
 		fi
 		st="$(ubus call "hostapd.$ifname" get_status 2>/dev/null | jsonfilter -e @.status 2>/dev/null)"

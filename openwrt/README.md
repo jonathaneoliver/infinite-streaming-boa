@@ -69,8 +69,9 @@ boa-setup check
 ```
 
 Installed with the `boa` package. It walks every prerequisite above and below
--- access, USB adapters and their drivers, hostapd, each access point, the
-transparent bridge, packages, boa's own config, the service -- and prints each
+-- access, adapters and their drivers on both the USB and PCI buses, hostapd,
+each access point, the transparent bridge, packages, boa's own config, the
+service -- and prints each
 as `OK`, `WARN` or `FAIL`, with the command that fixes it. It exits 1 if
 anything failed.
 
