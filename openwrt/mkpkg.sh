@@ -129,16 +129,28 @@ install -d "$R/usr/libexec/boa" "$R/usr/sbin" "$R/etc/init.d" "$R/etc/config" "$
 install -m 0755 /in/boad "$R/usr/libexec/boa/boad"
 install -m 0755 "$F/usr/sbin/boa-setup" "$R/usr/sbin/boa-setup"
 install -m 0755 "$F/etc/init.d/boa" "$R/etc/init.d/boa"
+install -m 0755 "$F/etc/init.d/boa-firstrun" "$R/etc/init.d/boa-firstrun"
 install -m 0644 "$F/etc/config/boa" "$R/etc/config/boa"
 echo /etc/infinite-streaming-boa/ > "$R/lib/upgrade/keep.d/boa"
 pack boa "$ARCH" "$R" /etc/config/boa
 
 # luci-app-boa
 R="$(mktemp -d)"
-install -d "$R/www/luci-static/resources/view/boa" "$R/usr/share/luci/menu.d" "$R/usr/share/rpcd/acl.d"
-install -m 0644 "$F/www/luci-static/resources/view/boa/boa.js" "$R/www/luci-static/resources/view/boa/boa.js"
+install -d "$R/www/luci-static/resources/view/boa" "$R/usr/share/luci/menu.d" \
+	"$R/usr/share/rpcd/acl.d" "$R/etc/uci-defaults"
+# EVERY VIEW THE MENU NAMES. This listed boa.js alone while menu.d had grown a
+# second entry, so the package shipped a menu item pointing at a file that was
+# not in it -- Services -> boa setup would have 404'd on any device that
+# installed the package rather than having the files copied by hand. Found by
+# installing on the x86-64 guest, 2026-09-25, which is the only way to find it:
+# every development box already had the file.
+for v in "$F"/www/luci-static/resources/view/boa/*.js; do
+	install -m 0644 "$v" "$R/www/luci-static/resources/view/boa/$(basename "$v")"
+done
 install -m 0644 "$F/usr/share/luci/menu.d/luci-app-boa.json" "$R/usr/share/luci/menu.d/luci-app-boa.json"
 install -m 0644 "$F/usr/share/rpcd/acl.d/luci-app-boa.json" "$R/usr/share/rpcd/acl.d/luci-app-boa.json"
+install -m 0644 "$F/www/boa-setup.html" "$R/www/boa-setup.html"
+install -m 0755 "$F/etc/uci-defaults/99-boa-landing" "$R/etc/uci-defaults/99-boa-landing"
 pack luci-app-boa noarch "$R"
 
 # The index, signed as package/Makefile signs one. Packages are trusted

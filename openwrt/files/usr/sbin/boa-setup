@@ -768,6 +768,29 @@ cmd_wizard() {
 	local dry="" ssid key key2 country cur ifaces devs i d n=0
 	[ "${1:-}" = "--dry-run" ] && dry=1
 
+	# UNATTENDED, when the box has waited and nobody came. Same writes as the
+	# interactive path below, with everything it would have asked either
+	# derived or generated -- never invented. See cmd_firstrun for what is
+	# deliberately left alone: the root password, and convert.
+	if [ "${1:-}" = "--defaults" ]; then
+		ssid="$(default_ssid)"
+		# /dev/urandom through tr, because a box this fresh has no openssl and
+		# no password manager. 16 characters from an unambiguous alphabet: it
+		# gets read off a screen and typed into a phone.
+		key="$(tr -dc 'abcdefghjkmnpqrstuvwxyz23456789' < /dev/urandom | head -c 16)"
+		country=""
+		apply_wizard "$ssid" "$key" "$country" || return 1
+		firstrun_note "ran unattended $(date '+%Y-%m-%d %H:%M')
+  SSID:       $ssid
+  passphrase: $key
+  country:    none -- the world domain, 20 dBm, no DFS
+  root password NOT set, and the bridge NOT converted: both need a person.
+  Change any of it: boa-setup wizard, or Services -> boa setup"
+		echo "No one set this box up, so it brought itself up:"
+		sed 's/^/  /' "$FIRSTRUN_STATE"
+		return 0
+	fi
+
 	# Refused rather than half-done: without a terminal every prompt would take
 	# its default silently, and the operator would be told a box was configured
 	# with an SSID and no passphrase that nobody chose.
@@ -822,6 +845,29 @@ cmd_wizard() {
 	echo "              LuCI's check-for-firmware-upgrades popup turned off"
 	[ "$(ask 'Apply' 'yes')" = yes ] || { echo "Nothing changed."; return 0; }
 
+	apply_wizard "$ssid" "$key" "$country" || return 1
+	echo "Configured the access points."
+
+	# LAST, and on purpose: it replaces this session's own credentials. Anything
+	# that failed above is still fixable over the ssh session that is open.
+	case "$(awk -F: '$1 == "root" { print $2 }' /etc/shadow 2>/dev/null)" in
+		''|'*'|'!')
+			echo
+			echo "This device has no root password: anyone on the LAN can log in."
+			passwd root ;;
+		*)  echo "root already has a password (change it with: passwd)" ;;
+	esac
+	echo
+	echo "Done. Check it with: boa-setup check"
+	return 0
+}
+
+# The writes themselves, shared by the interactive wizard and --defaults, so
+# the two cannot drift into configuring a box differently.
+apply_wizard() {
+	local ssid="$1" key="$2" country="$3" ifaces devs i d n=0
+	ifaces="$(uci -q show wireless | sed -n 's/^wireless\.\([^.=]*\)=wifi-iface$/\1/p')"
+	devs="$(uci -q show wireless | sed -n 's/^wireless\.\([^.=]*\)=wifi-device$/\1/p')"
 	for i in $ifaces; do
 		[ "$(uci -q get wireless.$i.mode)" = ap ] || continue
 		n=$((n + 1))
@@ -882,19 +928,58 @@ cmd_wizard() {
 		echo "Turned off LuCI's check-for-firmware-upgrades popup."
 	fi
 
-	# LAST, and on purpose: it replaces this session's own credentials. Anything
-	# that failed above is still fixable over the ssh session that is open.
-	case "$(awk -F: '$1 == "root" { print $2 }' /etc/shadow 2>/dev/null)" in
-		''|'*'|'!')
-			echo
-			echo "This device has no root password: anyone on the LAN can log in."
-			passwd root ;;
-		*)  echo "root already has a password (change it with: passwd)" ;;
-	esac
-
-	echo
-	echo "Done. Check it with: boa-setup check"
 	return 0
+}
+
+# --- first run ---------------------------------------------------------------
+#
+# The box waits a couple of minutes for somebody to set it up, and gets on with
+# it if nobody does.
+#
+# WHAT "DEFAULTS" CAN AND CANNOT BE. Two of the steps a person does are not
+# things a box may decide on its own:
+#
+#  - The ROOT PASSWORD stays unset. A random one would lock the operator out of
+#    their own device -- there is no screen to read it from and no label to
+#    print it on. `check` goes on failing until a person sets one, which is the
+#    honest state.
+#  - `convert` is NOT run. It changes the device's address and takes the
+#    network down with it; unattended that can strand the box somewhere nobody
+#    can reach. See the comment above cmd_convert.
+#
+# What it does do is bring the radios up so the box is useful:
+#
+#  - SSID from the board name and the LAN MAC, as the wizard derives it.
+#  - A RANDOM passphrase, per device, recorded where the operator can read it.
+#    Not a fixed default: that is published credentials on every unit, and not
+#    derived from the MAC, which is in every beacon.
+#  - No country, so the world domain applies -- measured: both bands come up at
+#    20 dBm. Guessing a country is a regulatory answer, not a default.
+FIRSTRUN_STATE=/etc/infinite-streaming-boa/firstrun
+FIRSTRUN_WAIT=120
+
+firstrun_note() { mkdir -p "$(dirname "$FIRSTRUN_STATE")"; printf '%s\n' "$1" > "$FIRSTRUN_STATE"; chmod 600 "$FIRSTRUN_STATE"; }
+
+cmd_firstrun() {
+	case "${1:-status}" in
+		status)
+			if [ -f "$FIRSTRUN_STATE" ]; then sed 's/^/  /' "$FIRSTRUN_STATE"; else echo "  armed: nothing has run yet"; fi
+			return 0 ;;
+		cancel)
+			# Somebody turned up. Opening the wizard is what calls this, so the
+			# countdown stops the moment a person is looking at it.
+			firstrun_note "cancelled: an operator opened the setup page"
+			return 0 ;;
+		wait)
+			# Counted FROM BOOT, not from a page load: the window is the one
+			# after the network comes up, whether or not anyone is watching.
+			sleep "$FIRSTRUN_WAIT"
+			[ -f "$FIRSTRUN_STATE" ] && return 0
+			cmd_wizard --defaults
+			return 0 ;;
+		now) cmd_wizard --defaults; return 0 ;;
+		*) echo "usage: boa-setup firstrun status|cancel|now" >&2; return 2 ;;
+	esac
 }
 
 # --- landing -----------------------------------------------------------------
@@ -1262,6 +1347,7 @@ case "${1:-}" in
 	install-wpad)    shift; cmd_install_wpad "$@" ;;
 	wizard)  cmd_wizard "${2:-}" ;;
 	landing) cmd_landing "${2:-}" ;;
+	firstrun) cmd_firstrun "${2:-}" ;;
 	*)
 		echo "usage: boa-setup check | wizard [--dry-run] | convert [--dry-run]" >&2
 		echo "                | plan-channels [--dry-run] | install-drivers [--dry-run]" >&2
@@ -1273,6 +1359,10 @@ case "${1:-}" in
 		echo "  convert        turn a stock OpenWrt router into the transparent bridge boa needs." >&2
 		echo "                 Interrupts the network and changes the device's address. Never" >&2
 		echo "                 runs on its own -- see the comment above cmd_convert for why." >&2
+		echo "  firstrun       status | cancel | now. The box waits two minutes from boot" >&2
+		echo "                 for somebody to set it up, then brings the radios up itself" >&2
+		echo "                 with a random passphrase. It never sets a root password or" >&2
+		echo "                 converts the bridge: both wait for a person." >&2
 		echo "  landing        whether http://<this box>/ shows the setup page or LuCI." >&2
 		echo "                 on | off | status. Turned off once the wizard has run." >&2
 		echo "  plan-channels  give each serving radio a channel that does not clash with the" >&2

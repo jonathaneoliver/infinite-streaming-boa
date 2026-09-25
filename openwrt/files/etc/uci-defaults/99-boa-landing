@@ -16,7 +16,14 @@ case "$(awk -F: '$1 == "root" { print $2 }' /etc/shadow 2>/dev/null)" in
 	''|'*'|'!') ;;                 # no password: still factory
 	*) exit 0 ;;                   # somebody set one: this box is in use
 esac
-[ "$(uci -q get network.lan.ipaddr)" = "192.168.1.1" ] || exit 0
+# WITH OR WITHOUT THE PREFIX. OpenWrt 25.12 stores this as `192.168.1.1/24`,
+# and matching the bare address silently never fired -- measured on the x86-64
+# guest, where the script ran, found no match, and removed itself without a
+# word. Older releases store it bare, and both are the same box.
+case "$(uci -q get network.lan.ipaddr)" in
+	192.168.1.1|192.168.1.1/*) ;;
+	*) exit 0 ;;
+esac
 [ "$(uci -q get network.lan.proto)" = "static" ] || exit 0
 
 /usr/sbin/boa-setup landing on >/dev/null 2>&1
