@@ -6,6 +6,9 @@
 #                        with the command that fixes each one
 #   boa-setup convert    turn a stock router into the transparent bridge boa
 #                        needs. Asked for, never automatic: see cmd_convert.
+#   boa-setup install-drivers
+#                        install the kmod packages for USB adapters that have
+#                        no driver -- what `check` describes, done.
 #
 # `check` changes nothing -- no uci set, no reload, no restart -- so it is safe
 # to run on a router carrying traffic. It exits 1 if anything failed.
@@ -112,35 +115,36 @@ report_adapter() {
 	fi
 }
 
-check_drivers() {
-	section "Adapters and drivers"
-	local d id drv seen=0 cls info
+# Every adapter on either bus, handed one at a time to $1 as
+#   <id> <where> <driver> <info> <product>
+#
+# ONE ENUMERATION, because there were two and they disagreed. `check` learned
+# about PCI while install-drivers still walked USB alone, so on the x86-64
+# guest with an MT7915E check reported the missing driver AND the package that
+# fixes it, while install-drivers in the same breath said "Nothing to install:
+# every adapter boa recognises already has a driver". Measured 2026-09-25.
+# Whatever one of them can see, the other has to see too.
+walk_adapters() {
+	local fn="$1" d id drv info cls
 	for d in /sys/bus/usb/devices/*; do
 		[ -f "$d/idVendor" ] || continue
 		# Hubs, and the root hubs of the controllers themselves.
 		[ "$(cat "$d/bDeviceClass")" = 09 ] && continue
 		id="$(cat "$d/idVendor"):$(cat "$d/idProduct")"
 		drv="$(basename "$(readlink "$d/${d##*/}:1.0/driver" 2>/dev/null)" 2>/dev/null)"
-		seen=1
-		report_adapter "$id" "usb ${d##*/}" "$drv" "$(known_usb "$id")" \
+		"$fn" "$id" "usb ${d##*/}" "$drv" "$(known_usb "$id")" \
 			"$(cat "$d/product" 2>/dev/null)"
 	done
 	# NETWORK DEVICES ONLY, because every PCI device is here -- bridges, the
 	# SATA controller, the GPU -- and printing them would bury the lines that
 	# matter.
 	#
-	# THE CLASS ALONE IS NOT ENOUGH, which cost a round of this. sysfs `class`
-	# is 0xCCSSPP, and 0x02 is network. But the MT7915E reports **0x000280** --
-	# class 00, "unclassified", which is what lspci prints as "Unclassified
-	# device [0002]". Measured on the x86-64 guest, 2026-09-25: filtering on
-	# 0x02* found the three virtio NICs and silently skipped the radio, which
-	# is the exact blindness this change exists to remove.
-	#
-	# So three ways in, and a part only has to satisfy one: the class says
-	# network, OR boa knows the id, OR the kernel has already bound it as a net
-	# or 802.11 device. The middle one is what catches a KNOWN radio with no
-	# driver, which is the case worth reporting and the one with no kernel
-	# evidence to go on.
+	# THE CLASS ALONE IS NOT ENOUGH. sysfs `class` is 0xCCSSPP and 0x02 is
+	# network, but the MT7915E reports **0x000280** -- class 00,
+	# "unclassified". Filtering on 0x02* found the virtio NICs and silently
+	# skipped the radio. So three ways in, and a part only has to satisfy one:
+	# the class says network, OR boa knows the id, OR the kernel has already
+	# bound it as a net or 802.11 device.
 	for d in /sys/bus/pci/devices/*; do
 		[ -f "$d/class" ] || continue
 		cls="$(cat "$d/class")"
@@ -151,10 +155,35 @@ check_drivers() {
 			*) [ -n "$info" ] || [ -d "$d/net" ] || [ -d "$d/ieee80211" ] || continue ;;
 		esac
 		drv="$(basename "$(readlink "$d/driver" 2>/dev/null)" 2>/dev/null)"
-		seen=1
-		report_adapter "$id" "pci ${d##*/}" "$drv" "$info" ""
+		"$fn" "$id" "pci ${d##*/}" "$drv" "$info" ""
 	done
-	[ "$seen" = 1 ] || warn "no network adapters on either bus: boa needs a radio to do anything"
+}
+
+check_drivers() {
+	section "Adapters and drivers"
+	SEEN_ADAPTER=0
+	walk_adapters check_one_adapter
+	# A RADIO NEED NOT BE ON EITHER BUS. The Cudy's are platform devices
+	# (platform/soc/18000000.wifi) and a Pi's onboard one is SDIO, so neither
+	# shows under /sys/bus/usb or /sys/bus/pci. Without this the warning fires
+	# on a Cudy whose USB adapter has been unplugged -- while two built-in
+	# radios are serving clients, which is the opposite of what it claims.
+	#
+	# They are not reported as adapters, because there is nothing to install:
+	# their drivers are in the image. They only have to stop this warning being
+	# wrong. A Pi 5 with an M.2 HAT is a PCIe part and is listed above.
+	if [ "$SEEN_ADAPTER" != 1 ]; then
+		if [ -n "$(ls /sys/class/ieee80211 2>/dev/null)" ]; then
+			note "no USB or PCI adapter: this device's radios are built in ($(ls /sys/class/ieee80211 | tr '\n' ' '))"
+		else
+			warn "no network adapters on either bus, and no built-in radio: boa needs one to do anything"
+		fi
+	fi
+}
+
+check_one_adapter() {
+	SEEN_ADAPTER=1
+	report_adapter "$@"
 }
 
 # --- 3. hostapd --------------------------------------------------------------
@@ -470,6 +499,110 @@ check_service() {
 	[ "$health" = true ] && ok "answering on :$port" || fail "not answering on :$port"
 }
 
+# --- install-drivers ---------------------------------------------------------
+#
+# What `check` describes, done. The table in known_usb() already holds the
+# package for every adapter boa has been run with, so printing a command for
+# the operator to retype is an indirection with no purpose.
+#
+# A SEPARATE VERB, because `check` is read-only and that is load-bearing: it is
+# the one thing here safe to run on a router carrying traffic, and it stays
+# that way. Installing pulls from the network, can fail, and changes the box.
+#
+# DRIVERS ONLY. The wpad swap `check` also offers -- removing wpad-basic and
+# installing the full build -- is deliberately not here. It stops the service
+# that is running every access point on the box, and has an ordering trap that
+# leaves every AP down if a wifi reload happens before wpad is started again.
+# That belongs in the operator's hands, with the warning attached.
+# Collects what walk_adapters finds. Globals because a shell function cannot
+# hand a list back, and the alternative -- a second copy of the enumeration --
+# is the bug this replaces.
+want_driver_for() {
+	local id="$1" where="$2" drv="$3" info="$4" prod="$5" pkgs name
+	[ -n "$drv" ] && return 0
+	if [ -z "$info" ]; then
+		# Reported, never guessed at -- the same rule check follows. An unknown
+		# adapter with no driver is a real finding and not something to install
+		# a plausible-looking package for.
+		MISSING_IDS="$MISSING_IDS$id $prod at $where
+"
+		return 0
+	fi
+	pkgs="${info#* }"; pkgs="${pkgs%%|*}"; name="${info#*|}"
+	echo "  $name at $where needs: $pkgs"
+	WANT_PKGS="$WANT_PKGS $pkgs"
+}
+
+# Adapters boa knows that STILL have no driver after the install.
+note_if_still_bare() {
+	local id="$1" where="$2" drv="$3" info="$4"
+	[ -n "$info" ] || return 0
+	[ -n "$drv" ] && return 0
+	STILL_BARE="$STILL_BARE  ${info#*|} at $where
+"
+}
+
+cmd_install_drivers() {
+	local dry=""
+	[ "${1:-}" = "--dry-run" ] && dry=1
+	WANT_PKGS=""; MISSING_IDS=""
+
+	walk_adapters want_driver_for
+
+	if [ -n "$MISSING_IDS" ]; then
+		printf '\nNo package known for:\n%s' "$MISSING_IDS"
+		echo "Report these rather than guessing -- boa installs only what it has been run with."
+	fi
+
+	if [ -z "$WANT_PKGS" ]; then
+		echo "Nothing to install: every adapter boa recognises already has a driver."
+		return 0
+	fi
+
+	# Deduplicated: three Realtek adapters all want kmod-usb-net-rtl8152, and
+	# apk is happy to be told three times but the operator should not have to
+	# read it three times.
+	WANT_PKGS="$(printf '%s\n' $WANT_PKGS | sort -u | tr '\n' ' ')"
+	echo
+	echo "apk add $WANT_PKGS"
+	if [ -n "$dry" ]; then
+		echo "--dry-run: nothing installed."
+		return 0
+	fi
+
+	# shellcheck disable=SC2086
+	apk add $WANT_PKGS || { echo "install failed; the adapters stay as they are" >&2; return 1; }
+
+	# CHECKED, not assumed. apk decides its own order, and it installed
+	# kmod-mt7915e at step 27 and kmod-mt7915-firmware at step 28 -- so the
+	# kernel auto-loaded the module the moment it landed, found no firmware,
+	# and failed the probe:
+	#
+	#   mt7915e 0000:00:09.0: Direct firmware load for mediatek/mt7915_rom_patch.bin
+	#                         failed with error -2
+	#   mt7915e 0000:00:09.0: probe with driver mt7915e failed with error -12
+	#
+	# The firmware was on disk by the time it was looked for, and nothing
+	# retries. Measured on the x86-64 guest, 2026-09-25: install-drivers
+	# reported success over a radio that stayed invisible.
+	sleep 2
+	STILL_BARE=""
+	walk_adapters note_if_still_bare
+	echo
+	if [ -n "$STILL_BARE" ]; then
+		printf 'Installed, but still without a driver:\n%s' "$STILL_BARE"
+		echo "A module is usually loaded before its firmware is unpacked, and the probe"
+		echo "is not retried. Reload it, or reboot:"
+		echo "  rmmod <module>; modprobe <module>     # lsmod names it"
+		echo "  PCI: echo 1 > /sys/bus/pci/devices/<addr>/remove && echo 1 > /sys/bus/pci/rescan"
+		echo "Then: boa-setup check"
+		return 1
+	fi
+	echo "Installed, and every adapter boa recognises now has a driver."
+	echo "Check with: boa-setup check"
+	return 0
+}
+
 # --- convert -----------------------------------------------------------------
 #
 # EXPLICIT, AND NEVER AUTOMATIC. The obvious home for this is a uci-defaults
@@ -772,8 +905,10 @@ case "${1:-}" in
 	check)   cmd_check ;;
 	convert) cmd_convert "${2:-}" ;;
 	plan-channels) cmd_plan_channels "${2:-}" ;;
+	install-drivers) cmd_install_drivers "${2:-}" ;;
 	*)
 		echo "usage: boa-setup check | convert [--dry-run] | plan-channels [--dry-run]" >&2
+		echo "                | install-drivers [--dry-run]" >&2
 		echo "  check          read-only: what this device still needs before boa can run on it" >&2
 		echo "  convert        turn a stock OpenWrt router into the transparent bridge boa needs." >&2
 		echo "                 Interrupts the network and changes the device's address. Never" >&2
@@ -781,5 +916,8 @@ case "${1:-}" in
 		echo "  plan-channels  give each serving radio a channel that does not clash with the" >&2
 		echo "                 others: 36 and 149 for the first two 5 GHz radios, 6/1/11 for" >&2
 		echo "                 2.4 GHz. Reloads Wi-Fi, so associated clients reconnect." >&2
+		echo "  install-drivers" >&2
+		echo "                 install the kmod packages for USB adapters that have no" >&2
+		echo "                 driver. Drivers only; the wpad swap stays in your hands." >&2
 		exit 2 ;;
 esac
