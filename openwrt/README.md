@@ -47,20 +47,34 @@ e.g. `192.168.1.1/24`) so the device stays reachable if the DHCP lease moves.
 
 OpenWrt's default `wpad-basic-mbedtls` has no BSS transition management, so
 **steer** fails with `UNKNOWN COMMAND`, and without 802.11k on the AP a client
-advertises no beacon-report capability, so **measure** is refused. Install the
-full build and enable both on every AP:
+advertises no beacon-report capability, so **measure** is refused.
 
 ```sh
-apk del wpad-basic-mbedtls && apk add wpad-mbedtls hostapd-utils
-/etc/init.d/wpad enable && /etc/init.d/wpad start   # the swap leaves it stopped
+boa-setup install-wpad          # add --dry-run to see the commands first
 uci set wireless.default_radio1.ieee80211k=1
 uci set wireless.default_radio1.bss_transition=1    # repeat per wifi-iface
 uci commit wireless && wifi reload
 ```
 
-**Start `wpad` before `wifi reload`.** Removing the basic package stops the
-service and installing the full one does not start it; a reload with no
-hostapd running leaves every AP down until it is started by hand.
+`install-wpad` removes the basic package, installs the full build and starts
+`wpad` again, in that order. **The order is the point.** Removing the basic
+package stops the service and installing the full one does not start it, so a
+`wifi reload` that lands in between leaves every AP down until `wpad` is
+started by hand — measured on the Cudy on 2026-09-24, where exactly that left
+`phy1-ap0` down while the other two came back.
+
+It **cannot** be a package dependency, which is the obvious alternative. The
+two wpad variants declare a mutual `conflicts` — each provides `hostapd` and
+`wpa-supplicant` — so `apk add wpad-mbedtls` fails outright while the basic one
+is installed, at matching revisions and more so on a stock image, where
+`hostapd-common` is pinned a revision behind and `kmod-mac80211` depends on it.
+Removing the basic package first is what frees both. So `DEPENDS:=+wpad-mbedtls`
+would not give boa the full hostapd; it would make boa uninstallable.
+
+Because the swap stops every AP on the box, `install-wpad` **refuses while any
+access point is running** and says so, unless given `--force`. On a stock image
+there is nothing to refuse over: both `wifi-iface`s ship `option disabled '1'`,
+so a fresh device is serving nothing.
 
 ## Check a device: `boa-setup check`
 
