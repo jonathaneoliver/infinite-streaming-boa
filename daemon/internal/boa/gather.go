@@ -430,7 +430,7 @@ func (e *Engine) GatherTo(iface string, durSec float64) (int, error) {
 // a hole in it and the gather would silently not be a gather.
 func (e *Engine) gatherDeny(iface string) ([]string, error) {
 	var deny []string
-	for _, w := range e.cfg.WlanPorts {
+	for _, w := range e.WlanPorts() {
 		if w == iface {
 			continue
 		}
@@ -545,7 +545,7 @@ func (e *Engine) EvictClient(mac string, durSec float64) error {
 
 	// Somewhere to go, or this is an outage wearing an evict's name.
 	var elsewhere []string
-	for _, w := range e.cfg.WlanPorts {
+	for _, w := range e.WlanPorts() {
 		if w != from && hostapdReachable(w) {
 			elsewhere = append(elsewhere, w)
 		}
@@ -600,7 +600,7 @@ func (e *Engine) EvictFrom(iface string, durSec float64) (int, error) {
 	// client off the box entirely, which is a deadzone for the whole network
 	// rather than an evict, and is not what this button offers.
 	var elsewhere []string
-	for _, w := range e.cfg.WlanPorts {
+	for _, w := range e.WlanPorts() {
 		if w != iface && hostapdReachable(w) {
 			elsewhere = append(elsewhere, w)
 		}

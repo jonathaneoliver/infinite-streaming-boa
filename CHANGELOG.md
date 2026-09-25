@@ -13,7 +13,30 @@ deliberate and documented so they are not mistaken for defects — see
 
 ## [Unreleased]
 
-Nothing yet.
+### Fixed
+
+- **A device running 0.5.0 on OpenWrt listed no Wi-Fi clients at all**, and its
+  interface reported the box had no radio, while clients were associated and
+  streaming through it. Measured on a Cudy TR3000 with two radios serving and
+  an iPhone that had moved 1.7 GB through `phy1-ap0`: `caps.radio` false,
+  `caps.wlan_iface` empty, one client listed, the phone absent.
+
+  0.5.0 moved the port lists out of the init script and into the daemon, so
+  `-wlan` and `-lan` are empty on every OpenWrt device — but only some of the
+  daemon had been moved onto the discovered lists. The rest still read the
+  command line, which is now permanently empty, so the client list, the
+  capability block, steer, deauth, BSS transition, transmit power, gather and
+  radio profiling were all working from nothing.
+
+  Every one of those failed silently: the loops ran over an empty list and
+  reported success, and `boa-setup check` calls such a device healthy because
+  it reads UCI and the kernel rather than what the daemon can see. It reported
+  `0 failed` on the box above.
+
+  The passive learner was worse, because its set of client-facing ports was
+  fixed when it was built — before anything had been discovered — so every
+  frame looked as though it came from upstream and no client was ever named.
+  It now follows the bridge too.
 
 ## [0.5.0] — 2026-09-24
 

@@ -117,7 +117,7 @@ func (e *Engine) LinkControlAvailable() bool { return e.cfg.Demo || e.anyLinkCon
 // hiding the controls because the first one checked cannot drive them would
 // withdraw a capability the box actually has.
 func (e *Engine) anyLinkControl() bool {
-	for _, w := range e.cfg.WlanPorts {
+	for _, w := range e.WlanPorts() {
 		if hostapdReachable(w) {
 			return true
 		}
@@ -140,12 +140,12 @@ func (e *Engine) radioFor(mac string) string {
 	if ok && w != "" {
 		return w
 	}
-	for _, w := range e.cfg.WlanPorts {
+	for _, w := range e.WlanPorts() {
 		if _, found := StationDump(w)[mac]; found {
 			return w
 		}
 	}
-	return e.cfg.PrimaryWlan()
+	return e.primaryWlanNow()
 }
 
 // LinkDeauth deauthenticates a client, taking its link down; it reassociates on
@@ -261,7 +261,7 @@ func (e *Engine) clearDenyACL() {
 	// Every radio: a deadzone in force when the daemon died could have been
 	// applied through either socket, and clearing only one strands the client
 	// off that AP for good.
-	for _, w := range e.cfg.WlanPorts {
+	for _, w := range e.WlanPorts() {
 		if !hostapdAvailable(w) {
 			continue
 		}
@@ -415,7 +415,7 @@ func (e *Engine) deadzoneRadios(mac, scope string) ([]string, error) {
 		return []string{e.radioFor(mac)}, nil
 	case ScopeAll:
 		var on []string
-		for _, w := range e.cfg.WlanPorts {
+		for _, w := range e.WlanPorts() {
 			switch {
 			case hostapdReachable(w):
 				on = append(on, w)

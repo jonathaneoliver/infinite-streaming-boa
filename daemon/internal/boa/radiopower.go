@@ -645,7 +645,7 @@ func (e *Engine) hushRadios() {
 	if e.cfg.Demo {
 		return
 	}
-	for _, w := range e.cfg.WlanPorts {
+	for _, w := range e.WlanPorts() {
 		if hostapdReachable(w) {
 			hushTeardown(w)
 		}
@@ -984,7 +984,7 @@ func (e *Engine) restoreRadioPower() {
 	if e.cfg.Demo {
 		return
 	}
-	for _, w := range e.cfg.WlanPorts {
+	for _, w := range e.WlanPorts() {
 		on, known := radioPowered(w)
 		if !known {
 			continue
@@ -1061,7 +1061,7 @@ func (e *Engine) logRadioIdentity() {
 	if e.cfg.Demo {
 		return
 	}
-	for _, w := range e.cfg.WlanPorts {
+	for _, w := range e.WlanPorts() {
 		if !LinkExists(w) {
 			continue
 		}
@@ -1102,7 +1102,7 @@ func (e *Engine) checkRadiosAtStart() {
 	if e.cfg.Demo {
 		return
 	}
-	for _, w := range e.cfg.WlanPorts {
+	for _, w := range e.WlanPorts() {
 		go func(iface string) {
 			// Settle first. hostapd may still be coming up alongside the
 			// daemon, and a BSS that is merely not ready yet must not be
@@ -2387,7 +2387,7 @@ func (e *Engine) ownBSSIDs() map[string]bool {
 // absent from any scan it took.
 func (e *Engine) ownBSSIDsByIface() map[string]string {
 	out := map[string]string{}
-	for _, w := range e.cfg.WlanPorts {
+	for _, w := range e.WlanPorts() {
 		if !hostapdAvailable(w) {
 			continue
 		}

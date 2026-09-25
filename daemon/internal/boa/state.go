@@ -1079,7 +1079,10 @@ func (e *Engine) tick() {
 	// the dump it just produced rather than from the driver's name. Only
 	// recorded for a radio that HAD a station to answer for -- see airSeen.
 	airSeen := map[string]bool{}
-	for _, w := range e.cfg.WlanPorts {
+	// The ports a client can be on, as they are NOW. The Learner was built
+	// before any of them had been discovered. See #381.
+	e.learn.SetDownstream(append(append([]string{}, e.WlanPorts()...), e.LanPorts()...)...)
+	for _, w := range e.WlanPorts() {
 		for mac, st := range StationDump(w) {
 			stations[mac] = st
 			stationRadio[mac] = w
@@ -1088,7 +1091,7 @@ func (e *Engine) tick() {
 	}
 	e.stationRadio = stationRadio
 	e.rememberAirSeen(airSeen)
-	fdb := BridgeFDB(e.cfg.Bridge, e.cfg.WANPort, e.cfg.WlanPorts)
+	fdb := BridgeFDB(e.cfg.Bridge, e.cfg.WANPort, e.WlanPorts())
 	// ARP is the primary source for both address and port: it observes the
 	// client directly, whereas the forwarding database depends on MAC learning
 	// that ages out and, in practice, is often empty.
@@ -1180,10 +1183,10 @@ func (e *Engine) tick() {
 	// device whose port is unknown cannot be shaped anyway (a tc filter has to
 	// attach to an interface), so listing it would be noise.
 	downstream := map[string]bool{}
-	for _, l := range e.cfg.LanPorts {
+	for _, l := range e.LanPorts() {
 		downstream[l] = true
 	}
-	for _, w := range e.cfg.WlanPorts {
+	for _, w := range e.WlanPorts() {
 		downstream[w] = true
 	}
 	for mac, sn := range arp {
@@ -1396,7 +1399,7 @@ func (e *Engine) tick() {
 	// localhost included. It also does a hostapd round trip on a cache miss,
 	// which has no business happening once per client inside a lock.
 	chanByIface := map[string]int{}
-	for _, w := range e.cfg.WlanPorts {
+	for _, w := range e.WlanPorts() {
 		if r := e.radioOnFor(w); r != nil {
 			chanByIface[w] = r.Channel
 		}
@@ -1521,11 +1524,11 @@ func (e *Engine) tick() {
 		Clients: clients,
 		Caps: Capabilities{
 			Shaping: ready, Uplink: ready, Reason: reason,
-			Radio:     LinkExists(e.cfg.PrimaryWlan()),
+			Radio:     LinkExists(e.primaryWlanNow()),
 			Leases:    false, // transparent bridge: upstream owns DHCP
-			WlanIface: e.cfg.PrimaryWlan(), WlanIfaces: e.cfg.WlanPorts,
+			WlanIface: e.primaryWlanNow(), WlanIfaces: e.WlanPorts(),
 			UplinkIf: e.cfg.WANPort,
-			Adapter:  Radio(e.cfg.PrimaryWlan()),
+			Adapter:  Radio(e.primaryWlanNow()),
 			Ntopng:   e.ntopngUp(), NtopngPort: ntopngPort,
 			Iperf: PortListening(iperfPort), IperfPort: iperfPort,
 			// /proc rather than a dial, as for iperf3: glances binds a fixed
@@ -1636,7 +1639,7 @@ func (e *Engine) notices(ready bool, reason string) []Notice {
 	// ARE present matters more than naming the one that is not: with several
 	// adapters the useful question is which of them the box is watching.
 	var haveLan []string
-	for _, l := range e.cfg.LanPorts {
+	for _, l := range e.LanPorts() {
 		if LinkExists(l) {
 			haveLan = append(haveLan, l)
 		}

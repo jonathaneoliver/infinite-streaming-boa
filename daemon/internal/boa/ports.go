@@ -136,6 +136,19 @@ func (e *Engine) effectiveConfig() Config {
 	return c
 }
 
+// primaryWlanNow is Config.PrimaryWlan against the effective list.
+//
+// The one the capability block reports as "the radio". Against argv it is empty
+// on every OpenWrt device, because the init script stopped working the list out
+// and passes an empty -wlan -- so caps.radio came back false and the interface
+// concluded the box had no radio while two were serving. See issue #381.
+func (e *Engine) primaryWlanNow() string {
+	if w := e.WlanPorts(); len(w) > 0 {
+		return w[0]
+	}
+	return ""
+}
+
 // isWlanNow is Config.IsWlan against the effective list.
 //
 // The difference decides whether a client is treated as wireless at all: its
