@@ -188,6 +188,32 @@ check_hostapd() {
 }
 
 # --- 4. Wi-Fi ----------------------------------------------------------------
+# The two things `wifi config` writes that stop a radio starting at all.
+# Reported at $4 -- `fail` for a radio that is serving now, `warn` for one that
+# is not, where it is a trap rather than a fault yet.
+#
+# country '00' is NOT the same as no country, which is the distinction that
+# cost an afternoon. Measured on a Cudy TR3000, 2026-09-24: with no country set
+# anywhere and the regulatory domain at 00, both radios came up ENABLED, 2.4 ch
+# 1 and 5 ch 40, at 20 dBm. A literal '00' is what hostapd refuses to parse --
+# `Invalid country_code '00'` -- and the access point never starts. So an empty
+# country is a WARN naming what it costs, and '00' is the failure.
+check_radio_landmines() {
+	local r="$1" band="$2" country="$3" level="$4"
+	case "$country" in
+		00) "$level" "$r has country '00', which hostapd rejects: the access point will not start"
+		    fix "uci delete wireless.$r.country (the world domain works) or set a real one" ;;
+		'') warn "$r has no country: it runs on the world domain -- no DFS, no ch 12/13, and 20 dBm"
+		    fix "uci set wireless.$r.country=<CC> && uci commit wireless && wifi reload" ;;
+	esac
+	# `wifi config` offers 6g first on these radios, and the mt7921u will not
+	# start a 6 GHz access point.
+	[ "$band" = 6g ] && {
+		"$level" "$r is set to 6 GHz, where the mt7921u will not run an access point"
+		fix "uci set wireless.$r.band=5g (or 2g) && uci commit wireless && wifi reload"; }
+	return 0
+}
+
 # Whether wifi-device $1 has an enabled access-point interface configured.
 serves_ap() {
 	local i
@@ -252,7 +278,7 @@ radio_hw_present() {
 
 check_wifi() {
 	section "Wi-Fi"
-	local r band country dis serving=0 i dev mode ifname st k v
+	local r band country dis scan serving=0 i dev mode ifname st k v
 	for r in $(uci -q show wireless | sed -n 's/^wireless\.\([^.=]*\)=wifi-device$/\1/p'); do
 		dis="$(uci -q get wireless.$r.disabled)"
 		band="$(uci -q get wireless.$r.band)"
@@ -265,18 +291,22 @@ check_wifi() {
 		# is one for the whole system, and a listen-only scanner -- the onboard
 		# radio on a Pi 5 -- runs under whatever the serving radios set.
 		if ! serves_ap "$r"; then
-			note "$r ($band) runs no access point$( [ "$(uci -q get boa.main.scan)" = "$(radio_ifname "$r")" ] && echo ": boa's scan radio")"
+			# The scan radio is only named when there IS one. Both sides of
+			# this comparison are empty on a device with no scan radio and a
+			# radio that has no netdev yet, and '' = '' called every such radio
+			# boa's scanner -- measured on the Cudy the moment a USB adapter
+			# was plugged in.
+			scan="$(uci -q get boa.main.scan)"
+			note "$r ($band) runs no access point$( [ -n "$scan" ] && [ "$scan" = "$(radio_ifname "$r")" ] && echo ": boa's scan radio")"
+			# NOT skipped with it. A radio that serves nothing YET still
+			# carries whatever `wifi config` wrote for it, and the two things
+			# below stop it dead the moment it is enabled. Measured on the
+			# Cudy: a freshly plugged mt7921u arrived with country '00' and
+			# band '6g' and `check` reported 0 failed, 0 warnings.
+			check_radio_landmines "$r" "$band" "$country" warn
 			continue
 		fi
-		case "$country" in
-			''|00) fail "$r has no country set, so it runs on the world domain's few channels"
-			       fix "uci set wireless.$r.country=<CC> && uci commit wireless && wifi reload" ;;
-		esac
-		# `wifi config` offers 6g first on these radios, and the mt7921u will
-		# not start a 6 GHz access point.
-		[ "$band" = 6g ] && {
-			warn "$r is set to 6 GHz, where the mt7921u will not run an access point"
-			fix "uci set wireless.$r.band=5g (or 2g) && uci commit wireless && wifi reload"; }
+		check_radio_landmines "$r" "$band" "$country" fail
 	done
 
 	for i in $(uci -q show wireless | sed -n 's/^wireless\.\([^.=]*\)=wifi-iface$/\1/p'); do
