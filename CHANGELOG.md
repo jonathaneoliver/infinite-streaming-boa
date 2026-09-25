@@ -15,6 +15,39 @@ deliberate and documented so they are not mistaken for defects — see
 
 ### Added
 
+- **A first-run setup wizard**, in two places: **Services → boa setup** in
+  LuCI, and **`boa-setup wizard`** for a device with no LuCI on it. Both ask
+  the same four questions — SSID, passphrase, country and root password — and
+  both are used over the wired LAN, which is not a choice: a device fresh from
+  a flash ships every `wifi-iface` with `option disabled '1'`, so there is no
+  access point to join, and applying takes the radios down and back up.
+
+  The root password is the point of it. A factory-reset device has none at
+  all — SSH accepts a blank password and LuCI shows its own "No password set!"
+  banner on every page.
+
+  The country is offered rather than demanded. Measured with no country set
+  anywhere and the regulatory domain at `00`, both radios came up on 2.4 GHz
+  ch 1 and 5 GHz ch 40 at 20 dBm. A country is worth having — it unlocks DFS,
+  ch 12/13 and 3–6 dB — but it is not a prerequisite, and a wrong one is a
+  regulatory answer. An empty answer *deletes* the option: a literal `00` is
+  what hostapd refuses to parse.
+
+  The SSID defaults to the board name and the last two octets of the LAN MAC
+  (`cudy-3f16`). A MAC is in every beacon, so a name built from one gives
+  nothing away — which is exactly why the passphrase is never derived from it.
+
+  Applying also turns on `ieee80211k` and `bss_transition` per access point,
+  without which `measure` is refused and `steer` fails, and switches off
+  LuCI's check-for-firmware-upgrades dialog. That dialog reappears on every
+  Status → Overview load until answered once, because it is driven by the
+  preference being *unset* rather than by checking being enabled; a
+  factory-reset device is unset, so the popup is the default experience. It is
+  left alone if you have already answered it.
+- **`boa-setup install-drivers`**, which installs the kmod packages for USB
+  adapters that have no driver — what `check` already described, done rather
+  than printed for retyping. Drivers only, and an adapter boa does not
+  recognise is still reported rather than guessed at.
 - **`boa-setup install-wpad`**, which replaces the stock `wpad-basic-mbedtls`
   with the full build so `steer` and `measure` work. Every clean install had
   needed the same two commands by hand.
