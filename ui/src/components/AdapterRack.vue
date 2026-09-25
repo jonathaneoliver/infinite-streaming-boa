@@ -578,6 +578,18 @@ async function setRole(r: IfaceInfo, scanner: boolean) {
     await props.bridge.load();
     const now = rackAdapters.value.find((a) => a.role === want && a.name.startsWith(phyPrefix(name)));
     if (now) break;
+    // THE PREFIX IS A GUESS, and it is wrong for a name boa did not make.
+    // phyPrefix splits on '-', so an interface called `scan0` -- added by hand
+    // and named in boa.main.scan -- yields `scan0`. Nothing starts with that
+    // after the rename, so this ran its full 12 x 700ms and gave up with the
+    // old row still on screen: measured 2026-09-25, pressing `serve` on such a
+    // radio looked like it had done nothing while the box had acted.
+    //
+    // The old name disappearing from the rack is itself the answer, and it
+    // needs no guess about what the new one is called. Checked AFTER the
+    // prefix match, so the normal path is unchanged and this is only the way
+    // out when the assumption does not hold.
+    if (!rackAdapters.value.some((a) => a.name === name)) break;
   }
 }
 
