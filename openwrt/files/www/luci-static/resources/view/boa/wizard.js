@@ -38,6 +38,27 @@ var callNetworkDevices = rpc.declare({
 	expect: { '': {} }
 });
 
+// Commit ONE config, rather than uci.apply().
+//
+// uci.apply() is a reload of everything, network included -- and the browser is
+// talking to LuCI over that network. Measured on the Cudy, 2026-09-25: the
+// radios and the config came up correctly and `uci changes` was empty, but the
+// apply request itself died mid-flight and the page reported
+//
+//   RPC call to uci/apply failed with ubus code 5: No data received
+//
+// reporting failure for work that had in fact succeeded, and telling the
+// operator the device "may be partly configured" when it was fully configured.
+//
+// This page only ever writes `wireless` and `attendedsysupgrade`. Committing
+// those two and running /sbin/wifi does everything that is needed and leaves
+// the network alone, so the reply comes back.
+var callUciCommit = rpc.declare({
+	object: 'uci',
+	method: 'commit',
+	params: [ 'config' ]
+});
+
 // The board name and the last two octets of the LAN MAC: `cudy-3f16`.
 //
 // A MAC is broadcast in every beacon, so a NAME built from one gives nothing
@@ -185,7 +206,11 @@ return view.extend({
 			]) ]);
 
 			return uci.save()
-				.then(function() { return uci.apply(); })
+				.then(function() { return callUciCommit('wireless'); })
+				// Best effort, and separately: an older LuCI without this
+				// config present should not fail the whole apply over a popup
+				// preference.
+				.then(function() { return callUciCommit('attendedsysupgrade').catch(function() { return null; }); })
 				.then(function() { return fs.exec('/sbin/wifi'); })
 				.then(function() {
 					if (!pw.value.length)
