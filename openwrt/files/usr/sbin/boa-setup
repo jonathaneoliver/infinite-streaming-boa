@@ -345,7 +345,7 @@ check_service() {
 # both have lan on 192.168.1.1 with a wan and a DHCP server. So the operator
 # asks for this, or it does not happen.
 cmd_convert() {
-	local dry="" gw uplink oldaddr p
+	local dry="" gw uplink oldaddr p restart_boa=""
 	[ "${1:-}" = "--dry-run" ] && dry=1
 
 	# Already a bridge? Say so and stop. Running this twice must be harmless.
@@ -431,6 +431,20 @@ EOF
 	if [ -f /etc/config/boa ]; then
 		uci set boa.main.wan="$uplink"
 		uci commit boa
+		# AND RESTARTED, because boad reads the uplink once, at exec.
+		#
+		# Writing the config is not enough: boad keeps whatever -wan it was
+		# started with, and every conversion MOVES the uplink -- a stock router
+		# has it on its own port, and converting makes that port a bridge
+		# member. So the default path left the daemon pointing at the old one.
+		#
+		# It does not look like a failure, which is why it survived a release.
+		# Measured on a Cudy TR3000, 2026-09-25: with boad still on `-wan eth1`
+		# after convert set eth0, boa classified the real uplink as a CLIENT
+		# port and listed 20 clients on it -- the upstream router among them --
+		# while the two radios showed no clients and a phone was associated to
+		# one of them. Internally consistent, entirely wrong. See #383.
+		restart_boa=1
 	else
 		echo "Note: /etc/config/boa does not exist yet. After installing boa, set"
 		echo "      uci set boa.main.wan=$uplink && uci commit boa"
@@ -438,7 +452,13 @@ EOF
 
 	uci commit network; uci commit dhcp; uci commit wireless
 	echo "Committed. Restarting the network -- the connection will drop briefly."
-	( sleep 1; /etc/init.d/network restart; sleep 6; /etc/init.d/dnsmasq restart ) >/dev/null 2>&1 &
+	# boa goes with it, and AFTER the network, so it reads the bridge as it
+	# will be rather than as it was. Only when boa is actually installed and
+	# enabled: converting first and installing later is a supported order.
+	( sleep 1; /etc/init.d/network restart; sleep 6; /etc/init.d/dnsmasq restart
+	  [ -n "$restart_boa" ] && [ -x /etc/init.d/boa ] && /etc/init.d/boa restart
+	) >/dev/null 2>&1 &
+	[ -n "$restart_boa" ] && echo "boa restarts with it, so it picks up the new uplink."
 	echo "Then: boa-setup check"
 	return 0
 }
