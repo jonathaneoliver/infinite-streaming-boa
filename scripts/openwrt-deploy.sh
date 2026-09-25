@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 #
-# Install or update boa on an OpenWrt device (tested: OpenWrt 25.12, Pi 5).
+# Install or update boa on an OpenWrt device (tested: OpenWrt 25.12 on a Pi 5,
+# the Cudy TR3000 and an x86-64 VM). boad is built for the device's `uname -m`.
 #
 # The device must already be a transparent bridge: the uplink port and the APs
 # in one bridge, DHCP left to the upstream router. See openwrt/README.md.
@@ -29,8 +30,23 @@ done
 HOST="${TARGET#*@}"
 
 log "Checking $TARGET"
-ssh -o ConnectTimeout=8 -o BatchMode=yes "$TARGET" 'test -f /etc/openwrt_release' 2>/dev/null \
+MACHINE="$(ssh -o ConnectTimeout=8 -o BatchMode=yes "$TARGET" \
+  'test -f /etc/openwrt_release && uname -m' 2>/dev/null)" \
   || die "cannot reach $TARGET over SSH with a key, or it is not OpenWrt."
+
+# The binary's architecture follows the device, not this script. It was
+# `GOARCH=arm64`, hardcoded, which was right for the Pi and the Cudy and wrong
+# for the x86-64 VM: the deploy reported success and shipped a boad that cannot
+# exec. openwrt-package.sh had the same bug for the SDK (#365).
+#
+# Unrecognised is fatal, not a guess: a binary that cannot run is a worse
+# outcome than stopping.
+case "$MACHINE" in
+  x86_64)  GOARCH=amd64 ;;
+  aarch64) GOARCH=arm64 ;;
+  *) die "cannot tell which GOARCH $TARGET needs (uname -m: '${MACHINE}'); add
+it to the case in $0 rather than shipping a binary that may not run" ;;
+esac
 
 log "Building interface"
 ( cd ui && { [ -d node_modules ] || npm install --silent; } && npm run build --silent )
@@ -40,8 +56,8 @@ log "Building interface"
 VER="$(bash scripts/version.sh)"
 OUT="$(mktemp -d)"
 trap 'rm -rf "$OUT"' EXIT
-log "Building boad $VER for linux/arm64"
-( cd daemon && CGO_ENABLED=0 GOOS=linux GOARCH=arm64 \
+log "Building boad $VER for linux/$GOARCH"
+( cd daemon && CGO_ENABLED=0 GOOS=linux GOARCH="$GOARCH" \
     go build -trimpath -ldflags="-s -w -X main.version=${VER}" -o "$OUT/boad" . )
 
 if [ "$UI_ONLY" -eq 0 ]; then
