@@ -735,6 +735,18 @@ func (e *Engine) Start() {
 		for range t.C {
 			e.learn.SaveNames(namesPath)
 			e.hist.Save(e.histPath)
+			// A listen-only interface is a netdev, not config, so anything
+			// that takes the radio away takes it with it. Rebuilding only at
+			// Start covers a reboot and nothing else: measured on a Cudy
+			// TR3000, 2026-09-25, unplugging and replugging the adapter left
+			// the box with no scanner and boad never restarted (same pid
+			// across both), so ensureScanIfaces was never reached again and
+			// the box quietly stopped sweeping. See #387.
+			//
+			// On this loop rather than the 1 Hz tick: it reads a directory and
+			// usually does nothing, but a radio appearing is a human-speed
+			// event and there is no reason to ask about it every second.
+			e.rebuildMissingScanIfaces()
 		}
 	}()
 	go func() {
@@ -1648,6 +1660,23 @@ func (e *Engine) notices(ready bool, reason string) []Notice {
 		n = append(n, Notice{"info",
 			"No USB ethernet adapter detected: wired clients will not appear " +
 				"until one is plugged in."})
+	}
+	// A configured listen-only radio that is not there. Said as a condition
+	// rather than logged as a line, because it stays true until somebody acts
+	// and the log would either repeat it or scroll away.
+	//
+	// Nothing an operator would notice breaks when this happens -- the box
+	// keeps serving and conditioning -- so without saying it the only symptom
+	// is a neighbourhood view that is empty for no stated reason, and surveys
+	// quietly taking a serving radio off channel instead of being free. See
+	// #387.
+	if missing := e.missingScanPorts(); len(missing) > 0 {
+		n = append(n, Notice{"warn", fmt.Sprintf(
+			"The listen-only radio %s is configured but not present, so there is "+
+				"nothing sweeping: surveys fall back to a serving radio and take it "+
+				"off channel for about 1.3s each. If the adapter was replugged it may "+
+				"have come back on a different phy, which changes the name.",
+			strings.Join(missing, ", "))})
 	}
 	return n
 }

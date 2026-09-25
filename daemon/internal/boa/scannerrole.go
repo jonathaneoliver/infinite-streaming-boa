@@ -86,6 +86,75 @@ func (e *Engine) ensureScanIfaces() {
 	e.warnOrphanScanIfaces()
 }
 
+// rebuildMissingScanIfaces is ensureScanIfaces on a timer: it recreates a
+// listen-only interface whose phy is THERE, and says nothing when it is not.
+//
+// Quiet on purpose, and only on the repeating path. A radio that has genuinely
+// gone -- unplugged, or back at a different index -- would otherwise repeat the
+// same warning every couple of minutes for as long as it stayed away, which
+// teaches an operator to scroll past the log rather than read it. That absence
+// is reported instead as a notice on the snapshot, which states a condition
+// rather than appending a line, so it is visible the whole time it is true and
+// gone the moment it is not.
+//
+// It exists because a hotplug does not restart the daemon: measured on a Cudy
+// TR3000, 2026-09-25, boad kept the same pid across an unplug and a replug, so
+// nothing reached ensureScanIfaces and the box silently stopped sweeping. See
+// #387.
+func (e *Engine) rebuildMissingScanIfaces() {
+	if e.cfg.Demo {
+		return
+	}
+	for _, s := range e.cfg.ScanPorts {
+		if s == "" || LinkExists(s) {
+			continue
+		}
+		phy := phyOfScanIface(s)
+		if phy == "" || !phyExists(phy) {
+			continue
+		}
+		if out, err := exec.Command("iw", "phy", phy, "interface", "add", s, "type", "managed").CombinedOutput(); err != nil {
+			e.logEvent(EventWarning, s, "", "could not rebuild the listen-only radio %s on %s: %v: %s",
+				s, phy, err, strings.TrimSpace(string(out)))
+			continue
+		}
+		_ = exec.Command("ip", "link", "set", s, "up").Run()
+		e.logEvent(EventRadio, s, "", "%s rebuilt on %s: the radio came back and a listen-only interface does not survive with it", s, phy)
+	}
+}
+
+// phyExists reports whether a radio is present under that name right now.
+func phyExists(phy string) bool {
+	_, err := os.Stat(filepath.Join("/sys/class/ieee80211", phy))
+	return err == nil
+}
+
+// missingScanPorts are the listen-only radios that are configured and absent.
+//
+// The condition behind the notice. A box in this state keeps serving and
+// conditioning -- nothing an operator would notice breaks -- and quietly stops
+// sweeping for free, taking a serving radio off channel for about 1.3s per
+// survey instead, with the neighbourhood view empty. Measured 2026-09-25: the
+// only thing on the box that reported it was `boa-setup check`, from a shell.
+func (e *Engine) missingScanPorts() []string {
+	return missingPorts(e.cfg.ScanPorts, LinkExists)
+}
+
+// missingPorts is that rule as a value, so it can be tested without a box to
+// run `ip link` on -- the same reason scanPortsAfter above is separate. The
+// daemon builds on macOS, where LinkExists answers false for everything
+// because there is no `ip`, so a test that called it directly would assert the
+// platform rather than the rule.
+func missingPorts(ports []string, exists func(string) bool) []string {
+	var out []string
+	for _, s := range ports {
+		if s != "" && !exists(s) {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
 // warnOrphanScanIfaces names a listen-only interface this box made and no
 // longer claims.
 //
