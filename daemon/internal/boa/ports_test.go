@@ -111,3 +111,43 @@ func TestNoBridgeIsEmptyRatherThanAnError(t *testing.T) {
 		t.Errorf("got %v/%v, want both empty", wlan, lan)
 	}
 }
+
+// #381: the radio list has to reach EVERY consumer, not just the bridge view.
+//
+// The regression this guards: #376 moved discovery into the daemon and removed
+// the init script's computation, so -wlan is empty on every OpenWrt device --
+// but most call sites still read the argv snapshot. The bridge view was right
+// while the capability block said the box had no radio, the client list had no
+// Wi-Fi clients, and steer, deauth and transmit power all looped over nothing.
+//
+// Measured on a Cudy TR3000 with two radios serving and an iPhone associated:
+// caps.radio false, caps.wlan_iface "", one client, and the phone absent.
+func TestPrimaryWlanFollowsDiscoveryWhenArgvIsEmpty(t *testing.T) {
+	root := fakeBridge(t, "br-lan", map[string]bool{
+		"eth0":     false, // the uplink
+		"eth1":     false, // a wired client port
+		"phy0-ap0": true,
+		"phy1-ap0": true,
+	})
+	t.Setenv("BOA_SYSFS_ROOT", root)
+
+	// Exactly what the OpenWrt init script passes now: no -wlan, no -lan.
+	e := &Engine{cfg: Config{Bridge: "br-lan", WANPort: "eth0"}}
+
+	if got := e.primaryWlanNow(); got != "phy0-ap0" {
+		t.Errorf("primaryWlanNow() = %q, want phy0-ap0 -- caps.radio is derived from this, and %q makes the interface report no radio at all", got, got)
+	}
+	if got := e.WlanPorts(); len(got) != 2 {
+		t.Errorf("WlanPorts() = %v, want both radios: this is what the station dump and the fdb filter are built from", got)
+	}
+	if got := e.LanPorts(); len(got) != 1 || got[0] != "eth1" {
+		t.Errorf("LanPorts() = %v, want [eth1]", got)
+	}
+
+	// An explicit list still pins, which is what a bench that deliberately
+	// leaves a port out depends on.
+	pinned := &Engine{cfg: Config{Bridge: "br-lan", WANPort: "eth0", WlanPorts: []string{"phy1-ap0"}}}
+	if got := pinned.primaryWlanNow(); got != "phy1-ap0" {
+		t.Errorf("primaryWlanNow() = %q with an explicit -wlan, want phy1-ap0", got)
+	}
+}

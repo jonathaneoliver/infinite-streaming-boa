@@ -145,6 +145,28 @@ func NewLearner(bridge string, downstreamPorts ...string) *Learner {
 	}
 }
 
+// SetDownstream replaces the set of ports a client can be on.
+//
+// It has to be replaceable, not fixed at construction. The ports are now
+// discovered from the bridge rather than passed on the command line, so at the
+// moment the Learner is built the list is empty on every OpenWrt device -- and
+// an empty downstream set means every frame looks as though it arrived from
+// upstream, so nothing is ever learned and no client has a name. See #381.
+//
+// Called on the collector's own tick, so a radio that appears later starts
+// being learned from without a restart.
+func (l *Learner) SetDownstream(ports ...string) {
+	down := make(map[string]bool, len(ports))
+	for _, p := range ports {
+		if p != "" {
+			down[p] = true
+		}
+	}
+	l.mu.Lock()
+	l.downstream = down
+	l.mu.Unlock()
+}
+
 // fromClient reports whether a frame arriving on this interface came from a
 // device downstream of the box.
 //

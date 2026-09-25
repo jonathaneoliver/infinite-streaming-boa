@@ -20,6 +20,8 @@ type Seen struct {
 
 func NewLearner(bridge string, downstreamPorts ...string) *Learner { return &Learner{bridge: bridge} }
 
+func (l *Learner) SetDownstream(ports ...string) {}
+
 func (l *Learner) Run() error {
 	return errors.New("passive learning requires Linux (AF_PACKET)")
 }

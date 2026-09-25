@@ -826,7 +826,7 @@ func (e *Engine) pinToBand(mac string, mhz int, durSec float64) error {
 // that cannot accept the client. See RadioOn.Serving.
 func (e *Engine) radioOnBand(mhz int) string {
 	want := bandOf(mhz)
-	for _, w := range e.cfg.WlanPorts {
+	for _, w := range e.WlanPorts() {
 		r := e.radioOnFor(w)
 		if r == nil || !r.Serving || r.Band != want {
 			continue
@@ -879,7 +879,7 @@ func (e *Engine) SteerAll(fromIface, toIface string, mode steerMode) (int, error
 //
 // Load balancing is a router's job. This is not a router.
 func (e *Engine) OtherRadio(from string) string {
-	for _, w := range e.cfg.WlanPorts {
+	for _, w := range e.WlanPorts() {
 		if w == from {
 			continue
 		}

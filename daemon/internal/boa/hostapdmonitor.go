@@ -201,7 +201,7 @@ func (e *Engine) watchHostapdEvents() {
 	if e.cfg.Demo {
 		return
 	}
-	for _, iface := range e.cfg.WlanPorts {
+	for _, iface := range e.WlanPorts() {
 		go e.watchOneRadio(iface)
 	}
 }
@@ -575,7 +575,7 @@ func (e *Engine) radioByBSSID(bssid string) string {
 	if want == "" {
 		return ""
 	}
-	for _, iface := range e.cfg.WlanPorts {
+	for _, iface := range e.WlanPorts() {
 		ni, err := net.InterfaceByName(iface)
 		if err != nil || ni.HardwareAddr == nil {
 			continue

@@ -129,13 +129,13 @@ func (e *Engine) portFlows(now time.Time, wanClasses map[int]Counters) []PortFlo
 	if e.cfg.WANPort != "" {
 		want = append(want, port{e.cfg.WANPort, RoleWAN})
 	}
-	for _, w := range e.cfg.WlanPorts {
+	for _, w := range e.WlanPorts() {
 		want = append(want, port{w, RoleAP})
 	}
 	for _, s := range e.cfg.ScanPorts {
 		want = append(want, port{s, RoleScanner})
 	}
-	for _, l := range e.cfg.LanPorts {
+	for _, l := range e.LanPorts() {
 		want = append(want, port{l, RoleLAN})
 	}
 
