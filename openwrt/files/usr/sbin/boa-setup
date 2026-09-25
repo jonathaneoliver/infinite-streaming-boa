@@ -28,6 +28,22 @@ installed() { apk info -e "$1" >/dev/null 2>&1; }
 in_bridge() { [ -e "/sys/class/net/br-lan/brif/$1" ]; }
 is_wifi()   { [ -e "/sys/class/net/$1/phy80211" ]; }
 
+# The interface's 802.11 type, as the kernel has it: managed, AP, monitor.
+iface_type() { iw dev "$1" info 2>/dev/null | awk '$1 == "type" { print $2; exit }'; }
+
+# Whether an interface can enumerate networks, which is not the same as being a
+# radio. A monitor interface can survey the one channel it is parked on and
+# nothing else; `iw scan` on one returns `Not supported (-95)`. Asked of the
+# type rather than by running a scan, because a scan takes seconds, moves the
+# radio off channel, and `check` is read-only and safe on a box carrying
+# traffic -- which is load-bearing and stays that way.
+can_scan() {
+	case "$(iface_type "$1")" in
+		managed|AP|'') return 0 ;;   # unknown: reported elsewhere, not guessed at here
+		*)             return 1 ;;
+	esac
+}
+
 # --- 1. Access ---------------------------------------------------------------
 check_access() {
 	section "Access"
@@ -295,8 +311,17 @@ check_boa_config() {
 			fail "boa.main.scan is $scan, which is not a radio"
 		elif in_bridge "$scan"; then
 			fail "boa.main.scan is $scan, which is serving clients: every scan takes it off channel"
+		elif ! can_scan "$scan"; then
+			# THE POINT OF A SCAN RADIO IS THAT IT SCANS, and existing and not
+			# serving does not establish that. Measured on a Cudy TR3000,
+			# 2026-09-25: a monitor-mode interface passed every test above and
+			# answered `command failed: Not supported (-95)` to every scan, so
+			# boa had a scanner that produced no sweeps, the neighbourhood view
+			# stayed empty, and check reported 0 failed throughout. See #384.
+			fail "boa.main.scan is $scan, which cannot scan: $(iface_type "$scan") interfaces do not support it"
+			fix "give the radio a managed interface instead -- boa's own 'scan only' button does this"
 		else
-			ok "boa.main.scan = $scan, a radio that serves nobody"
+			ok "boa.main.scan = $scan, a radio that serves nobody and can scan"
 		fi
 	elif [ -n "$spare" ]; then
 		warn "no scan radio set, so boa scans with a radio that serves clients; $spare serves nobody"
