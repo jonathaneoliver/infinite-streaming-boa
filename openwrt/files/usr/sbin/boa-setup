@@ -897,6 +897,65 @@ cmd_wizard() {
 	return 0
 }
 
+# --- landing -----------------------------------------------------------------
+#
+# Whether http://<this box>/ shows the setup page or LuCI.
+#
+# uhttpd serves the first file in `index_page` that exists, so naming ours
+# ahead of LuCI's index.html takes the web root WITHOUT touching a file another
+# package owns -- /www/index.html belongs to luci-base, and overwriting it
+# would be modified-by-hand as far as apk is concerned and reverted by the next
+# upgrade.
+#
+# RETIRED, NOT DELETED. The wizard turns this off when it has run, so the
+# address goes back to meaning LuCI. The page itself stays on disk and the
+# wizard stays in the menu at Services -> boa setup, because coming back later
+# to change a passphrase or a country is an ordinary thing to want -- `landing
+# on` puts the front door back for anyone who would rather have it.
+LANDING_PAGE=boa-setup.html
+
+landing_state() {
+	case " $(uci -q get uhttpd.main.index_page) " in
+		*" $LANDING_PAGE "*) echo on ;;
+		*)                   echo off ;;
+	esac
+}
+
+cmd_landing() {
+	local want="${1:-status}" cur
+	cur="$(landing_state)"
+	case "$want" in
+		status)
+			echo "landing page: $cur"
+			[ -f "/www/$LANDING_PAGE" ] || echo "  (the page itself is missing: reinstall luci-app-boa)"
+			return 0 ;;
+		on)
+			[ "$cur" = on ] && { echo "Already on: / shows the setup page."; return 0; }
+			# Rebuilt rather than appended to: index_page is unset on a stock box,
+			# where uhttpd falls back to index.html on its own. Naming both, in
+			# order, means ours wins while it exists and LuCI's takes over the
+			# moment it does not -- no list that depends on a file having been
+			# deleted.
+			uci -q delete uhttpd.main.index_page
+			uci add_list uhttpd.main.index_page="$LANDING_PAGE"
+			uci add_list uhttpd.main.index_page='index.html'
+			uci commit uhttpd
+			/etc/init.d/uhttpd reload >/dev/null 2>&1
+			echo "On: http://<this box>/ now shows the setup page."
+			return 0 ;;
+		off)
+			[ "$cur" = off ] && { echo "Already off: / shows LuCI."; return 0; }
+			uci del_list uhttpd.main.index_page="$LANDING_PAGE"
+			uci commit uhttpd
+			/etc/init.d/uhttpd reload >/dev/null 2>&1
+			echo "Off: / goes back to LuCI. The setup page stays at Services -> boa setup."
+			return 0 ;;
+		*)
+			echo "usage: boa-setup landing on|off|status" >&2
+			return 2 ;;
+	esac
+}
+
 # --- convert -----------------------------------------------------------------
 #
 # EXPLICIT, AND NEVER AUTOMATIC. The obvious home for this is a uci-defaults
@@ -1202,6 +1261,7 @@ case "${1:-}" in
 	install-drivers) cmd_install_drivers "${2:-}" ;;
 	install-wpad)    shift; cmd_install_wpad "$@" ;;
 	wizard)  cmd_wizard "${2:-}" ;;
+	landing) cmd_landing "${2:-}" ;;
 	*)
 		echo "usage: boa-setup check | wizard [--dry-run] | convert [--dry-run]" >&2
 		echo "                | plan-channels [--dry-run] | install-drivers [--dry-run]" >&2
@@ -1213,6 +1273,8 @@ case "${1:-}" in
 		echo "  convert        turn a stock OpenWrt router into the transparent bridge boa needs." >&2
 		echo "                 Interrupts the network and changes the device's address. Never" >&2
 		echo "                 runs on its own -- see the comment above cmd_convert for why." >&2
+		echo "  landing        whether http://<this box>/ shows the setup page or LuCI." >&2
+		echo "                 on | off | status. Turned off once the wizard has run." >&2
 		echo "  plan-channels  give each serving radio a channel that does not clash with the" >&2
 		echo "                 others: 36 and 149 for the first two 5 GHz radios, 6/1/11 for" >&2
 		echo "                 2.4 GHz. Reloads Wi-Fi, so associated clients reconnect." >&2

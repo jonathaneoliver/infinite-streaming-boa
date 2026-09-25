@@ -45,6 +45,10 @@ define Package/luci-app-boa/install
 	$(INSTALL_DATA) $(BOA_FILES)/www/luci-static/resources/view/boa/wizard.js $(1)/www/luci-static/resources/view/boa/wizard.js
 	$(INSTALL_DIR) $(1)/usr/share/luci/menu.d
 	$(INSTALL_DATA) $(BOA_FILES)/usr/share/luci/menu.d/luci-app-boa.json $(1)/usr/share/luci/menu.d/luci-app-boa.json
+	$(INSTALL_DIR) $(1)/www
+	$(INSTALL_DATA) $(BOA_FILES)/www/boa-setup.html $(1)/www/boa-setup.html
+	$(INSTALL_DIR) $(1)/etc/uci-defaults
+	$(INSTALL_BIN) $(BOA_FILES)/etc/uci-defaults/99-boa-landing $(1)/etc/uci-defaults/99-boa-landing
 	$(INSTALL_DIR) $(1)/usr/share/rpcd/acl.d
 	$(INSTALL_DATA) $(BOA_FILES)/usr/share/rpcd/acl.d/luci-app-boa.json $(1)/usr/share/rpcd/acl.d/luci-app-boa.json
 endef
