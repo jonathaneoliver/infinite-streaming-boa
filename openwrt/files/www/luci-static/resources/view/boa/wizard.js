@@ -212,6 +212,16 @@ return view.extend({
 				// preference.
 				.then(function() { return callUciCommit('attendedsysupgrade').catch(function() { return null; }); })
 				.then(function() { return fs.exec('/sbin/wifi'); })
+				// The front door retires itself. http://<box>/ shows the setup page
+				// only until the box has been set up; after this it means LuCI again.
+				// Best effort -- a box that never had the landing page turned on, or
+				// an older ACL without this entry, must not fail the whole apply over
+				// a redirect. The wizard itself stays in the menu either way, because
+				// coming back to change a passphrase is an ordinary thing to want.
+				.then(function() {
+					return fs.exec('/usr/sbin/boa-setup', [ 'landing', 'off' ])
+						.catch(function() { return null; });
+				})
 				.then(function() {
 					if (!pw.value.length)
 						return null;

@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+<title>Set up this box &mdash; infinite-streaming-boa</title>
+<style>
+:root { color-scheme: light dark; --ink:#16181d; --dim:#5b6472; --line:#d8dde5; --bg:#fbfcfd; --accent:#1b6fd4; }
+@media (prefers-color-scheme: dark) {
+  :root { --ink:#e8ecf2; --dim:#98a3b3; --line:#2a3039; --bg:#14161a; --accent:#63a8ff; }
+}
+* { box-sizing: border-box; }
+body { margin:0; background:var(--bg); color:var(--ink); font:16px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif; }
+main { max-width: 34rem; margin: 0 auto; padding: 3rem 1rem 4rem; }
+h1 { font-size:1.5rem; margin:0 0 .25rem; letter-spacing:-.01em; }
+.sub { color:var(--dim); margin:0 0 2rem; }
+.card { border:1px solid var(--line); border-radius:10px; padding:1.25rem 1.25rem 1.4rem; background:transparent; }
+h2 { font-size:1rem; margin:0 0 .6rem; }
+p { margin:0 0 .9rem; }
+ol { margin:0 0 1.2rem; padding-left:1.2rem; color:var(--dim); }
+li { margin:.3rem 0; }
+code { font:13px/1.4 ui-monospace,SFMono-Regular,Menlo,monospace; background:rgba(127,127,127,.14); padding:.1em .35em; border-radius:4px; }
+a.go { display:inline-block; background:var(--accent); color:#fff; text-decoration:none; padding:.6rem 1.1rem; border-radius:7px; font-weight:600; }
+a.go:hover { filter:brightness(1.08); }
+.note { color:var(--dim); font-size:.88rem; margin-top:1.4rem; border-top:1px solid var(--line); padding-top:1rem; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Set up this box</h1>
+  <p class="sub">infinite-streaming-boa &mdash; per-device network link conditioner</p>
+
+  <div class="card">
+    <h2>This device has not been set up yet</h2>
+    <p>It is running with factory settings: <strong>no root password</strong>, and
+       its radios are switched off. The setup page asks for the few things it needs.</p>
+    <ol>
+      <li>Log in as <code>root</code> &mdash; there is no password yet, so leave it empty</li>
+      <li>Choose a network name, a passphrase and a country</li>
+      <li>Set a root password, which closes the open door above</li>
+    </ol>
+    <a class="go" href="/cgi-bin/luci/admin/services/boa_wizard">Open the setup page</a>
+  </div>
+
+  <p class="note">
+    Use this over a <strong>wired</strong> port. Applying takes every radio down and
+    back up, so a browser on Wi-Fi would cut itself off part-way through.
+    <br><br>
+    This page appears only until the box is set up. Afterwards this address goes back
+    to LuCI, and the setup page stays at
+    <strong>Services &rarr; boa setup</strong> whenever you want to change something.
+  </p>
+</main>
+</body>
+</html>

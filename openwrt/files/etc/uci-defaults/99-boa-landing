@@ -1,0 +1,23 @@
+#!/bin/sh
+# Point http://<this box>/ at the setup page -- but ONLY on a box that has not
+# been set up.
+#
+# THE TRAP THIS AVOIDS. OpenWrt runs uci-defaults AT INSTALL TIME as well as on
+# a first boot, so an unconditional version of this would hijack the web root of
+# a router somebody is already using, the moment they ran `apk add
+# luci-app-boa`. The same reasoning is written out above cmd_convert.
+#
+# "Not set up" is judged by two things together, because either alone is weak:
+# a root password that has never been set, and lan still on the address OpenWrt
+# ships. A device in use has almost certainly changed one of them.
+[ -x /usr/sbin/boa-setup ] || exit 0
+
+case "$(awk -F: '$1 == "root" { print $2 }' /etc/shadow 2>/dev/null)" in
+	''|'*'|'!') ;;                 # no password: still factory
+	*) exit 0 ;;                   # somebody set one: this box is in use
+esac
+[ "$(uci -q get network.lan.ipaddr)" = "192.168.1.1" ] || exit 0
+[ "$(uci -q get network.lan.proto)" = "static" ] || exit 0
+
+/usr/sbin/boa-setup landing on >/dev/null 2>&1
+exit 0
