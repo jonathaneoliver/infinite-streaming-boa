@@ -199,16 +199,24 @@ serves_ap() {
 	return 1
 }
 
-# The netdev of wifi-device $1's phy, when it has exactly the one OpenWrt made
-# for it (wlan0 on the Pi 5's onboard radio): its path matches the phy's device.
+# The netdev of wifi-device $1's phy.
+#
+# THROUGH radio_phy, AND FROM THE NETDEV SIDE, both for the same DBDC reason.
+# An MT7915E is one PCI device carrying two phys, so matching the uci `path`
+# alone gives both halves the same phy, and listing `$phy/device/net/*` lists
+# the netdevs of the shared DEVICE -- both halves again. Neither separates
+# them. A netdev's own phy80211 link does.
+#
+# Measured 2026-09-25: without this the 5 GHz radio answered with the 2.4 GHz
+# radio's interface, so the scan-radio comparison in check_wifi missed and the
+# planner did not recognise its own scanner.
 radio_ifname() {
-	local path p n
-	path="$(uci -q get wireless.$1.path)"
-	[ -n "$path" ] || return
-	for p in /sys/class/ieee80211/*; do
-		case "$(readlink -f "$p/device")" in
-			*"$path") for n in "$p"/device/net/*; do [ -e "$n" ] && echo "${n##*/}"; done; return ;;
-		esac
+	local phy d
+	phy="$(radio_phy "$1")" || return
+	for d in /sys/class/net/*/phy80211; do
+		[ -e "$d" ] || continue
+		[ "$(basename "$(readlink -f "$d")")" = "$phy" ] || continue
+		d="${d%/phy80211}"; echo "${d##*/}"
 	done
 }
 
@@ -472,6 +480,158 @@ check_service() {
 # switch lan to DHCP and turn off its DHCP server -- quite possibly over the
 # SSH session doing the installing.
 #
+# --- plan-channels -----------------------------------------------------------
+#
+# Give every serving radio a channel that does not clash with the others.
+#
+# WHY THIS EXISTS ON OPENWRT AT ALL. The Pi image and the container get this
+# from infinite-streaming-boa-radioplan, which sees every phy at once and hands
+# out channels from a taken list. That script is NOT in the OpenWrt package --
+# it writes hostapd configs directly, which is netifd's job here -- so an
+# OpenWrt box has had no cross-radio plan at all: `wifi config` sets each radio
+# independently and two 5 GHz radios can land on the same channel, each
+# halving the other's airtime while the interface reports both as healthy.
+#
+# THE SAME POLICY, deliberately the same numbers as radioplan's:
+#
+#   36 and 149 are the two non-overlapping non-DFS 80 MHz blocks, so the first
+#   two 5 GHz radios get a clean 80 MHz each. 2.4 GHz gets the usual
+#   non-overlapping trio. Non-DFS on purpose -- a DFS channel makes the radio
+#   listen for radar before it may beacon, and an access point that takes a
+#   minute to appear is a minute of measurement that is really about the radar
+#   check.
+#
+# Two copies of the constants is a real cost and worth naming: radioplan writes
+# hostapd configs and this writes uci, so neither can call the other, but a
+# change to the plan has to be made in both. The alternative -- shipping
+# radioplan here -- puts a script behind netifd's back on a box where uci owns
+# wireless, which this repository has been bitten by before.
+PLAN_5="36 149"
+PLAN_24="6 1 11"
+
+# The phy behind wifi-device $1, by the same path match as radio_hw_present.
+#
+# THE +N SUFFIX SELECTS AMONG PHYS ON ONE DEVICE, and dropping it is not enough:
+# a DBDC part like the MT7915E is one PCI device with two phys, `path` for the
+# 2.4 GHz half and `path+1` for the 5 GHz one. Matching the path and taking the
+# first phy gives BOTH halves the 2.4 GHz radio -- measured 2026-09-25, where it
+# then found no 5 GHz channel for a radio that was serving on 36 at the time.
+#
+# Ordered by the glob, which is phy0, phy1, ... and so matches the kernel's
+# creation order for the single-digit indices these boxes have. A box with ten
+# or more phys would need a numeric sort.
+radio_phy() {
+	local path p idx=0 n=0
+	path="$(uci -q get wireless.$1.path)"
+	[ -n "$path" ] || return 1
+	case "$path" in *+[0-9]) idx="${path##*+}"; path="${path%+*}" ;; esac
+	for p in /sys/class/ieee80211/*; do
+		case "$(readlink -f "$p/device")" in
+			*"$path")
+				[ "$n" = "$idx" ] && { echo "${p##*/}"; return 0; }
+				n=$((n + 1)) ;;
+		esac
+	done
+	return 1
+}
+
+# What phy $1 can actually use in band $2 (24|5), asked of the hardware.
+#
+# Channels marked "disabled" or "no IR" are excluded: no-IR means the radio may
+# not transmit there without first hearing someone else, which an access point
+# cannot rely on. This is what stops 149 being written on a box in a regulatory
+# domain that does not have it -- the AP would simply never start.
+phy_channels() {
+	iw phy "$1" info 2>/dev/null | awk -v want="$2" '
+		/^\t*Band 1:/ { band="24"; next }
+		/^\t*Band 2:/ { band="5";  next }
+		/^\t*Band [0-9]+:/ { band="other"; next }
+		band == want && /\* [0-9.]+ MHz \[[0-9]+\]/ && !/disabled/ && !/no IR/ {
+			match($0, /\[[0-9]+\]/)
+			print substr($0, RSTART+1, RLENGTH-2)
+		}'
+}
+
+# Whether wifi-device $1 has an enabled AP interface -- a radio that serves
+# nothing takes no channel, for radioplan's reason: giving one to a radio that
+# never transmits pushes a radio that DOES onto a worse channel.
+serves_ap_enabled() {
+	local i
+	for i in $(uci -q show wireless | sed -n 's/^wireless\.\([^.=]*\)=wifi-iface$/\1/p'); do
+		[ "$(uci -q get wireless.$i.device)" = "$1" ] || continue
+		[ "$(uci -q get wireless.$i.mode)" = ap ] || continue
+		[ "$(uci -q get wireless.$i.disabled)" = 1 ] && continue
+		return 0
+	done
+	return 1
+}
+
+cmd_plan_channels() {
+	local dry="" r band phy scan scandev taken="" ch plan n=0
+	[ "${1:-}" = "--dry-run" ] && dry=1
+
+	scan="$(uci -q get boa.main.scan)"
+	printf 'Planning channels for the radios that serve.\n'
+
+	for r in $(uci -q show wireless | sed -n 's/^wireless\.\([^.=]*\)=wifi-device$/\1/p'); do
+		radio_hw_present "$r" || { note "$r: adapter not present"; continue; }
+		[ "$(uci -q get wireless.$r.disabled)" = 1 ] && { note "$r: disabled"; continue; }
+		serves_ap_enabled "$r" || { note "$r: serves no access point"; continue; }
+		phy="$(radio_phy "$r")" || { note "$r: no phy"; continue; }
+
+		# The scan radio never takes a channel from the plan -- radioplan's
+		# reason: giving one to a radio that never transmits pushes a radio that
+		# DOES onto a worse channel. Compared by PHY rather than by interface
+		# name, so a radio with several netdevs still matches.
+		if [ -n "$scan" ] && [ -e "/sys/class/net/$scan/phy80211" ]; then
+			scandev="$(basename "$(readlink -f "/sys/class/net/$scan/phy80211")")"
+			[ "$scandev" = "$phy" ] && { note "$r ($phy): boa's scan radio"; continue; }
+		fi
+
+		band="$(uci -q get wireless.$r.band)"
+		case "$band" in
+			5g) plan="$PLAN_5"; band=5 ;;
+			2g) plan="$PLAN_24"; band=24 ;;
+			*)  note "$r: band '$band' is not one this plans for"; continue ;;
+		esac
+
+		ch=""
+		for c in $plan; do
+			case " $taken " in *" $c "*) continue ;; esac
+			phy_channels "$phy" "$band" | grep -qx "$c" || continue
+			ch="$c"; break
+		done
+		if [ -z "$ch" ]; then
+			warn "$r ($phy): no free channel it can use; leaving it on $(uci -q get wireless.$r.channel)"
+			continue
+		fi
+		taken="$taken $ch"
+		n=$((n + 1))
+		if [ "$(uci -q get wireless.$r.channel)" = "$ch" ]; then
+			ok "$r ($phy): already on $ch"
+			continue
+		fi
+		if [ -n "$dry" ]; then
+			printf '  would set wireless.%s.channel=%s (was %s)\n' \
+				"$r" "$ch" "$(uci -q get wireless.$r.channel)"
+		else
+			ok "$r ($phy): $(uci -q get wireless.$r.channel) -> $ch"
+			uci set wireless.$r.channel="$ch"
+		fi
+	done
+
+	[ "$n" -gt 0 ] || { echo "No serving radio to plan for." >&2; return 1; }
+	if [ -n "$dry" ]; then
+		echo "  uci commit wireless && wifi reload"
+		echo "--dry-run: nothing changed."
+		return 0
+	fi
+	uci commit wireless
+	echo "Reloading Wi-Fi..."
+	wifi reload
+	printf 'Planned %d radio(s).\n' "$n"
+}
+
 # A fresh flash and a working router are not distinguishable from the config:
 # both have lan on 192.168.1.1 with a wan and a DHCP server. So the operator
 # asks for this, or it does not happen.
@@ -611,11 +771,15 @@ cmd_check() {
 case "${1:-}" in
 	check)   cmd_check ;;
 	convert) cmd_convert "${2:-}" ;;
+	plan-channels) cmd_plan_channels "${2:-}" ;;
 	*)
-		echo "usage: boa-setup check | convert [--dry-run]" >&2
-		echo "  check     read-only: what this device still needs before boa can run on it" >&2
-		echo "  convert   turn a stock OpenWrt router into the transparent bridge boa needs." >&2
-		echo "            Interrupts the network and changes the device's address. Never" >&2
-		echo "            runs on its own -- see the comment above cmd_convert for why." >&2
+		echo "usage: boa-setup check | convert [--dry-run] | plan-channels [--dry-run]" >&2
+		echo "  check          read-only: what this device still needs before boa can run on it" >&2
+		echo "  convert        turn a stock OpenWrt router into the transparent bridge boa needs." >&2
+		echo "                 Interrupts the network and changes the device's address. Never" >&2
+		echo "                 runs on its own -- see the comment above cmd_convert for why." >&2
+		echo "  plan-channels  give each serving radio a channel that does not clash with the" >&2
+		echo "                 others: 36 and 149 for the first two 5 GHz radios, 6/1/11 for" >&2
+		echo "                 2.4 GHz. Reloads Wi-Fi, so associated clients reconnect." >&2
 		exit 2 ;;
 esac
