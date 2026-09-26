@@ -21,6 +21,11 @@
 				"luci-rpc": [
 					"getNetworkDevices"
 				]
+			},
+			"file": {
+				"/tmp/boa-apply.log": [
+					"read"
+				]
 			}
 		},
 		"write": {
@@ -28,16 +33,17 @@
 				"wireless",
 				"attendedsysupgrade"
 			],
-			"ubus": {
-				"luci": [
-					"setPassword"
-				]
-			},
 			"file": {
-				"/sbin/wifi": [
+				"/tmp/boa-wizard.conf": [
+					"write"
+				],
+				"/usr/sbin/boa-setup firstrun cancel": [
 					"exec"
 				],
-				"/usr/sbin/boa-setup landing off": [
+				"/usr/sbin/boa-setup install-drivers": [
+					"exec"
+				],
+				"/usr/sbin/boa-setup apply /tmp/boa-wizard.conf --background": [
 					"exec"
 				]
 			}

@@ -649,6 +649,50 @@ cmd_install_drivers() {
 # carrying clients is the case that still wants a human, and says so.
 running_aps() { ubus list 2>/dev/null | grep -c '^hostapd\.'; }
 
+# DID IT ACTUALLY COME UP?
+#
+# apply_wizard writes uci and reloads wifi. Whether an access point is SERVING
+# afterwards is a different question, and it is the only one an operator cares
+# about. hostapd registers a ubus object per running AP, so running_aps answers
+# it from the box rather than from what we asked the box for.
+#
+# Measured on the x86-64 VM 2026-09-26: the LuCI wizard reported `"ubuntu1263"
+# is up on 2 radio(s)` -- counted from the uci sections it had just written --
+# while running_aps was 0, because wpad was missing and netifd prepared both
+# interfaces and tore them down again. A confident success message over a box
+# serving nothing is worse than an error. See #406.
+#
+# It WAITS rather than reading once: hostapd registers a moment after a reload,
+# and a single early read would call every slow start a failure.
+verify_serving() {
+	local n i=0
+	while [ "$i" -lt 20 ]; do
+		n="$(running_aps)"; n="${n:-0}"
+		[ "$n" -gt 0 ] && { printf '%s' "$n"; return 0; }
+		i=$((i + 1)); sleep 1
+	done
+	printf '0'
+	return 1
+}
+
+# The root password, from a value a person wrote down -- into a file before the
+# box booted, or into the setup page. NEVER invented: a random one would lock
+# the owner out of a device with no screen to read it back from.
+#
+# Prints what happened rather than returning it, because every caller records
+# the same sentence in the first-run note.
+set_root_password() {
+	if [ -z "$1" ]; then
+		printf 'not set: anyone on the LAN can log in'
+		return 0
+	fi
+	if printf '%s\n%s\n' "$1" "$1" | passwd root >/dev/null 2>&1; then
+		printf 'set from %s' "$2"
+	else
+		printf 'FAILED to set -- the box is still open'
+	fi
+}
+
 cmd_install_wpad() {
 	local dry="" force="" basic="" full="" p aps
 	for p in "$@"; do
@@ -928,21 +972,21 @@ cmd_wizard() {
 
 		# THE TWO A BOX MAY NOT DECIDE, done here only because a person wrote
 		# them down. Without the file they stay undone and check keeps saying so.
-		if [ -n "$rootpw" ]; then
-			if printf '%s\n%s\n' "$rootpw" "$rootpw" | passwd root >/dev/null 2>&1; then
-				rootpw="set from $src"
-			else
-				rootpw="FAILED to set -- the box is still open"
-			fi
-		else
-			rootpw="not set: no root_password given, so anyone on the LAN can log in"
-		fi
+		rootpw="$(set_root_password "$rootpw" "$src")"
+
+		# Same question the setup page asks: is anything actually serving? An
+		# unattended run has nobody watching it, so a box that configured two
+		# access points and started none would otherwise sit there looking
+		# finished. See #406.
+		local aps
+		aps="$(verify_serving)" || true
 
 		firstrun_note "ran unattended $(date '+%Y-%m-%d %H:%M'), from $src
   SSID:          $ssid
   passphrase:    $key
   country:       ${country:-none -- the world domain, 20 dBm, no DFS}
   root password: $rootpw
+  serving:       ${aps:-0} access point(s)
   Change any of it: boa-setup wizard, or Services -> boa setup"
 
 		# Removed once read: it carries a password in clear, and what it did is
@@ -1214,7 +1258,118 @@ firstrun_conf_find() {
 FIRSTRUN_STATE=/etc/infinite-streaming-boa/firstrun
 FIRSTRUN_WAIT=120
 
+# Where a detached `apply` writes, and the line it ends with. The path is FIXED
+# rather than a mktemp: the LuCI ACL names the exact command it may run and the
+# exact file it may read, so there is no wildcard for anything else to slip
+# through. The sentinel is how the page tells "still installing" from
+# "finished", which a log that simply stops growing cannot.
+APPLY_LOG=/tmp/boa-apply.log
+APPLY_ANSWERS=/tmp/boa-wizard.conf
+APPLY_DONE=__BOA_APPLY_DONE
+
 firstrun_note() { mkdir -p "$(dirname "$FIRSTRUN_STATE")"; printf '%s\n' "$1" > "$FIRSTRUN_STATE"; chmod 600 "$FIRSTRUN_STATE"; }
+
+# --- apply --------------------------------------------------------------------
+
+# Everything the wizard collects, applied without asking anything.
+#
+# THE LUCI PAGE CALLS THIS rather than writing uci itself. It used to be a
+# second implementation of apply_wizard written in JavaScript, and it had
+# already drifted from this one in five ways: no prerequisites, so a box with
+# no wpad configured two access points that netifd immediately tore down; no
+# hostname and no mDNS; no verification, so it reported success over a box
+# serving nothing; and no convert, so a web-only owner never got a bridge.
+# One implementation, and the web path inherits everything the shell path has
+# learned -- including the measurements written into these comments. See #406.
+#
+# THE ANSWERS ARRIVE IN A FILE, not in argv. A passphrase and a root password
+# on a command line are readable by anyone who can list /proc for as long as
+# the command runs, and this one runs for minutes while it installs packages.
+# The file is the same key=value format as boa-firstrun.conf, read by the same
+# parser, and is deleted as soon as it has been read -- before any of the slow
+# work starts, so it is not sitting there for the length of an apk install.
+cmd_apply() {
+	local conf="${1:-}" dry="" ssid key country rootpw doconv n
+	[ -n "$conf" ] || { echo "usage: boa-setup apply <answers-file> [--background]" >&2; return 2; }
+	[ -r "$conf" ] || { echo "boa-setup apply: cannot read $conf" >&2; return 1; }
+
+	# DETACHED, because this takes minutes and its caller cannot wait.
+	#
+	# The work below installs packages -- drivers, wpad, umdns -- over whatever
+	# uplink the box has. rpcd's exec has a timeout and the browser has its own,
+	# and a setup that is still installing when one of them fires looks to the
+	# operator exactly like a setup that hung. Measured on the x86-64 VM: the
+	# driver install alone pulled 28 packages.
+	#
+	# So the caller gets the log path back immediately and follows the file.
+	# setsid, because rpcd reaps the process group when the exec call returns,
+	# which would kill the install halfway through.
+	if [ "${2:-}" = --background ]; then
+		rm -f "$APPLY_LOG"
+		: > "$APPLY_LOG"
+		chmod 600 "$APPLY_LOG"
+		setsid sh -c '{ "$1" apply "$2"; printf "'"$APPLY_DONE"' rc=%s\n" "$?"; } >> "$3" 2>&1' \
+			sh "$0" "$conf" "$APPLY_LOG" </dev/null >/dev/null 2>&1 &
+		echo "$APPLY_LOG"
+		return 0
+	fi
+
+	ssid="$(firstrun_conf_get ssid "$conf")"
+	key="$(firstrun_conf_get key "$conf")"
+	country="$(firstrun_conf_get country "$conf" | tr 'a-z' 'A-Z')"
+	rootpw="$(firstrun_conf_get root_password "$conf")"
+	doconv="$(firstrun_conf_get convert "$conf")"
+	rm -f "$conf"
+
+	# Validated here as well as in the form. The form is one caller, and a
+	# value that reaches hostapd malformed takes the radios down rather than
+	# being rejected: '00' in particular is refused as an invalid country_code
+	# and the access point never starts.
+	[ -n "$ssid" ] || { echo "An SSID is required." >&2; return 1; }
+	[ "${#ssid}" -gt 32 ] && { echo "An SSID is at most 32 characters." >&2; return 1; }
+	if [ -n "$key" ]; then
+		[ "${#key}" -lt 8 ] || [ "${#key}" -gt 63 ] && {
+			echo "A WPA passphrase is 8 to 63 characters." >&2; return 1; }
+	fi
+	case "$country" in
+		'') ;;
+		00) echo "'00' is not a country: hostapd rejects it as an invalid country_code." >&2
+		    echo "Leave it empty instead -- that is the world domain, and it works." >&2; return 1 ;;
+		[A-Z][A-Z]) ;;
+		*)  echo "A country code is two letters, or empty." >&2; return 1 ;;
+	esac
+
+	wizard_prerequisites
+	apply_wizard "$ssid" "$key" "$country" || return 1
+
+	rootpw="$(set_root_password "$rootpw" 'the setup page')"
+
+	# The check the old JavaScript never made.
+	if n="$(verify_serving)"; then
+		echo "Serving: $n access point(s) are up."
+	else
+		echo "WARNING: the settings were written, but NO access point is serving." >&2
+		echo "The radios were configured and reloaded, and hostapd registered none." >&2
+		echo "Find out why with:  boa-setup check" >&2
+	fi
+
+	firstrun_note "set up $(date '+%Y-%m-%d %H:%M') from the setup page
+  SSID:          $ssid
+  country:       ${country:-none -- the world domain, 20 dBm, no DFS}
+  root password: $rootpw
+  serving:       ${n:-0} access point(s)
+  Change any of it: boa-setup wizard, or Services -> boa setup"
+
+	cmd_landing done >/dev/null 2>&1
+
+	case "$doconv" in
+		1|y|yes|true)
+			echo
+			echo "convert=yes: turning this into a transparent bridge."
+			cmd_convert ;;
+	esac
+	return 0
+}
 
 cmd_firstrun() {
 	case "${1:-status}" in
@@ -1657,6 +1812,7 @@ case "${1:-}" in
 	install-drivers) cmd_install_drivers "${2:-}" ;;
 	install-wpad)    shift; cmd_install_wpad "$@" ;;
 	install-mdns)    shift; cmd_install_mdns "$@" ;;
+	apply)           shift; cmd_apply "$@" ;;
 	wizard)  cmd_wizard "${2:-}" ;;
 	landing) cmd_landing "${2:-}" ;;
 	firstrun) cmd_firstrun "${2:-}" ;;
@@ -1684,6 +1840,10 @@ case "${1:-}" in
 		echo "  install-drivers" >&2
 		echo "                 install the kmod packages for USB adapters that have no" >&2
 		echo "                 driver. Drivers only; the wpad swap stays in your hands." >&2
+		echo "  apply          apply a whole setup from a key=value answers file, without" >&2
+		echo "                 asking: the same keys as boa-firstrun.conf. This is what" >&2
+		echo "                 Services -> boa setup calls; the file is deleted as it is" >&2
+		echo "                 read, because it carries passwords in clear." >&2
 		echo "  install-mdns   install umdns, so the box answers to <hostname>.local. The" >&2
 		echo "                 wizard names it after the SSID -- openwrt-ubuntu1263.local" >&2
 		echo "                 -- and the name keeps working after convert, when the" >&2
