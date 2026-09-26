@@ -101,6 +101,45 @@ Run against a copy of its config edited back to a router's -- `lan` static,
 `boa.main.wan` on the wrong port, no scan radio -- it reported all nine, as
 5 failures and 4 warnings, each with its fix.
 
+## Set a device up without touching it: `boa-firstrun.conf`
+
+A box that nobody sets up waits **two minutes from boot** for somebody to open
+the setup page, then brings itself up. What it decides alone is deliberately
+limited -- an SSID derived from the board name and the LAN MAC, a passphrase
+generated per device, and no country -- because the two things that matter most
+cannot be guessed:
+
+- a **root password** a box invented would lock the operator out, since there is
+  no screen to read it from and no label to print it on;
+- **`convert`** changes the device's address, and unattended it can strand the
+  box somewhere nobody can reach.
+
+A file changes what those are. `root_password=` written by the owner is an
+instruction, not a guess, so the unattended path can carry it out and the device
+comes up **fully** configured:
+
+```sh
+# /boot/boa-firstrun.conf   (x86, Pi: mountable from another machine before
+#                            the device has ever been switched on)
+# /etc/boa-firstrun.conf    (anywhere else: baked into the image, or copied
+#                            over before first boot)
+ssid=bench-3
+key=a passphrase, 8-63 characters
+country=GB
+root_password=...
+convert=no
+```
+
+Every key is optional and anything absent falls back to what the box would have
+chosen, so a file naming only an SSID still gets a generated passphrase. The
+file is **deleted once read** -- it carries a password in clear -- and what it
+did is recorded in `/etc/infinite-streaming-boa/firstrun`, root-readable only,
+including whether the root password was actually set.
+
+`/etc/boa-firstrun.conf.example` ships with the `boa` package and documents
+every key. Opening the setup page cancels the countdown, so an operator who
+arrives in time is never raced.
+
 ## Install from the package feed
 
 Signed releases are published to a feed on GitHub Pages,
