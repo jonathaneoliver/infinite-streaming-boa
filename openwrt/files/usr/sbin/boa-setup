@@ -596,6 +596,9 @@ cmd_install_drivers() {
 	walk_adapters note_if_still_bare
 	echo
 	if [ -n "$STILL_BARE" ]; then
+		# Recorded so the setup page can pick up here after the restart,
+		# instead of showing the same "no radios" screen it opened with.
+		stage_set reboot-for-drivers
 		printf 'Installed, but still without a driver:\n%s' "$STILL_BARE"
 		echo "A module is usually loaded before its firmware is unpacked, and the probe"
 		echo "is not retried. Reload it, or reboot:"
@@ -604,6 +607,7 @@ cmd_install_drivers() {
 		echo "Then: boa-setup check"
 		return 1
 	fi
+	stage_clear
 	echo "Installed, and every adapter boa recognises now has a driver."
 	echo "Check with: boa-setup check"
 	return 0
@@ -1267,6 +1271,46 @@ APPLY_LOG=/tmp/boa-apply.log
 APPLY_ANSWERS=/tmp/boa-wizard.conf
 APPLY_DONE=__BOA_APPLY_DONE
 
+# WHERE SETUP HAD GOT TO, across a reboot.
+#
+# Installing a radio driver needs one: the module is loaded before its firmware
+# is unpacked and the probe is never retried, so the radios do not appear until
+# the box restarts. That restart takes the setup page with it, and an operator
+# who comes back to a page that has forgotten everything is looking at the same
+# "no radios" screen they started from, with no way to tell whether their last
+# click did anything.
+#
+# So it is written to /etc rather than /tmp, which is a tmpfs and would not
+# survive the one event this exists for.
+SETUP_STAGE=/etc/infinite-streaming-boa/setup-stage
+
+stage_set()   { mkdir -p "$(dirname "$SETUP_STAGE")"; printf '%s\n' "$1" > "$SETUP_STAGE"; }
+stage_clear() { rm -f "$SETUP_STAGE"; }
+
+# SELF-HEALING, so the page needs one call and no rules of its own. A stage is
+# a claim about what still has to happen; when the box can be seen to have done
+# it, the claim is stale and is dropped here rather than left for every caller
+# to reason about.
+stage_get() {
+	local s
+	s="$(cat "$SETUP_STAGE" 2>/dev/null)" || { echo none; return 0; }
+	case "$s" in
+		reboot-for-drivers)
+			if [ -n "$(uci -q show wireless 2>/dev/null | grep wifi-device)" ]; then
+				stage_clear; echo none; return 0
+			fi ;;
+	esac
+	echo "$s"
+}
+
+cmd_stage() {
+	case "${1:-get}" in
+		get)   stage_get ;;
+		clear) stage_clear ;;
+		*)     echo "usage: boa-setup stage get|clear" >&2; return 2 ;;
+	esac
+}
+
 firstrun_note() { mkdir -p "$(dirname "$FIRSTRUN_STATE")"; printf '%s\n' "$1" > "$FIRSTRUN_STATE"; chmod 600 "$FIRSTRUN_STATE"; }
 
 # --- apply --------------------------------------------------------------------
@@ -1813,6 +1857,7 @@ case "${1:-}" in
 	install-wpad)    shift; cmd_install_wpad "$@" ;;
 	install-mdns)    shift; cmd_install_mdns "$@" ;;
 	apply)           shift; cmd_apply "$@" ;;
+	stage)           cmd_stage "${2:-get}" ;;
 	wizard)  cmd_wizard "${2:-}" ;;
 	landing) cmd_landing "${2:-}" ;;
 	firstrun) cmd_firstrun "${2:-}" ;;
@@ -1840,6 +1885,10 @@ case "${1:-}" in
 		echo "  install-drivers" >&2
 		echo "                 install the kmod packages for USB adapters that have no" >&2
 		echo "                 driver. Drivers only; the wpad swap stays in your hands." >&2
+		echo "  stage          get | clear -- what setup still has to do, across a reboot." >&2
+		echo "                 Today the only one is reboot-for-drivers, set when a driver" >&2
+		echo "                 installed but its radio needs a restart to appear. It clears" >&2
+		echo "                 itself once the radios are there." >&2
 		echo "  apply          apply a whole setup from a key=value answers file, without" >&2
 		echo "                 asking: the same keys as boa-firstrun.conf. This is what" >&2
 		echo "                 Services -> boa setup calls; the file is deleted as it is" >&2

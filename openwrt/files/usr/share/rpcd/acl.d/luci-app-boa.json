@@ -45,6 +45,12 @@
 				],
 				"/usr/sbin/boa-setup apply /tmp/boa-wizard.conf --background": [
 					"exec"
+				],
+				"/sbin/reboot": [
+					"exec"
+				],
+				"/usr/sbin/boa-setup stage get": [
+					"exec"
 				]
 			}
 		}

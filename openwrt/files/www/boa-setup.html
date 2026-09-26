@@ -21,8 +21,10 @@ p { margin:0 0 .9rem; }
 ol { margin:0 0 1.2rem; padding-left:1.2rem; color:var(--dim); }
 li { margin:.3rem 0; }
 code { font:13px/1.4 ui-monospace,SFMono-Regular,Menlo,monospace; background:rgba(127,127,127,.14); padding:.1em .35em; border-radius:4px; }
-a.go { display:inline-block; background:var(--accent); color:#fff; text-decoration:none; padding:.6rem 1.1rem; border-radius:7px; font-weight:600; }
-a.go:hover { filter:brightness(1.08); }
+.go { display:inline-block; background:var(--accent); color:#fff; text-decoration:none; padding:.6rem 1.1rem; border-radius:7px; font-weight:600;
+      border:0; font-size:1rem; font-family:inherit; cursor:pointer; line-height:1.2; }
+.go:hover { filter:brightness(1.08); }
+form { margin:0; }
 .note { color:var(--dim); font-size:.88rem; margin-top:1.4rem; border-top:1px solid var(--line); padding-top:1rem; }
 </style>
 </head>
@@ -36,11 +38,33 @@ a.go:hover { filter:brightness(1.08); }
     <p>It is running with factory settings: <strong>no root password</strong>, and
        its radios are switched off. The setup page asks for the few things it needs.</p>
     <ol>
-      <li>Log in as <code>root</code> &mdash; there is no password yet, so leave it empty</li>
       <li>Choose a network name, a passphrase and a country</li>
       <li>Set a root password, which closes the open door above</li>
     </ol>
-    <a class="go" href="/cgi-bin/luci/admin/services/boa_wizard">Open the setup page</a>
+    <!--
+      STRAIGHT IN, no login screen.
+
+      The setup page is a LuCI admin view, so it needs a session. LuCI's own
+      dialog asks for a username and a password -- and on a device in this
+      state there IS no password, so it was asking an operator to type nothing
+      into a box and press a button, having first read an "Authorization
+      Required" heading that reads like a wrong turn.
+
+      This posts the empty credentials LuCI would have been given anyway. It
+      grants nothing that was not already granted: a device with no root
+      password is open to anyone who can reach it, which is exactly what the
+      warning above says and what the wizard's last step fixes.
+
+      It stops working the moment it should. Once a root password is set the
+      POST is refused and LuCI shows its normal login -- and by then this page
+      has retired itself anyway, because `boa-setup landing done` runs as part
+      of the same apply.
+    -->
+    <form method="post" action="/cgi-bin/luci/admin/services/boa_wizard">
+      <input type="hidden" name="luci_username" value="root">
+      <input type="hidden" name="luci_password" value="">
+      <button class="go" type="submit">Open the setup page</button>
+    </form>
   </div>
 
   <p class="note">

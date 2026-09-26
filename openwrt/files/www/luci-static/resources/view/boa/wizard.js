@@ -155,7 +155,14 @@ return view.extend({
 			// typing them, then report success for values nobody chose. See
 			// #404. Best effort: an older box without this verb must still be
 			// able to open the page.
-			fs.exec('/usr/sbin/boa-setup', [ 'firstrun', 'cancel' ]).catch(function() { return null; })
+			fs.exec('/usr/sbin/boa-setup', [ 'firstrun', 'cancel' ]).catch(function() { return null; }),
+			// Where setup had got to before the last reboot. Installing a
+			// driver needs one, and the restart takes this page with it, so
+			// without this an operator comes back to the screen they started
+			// from with no way to tell their last click did anything.
+			fs.exec('/usr/sbin/boa-setup', [ 'stage', 'get' ])
+				.then(function(r) { return (r.stdout || '').trim(); })
+				.catch(function() { return 'none'; })
 		]);
 	},
 
@@ -173,9 +180,119 @@ return view.extend({
 		} catch (e) { devs = []; aps = []; }
 
 		if (!devs.length)
-			return this.renderNoRadios();
+			return this.renderNoRadios(data[4] || 'none');
 
 		return this.renderForm(board, devices, devs, aps);
+	},
+
+	// Reboot, and wait for the box to come back.
+	//
+	// The request dies with the box, which is expected and not an error, so
+	// nothing here waits on it. What it waits on is the device answering
+	// again, and then it reloads -- so the operator ends up on the next stage
+	// of setup rather than on a dead tab they have to think about.
+	// Fifteen seconds before it actually goes, and a way out.
+	//
+	// Rebooting a box is not undoable once it starts, and the button sits on a
+	// page an operator may have opened to read rather than to act. The count
+	// is also the acknowledgement that the click landed -- the thing that was
+	// missing everywhere else on this page.
+	armReboot: function(into, onCancel) {
+		var self = this, left = 15, timer = null;
+		var line = E('p', {});
+
+		function paint() {
+			line.textContent = _('Rebooting in %d second(s).').format(left);
+		}
+
+		var cancel = E('button', { 'class': 'cbi-button', 'click': function() {
+			window.clearInterval(timer);
+			onCancel();
+		} }, [ _('Cancel') ]);
+
+		var now = E('button', { 'class': 'cbi-button cbi-button-apply important', 'click': function() {
+			window.clearInterval(timer);
+			self.rebootAndWait(into);
+		} }, [ _('Reboot now') ]);
+
+		into.innerHTML = '';
+		into.appendChild(E('div', { 'class': 'alert-message warning' }, [
+			line,
+			E('p', {}, [ _('The device goes down for about half a minute. This page waits for it and comes back by itself.') ]),
+			E('div', { 'class': 'cbi-page-actions' }, [ now, ' ', cancel ])
+		]));
+		paint();
+
+		timer = window.setInterval(function() {
+			left--;
+			if (left <= 0) {
+				window.clearInterval(timer);
+				self.rebootAndWait(into);
+				return;
+			}
+			paint();
+		}, 1000);
+	},
+
+	rebootAndWait: function(into) {
+		var line = E('p', { 'class': 'spinning' }, [ _('Rebooting...') ]);
+		var since = Date.now();
+
+		into.innerHTML = '';
+		into.appendChild(E('div', { 'class': 'alert-message warning' }, [
+			line,
+			E('p', {}, [ _('This page comes back by itself when the device answers again. You will be asked to log in: a reboot ends the session.') ])
+		]));
+
+		// A visible clock, because the one question this screen has to answer
+		// is "is anything actually happening".
+		window.setInterval(function() {
+			var s = Math.round((Date.now() - since) / 1000);
+			line.textContent = _('Rebooting — waiting for the device to answer again (%ds).').format(s);
+		}, 1000);
+
+		fs.exec('/sbin/reboot').catch(function() { return null; });
+
+		// Long enough that the box has actually gone down before the first
+		// poll: asking too early gets an answer from a device that is about
+		// to stop answering, and the page reloads into the reboot it just
+		// asked for.
+		var gone = false;
+		function poll() {
+			window.fetch('/cgi-bin/luci/', { method: 'HEAD', cache: 'no-store' })
+				.then(function() {
+					if (gone) { resume(); return; }
+					window.setTimeout(poll, 2000);
+				})
+				.catch(function() {
+					gone = true;
+					window.setTimeout(poll, 2000);
+				});
+		}
+		window.setTimeout(poll, 5000);
+
+		// BACK IN WITHOUT A LOGIN SCREEN.
+		//
+		// A reboot ends the session, so a plain reload lands on LuCI's
+		// "Authorization Required" -- asking for a password that does not
+		// exist yet, since setting one is a later step of this very wizard.
+		//
+		// So the same empty credentials the landing page uses are posted
+		// again, straight at this page. This grants nothing: a device with no
+		// root password is already open to anyone who can reach it. If one HAS
+		// been set by now the POST is refused and LuCI asks properly, which is
+		// the right outcome rather than a fallback.
+		function resume() {
+			var f = E('form', {
+				'method': 'post',
+				'action': '/cgi-bin/luci/admin/services/boa_wizard'
+			}, [
+				E('input', { 'type': 'hidden', 'name': 'luci_username', 'value': 'root' }),
+				E('input', { 'type': 'hidden', 'name': 'luci_password', 'value': '' })
+			]);
+			document.body.appendChild(f);
+			f.submit();
+		}
 	},
 
 	// No wifi-device sections. On x86 that almost always means the radio is
@@ -184,35 +301,73 @@ return view.extend({
 	// was claiming there was nothing to set up.
 	//
 	// So this offers to do something about it instead of being a dead end.
-	renderNoRadios: function() {
-		var out = E('pre', { 'style': 'max-height:22em; overflow:auto; white-space:pre-wrap' });
-		var note = E('div', {});
+	renderNoRadios: function(stage) {
+		var self = this;
+		var out     = E('pre', { 'style': 'max-height:22em; overflow:auto; white-space:pre-wrap' });
+		var actions = E('div', { 'class': 'cbi-page-actions' });
+		var intro   = E('div', {});
 
-		var go = E('button', { 'class': 'cbi-button cbi-button-apply important', 'click': function(ev) {
-			ev.target.disabled = true;
-			out.textContent = _('Looking for adapters and installing what they need...');
-			fs.exec('/usr/sbin/boa-setup', [ 'install-drivers' ]).then(function(res) {
-				out.textContent = (res.stdout || '') + (res.stderr || '');
-				note.appendChild(E('div', { 'class': 'alert-message warning' }, [
-					E('p', {}, [ _('A driver is usually loaded before its firmware is unpacked, and the probe is not retried, so a reboot is normally needed before the radios appear.') ]),
-					E('p', {}, [ _('Reboot, then come back to this page.') ])
-				]));
-				ev.target.disabled = false;
-			}).catch(function(e) {
-				out.textContent = _('Could not run boa-setup install-drivers: %s').format(e.message || e);
-				ev.target.disabled = false;
-			});
-		} }, [ _('Install drivers') ]);
+		// AFTER THE DRIVER INSTALL, BEFORE THE REBOOT. The stage survived the
+		// page, so this picks up where the operator left off instead of
+		// offering to install drivers that are already installed.
+		function rebootState(stillBare) {
+			intro.innerHTML = '';
+			intro.appendChild(E('div', { 'class': 'alert-message warning' }, [
+				E('p', {}, [ E('strong', {}, [ stillBare
+					? _('The drivers are installed. The radios need a reboot to appear.')
+					: _('This device is waiting for a reboot to finish installing its drivers.') ]) ]),
+				E('p', {}, [ _('A module is loaded before its firmware is unpacked and the probe is never retried, so the radio stays invisible until the device restarts. This is normal and happens once.') ])
+			]));
+			actions.innerHTML = '';
+			actions.appendChild(E('button', {
+				'class': 'cbi-button cbi-button-apply important',
+				'click': function() {
+					actions.innerHTML = '';
+					self.armReboot(intro, function() { rebootState(stillBare); });
+				}
+			}, [ _('Reboot') ]));
+			actions.appendChild(document.createTextNode(' '));
+			actions.appendChild(E('button', { 'class': 'cbi-button', 'click': function() {
+				window.location.reload();
+			} }, [ _('I rebooted already — check again') ]));
+		}
+
+		function installState() {
+			intro.innerHTML = '';
+			intro.appendChild(E('div', { 'class': 'alert-message warning' }, [
+				E('p', {}, [ _('This device has no wireless configuration yet, which normally means its radio has no driver.') ]),
+				E('p', {}, [ _('OpenWrt x86 images ship no wireless drivers at all, so a radio can be physically present and still be invisible here.') ])
+			]));
+			actions.innerHTML = '';
+			actions.appendChild(E('button', { 'class': 'cbi-button cbi-button-apply important', 'click': function(ev) {
+				ev.target.disabled = true;
+				// It takes as long as it takes to fetch and unpack 28
+				// packages, and nothing on screen would otherwise change for
+				// all of it. Said, so the wait reads as work.
+				out.textContent = _('Looking for adapters and installing what they need. This fetches packages, so it can take a minute or two...');
+				fs.exec('/usr/sbin/boa-setup', [ 'install-drivers' ]).then(function(res) {
+					out.textContent = (res.stdout || '') + (res.stderr || '');
+					// install-drivers exits non-zero and records the stage
+					// when an adapter is installed but still bare, which is
+					// the ordinary outcome here rather than a failure.
+					rebootState(true);
+				}).catch(function(e) {
+					out.textContent = _('Could not run boa-setup install-drivers: %s').format(e.message || e);
+					ev.target.disabled = false;
+				});
+			} }, [ _('Install drivers') ]));
+		}
+
+		if (stage == 'reboot-for-drivers')
+			rebootState(false);
+		else
+			installState();
 
 		return E('div', { 'class': 'cbi-map' }, [
 			E('h2', {}, [ _('boa setup') ]),
-			E('div', { 'class': 'alert-message warning' }, [
-				E('p', {}, [ _('This device has no wireless configuration yet, which normally means its radio has no driver.') ]),
-				E('p', {}, [ _('OpenWrt x86 images ship no wireless drivers at all, so a radio can be physically present and still be invisible here.') ])
-			]),
-			E('div', { 'class': 'cbi-page-actions' }, [ go ]),
-			out,
-			note
+			intro,
+			actions,
+			out
 		]);
 	},
 
