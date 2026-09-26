@@ -713,6 +713,105 @@ cmd_install_wpad() {
 	return 0
 }
 
+# --- install-mdns ------------------------------------------------------------
+
+# The name the box answers to on the link, derived from the SSID so that an
+# operator who knows the network knows the box: the network `ubuntu1263` is
+# served by openwrt-ubuntu1263.local. One thing to remember, not two.
+#
+# A TRANSLATION, NOT A COPY. An SSID is 32 arbitrary bytes -- spaces,
+# punctuation and UTF-8 are all legal in one -- and a DNS label is not: ASCII
+# letters, digits and hyphens, no leading or trailing hyphen. So `My Bench AP!`
+# becomes openwrt-my-bench-ap, and an SSID that survives none of that (all
+# emoji, say) falls back to the board-and-MAC name rather than producing
+# `openwrt-` and an invalid label.
+mdns_hostname() {
+	local n
+	n="$(printf '%s' "$1" | tr 'A-Z' 'a-z' | sed 's/[^a-z0-9-]/-/g; s/--*/-/g; s/^-*//; s/-*$//')"
+	[ -n "$n" ] || n="$(default_ssid)"
+	printf 'openwrt-%s' "$n"
+}
+
+# Set the hostname, and make mDNS announce it.
+#
+# THE RESTART IS NOT OPTIONAL. Measured on the x86-64 guest 2026-09-26: umdns
+# reads the hostname once at start and caches it. After `uci set` plus
+# `/etc/init.d/system reload` the kernel hostname had changed and the box went
+# on announcing the OLD name, with the new one resolving to nothing from a
+# MacBook on the same link; a umdns restart was what made the new name answer.
+set_hostname() {
+	local want="$1"
+	[ "$(uci -q get system.@system[0].hostname)" = "$want" ] && return 0
+	uci set system.@system[0].hostname="$want"
+	uci commit system
+	/etc/init.d/system reload 2>/dev/null
+	[ -x /etc/init.d/umdns ] && /etc/init.d/umdns restart >/dev/null 2>&1
+	echo "This box is now '$want', and answers to $want.local"
+	return 0
+}
+
+# mDNS, so the box can be found by name.
+#
+# This matters most at the moment its address is least knowable. `convert` moves
+# lan to DHCP, and the lease it gets is the upstream router's business: the one
+# address an operator was told to use is the one that stops being true. A .local
+# name is multicast on the link and carries whatever addresses the box currently
+# holds, so it survives the change that breaks everything else.
+#
+# Measured from a MacBook on the same link, x86-64 guest, 2026-09-26:
+# openwrt-ubuntu1263.local answered with BOTH 192.168.1.1 (the rescue address
+# convert leaves behind) and 192.168.0.66 (the new lease) at once, and
+# http://openwrt-ubuntu1263.local:8080/ served the boa UI. No firewall rule was
+# needed -- 5353/udp arrives on the lan zone, which accepts input, and after
+# convert the uplink is a port of that same bridge.
+#
+# umdns rather than avahi: it is OpenWrt's own, it reads the hostname straight
+# out of uci with no service file to write, and it is a fraction of the size --
+# avahi wants dbus with it, on a box whose whole point is to stay small.
+cmd_install_mdns() {
+	local dry="" p
+	for p in "$@"; do
+		case "$p" in
+			--dry-run) dry=1 ;;
+		esac
+	done
+
+	if apk info 2>/dev/null | grep -qx umdns; then
+		if /etc/init.d/umdns running >/dev/null 2>&1; then
+			echo "Nothing to do: umdns is running, so this box answers to $(uci -q get system.@system[0].hostname).local."
+			return 0
+		fi
+		echo "umdns is installed but not running."
+		[ -n "$dry" ] && { echo "--dry-run: nothing changed."; return 0; }
+		/etc/init.d/umdns enable
+		/etc/init.d/umdns start
+		return 0
+	fi
+
+	echo "apk add umdns   (so the box answers to <hostname>.local)"
+	echo "/etc/init.d/umdns enable && /etc/init.d/umdns start"
+	if [ -n "$dry" ]; then
+		echo "--dry-run: nothing installed."
+		return 0
+	fi
+
+	# BEST EFFORT, and it returns 0 either way: a box with no mDNS is reachable
+	# by address and correct in every other respect, so this must not fail a
+	# wizard that is otherwise succeeding. It still REPORTS -- a silent failure
+	# here leaves an operator typing a name that will never resolve, with
+	# nothing to say why.
+	if ! apk add umdns; then
+		echo "umdns did not install, so this box will NOT answer to a .local name." >&2
+		echo "Reach it by address. To retry once the network is working:" >&2
+		echo "  boa-setup install-mdns" >&2
+		return 0
+	fi
+	/etc/init.d/umdns enable
+	/etc/init.d/umdns start
+	echo "Installed: this box answers to $(uci -q get system.@system[0].hostname).local"
+	return 0
+}
+
 # --- wizard ------------------------------------------------------------------
 #
 # The first-boot questions, asked once, over the wired LAN.
@@ -768,20 +867,28 @@ ask() {
 # they depend on each other.
 #
 # THE WIZARD DOES THEM, rather than telling an operator which commands to type
-# next. Both verbs are idempotent and say so -- install-drivers reports
+# next. All three verbs are idempotent and say so -- install-drivers reports
 # "nothing to install" when every adapter is driven, install-wpad reports
-# "nothing to do" when the full build is already there -- so running them
-# always costs a line of output and nothing else.
+# "nothing to do" when the full build is already there, install-mdns the same
+# once umdns is running -- so running them always costs a line of output and
+# nothing else.
 #
 # Drivers first: a radio that has no driver has no phy, so there is no
 # wifi-device for wpad to serve and nothing for the wizard to name. wpad second:
 # without it netifd starts a radio, finds no hostapd to hand it to, and tears it
 # down again every 30 seconds. Measured on the x86-64 guest, where skipping this
 # left two configured radios and `no access point is serving`.
+#
+# mDNS last, and unlike the other two it is a convenience rather than a
+# prerequisite: nothing about an access point depends on it. It runs here
+# because this is the one moment the box is guaranteed to be reachable at a
+# known address, and the next thing that may happen is `convert`, after which
+# the address is the upstream router's business and nobody's guess.
 wizard_prerequisites() {
 	echo "Checking what this device needs first."
 	cmd_install_drivers "$@" 2>&1 | sed 's/^/  /'
 	cmd_install_wpad "$@" 2>&1 | sed 's/^/  /'
+	cmd_install_mdns "$@" 2>&1 | sed 's/^/  /'
 	echo
 }
 
@@ -986,12 +1093,18 @@ apply_wizard() {
 
 	if [ -n "$dry" ]; then
 		echo "  uci commit wireless && wifi"
+		[ "$(uci -q get system.@system[0].hostname)" != "$(mdns_hostname "$ssid")" ] &&
+			echo "  uci set system.@system[0].hostname='$(mdns_hostname "$ssid")' (+umdns restart)"
 		[ -z "$(uci -q get attendedsysupgrade.client.login_check_for_upgrades)" ] &&
 			echo "  uci set attendedsysupgrade.client.login_check_for_upgrades='0'"
 		echo "  passwd   (asked for separately, interactively)"
 		echo "--dry-run: nothing changed."
 		return 0
 	fi
+
+	# Before the wifi reload, not after: the reload takes seconds and an
+	# operator watching for the name to appear should not be waiting on radios.
+	set_hostname "$(mdns_hostname "$ssid")"
 
 	uci commit wireless
 	echo "Reloading Wi-Fi..."
@@ -1543,6 +1656,7 @@ case "${1:-}" in
 	plan-channels) cmd_plan_channels "${2:-}" ;;
 	install-drivers) cmd_install_drivers "${2:-}" ;;
 	install-wpad)    shift; cmd_install_wpad "$@" ;;
+	install-mdns)    shift; cmd_install_mdns "$@" ;;
 	wizard)  cmd_wizard "${2:-}" ;;
 	landing) cmd_landing "${2:-}" ;;
 	firstrun) cmd_firstrun "${2:-}" ;;
@@ -1550,6 +1664,7 @@ case "${1:-}" in
 		echo "usage: boa-setup check | wizard [--dry-run] | convert [--dry-run]" >&2
 		echo "                | plan-channels [--dry-run] | install-drivers [--dry-run]" >&2
 		echo "                | install-wpad [--dry-run] [--force]" >&2
+		echo "                | install-mdns [--dry-run]" >&2
 		echo "  check          read-only: what this device still needs before boa can run on it" >&2
 		echo "  wizard         ask for the SSID, passphrase, country and root password a fresh" >&2
 		echo "                 device needs, and set them. Over the wired LAN: a fresh device" >&2
@@ -1569,5 +1684,9 @@ case "${1:-}" in
 		echo "  install-drivers" >&2
 		echo "                 install the kmod packages for USB adapters that have no" >&2
 		echo "                 driver. Drivers only; the wpad swap stays in your hands." >&2
+		echo "  install-mdns   install umdns, so the box answers to <hostname>.local. The" >&2
+		echo "                 wizard names it after the SSID -- openwrt-ubuntu1263.local" >&2
+		echo "                 -- and the name keeps working after convert, when the" >&2
+		echo "                 address does not. The wizard runs this itself." >&2
 		exit 2 ;;
 esac
