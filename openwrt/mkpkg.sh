@@ -131,6 +131,7 @@ install -m 0755 "$F/usr/sbin/boa-setup" "$R/usr/sbin/boa-setup"
 install -m 0755 "$F/etc/init.d/boa" "$R/etc/init.d/boa"
 install -m 0755 "$F/etc/init.d/boa-firstrun" "$R/etc/init.d/boa-firstrun"
 install -m 0644 "$F/etc/config/boa" "$R/etc/config/boa"
+install -m 0644 "$F/etc/boa-firstrun.conf.example" "$R/etc/boa-firstrun.conf.example"
 echo /etc/infinite-streaming-boa/ > "$R/lib/upgrade/keep.d/boa"
 pack boa "$ARCH" "$R" /etc/config/boa
 
