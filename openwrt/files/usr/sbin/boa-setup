@@ -949,7 +949,21 @@ apply_wizard() {
 
 	uci commit wireless
 	echo "Reloading Wi-Fi..."
-	wifi
+	# NOT A GIVEN. A stock OpenWrt x86 image has no `wifi` at all -- measured on
+	# the 25.12.5 guest, where wifi-scripts, wpad and hostapd were all absent
+	# until a radio driver pulled them in. Nothing here reaches this line on a
+	# box with no access points, so today it is guarded by accident; said out
+	# loud rather than relying on that.
+	if command -v wifi >/dev/null 2>&1; then
+		# ubus objects for a radio appear as it comes up, so a reload can ask
+		# for one a moment early and print `Command failed: Not found` from
+		# /bin/ubus. Harmless -- the radios come up -- but it reads as an error
+		# an operator should act on, and there is nothing to act on.
+		wifi 2>&1 | grep -v '^Command failed: Not found$'
+	else
+		echo "  no 'wifi' command on this device, so the radios were not reloaded." >&2
+		echo "  It arrives with wifi-scripts, which a radio driver pulls in." >&2
+	fi
 	echo "Configured $n access point(s)."
 
 	# LuCI's firmware-upgrade dialog, which asks on EVERY Status -> Overview
@@ -969,6 +983,14 @@ apply_wizard() {
 		uci commit attendedsysupgrade
 		echo "Turned off LuCI's check-for-firmware-upgrades popup."
 	fi
+
+	# THE FRONT DOOR RETIRES HERE, not in the interactive branch, because both
+	# paths end up in this function and only one of them was doing it. Measured
+	# on the x86-64 guest: a box configured from a file still greeted the next
+	# visitor with "this device has not been set up yet", which was true of
+	# nothing by then. The LuCI page does its own call as well, which is
+	# harmless -- `landing off` on a box that is already off says so and stops.
+	cmd_landing off >/dev/null 2>&1
 
 	return 0
 }
