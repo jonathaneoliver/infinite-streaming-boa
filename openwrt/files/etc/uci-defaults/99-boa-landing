@@ -27,4 +27,17 @@ esac
 [ "$(uci -q get network.lan.proto)" = "static" ] || exit 0
 
 /usr/sbin/boa-setup landing on >/dev/null 2>&1
+
+# AND ARM THE COUNTDOWN HERE, where the decision about this being an
+# unconfigured box is actually made.
+#
+# The service guards itself on the landing page being on, and default_postinst
+# starts it when the `boa` package installs -- which is BEFORE this script
+# runs, because this ships with luci-app-boa and that installs second. So the
+# guard was evaluated before it could be true, and on a box where boa was
+# installed after boot the countdown never armed at all. Measured on the
+# x86-64 guest: four minutes after an install, `firstrun wait` was not running
+# and nothing had happened.
+/etc/init.d/boa-firstrun enable >/dev/null 2>&1
+/etc/init.d/boa-firstrun start >/dev/null 2>&1
 exit 0

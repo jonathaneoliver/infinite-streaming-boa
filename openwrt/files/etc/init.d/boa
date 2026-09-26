@@ -19,6 +19,29 @@ start_service() {
 	config_get_bool enabled main enabled 1
 	[ "$enabled" -eq 1 ] || return 0
 
+	# NOT UNTIL THE BOX IS A BRIDGE.
+	#
+	# boad has nothing to do on a device that still routes: there is no bridge,
+	# so every port is misclassified; there are no clients behind it to
+	# condition; and behind NAT it could not tell them apart anyway, which is
+	# the whole reason convert exists.
+	#
+	# What it DOES do meanwhile is hold UDP 67 for DHCP name learning -- a port
+	# a router legitimately needs. Measured on the x86-64 guest, 2026-09-26:
+	# boad took it, dnsmasq went into a crash loop ("failed to bind DHCP server
+	# socket: Address in use"), and the device was left able to ping the
+	# internet by address and resolve nothing. `apk` then could not install the
+	# driver the setup wizard was in the middle of asking for.
+	#
+	# The same condition convert establishes and check tests: lan takes its
+	# address from upstream, and there is no wan of our own. convert restarts
+	# this service as its last step, so finishing setup starts boa.
+	if [ "$(uci -q get network.lan.proto)" != dhcp ] || [ -n "$(uci -q get network.wan)" ]; then
+		echo "boa: not started -- this device still routes rather than bridging." >&2
+		echo "boa: run 'boa-setup convert' to make it a transparent bridge." >&2
+		return 0
+	fi
+
 	config_get addr   main addr ':8080'
 	config_get bridge main bridge 'br-lan'
 	config_get wan    main wan 'eth1'

@@ -764,6 +764,27 @@ ask() {
 	printf '%s' "$a"
 }
 
+# The steps that have to happen before an access point can exist, in the order
+# they depend on each other.
+#
+# THE WIZARD DOES THEM, rather than telling an operator which commands to type
+# next. Both verbs are idempotent and say so -- install-drivers reports
+# "nothing to install" when every adapter is driven, install-wpad reports
+# "nothing to do" when the full build is already there -- so running them
+# always costs a line of output and nothing else.
+#
+# Drivers first: a radio that has no driver has no phy, so there is no
+# wifi-device for wpad to serve and nothing for the wizard to name. wpad second:
+# without it netifd starts a radio, finds no hostapd to hand it to, and tears it
+# down again every 30 seconds. Measured on the x86-64 guest, where skipping this
+# left two configured radios and `no access point is serving`.
+wizard_prerequisites() {
+	echo "Checking what this device needs first."
+	cmd_install_drivers "$@" 2>&1 | sed 's/^/  /'
+	cmd_install_wpad "$@" 2>&1 | sed 's/^/  /'
+	echo
+}
+
 cmd_wizard() {
 	local dry="" ssid key key2 country cur ifaces devs i d n=0
 	[ "${1:-}" = "--dry-run" ] && dry=1
@@ -795,6 +816,7 @@ cmd_wizard() {
 			    country="" ;;
 		esac
 
+		wizard_prerequisites
 		apply_wizard "$ssid" "$key" "$country" || return 1
 
 		# THE TWO A BOX MAY NOT DECIDE, done here only because a person wrote
@@ -820,6 +842,10 @@ cmd_wizard() {
 		# recorded above instead.
 		[ -n "$conf" ] && rm -f "$conf"
 
+		# REPORTED, NOT RETIRED. Taking the page down left whoever arrived a
+		# minute later looking at LuCI with no sign anything had happened. It
+		# now says what the box did instead of asking to be set up.
+		cmd_landing done >/dev/null 2>&1
 		echo "No one set this box up, so it brought itself up:"
 		sed 's/^/  /' "$FIRSTRUN_STATE"
 
@@ -887,6 +913,7 @@ cmd_wizard() {
 	echo "              LuCI's check-for-firmware-upgrades popup turned off"
 	[ "$(ask 'Apply' 'yes')" = yes ] || { echo "Nothing changed."; return 0; }
 
+	wizard_prerequisites
 	apply_wizard "$ssid" "$key" "$country" || return 1
 	echo "Configured the access points."
 
@@ -899,6 +926,25 @@ cmd_wizard() {
 			passwd root ;;
 		*)  echo "root already has a password (change it with: passwd)" ;;
 	esac
+	cmd_landing off >/dev/null 2>&1
+
+	# THE LAST STEP, and the one that cannot be undone from here: it deletes
+	# the wan interface, moves lan to DHCP and changes the device's address. So
+	# it is asked, never assumed, and the answer defaults to no.
+	echo
+	if [ "$(uci -q get network.lan.proto)" = dhcp ] && [ -z "$(uci -q get network.wan)" ]; then
+		echo "Already a transparent bridge, so there is nothing left to convert."
+	else
+		echo "This device still routes. boa needs a transparent bridge to tell one"
+		echo "client from another -- behind NAT they all leave with one address."
+		echo "Converting interrupts the network and changes this device's address."
+		if [ "$(ask 'Convert it now' 'no')" = yes ]; then
+			cmd_convert
+		else
+			echo "Left as it is. When you want it: boa-setup convert"
+		fi
+	fi
+
 	echo
 	echo "Done. Check it with: boa-setup check"
 	return 0
@@ -983,14 +1029,6 @@ apply_wizard() {
 		uci commit attendedsysupgrade
 		echo "Turned off LuCI's check-for-firmware-upgrades popup."
 	fi
-
-	# THE FRONT DOOR RETIRES HERE, not in the interactive branch, because both
-	# paths end up in this function and only one of them was doing it. Measured
-	# on the x86-64 guest: a box configured from a file still greeted the next
-	# visitor with "this device has not been set up yet", which was true of
-	# nothing by then. The LuCI page does its own call as well, which is
-	# harmless -- `landing off` on a box that is already off says so and stops.
-	cmd_landing off >/dev/null 2>&1
 
 	return 0
 }
@@ -1126,8 +1164,9 @@ LANDING_PAGE=boa-setup.html
 
 landing_state() {
 	case " $(uci -q get uhttpd.main.index_page) " in
-		*" $LANDING_PAGE "*) echo on ;;
-		*)                   echo off ;;
+		*" $LANDING_PAGE "*)     echo on ;;
+		*" boa-setup-done.html "*) echo done ;;
+		*)                       echo off ;;
 	esac
 }
 
@@ -1153,15 +1192,49 @@ cmd_landing() {
 			/etc/init.d/uhttpd reload >/dev/null 2>&1
 			echo "On: http://<this box>/ now shows the setup page."
 			return 0 ;;
+		done)
+			# NOT RETIRED, REPORTED. A box that set itself up used to take the
+			# front door down, so whoever wandered over a minute later found
+			# LuCI and no sign anything had been offered or done. The page
+			# stays; it just stops claiming the box is unconfigured.
+			#
+			# THE PASSPHRASE IS NOT ON IT. The firstrun record is root-only for
+			# a reason, and after `convert` this web root is reachable from the
+			# whole upstream network -- publishing the Wi-Fi key there would
+			# hand it to anyone who can load a page. The page says where to
+			# read it instead, which is the same bar as the root password.
+			[ -f "$FIRSTRUN_STATE" ] || { echo "Nothing has run yet; leaving the setup page as it is." >&2; return 1; }
+			{
+				sed -n '1,/^  <div class="card">/p' /www/boa-setup.html |
+					sed 's/<h1>Set up this box<\/h1>/<h1>This box set itself up<\/h1>/'
+				echo '    <h2>Nobody was here, so it used the answers it was given</h2>'
+				echo '    <pre style="white-space:pre-wrap;font:13px\/1.5 ui-monospace,Menlo,monospace;color:var(--dim)">'
+				grep -v '^  passphrase:' "$FIRSTRUN_STATE" | sed 's/&/\&amp;/g; s/</\&lt;/g'
+				echo '    </pre>'
+				echo '    <p>The passphrase is not shown here: this page is readable by anyone who'
+				echo '       can reach the box. Read it with <code>boa-setup firstrun status</code>.</p>'
+				echo '    <a class="go" href="/cgi-bin/luci/admin/services/boa_wizard">Change any of it</a>'
+				echo '  </div>'
+				echo '  <p class="note">This page goes away for good with <code>boa-setup landing off</code>.</p>'
+				echo '</main></body></html>'
+			} > /www/boa-setup-done.html
+			uci -q delete uhttpd.main.index_page
+			uci add_list uhttpd.main.index_page='boa-setup-done.html'
+			uci add_list uhttpd.main.index_page='index.html'
+			uci commit uhttpd
+			/etc/init.d/uhttpd reload >/dev/null 2>&1
+			echo "The setup page now reports what the box did, instead of asking."
+			return 0 ;;
 		off)
 			[ "$cur" = off ] && { echo "Already off: / shows LuCI."; return 0; }
+			uci del_list uhttpd.main.index_page='boa-setup-done.html' 2>/dev/null
 			uci del_list uhttpd.main.index_page="$LANDING_PAGE"
 			uci commit uhttpd
 			/etc/init.d/uhttpd reload >/dev/null 2>&1
 			echo "Off: / goes back to LuCI. The setup page stays at Services -> boa setup."
 			return 0 ;;
 		*)
-			echo "usage: boa-setup landing on|off|status" >&2
+			echo "usage: boa-setup landing on|done|off|status" >&2
 			return 2 ;;
 	esac
 }

@@ -3,6 +3,8 @@ package boa
 import (
 	"log"
 	"net"
+	"os/exec"
+	"strings"
 )
 
 // listenDHCP learns device names from DHCP requests crossing the bridge.
@@ -18,7 +20,26 @@ import (
 // that issues no addresses -- running a DHCP server is an explicit non-goal --
 // so nothing else wants the port. If something ever does, the bind fails, this
 // logs once and returns, and every other source of names carries on.
+//
+// THAT WAS ASSERTED, NOT CHECKED, AND THE FAILURE IS THE WRONG WAY ROUND. On a
+// box that still routes -- which every device is until convert has run -- a
+// DHCP server does want the port, and boad starts first. So the bind SUCCEEDS
+// and dnsmasq is the one that fails, which this code never sees. Measured on
+// the x86-64 guest, 2026-09-26: dnsmasq in a crash loop with "failed to bind
+// DHCP server socket: Address in use", the device able to ping the internet by
+// address and resolve nothing, and `apk` unable to fetch the driver the setup
+// wizard was asking for.
+//
+// So the claim is tested before it is relied on. The service is not started at
+// all on a routing box now, which makes this belt and braces -- but a daemon
+// started by hand must not be able to take DNS down either, and an assumption
+// stated in a comment is worth exactly as much as one that is checked.
 func (l *Learner) listenDHCP() {
+	if !onTransparentBridge() {
+		log.Printf("boa: DHCP name learning off -- this device still routes, " +
+			"and port 67 belongs to its DHCP server. It starts once the box is bridged.")
+		return
+	}
 	conn, err := net.ListenUDP("udp4", &net.UDPAddr{Port: dhcpServerPort})
 	if err != nil {
 		// Not fatal, and not silent. Names are a convenience; conditioning does
@@ -53,4 +74,22 @@ func (l *Learner) listenDHCP() {
 		// storeNamesFrom.
 		l.storeNamesFrom(nameFromDHCP, mac, nil, name)
 	}
+}
+
+// onTransparentBridge reports whether this device bridges rather than routes:
+// lan takes its address from upstream and there is no wan of our own.
+//
+// The same pair convert establishes and `boa-setup check` tests, asked of uci
+// rather than inferred from the interfaces -- a bridge that is mid-reload still
+// has the config that says what it is.
+func onTransparentBridge() bool {
+	proto, err := exec.Command("uci", "-q", "get", "network.lan.proto").Output()
+	if err != nil || strings.TrimSpace(string(proto)) != "dhcp" {
+		return false
+	}
+	// `uci get` on a missing section exits non-zero, which is the answer we want.
+	if err := exec.Command("uci", "-q", "get", "network.wan").Run(); err == nil {
+		return false
+	}
+	return true
 }
