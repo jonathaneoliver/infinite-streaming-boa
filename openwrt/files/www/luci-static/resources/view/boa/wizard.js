@@ -91,11 +91,17 @@ function row(label, control, help) {
 // a spinner with nothing behind it.
 function followLog(pre, onDone) {
 	var stop = false;
+	// The network goes down and comes back during convert, so a read failing
+	// is expected and must not end the follow. Only a run of them from the
+	// very start means nothing was ever started.
+	var misses = 0, everRead = false;
 
 	function tick() {
 		if (stop)
 			return;
 		fs.read(LOG).then(function(text) {
+			everRead = true;
+			misses = 0;
 			text = text || '';
 			var end = text.indexOf(DONE);
 			pre.textContent = (end >= 0 ? text.slice(0, end) : text).replace(/\s+$/, '');
@@ -108,8 +114,21 @@ function followLog(pre, onDone) {
 			}
 			window.setTimeout(tick, 1500);
 		}).catch(function() {
-			// The log may not exist for the first instant after the exec
-			// returns. Keep trying rather than calling it a failure.
+			misses++;
+			// Nothing ever appeared: the run did not start. Said after 30s
+			// rather than spinning forever.
+			if (!everRead && misses > 20) {
+				stop = true;
+				onDone(-1, '');
+				return;
+			}
+			// It was running and the box went away -- which is what convert
+			// does. Keep looking: it comes back on the rescue address.
+			if (everRead && misses > 120) {
+				stop = true;
+				onDone(-2, pre.textContent);
+				return;
+			}
 			window.setTimeout(tick, 1500);
 		});
 	}
@@ -273,11 +292,25 @@ return view.extend({
 
 			return fs.write(ANSWERS, lines.join('\n') + '\n')
 				.then(function() {
-					return fs.exec('/usr/sbin/boa-setup', [ 'apply', ANSWERS, '--background' ]);
-				})
-				.then(function() {
 					container.parentNode.replaceChild(panel, container);
 					container = panel;
+
+					// FIRED, AND DELIBERATELY NOT WAITED ON.
+					//
+					// `--background` detaches properly -- measured on the box,
+					// it returns in 0s with the child still running -- but rpcd
+					// holds the exec CALL open past that, and the last thing
+					// this run does is convert, which restarts the network. The
+					// XHR then dies under the browser and the old code reported
+					// `XHR request aborted by browser / Nothing has been changed
+					// on the device` over a device that had just been fully and
+					// correctly set up. Measured 2026-09-26.
+					//
+					// So the request is a trigger, not a result. The log is the
+					// source of truth, and following it survives the network
+					// going away and coming back.
+					fs.exec('/usr/sbin/boa-setup', [ 'apply', ANSWERS, '--background' ])
+						.catch(function() { return null; });
 
 					followLog(out, function(rc, text) {
 						var served = /Serving: ([1-9][0-9]*) access point/.exec(text);
@@ -300,7 +333,11 @@ return view.extend({
 							// written, which was a success message over a box
 							// serving nothing. This reads what boa-setup found.
 							E('p', {}, [ E('strong', {}, [ _('It did not finish cleanly.') ]) ]),
-							E('p', {}, [ rc === 0
+							E('p', {}, [ rc === -1
+								? _('Nothing started: the device never wrote a setup log. Nothing has been changed.')
+								: rc === -2
+								? _('The device stopped answering while it was working, and did not come back. If you ticked the bridge box its address has changed — try the rescue address, 192.168.1.1.')
+								: rc === 0
 								? _('The settings were written, but no access point came up. The output above says how far it got.')
 								: _('boa-setup exited %d. The output above says how far it got.').format(rc) ]),
 							E('p', {}, [ _('Check the device with: boa-setup check') ])
@@ -321,10 +358,13 @@ return view.extend({
 						try { ui.changes.init(); } catch (e) {}
 					});
 				})
+				// Only fs.write can reach here, and it runs before anything on
+				// the device has been touched -- so this is the one place the
+				// page can honestly say nothing changed.
 				.catch(function(e) {
 					status.appendChild(E('div', { 'class': 'alert-message danger' }, [
-						E('p', {}, [ _('Could not start the setup: %s').format(e.message || e) ]),
-						E('p', {}, [ _('Nothing has been changed on the device.') ])
+						E('p', {}, [ _('Could not write the answers to the device: %s').format(e.message || e) ]),
+						E('p', {}, [ _('Nothing has been changed.') ])
 					]));
 				});
 		} }, [ _('Apply') ]);
