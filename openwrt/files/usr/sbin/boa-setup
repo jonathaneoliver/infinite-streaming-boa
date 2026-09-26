@@ -1082,8 +1082,28 @@ cmd_firstrun() {
 			[ -f "$FIRSTRUN_STATE" ] && return 0
 			cmd_wizard --defaults
 			return 0 ;;
-		now) cmd_wizard --defaults; return 0 ;;
-		*) echo "usage: boa-setup firstrun status|cancel|now" >&2; return 2 ;;
+		now|--force|force)
+			# GUARDED, because this verb is destructive and reads as harmless.
+			# It reassigns the SSID and passphrase, so on a box that has already
+			# been set up it drops every associated client and hands back
+			# credentials nobody has. Measured 2026-09-25: running it a second
+			# time to count some output silently replaced a file-driven
+			# configuration with a fresh random one.
+			#
+			# The timed path has always checked this; the verb an operator types
+			# did not, which is the wrong way round.
+			if [ "${1:-}" = now ] && [ -f "$FIRSTRUN_STATE" ]; then
+				echo "This device has already been set up:" >&2
+				sed 's/^/  /' "$FIRSTRUN_STATE" >&2
+				echo >&2
+				echo "Running this again would give it a new SSID and passphrase, and every" >&2
+				echo "client on it would drop. To change something, use the wizard:" >&2
+				echo "  boa-setup wizard          (or Services -> boa setup)" >&2
+				echo "To do it anyway: boa-setup firstrun --force" >&2
+				return 1
+			fi
+			cmd_wizard --defaults; return 0 ;;
+		*) echo "usage: boa-setup firstrun status|cancel|now|--force" >&2; return 2 ;;
 	esac
 }
 
