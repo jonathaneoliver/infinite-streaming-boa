@@ -1314,6 +1314,88 @@ has the buying case and the limits; [`openwrt/CUDY-TR3000.md`](openwrt/CUDY-TR30
 is the full record of what one unit took, from stock firmware to serving
 traffic, with every measurement above.
 
+### 5. An x86 box with an AP-class PCIe card
+
+The Cudy proves the point about access-point silicon, but it proves it as a
+whole appliance. This target separates the two: an ordinary x86 machine running
+the OpenWrt guest, with the radio supplied by a **MediaTek MT7915 M.2 A/E-key module** —
+[AsiaRF AW7915-AED](https://asiarf.com/product/80211ax-mt7915-mini-pcie-wifi6-module/)
+— passed through to it. Same packages, same UCI, same LuCI page; the difference
+is that the radio is an AP part rather than a client part with AP mode bolted
+on, and it arrives as a card rather than as a router.
+
+**What the module is**, from the vendor page and from the bus:
+
+| | |
+|---|---|
+| Model | AW7915-AED, M.2 A/E key (the vendor's page URL says mini-PCIe; its specification table is the M.2 part) |
+| Chipset | MT7915DAN (`14c3:7915`, driver `mt7915e`) |
+| Radio | 2T2R, dual-band concurrent 2.4 + 5 GHz, 802.11a/b/g/n/ac/ax |
+| Channel widths | 20 / 40 / 80 MHz |
+| Vendor PHY ceiling | 573 Mbit/s on 2.4 GHz, 1201 on 5 GHz, 1800 combined |
+| Antennas | 2 × IPEX |
+| Power | 3.3 V, 3 A recommended, 4–9 W |
+| Measured bus link | **PCIe 2.0 x1** (`5.0 GT/s x1`) — ample for 1201 Mbit/s |
+
+One caution on identity: the card presents a **generic subsystem ID**
+(`14c3:7915`, identical to its device ID), so nothing on the bus names the
+vendor, the model or the form factor. The specification above is the vendor's;
+only the bus link width and the driver binding were read off the machine. If
+you need to know which board is in a slot, read the label on it.
+
+It presents as **two phys**, one per band, which is why a three-radio box in
+this repository is usually this card plus a USB adapter, and why
+[`boa-setup`](openwrt/README.md) plans 2.4 GHz and two 5 GHz channels rather
+than one of each.
+
+#### Measured, x86-64 KVM guest, MT7915E on PCI passthrough, 2026-09-27
+
+MacBook Pro as the client over real antennas, `iperf3` 10 s, source-bound to the
+Wi-Fi address so nothing escapes over ethernet. The other radios were disabled
+for each run: all three share one SSID, so that is the only way to pin a client
+to a band.
+
+| Radio | TO the box, up | TO, down | THROUGH the box, up | THROUGH, down |
+|---|---|---|---|---|
+| 2.4 GHz, ch 6, HE20 | 51.0 | 86.8 | 74.2 | 86.6 Mbit/s |
+| 5 GHz, ch 149, HE80 | 500 | 854 | 847 | 861 Mbit/s |
+
+**854 Mbit/s down is 75 % of the 1134 Mbit/s PHY the box reported for that
+link** — against a vendor ceiling of 1201. That is a good HE80 result and the
+highest this project has measured on any radio.
+
+Latency, 30 pings at 5/s, idle and while the link is saturated:
+
+| Radio | idle → box | idle → through | loaded → box | loaded → through |
+|---|---|---|---|---|
+| 2.4 GHz | 1.8 min, 5.6 avg | 2.0 min, 3.6 avg | 23.5 avg, 50.6 max | 22.9 avg, 33.3 max |
+| 5 GHz | 1.9 min, 14.7 avg | 2.0 min, 28.5 avg | 35.6 avg, 180.2 max | 23.9 avg, 33.3 max |
+
+No packet loss in any run.
+
+The floor is **~2 ms on both bands**, and saturation adds roughly **20 ms**.
+That matters for this product specifically: a box whose job is to *impose*
+delay has a ~20 ms noise floor under load, so a configured 10 ms target is
+below the resolution of the link it is being applied to.
+
+**Read the idle minimum, not the idle average.** Idle runs were noisier than
+loaded ones — 5 GHz idle averaged 14.7 ms with a 133 ms tail, while loaded
+through the box averaged 23.9 ms with a 3.2 ms standard deviation. That
+inversion is client power-save: an idle MacBook sleeps between beacons and pays
+to wake. Once traffic flows the link is tight and predictable.
+
+**Two figures here are not yet trustworthy, and are marked rather than
+dropped.** Uplink *through* the box beat uplink *to* it — 847 against 500 on
+5 GHz — which is backwards for a bridge. The suspicion is that `iperf3`
+terminating on the guest is bounded by its own CPU, while a through run moves
+the endpoint off the box; the loaded-latency maximum of 180 ms *to* the box
+against 33 ms *through* it points the same way. Unverified. Until it is, treat
+the **through** column as the measure of the radio and the **to** column as a
+measure of the guest. These are also single runs, so every tail is one sample.
+
+None of this transfers to the Cudy: `mt798x` is different silicon, and the
+targets disagree.
+
 ## Requirements for the build and control host
 
 **This is a toolchain, not a parts list**, and it applies to all four targets:
@@ -1494,6 +1576,7 @@ is measured rather than argued.
 | mt7921u (Panda PAU0F) | USB, both targets | Client sibling of the mt7915/mt7916 AP line |
 | BCM43455 | Onboard, Pi | Embedded client chip |
 | Intel AX200 | PCIe, the container host | Laptop client card, self-managed regulatory domain |
+| MT7915 (AsiaRF AW7915-AED) | M.2 A/E, the x86 host | **An AP part**, not a client one — see [target 5](#5-an-x86-box-with-an-ap-class-pcie-card) |
 
 That single fact explains most of the limits catalogued in
 [what the radios will not do](#channel-manipulation-what-client-class-silicon-will-not-do):
