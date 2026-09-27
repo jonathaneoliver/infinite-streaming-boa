@@ -121,8 +121,9 @@ commands, because the four differ more in setup than in use.
 | [2. A Linux host, as a container](#2-a-linux-host-from-a-container) | Hardware you already have, nothing to flash | The fastest start, and PCIe slots for better radios later |
 | [3. An OpenWrt device, as packages](#3-an-openwrt-device-as-packages) | Two packages beside LuCI — measured on target 1's own Pi and radios | A Pi or router that should stay an OpenWrt box |
 | [4. A Cudy TR3000](#4-a-cudy-tr3000-as-a-whole-box) | The same packages, on AP-class radios | Channel moves that drop nobody, and distance imposed rather than modelled |
+| [5. OpenWrt in a VM](#5-openwrt-in-a-vm-with-an-ap-class-card-passed-through) | A KVM guest on Ubuntu, with an AP-class card passed through | AP radios in a machine you already own, and a box you can reset to pristine in a minute |
 
-The Pi and the container read the same `.env`; both OpenWrt targets are
+The Pi and the container read the same `.env`; all three OpenWrt targets are
 configured from UCI. Building any of them needs `docker` on the machine you
 build from, including on Linux —
 [Requirements for the build and control host](#requirements-for-the-build-and-control-host)
@@ -1314,15 +1315,35 @@ has the buying case and the limits; [`openwrt/CUDY-TR3000.md`](openwrt/CUDY-TR30
 is the full record of what one unit took, from stock firmware to serving
 traffic, with every measurement above.
 
-### 5. An x86 box with an AP-class PCIe card
+### 5. OpenWrt in a VM, with an AP-class card passed through
 
 The Cudy proves the point about access-point silicon, but it proves it as a
-whole appliance. This target separates the two: an ordinary x86 machine running
-the OpenWrt guest, with the radio supplied by a **MediaTek MT7915 M.2 A/E-key module** —
-[AsiaRF AW7915-AED](https://asiarf.com/product/80211ax-mt7915-mini-pcie-wifi6-module/)
-— passed through to it. Same packages, same UCI, same LuCI page; the difference
-is that the radio is an AP part rather than a client part with AP mode bolted
-on, and it arrives as a card rather than as a router.
+whole appliance. This target separates the two. **OpenWrt runs as a KVM guest on
+an ordinary Ubuntu machine**, and the radio is a **MediaTek MT7915 M.2 A/E-key
+module** — [AsiaRF AW7915-AED](https://asiarf.com/product/80211ax-mt7915-mini-pcie-wifi6-module/)
+— handed to that guest whole, by PCI passthrough. Same two packages, same UCI,
+same LuCI page; the difference is that the radio is an AP part rather than a
+client part with AP mode bolted on, and that it arrives as a card in a slot
+rather than as a router in a box.
+
+The virtualisation is not incidental. It is why the card can be moved between
+hosts, why a broken guest is a `qemu-img create` away from being a clean one —
+which is how every out-of-box test in this repository is run — and, as the
+measurements below show, why some numbers taken *on* the box are the guest's
+rather than the radio's.
+
+**How it is put together**, read off the host:
+
+| | |
+|---|---|
+| Host | Ubuntu 24.04.4 LTS, kernel 7.0.0, libvirt 10.0.0 |
+| Guest | OpenWrt 25.12.5 x86-64, **2 vCPU, 512 MiB** |
+| Passthrough | `<hostdev managed='yes'>` on `01:00.0`; libvirt rebinds `mt7915e` → `vfio-pci` at start and hands it back at shutdown |
+| IOMMU | **group 9, containing only the card** — a clean group, which is what makes this passthrough possible at all |
+
+That last row is the part that is not guaranteed. On this board the other
+candidate card shared a group with the boot controller, which cannot be passed
+through; the slot a card sits in decides whether it can be given to a guest.
 
 **What the module is**, from the vendor page and from the bus:
 
@@ -1387,9 +1408,10 @@ to wake. Once traffic flows the link is tight and predictable.
 **Two figures here are not yet trustworthy, and are marked rather than
 dropped.** Uplink *through* the box beat uplink *to* it — 847 against 500 on
 5 GHz — which is backwards for a bridge. The suspicion is that `iperf3`
-terminating on the guest is bounded by its own CPU, while a through run moves
-the endpoint off the box; the loaded-latency maximum of 180 ms *to* the box
-against 33 ms *through* it points the same way. Unverified. Until it is, treat
+terminating on the guest is bounded by **the guest's two vCPUs**, while a
+through run moves the endpoint off the box entirely; the loaded-latency maximum
+of 180 ms *to* the box against 33 ms *through* it points the same way. Still
+unverified — nobody has watched the guest's CPU during a run. Until it is, treat
 the **through** column as the measure of the radio and the **to** column as a
 measure of the guest. These are also single runs, so every tail is one sample.
 
@@ -1576,7 +1598,7 @@ is measured rather than argued.
 | mt7921u (Panda PAU0F) | USB, both targets | Client sibling of the mt7915/mt7916 AP line |
 | BCM43455 | Onboard, Pi | Embedded client chip |
 | Intel AX200 | PCIe, the container host | Laptop client card, self-managed regulatory domain |
-| MT7915 (AsiaRF AW7915-AED) | M.2 A/E, the x86 host | **An AP part**, not a client one — see [target 5](#5-an-x86-box-with-an-ap-class-pcie-card) |
+| MT7915 (AsiaRF AW7915-AED) | M.2 A/E, passed through to the VM | **An AP part**, not a client one — see [target 5](#5-openwrt-in-a-vm-with-an-ap-class-card-passed-through) |
 
 That single fact explains most of the limits catalogued in
 [what the radios will not do](#channel-manipulation-what-client-class-silicon-will-not-do):
