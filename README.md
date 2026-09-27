@@ -1444,19 +1444,33 @@ than one of each.
 
 #### Measured, x86-64 KVM guest, MT7915E on PCI passthrough, 2026-09-27
 
+The USB `mt7921u` is in the same table for contrast, on the same box, on the
+same afternoon. **It is not a fair chip comparison** — that adapter reports
+`txpower 3.00 dBm` whatever it is asked for, so its link is power-limited long
+before it is silicon-limited. It is here to show what the card is worth, not to
+rank two chips.
+
 MacBook Pro as the client over real antennas, `iperf3` 10 s, source-bound to the
 Wi-Fi address so nothing escapes over ethernet. The other radios were disabled
 for each run: all three share one SSID, so that is the only way to pin a client
 to a band.
 
-| Radio | TO the box, up | TO, down | THROUGH the box, up | THROUGH, down |
+| Radio | TO the box, down | TO, up | THROUGH, down | THROUGH, up |
 |---|---|---|---|---|
-| 2.4 GHz, ch 6, HE20 | 51.0 | 86.8 | 74.2 | 86.6 Mbit/s |
-| 5 GHz, ch 149, HE80 | 500 | 854 | 847 | 861 Mbit/s |
+| **5 GHz, ch 149, HE80** (4 runs) | 854, 864, 859, 876 | 500, 791, 776, 810 | 861, 851, 863, 847 | 847, 845, 841, 839 |
+| 2.4 GHz, ch 6, HE20 (1 run) | 86.8 | 51.0 | 86.6 | 74.2 |
+| mt7921u USB, ch 40, 80 MHz (3 runs) | 75.6, 77.6, 90.3 | 94.5, 59.1, 67.9 | 83.2, 87.0, 99.5 | 75.1, 38.7, 61.5 |
 
-**854 Mbit/s down is 75 % of the 1134 Mbit/s PHY the box reported for that
-link** — against a vendor ceiling of 1201. That is a good HE80 result and the
-highest this project has measured on any radio.
+**854-876 Mbit/s down is 75-77 % of the 1134 Mbit/s PHY the box reported for
+that link** — against a vendor ceiling of 1201. That is a good HE80 result and
+the highest this project has measured on any radio. The USB adapter beside it
+manages 75-100 Mbit/s, an order of magnitude less, at 3 dBm.
+
+**The USB path also costs the host far more.** Sampled during its runs the guest
+was **14-48 % idle carrying ~95 Mbit/s**, against 73-88 % idle carrying ~850 on
+the PCI card. USB passthrough traps every transfer through QEMU; PCI
+passthrough does not. On this platform a USB radio is expensive in CPU as well
+as slow on air.
 
 Latency, 30 pings at 5/s, idle and while the link is saturated:
 
@@ -1478,13 +1492,20 @@ through the box averaged 23.9 ms with a 3.2 ms standard deviation. That
 inversion is client power-save: an idle MacBook sleeps between beacons and pays
 to wake. Once traffic flows the link is tight and predictable.
 
-**Two figures here are not yet trustworthy, and are marked rather than
-dropped.** Uplink *through* the box beat uplink *to* it — 847 against 500 on
-5 GHz — which is backwards for a bridge. The suspicion is that `iperf3`
-terminating on the guest is bounded by **the guest's two vCPUs**, while a
-through run moves the endpoint off the box entirely; the loaded-latency maximum
-of 180 ms *to* the box against 33 ms *through* it points the same way. Still
-unverified — nobody has watched the guest's CPU during a run. Until it is, treat
+**The first uplink figure was an outlier, and the explanation for it was
+wrong.** A single early run gave 500 Mbit/s uplink *to* the box against 847
+*through* it, which is backwards for a bridge, and this section previously
+blamed the guest's two vCPUs. Repeating the sweep three more times gave **791,
+776 and 810** — and sampling the guest while `iperf3` terminated on it found it
+**73 % idle on uplink and 88 % idle on downlink**. The guest has ample CPU; the
+500 was one bad sample, most likely taken while the link was still settling
+after association. Both are recorded because the wrong explanation was
+published first, and because it is a standing reminder to repeat a run before
+theorising about it.
+
+What survives is a much smaller gap: uplink *through* the box runs a few per
+cent ahead of uplink terminating *on* it (≈840 against ≈790), which is the
+ordinary cost of the guest being the endpoint rather than a bridge. Until it is, treat
 the **through** column as the measure of the radio and the **to** column as a
 measure of the guest. These are also single runs, so every tail is one sample.
 
