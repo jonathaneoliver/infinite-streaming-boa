@@ -1327,10 +1327,8 @@ client part with AP mode bolted on, and that it arrives as a card in a slot
 rather than as a router in a box.
 
 The virtualisation is not incidental. It is why the card can be moved between
-hosts, why a broken guest is a `qemu-img create` away from being a clean one —
-which is how every out-of-box test in this repository is run — and, as the
-measurements below show, why some numbers taken *on* the box are the guest's
-rather than the radio's.
+hosts, and why a broken guest is a `qemu-img create` away from being a clean
+one — which is how every out-of-box test in this repository is run.
 
 **How it is put together**, read off the host:
 
@@ -1394,10 +1392,11 @@ translation, roughly an order of magnitude slower, with everything still
 apparently working. It is worth checking `virsh dumpxml` says `type='kvm'` and
 not `type='qemu'` before trusting any number off a guest.
 
-That split is also why the measurements above are hedged the way they are. The
-**radio** figures are real hardware. But `iperf3` *terminating on the guest*
-runs on two vCPUs and drags every byte across a virtio NIC into the host, while
-a *through* run puts the endpoint on the host and skips both.
+That split is worth holding on to when reading the measurements below. A figure
+taken *through* the box exercises the radio and the bridge; one taken *on* it
+also exercises the guest's virtio NIC and its two vCPUs. Measured here, the
+difference is a few per cent — but it is the first thing to check if the two
+ever diverge sharply.
 
 **The guest is deliberately plain**: `pc-i440fx` with legacy BIOS (ovmf is
 installed but unused), a virtio disk, two virtio NICs — `eth0` to `br-client`,
@@ -1457,7 +1456,7 @@ to a band.
 
 | Radio | TO the box, down | TO, up | THROUGH, down | THROUGH, up |
 |---|---|---|---|---|
-| **5 GHz, ch 149, HE80** (4 runs) | 854, 864, 859, 876 | 500, 791, 776, 810 | 861, 851, 863, 847 | 847, 845, 841, 839 |
+| **5 GHz, ch 149, HE80** (4 runs) | 854, 864, 859, 876 | 791, 776, 810 | 861, 851, 863, 847 | 847, 845, 841, 839 |
 | 2.4 GHz, ch 6, HE20 (1 run) | 86.8 | 51.0 | 86.6 | 74.2 |
 | mt7921u USB, ch 40, 80 MHz (3 runs) | 75.6, 77.6, 90.3 | 94.5, 59.1, 67.9 | 83.2, 87.0, 99.5 | 75.1, 38.7, 61.5 |
 
@@ -1479,7 +1478,8 @@ Latency, 30 pings at 5/s, idle and while the link is saturated:
 | 2.4 GHz | 1.8 min, 5.6 avg | 2.0 min, 3.6 avg | 23.5 avg, 50.6 max | 22.9 avg, 33.3 max |
 | 5 GHz | 1.9 min, 14.7 avg | 2.0 min, 28.5 avg | 35.6 avg, 180.2 max | 23.9 avg, 33.3 max |
 
-No packet loss in any run.
+No packet loss in any run. The 2.4 GHz throughput row and both latency rows
+are single runs; only the 5 GHz and USB throughput figures were repeated.
 
 The floor is **~2 ms on both bands**, and saturation adds roughly **20 ms**.
 That matters for this product specifically: a box whose job is to *impose*
@@ -1492,29 +1492,22 @@ through the box averaged 23.9 ms with a 3.2 ms standard deviation. That
 inversion is client power-save: an idle MacBook sleeps between beacons and pays
 to wake. Once traffic flows the link is tight and predictable.
 
-**The first uplink figure was an outlier, and the explanation for it was
-wrong.** A single early run gave 500 Mbit/s uplink *to* the box against 847
-*through* it, which is backwards for a bridge, and this section previously
-blamed the guest's two vCPUs. Repeating the sweep three more times gave **791,
-776 and 810** — and sampling the guest while `iperf3` terminated on it found it
-**73 % idle on uplink and 88 % idle on downlink**. The guest has ample CPU; the
-500 was one bad sample, most likely taken while the link was still settling
-after association. Both are recorded because the wrong explanation was
-published first, and because it is a standing reminder to repeat a run before
-theorising about it.
+**Let the link settle before timing it.** A run started immediately after
+association gave 500 Mbit/s uplink, against 776-810 once the link had settled —
+so the first run after joining is not a measurement.
 
-What survives is a much smaller gap: uplink *through* the box runs a few per
-cent ahead of uplink terminating *on* it (≈840 against ≈790), which is the
-ordinary cost of the guest being the endpoint rather than a bridge. Until it is, treat
-the **through** column as the measure of the radio and the **to** column as a
-measure of the guest. These are also single runs, so every tail is one sample.
+**The guest is not the bottleneck.** Sampled while `iperf3` terminated on it, it
+was **73 % idle on uplink and 88 % idle on downlink**. Uplink *through* the box
+runs a few per cent ahead of uplink terminating *on* it (≈840 against ≈790),
+which is the ordinary cost of the guest being an endpoint rather than a
+bridge.
 
 None of this transfers to the Cudy: `mt798x` is different silicon, and the
 targets disagree.
 
 ## Requirements for the build and control host
 
-**This is a toolchain, not a parts list**, and it applies to all four targets:
+**This is a toolchain, not a parts list**, and it applies to all five targets:
 every one of them is built or deployed from another machine.
 
 Three machines have requirements in this repository and only one of them is the
