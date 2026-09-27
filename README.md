@@ -1378,6 +1378,27 @@ The hook lives at `/etc/libvirt/hooks/qemu` and logs what it does. If the USB
 adapter is absent it says so and starts the guest anyway, with no wired client
 port, rather than refusing to boot.
 
+**Native, paravirtual, or passed through — three different things in one box:**
+
+| Layer | What it is | How you can tell |
+|---|---|---|
+| **CPU** | **Native.** Guest instructions run on the host silicon through AMD-V; KVM only traps privileged ones | The guest reports `AMD Ryzen 7 5700G`, the host's own part. Under emulation it would say "QEMU Virtual CPU" |
+| **Disk, NICs** | **Paravirtual** (`virtio`). Not emulated hardware — the guest knows it is virtual and uses a shared-memory queue — but still host-mediated: every packet crosses into the host | `<model type='virtio'/>` on both NICs and the disk |
+| **The Wi-Fi card** | **Real.** Assigned by VFIO with the IOMMU, so the guest's `mt7915e` programs the actual MT7915 registers with nothing in between | `<hostdev mode='subsystem' type='pci' managed='yes'>` |
+
+This rests on one firmware setting. **`SVM` must be enabled in the board's
+UEFI** — AMD's name for AMD-V. Without it `/dev/kvm` does not exist, the `svm`
+CPU flag is absent entirely so the machine reads as though it cannot virtualise
+at all, and QEMU silently falls back to **TCG**: software instruction
+translation, roughly an order of magnitude slower, with everything still
+apparently working. It is worth checking `virsh dumpxml` says `type='kvm'` and
+not `type='qemu'` before trusting any number off a guest.
+
+That split is also why the measurements above are hedged the way they are. The
+**radio** figures are real hardware. But `iperf3` *terminating on the guest*
+runs on two vCPUs and drags every byte across a virtio NIC into the host, while
+a *through* run puts the endpoint on the host and skips both.
+
 **The guest is deliberately plain**: `pc-i440fx` with legacy BIOS (ovmf is
 installed but unused), a virtio disk, two virtio NICs — `eth0` to `br-client`,
 `eth1` to `br-wan`, **in that order**, which is the order `boa-setup convert`
