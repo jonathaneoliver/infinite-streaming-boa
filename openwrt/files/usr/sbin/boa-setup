@@ -1412,6 +1412,66 @@ cmd_apply() {
 			echo "convert=yes: turning this into a transparent bridge."
 			cmd_convert ;;
 	esac
+
+	echo
+	boa_url
+	return 0
+}
+
+# WHERE TO FIND THE BOX NOW.
+#
+# Setup starts on the factory address and convert moves the device off it, so
+# the browser finishes on an address that is no longer the device's -- and the
+# obvious link, the one relative to the page, points straight back at it.
+# Measured 2026-09-27: after convert the MacBook driving the wizard renewed
+# onto the upstream subnet and could no longer reach the old address at all,
+# because the rescue address only answers to something still on that subnet.
+#
+# The NAME is preferred over the lease. The lease is the upstream router's to
+# change and it does; the name is not, which is what umdns was installed for a
+# few lines earlier. The addresses are printed too, because mDNS is not
+# guaranteed on every client.
+boa_url() {
+	local port name ip rescue addrs i=0
+	port="$(uci -q get boa.main.addr)"; port="${port##*:}"
+	[ -n "$port" ] || port=8080
+
+	if apk info 2>/dev/null | grep -qx umdns; then
+		name="$(uci -q get system.@system[0].hostname)"
+		[ -n "$name" ] && name="$name.local"
+	fi
+
+	# Waited for: convert has just restarted the network, and the lease that
+	# replaces the static address takes a moment to arrive. Reading once here
+	# would print the rescue address as though it were the answer.
+	# network.rescue is what convert leaves behind. The value can carry a
+	# prefix length -- lan.ipaddr is '192.168.1.1/24' on this image, which
+	# already broke one comparison written against the bare address -- so the
+	# suffix is stripped before it is compared with anything.
+	rescue="$(uci -q get network.rescue.ipaddr)"; rescue="${rescue%%/*}"
+	while [ "$i" -lt 20 ]; do
+		addrs="$(ip -4 -o addr show br-lan 2>/dev/null | awk '{print $4}' | cut -d/ -f1)"
+		ip="$(printf '%s\n' $addrs | grep -v "^${rescue:-__none__}$" | head -1)"
+		[ -n "$ip" ] && break
+		i=$((i + 1)); sleep 1
+	done
+	[ -n "$ip" ] || ip="$(printf '%s\n' $addrs | head -1)"
+
+	# A machine-readable line for the setup page, which uses it for its
+	# "Open boa" button so the operator is not sent back to an address the
+	# device has just stopped using. Hidden from the page's own log view.
+	[ -n "$name" ] && printf '__BOA_URL http://%s:%s/\n' "$name" "$port" \
+	                || printf '__BOA_URL http://%s:%s/\n' "$ip" "$port"
+
+	echo "Open boa at:"
+	[ -n "$name" ] && echo "  http://$name:$port/     (this name follows the device if its address changes)"
+	for a in $addrs; do
+		if [ "$a" = "$rescue" ]; then
+			echo "  http://$a:$port/     (rescue address -- only from a host on that subnet)"
+		else
+			echo "  http://$a:$port/"
+		fi
+	done
 	return 0
 }
 

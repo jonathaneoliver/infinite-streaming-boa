@@ -72,6 +72,50 @@ function defaultSSID(board, devices) {
 	return suffix ? prefix + '-' + suffix : prefix;
 }
 
+// ONE PROCESS, NOT FOUR PAGES.
+//
+// Setting up a fresh device is: install drivers, restart, answer the
+// questions, apply. Those were four screens that each replaced the last with
+// no relationship between them -- and one of them arrived after a reboot,
+// which is exactly the moment an operator is least sure anything is still
+// going to plan. The spine is on every screen, so each one says where it sits
+// in the whole rather than standing alone.
+//
+// Step 1 is complete when the device HAS radios, which is what installing a
+// driver is for. Derived rather than remembered: it is true however the radios
+// got there -- a device that shipped with drivers is simply past step 1 -- and
+// nothing has to survive the reboot to know it.
+function stepBar(active) {
+	var names = [ _('Drivers'), _('Settings'), _('Applying'), _('Done') ];
+	var items = names.map(function(n, i) {
+		var num = i + 1;
+		var state = num < active ? 'done' : (num == active ? 'now' : 'todo');
+		var dot = {
+			done: { bg: '#2e8b57', fg: '#fff', mark: '✓' },
+			now:  { bg: '#1b6fd4', fg: '#fff', mark: String(num) },
+			todo: { bg: 'transparent', fg: 'inherit', mark: String(num) }
+		}[state];
+
+		return E('span', {
+			'style': 'display:inline-flex; align-items:center; gap:.45em; margin-right:1.4em; ' +
+			         'opacity:' + (state == 'todo' ? '.45' : '1') + '; ' +
+			         'font-weight:' + (state == 'now' ? '600' : '400') + ';'
+		}, [
+			E('span', {
+				'style': 'display:inline-flex; align-items:center; justify-content:center;' +
+				         'width:1.5em; height:1.5em; border-radius:50%; font-size:.85em;' +
+				         'background:' + dot.bg + '; color:' + dot.fg + ';' +
+				         'border:1px solid ' + (state == 'todo' ? 'currentColor' : dot.bg) + ';'
+			}, [ dot.mark ]),
+			n
+		]);
+	});
+
+	return E('div', {
+		'style': 'display:flex; flex-wrap:wrap; align-items:center; margin:.2em 0 1.1em;'
+	}, items);
+}
+
 function row(label, control, help) {
 	return E('div', { 'class': 'cbi-value' }, [
 		E('label', { 'class': 'cbi-value-title' }, [ label ]),
@@ -104,7 +148,10 @@ function followLog(pre, onDone) {
 			misses = 0;
 			text = text || '';
 			var end = text.indexOf(DONE);
-			pre.textContent = (end >= 0 ? text.slice(0, end) : text).replace(/\s+$/, '');
+			// Machine-readable lines are for this code, not for the operator.
+			pre.textContent = (end >= 0 ? text.slice(0, end) : text)
+				.split('\n').filter(function(l) { return l.slice(0, 2) != '__'; }).join('\n')
+				.replace(/\s+$/, '');
 			pre.scrollTop = pre.scrollHeight;
 			if (end >= 0) {
 				stop = true;
@@ -241,7 +288,7 @@ return view.extend({
 		into.innerHTML = '';
 		into.appendChild(E('div', { 'class': 'alert-message warning' }, [
 			line,
-			E('p', {}, [ _('This page comes back by itself when the device answers again. You will be asked to log in: a reboot ends the session.') ])
+			E('p', {}, [ _('This page comes back by itself when the device answers again, and carries on from step 2. You are not asked to log in again.') ])
 		]));
 
 		// A visible clock, because the one question this screen has to answer
@@ -365,6 +412,7 @@ return view.extend({
 
 		return E('div', { 'class': 'cbi-map' }, [
 			E('h2', {}, [ _('boa setup') ]),
+			stepBar(1),
 			intro,
 			actions,
 			out
@@ -434,6 +482,7 @@ return view.extend({
 			var out = E('pre', { 'style': 'max-height:24em; overflow:auto; white-space:pre-wrap' });
 			var panel = E('div', { 'class': 'cbi-map' }, [
 				E('h2', {}, [ _('boa setup') ]),
+				stepBar(3),
 				E('div', { 'class': 'cbi-map-descr' }, [
 					_('Installing what this device needs and applying the settings. This can take a few minutes on a device that has no drivers yet — it is installing packages.')
 				]),
@@ -471,6 +520,13 @@ return view.extend({
 						var served = /Serving: ([1-9][0-9]*) access point/.exec(text);
 						var ok = (rc === 0 && served);
 
+						// The spine moves on with it, so the last screen is the
+						// end of the same process rather than a new one.
+						if (ok) {
+							var bar = panel.querySelector('div[style*="flex-wrap"]');
+							if (bar) panel.replaceChild(stepBar(4), bar);
+						}
+
 						panel.appendChild(E('div', {
 							'class': 'alert-message ' + (ok ? 'success' : 'danger')
 						}, ok ? [
@@ -498,9 +554,27 @@ return view.extend({
 							E('p', {}, [ _('Check the device with: boa-setup check') ])
 						]));
 
+						// THE ADDRESS THE DEVICE HAS NOW, not the one this page
+						// happens to be on. Setup starts on the factory address
+						// and convert moves the box off it, so a link relative
+						// to this page points back at an address that may no
+						// longer reach the device from where the operator is --
+						// measured 2026-09-27, after convert the browser's own
+						// machine could not route to it at all. boa-setup works
+						// the answer out and prints it; it prefers the mDNS
+						// name, which survives the lease changing.
+						var m = /__BOA_URL (\S+)/.exec(text);
+						var boaHref = m ? m[1] : '/cgi-bin/luci/admin/services/boa';
+
+						if (m)
+							panel.appendChild(E('div', { 'class': 'cbi-value-description' }, [
+								_('boa is at '), E('code', {}, [ m[1] ]),
+								_(' — this page is still on the address setup began with, which the device may have left.')
+							]));
+
 						panel.appendChild(E('div', { 'class': 'cbi-page-actions' }, [
 							E('a', { 'class': 'cbi-button cbi-button-apply important',
-							         'href': '/cgi-bin/luci/admin/services/boa' }, [ _('Open boa') ]),
+							         'href': boaHref }, [ _('Open boa') ]),
 							' ',
 							E('button', { 'class': 'cbi-button', 'click': function() {
 								window.location.reload();
@@ -526,6 +600,7 @@ return view.extend({
 
 		container = E('div', { 'class': 'cbi-map' }, [
 			E('h2', {}, [ _('boa setup') ]),
+			stepBar(2),
 			E('div', { 'class': 'cbi-map-descr' }, [
 				_('The first-run settings a device needs before it can serve clients for boa to condition.'), ' ',
 				_('Applying installs anything missing — radio drivers, wpad, mDNS — then turns on 802.11k and BSS transition on every access point, which boa needs for measure and steer, and switches off LuCI\'s check-for-firmware-upgrades popup unless you have already answered it.')
