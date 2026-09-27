@@ -686,15 +686,33 @@ running_aps() { ubus list 2>/dev/null | grep -c '^hostapd\.'; }
 # It WAITS rather than reading once: hostapd registers a moment after a reload,
 # and a single early read would call every slow start a failure.
 verify_serving() {
-	local n i=0
-	while [ "$i" -lt 20 ]; do
+	local n last=-1 stable=0 i=0
+	# WAITS FOR THE COUNT TO SETTLE, not for the first radio.
+	#
+	# This used to return the moment one hostapd object appeared, so on a box
+	# with three radios it reported "serving on 1 access point(s)" while the
+	# other two were still registering -- measured 2026-09-27 on a device that
+	# was in fact serving all three. Radios come up over several seconds, and
+	# they do not come up together, so the only honest answer is the one that
+	# has stopped changing.
+	while [ "$i" -lt 30 ]; do
 		n="$(running_aps)"; n="${n:-0}"
-		[ "$n" -gt 0 ] && { printf '%s' "$n"; return 0; }
-		i=$((i + 1)); sleep 1
+		if [ "$n" -gt 0 ] && [ "$n" = "$last" ]; then
+			stable=$((stable + 1))
+			[ "$stable" -ge 3 ] && { printf '%s' "$n"; return 0; }
+		else
+			stable=0
+		fi
+		last="$n"
+		i=$((i + 1))
+		sleep 1
 	done
-	printf '0'
-	return 1
+	# Still moving after 30s: report what is up rather than nothing.
+	n="$(running_aps)"; n="${n:-0}"
+	printf '%s' "$n"
+	[ "$n" -gt 0 ]
 }
+
 
 # The root password, from a value a person wrote down -- into a file before the
 # box booted, or into the setup page. NEVER invented: a random one would lock
@@ -1487,24 +1505,6 @@ cmd_apply() {
 
 	rootpw="$(set_root_password "$rootpw" 'the setup page')"
 
-	# The check the old JavaScript never made.
-	if n="$(verify_serving)"; then
-		echo "Serving: $n access point(s) are up."
-	else
-		echo "WARNING: the settings were written, but NO access point is serving." >&2
-		echo "The radios were configured and reloaded, and hostapd registered none." >&2
-		echo "Find out why with:  boa-setup check" >&2
-	fi
-
-	firstrun_note "set up $(date '+%Y-%m-%d %H:%M') from the setup page
-  SSID:          $ssid
-  country:       ${country:-none -- the world domain, 20 dBm, no DFS}
-  root password: $rootpw
-  serving:       ${n:-0} access point(s)
-  Change any of it: boa-setup wizard, or Services -> boa setup"
-
-	cmd_landing done >/dev/null 2>&1
-
 	# 36 and 149 for the first two 5 GHz radios, 6/1/11 for 2.4 GHz. Without
 	# this a box with two 5 GHz radios can bring both up on the same channel,
 	# where they share one channel's airtime and each makes the other look slow.
@@ -1519,6 +1519,35 @@ cmd_apply() {
 	echo
 	say "apply: planning channels"
 	cmd_plan_channels
+
+	# COUNTED LAST, after everything that touches a radio.
+	#
+	# This used to run before plan-channels, which reloads wifi -- so it
+	# measured a state that was about to be torn down and rebuilt, and
+	# reported whichever radios happened to be up at that instant. Measured
+	# 2026-09-27 on a three-radio box: it said 1, then 2 once it waited for the
+	# count to settle, while three were serving. Nothing after this line
+	# touches the radios, so this is the first point at which the answer is
+	# stable.
+	echo
+	if n="$(verify_serving)"; then
+		echo "Serving: $n access point(s) are up."
+		say "apply: serving $n access point(s)"
+	else
+		echo "WARNING: the settings were written, but NO access point is serving." >&2
+		echo "The radios were configured and reloaded, and hostapd registered none." >&2
+		echo "Find out why with:  boa-setup check, and boa-setup logs" >&2
+		say "apply: NO access point is serving"
+	fi
+
+	firstrun_note "set up $(date '+%Y-%m-%d %H:%M') from the setup page
+  SSID:          $ssid
+  country:       ${country:-none -- the world domain, 20 dBm, no DFS}
+  root password: $rootpw
+  serving:       ${n:-0} access point(s)
+  Change any of it: boa-setup wizard, or Services -> boa setup"
+
+	cmd_landing done >/dev/null 2>&1
 
 	case "$doconv" in
 		1|y|yes|true)

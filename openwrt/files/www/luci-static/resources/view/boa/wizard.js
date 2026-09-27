@@ -805,7 +805,38 @@ return view.extend({
 			// puts it back if anything takes it away.
 			var st = { mode: 'applying', rc: null, text: '', sig: '',
 			           ssid: s, country: c, setPw: setPw, wantConvert: wantConvert,
-			           boaHref: '', luciHref: '', boaHost: '', served: null };
+			           boaHref: '', luciHref: '', boaHost: '', served: null,
+			           left: 0, goTimer: null };
+
+			// THE LAST STEP TAKES ITSELF. Setup is finished and boa is where
+			// the operator was going all along, so the page goes there rather
+			// than waiting to be told -- but not instantly, because the panel
+			// above it is the only report of what just happened, and the
+			// addresses in it are the ones that changed. Fifteen seconds to
+			// read it, and a way to stop the clock and stay.
+			function startGoCountdown() {
+				if (!st.boaHref || st.goTimer)
+					return;
+				st.left = 15;
+				st.goTimer = window.setInterval(function() {
+					if (st.mode != 'done' || !st.goTimer) return;
+					st.left--;
+					if (st.left <= 0) {
+						window.clearInterval(st.goTimer);
+						st.goTimer = null;
+						trace('done: opening boa at', st.boaHref);
+						window.location.href = st.boaHref;
+						return;
+					}
+					paintApply(true);
+				}, 1000);
+			}
+
+			function stopGoCountdown() {
+				if (st.goTimer) { window.clearInterval(st.goTimer); st.goTimer = null; }
+				st.left = 0;
+				paintApply(true);
+			}
 
 			function paintApply(force) {
 				var host = document.querySelector('.boa-wiz');
@@ -814,7 +845,7 @@ return view.extend({
 				// Repaint only when something changed or the panel has gone --
 				// rebuilding on every tick would yank a button out from under a
 				// click.
-				var sig = st.mode + '|' + st.rc + '|' + st.served;
+				var sig = st.mode + '|' + st.rc + '|' + st.served + '|' + st.left;
 				if (!force && sig == st.sig && document.getElementById('boa-log'))
 					return;
 				st.sig = sig;
@@ -849,9 +880,13 @@ return view.extend({
 						]));
 					acts.push(E('a', { 'class': 'cbi-button cbi-button-apply important',
 					                   'href': st.boaHref || '/cgi-bin/luci/admin/services/boa' },
-					                 [ _('Go to boa') ]));
+					                 [ st.left > 0 ? _('Go to boa (%ds)').format(st.left)
+					                               : _('Go to boa') ]));
 					acts.push(E('a', { 'class': 'cbi-button',
 					                   'href': st.luciHref || '/cgi-bin/luci/' }, [ _('Go to OpenWrt') ]));
+					if (st.left > 0)
+						acts.push(E('button', { 'class': 'cbi-button',
+							'click': function() { stopGoCountdown(); } }, [ _('Stay here') ]));
 					acts.push(E('span', { 'style': 'flex:1' }));
 					acts.push(E('button', { 'class': 'cbi-button', 'click': function() {
 						window.location.reload(); } }, [ _('Change these settings') ]));
@@ -932,6 +967,8 @@ return view.extend({
 						st.served = served ? served[1] : null;
 						st.mode = (rc === 0 && served) ? 'done' : 'failed';
 						paintApply(true);
+						if (st.mode == 'done')
+							startGoCountdown();
 						try { ui.changes.init(); } catch (e) {}
 					});
 				})
