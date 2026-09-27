@@ -1516,6 +1516,16 @@ cmd_apply() {
 	# because the guest has no console to post-mortem from; what is certain is
 	# that convert should be the LAST thing that happens, since everything
 	# after it runs on a network that has just been rebuilt.
+	# LET THE RADIOS FINISH COMING UP FIRST.
+	#
+	# plan-channels only plans for radios that are serving, and a radio that
+	# is still starting is not. Measured 2026-09-27 on a three-radio box: run
+	# straight after the wifi reload, one 5 GHz radio was skipped because it
+	# had not registered yet, so it never reserved a channel -- and both 5 GHz
+	# radios ended up on 36, which is the exact collision this planner exists
+	# to prevent. The same wait the count uses, for the same reason.
+	verify_serving >/dev/null || true
+
 	echo
 	say "apply: planning channels"
 	cmd_plan_channels
