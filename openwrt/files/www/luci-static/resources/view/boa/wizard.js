@@ -547,6 +547,7 @@ return view.extend({
 		var self = this;
 		var st = {
 			mode: (stage == 'reboot-for-drivers') ? 'reboot' : 'install',
+			sig: '',
 			stillBare: false,
 			msg: '',
 			left: 0,
@@ -558,17 +559,24 @@ return view.extend({
 			st.mode = mode;
 			if (extra) for (var k in extra) st[k] = extra[k];
 			trace('state ->', mode);
-			paint();
+			paint(true);
 		}
 
 		function note(kind, children) {
 			return E('div', { 'class': kind }, children);
 		}
 
-		function paint() {
+		function paint(force) {
 			var panel = document.getElementById('boa-panel');
 			if (!panel)
 				return;
+			// Rebuild only when something changed or the log has gone missing.
+			// A blind rebuild every tick would yank a button out from under a
+			// click -- and the countdown is a button an operator is aiming at.
+			var sig = st.mode + '|' + st.left + '|' + st.stillBare + '|' + st.msg;
+			if (!force && sig == st.sig && document.getElementById('boa-log'))
+				return;
+			st.sig = sig;
 
 			var body = [], acts = [];
 
@@ -668,7 +676,7 @@ return view.extend({
 				if (st.mode != 'arming') { window.clearInterval(t); return; }
 				st.left--;
 				if (st.left <= 0) { window.clearInterval(t); go(); return; }
-				paint();
+				paint(true);
 			}, 1000);
 		}
 
@@ -708,9 +716,11 @@ return view.extend({
 			// THE HEARTBEAT. Cheap -- DOM only, no network -- and it is what makes
 			// this immune to whatever replaces the panel underneath it.
 			if (!timer)
-				timer = window.setInterval(paint, 1000);
+				timer = window.setInterval(function() {
+					paint(st.mode == 'rebooting');
+				}, 1000);
 			if (st.mode == 'reboot')
-				paint();
+				paint(true);
 			else
 				install();
 		});
@@ -788,17 +798,108 @@ return view.extend({
 			if (setPw)       lines.push('root_password=' + pw.value);
 			if (wantConvert) lines.push('convert=yes');
 
-			var out = E('pre', { 'id': 'boa-log',
-			                     'style': 'max-height:24em; overflow:auto; white-space:pre-wrap' });
-			var outWrap = E('div', {}, [ out ]);
-			var panel = E('div', { 'class': 'cbi-map boa-wiz' }, [
-				E('h2', {}, [ _('boa setup') ]),
-				stepBar(3),
-				E('div', { 'class': 'cbi-map-descr' }, [
-					_('Installing what this device needs and applying the settings. This can take a few minutes on a device that has no drivers yet — it is installing packages.')
-				]),
-				outWrap
-			]);
+			// SAME SHAPE AS THE DRIVERS STEP, and for the same reason: this
+			// panel used to be built once and then patched from callbacks, and
+			// the patches went to nodes LuCI had replaced. One state object, one
+			// paint() that rebuilds the whole view from it, and a heartbeat that
+			// puts it back if anything takes it away.
+			var st = { mode: 'applying', rc: null, text: '', sig: '',
+			           ssid: s, country: c, setPw: setPw, wantConvert: wantConvert,
+			           boaHref: '', luciHref: '', boaHost: '', served: null };
+
+			function paintApply(force) {
+				var host = document.querySelector('.boa-wiz');
+				if (!host)
+					return;
+				// Repaint only when something changed or the panel has gone --
+				// rebuilding on every tick would yank a button out from under a
+				// click.
+				var sig = st.mode + '|' + st.rc + '|' + st.served;
+				if (!force && sig == st.sig && document.getElementById('boa-log'))
+					return;
+				st.sig = sig;
+
+				var oldLog = document.getElementById('boa-log');
+				var kept = oldLog ? oldLog.textContent : '';
+
+				var ok = (st.mode == 'done');
+				var body = [], acts = [];
+
+				if (st.mode == 'applying') {
+					body.push(E('div', { 'class': 'cbi-map-descr' }, [
+						_('Installing what this device needs and applying the settings. This can take a few minutes on a device that has no drivers yet — it is installing packages.')
+					]));
+				} else if (ok) {
+					body.push(E('div', { 'class': 'cbi-map-descr' }, [
+						_('This device is set up. Nothing else is needed here.') ]));
+					body.push(E('div', { 'class': 'boa-ok' }, [
+						E('p', {}, [ E('strong', {}, [ _('Done.') ]), ' ',
+							_('"%s" is serving on %s access point(s).').format(st.ssid, st.served) ]),
+						E('p', {}, [ st.setPw
+							? _('The root password is set. The next login will ask for it — including SSH, which until now accepted a blank one.')
+							: _('The root password was NOT changed. This device still lets anyone on the LAN log in.') ]),
+						st.wantConvert
+							? E('p', {}, [ _('It is now a transparent bridge, so its address came from the upstream router and has changed. The old address stays on the bridge as a rescue address.') ])
+							: ''
+					]));
+					if (st.boaHost)
+						body.push(E('div', { 'class': 'cbi-value-description' }, [
+							_('This device is now at '), E('code', {}, [ st.boaHost ]),
+							_(' — this page is still on the address setup began with, which the device may have left. Both buttons below go to the new one.')
+						]));
+					acts.push(E('a', { 'class': 'cbi-button cbi-button-apply important',
+					                   'href': st.boaHref || '/cgi-bin/luci/admin/services/boa' },
+					                 [ _('Go to boa') ]));
+					acts.push(E('a', { 'class': 'cbi-button',
+					                   'href': st.luciHref || '/cgi-bin/luci/' }, [ _('Go to OpenWrt') ]));
+					acts.push(E('span', { 'style': 'flex:1' }));
+					acts.push(E('button', { 'class': 'cbi-button', 'click': function() {
+						window.location.reload(); } }, [ _('Change these settings') ]));
+				} else {
+					body.push(E('div', { 'class': 'cbi-map-descr' }, [
+						_('Setup did not finish. The output below says how far it got.') ]));
+					body.push(E('div', { 'class': 'boa-bad' }, [
+						E('p', {}, [ E('strong', {}, [ _('It did not finish cleanly.') ]) ]),
+						E('p', {}, [ st.rc === -1
+							? _('Nothing started: the device never wrote a setup log. Nothing has been changed.')
+							: st.rc === -2
+							? _('The device stopped answering while it was working, and did not come back. If you ticked the bridge box its address has changed — try the rescue address, 192.168.1.1.')
+							: st.rc === 0
+							? _('The settings were written, but no access point came up. The output above says how far it got.')
+							: _('boa-setup exited %d. The output above says how far it got.').format(st.rc) ]),
+						E('p', {}, [ _('Check the device with: boa-setup check, and boa-setup logs for the whole run.') ])
+					]));
+					acts.push(E('button', { 'class': 'cbi-button', 'click': function() {
+						window.location.reload(); } }, [ _('Change these settings') ]));
+				}
+
+				var log = E('pre', { 'id': 'boa-log',
+				                     'style': 'max-height:24em; overflow:auto; white-space:pre-wrap' });
+				log.textContent = kept;
+
+				host.innerHTML = '';
+				host.appendChild(E('h2', {}, [ _('boa setup') ]));
+				host.appendChild(stepBar(ok ? 4 : 3));
+				body.forEach(function(nd) { if (nd) host.appendChild(nd); });
+				if (ok) {
+					// The transcript is history now, so it folds away.
+					host.appendChild(E('details', {}, [
+						E('summary', {}, [ _('Show what it did') ]), log ]));
+				} else {
+					host.appendChild(log);
+				}
+				if (acts.length) {
+					var bar = E('div', { 'class': 'cbi-page-actions',
+					                     'style': 'display:flex; gap:.6rem; align-items:center;' });
+					acts.forEach(function(nd) { bar.appendChild(nd); });
+					host.appendChild(bar);
+				}
+				log.scrollTop = log.scrollHeight;
+
+				// LuCI drew this before the wizard closed the door.
+				if (ok && st.setPw)
+					dismissStalePasswordWarning();
+			}
 
 			// Cleared from the DOM as soon as they are in the file. They are
 			// still in that file until boa-setup reads and deletes it, which is
@@ -807,142 +908,36 @@ return view.extend({
 
 			return fs.write(ANSWERS, lines.join('\n') + '\n')
 				.then(function() {
-					container.parentNode.replaceChild(panel, container);
-					container = panel;
+					paintApply(true);
+					window.setInterval(function() { paintApply(false); }, 1000);
 
-					// FIRED, AND DELIBERATELY NOT WAITED ON.
-					//
-					// `--background` detaches properly -- measured on the box,
-					// it returns in 0s with the child still running -- but rpcd
-					// holds the exec CALL open past that, and the last thing
-					// this run does is convert, which restarts the network. The
-					// XHR then dies under the browser and the old code reported
-					// `XHR request aborted by browser / Nothing has been changed
-					// on the device` over a device that had just been fully and
-					// correctly set up. Measured 2026-09-26.
-					//
-					// So the request is a trigger, not a result. The log is the
-					// source of truth, and following it survives the network
-					// going away and coming back.
+					// A trigger, not a result: rpcd holds the exec call open and
+					// convert restarts the network under it. The log is the truth.
 					fireAndForget('/usr/sbin/boa-setup', [ 'apply', ANSWERS, '--background' ]);
 
 					trace('apply: started, following the log');
-					followLog(out, function(rc, text) {
+					followLog(null, function(rc, text) {
 						trace('apply: finished rc =', rc);
-						var served = /Serving: ([1-9][0-9]*) access point/.exec(text);
-						var ok = (rc === 0 && served);
-
-						// The spine moves on with it, so the last screen is the
-						// end of the same process rather than a new one.
-						if (ok) {
-							var bar = panel.querySelector('div[style*="flex-wrap"]');
-							if (bar) panel.replaceChild(stepBar(4), bar);
-						}
-
-						var descr = panel.querySelector('.cbi-map-descr');
-						if (descr)
-							descr.textContent = ok
-								? _('This device is set up. Nothing else is needed here.')
-								: _('Setup did not finish. The output below says how far it got.');
-
-						panel.appendChild(E('div', {
-							'class': ok ? 'boa-ok' : 'boa-bad'
-						}, ok ? [
-							E('p', {}, [ E('strong', {}, [ _('Done.') ]), ' ',
-								_('"%s" is serving on %s access point(s).').format(s, served[1]) ]),
-							E('p', {}, [ setPw
-								? _('The root password is set. The next login will ask for it — including SSH, which until now accepted a blank one.')
-								: _('The root password was NOT changed. This device still lets anyone on the LAN log in.') ]),
-							wantConvert
-								? E('p', {}, [ _('It is now a transparent bridge, so its address came from the upstream router and has changed. The old address stays on the bridge as a rescue address.') ])
-								: ''
-						] : [
-							// LOUDLY, AND ONLY WHEN TRUE. The old page said
-							// "up on N radio(s)" from the sections it had just
-							// written, which was a success message over a box
-							// serving nothing. This reads what boa-setup found.
-							E('p', {}, [ E('strong', {}, [ _('It did not finish cleanly.') ]) ]),
-							E('p', {}, [ rc === -1
-								? _('Nothing started: the device never wrote a setup log. Nothing has been changed.')
-								: rc === -2
-								? _('The device stopped answering while it was working, and did not come back. If you ticked the bridge box its address has changed — try the rescue address, 192.168.1.1.')
-								: rc === 0
-								? _('The settings were written, but no access point came up. The output above says how far it got.')
-								: _('boa-setup exited %d. The output above says how far it got.').format(rc) ]),
-							E('p', {}, [ _('Check the device with: boa-setup check') ])
-						]));
-
-						// THE ADDRESS THE DEVICE HAS NOW, not the one this page
-						// happens to be on. Setup starts on the factory address
-						// and convert moves the box off it, so a link relative
-						// to this page points back at an address that may no
-						// longer reach the device from where the operator is --
-						// measured 2026-09-27, after convert the browser's own
-						// machine could not route to it at all. boa-setup works
-						// the answer out and prints it; it prefers the mDNS
-						// name, which survives the lease changing.
-						var m = /__BOA_URL (\S+)/.exec(text);
-						var boaHref = m ? m[1] : '/cgi-bin/luci/admin/services/boa';
-
-						// LuCI at the same place. Derived from the boa URL rather
-						// than left relative, for the same reason: both live on
-						// this device, and this page may be the only thing still
-						// pointing at where it used to be. LuCI holds :80, so the
-						// port is dropped rather than carried over.
-						var luciHref = '/cgi-bin/luci/', boaHost = '';
+						var served = /Serving: ([1-9][0-9]*) access point/.exec(text || '');
+						var m = /__BOA_URL (\S+)/.exec(text || '');
 						if (m) {
+							st.boaHref = m[1];
 							try {
 								var u = new URL(m[1]);
-								boaHost = u.hostname;
-								luciHref = u.protocol + '//' + u.hostname + '/cgi-bin/luci/';
+								st.boaHost  = u.hostname;
+								st.luciHref = u.protocol + '//' + u.hostname + '/cgi-bin/luci/';
 							} catch (e) {}
 						}
-
-						if (boaHost)
-							panel.appendChild(E('div', { 'class': 'cbi-value-description' }, [
-								_('This device is now at '), E('code', {}, [ boaHost ]),
-								_(' — this page is still on the address setup began with, which the device may have left. Both buttons below go to the new one.')
-							]));
-
-						panel.appendChild(E('div', {
-							'class': 'cbi-page-actions',
-							'style': 'display:flex; gap:.6rem; align-items:center;'
-						}, [
-							E('a', { 'class': 'cbi-button cbi-button-apply important',
-							         'href': boaHref }, [ _('Go to boa') ]),
-							E('a', { 'class': 'cbi-button', 'href': luciHref }, [ _('Go to OpenWrt') ]),
-							E('span', { 'style': 'flex:1' }),
-							E('button', { 'class': 'cbi-button', 'click': function() {
-								window.location.reload();
-							} }, [ _('Change these settings') ])
-						]));
-
-						// WHILE IT RUNS the log is the content -- it is the only
-						// evidence anything is happening, and that was the whole
-						// point of following it. Once it has finished it is a
-						// transcript: half a screen of apk output, frozen at
-						// whatever line it happened to stop on, sitting above the
-						// one sentence that says how it went. So it folds away,
-						// still one click from view.
-						var summary = E('summary', {}, [
-							ok ? _('Show what it did') : _('Show the full output')
-						]);
-						var details = E('details', ok ? {} : { 'open': '' }, [ summary, out ]);
-						outWrap.replaceChild(details, out);
-
-						// The banner LuCI drew before this page closed the door.
-						if (setPw)
-							dismissStalePasswordWarning();
-
-						// The change indicator is client-side. Nothing here
-						// writes uci through LuCI any more, but an earlier
-						// visit may have left it set.
+						st.rc = rc;
+						st.served = served ? served[1] : null;
+						st.mode = (rc === 0 && served) ? 'done' : 'failed';
+						paintApply(true);
 						try { ui.changes.init(); } catch (e) {}
 					});
 				})
-				// Only fs.write can reach here, and it runs before anything on
-				// the device has been touched -- so this is the one place the
-				// page can honestly say nothing changed.
+				// Only fs.write reaches here, and it runs before anything on the
+				// device has been touched -- the one place this page can honestly
+				// say nothing changed.
 				.catch(function(e) {
 					status.appendChild(E('div', { 'class': 'boa-bad' }, [
 						E('p', {}, [ _('Could not write the answers to the device: %s').format(e.message || e) ]),
