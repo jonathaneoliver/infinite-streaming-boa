@@ -1689,11 +1689,18 @@ cmd_firstrun() {
 # on` puts the front door back for anyone who would rather have it.
 LANDING_PAGE=boa-setup.html
 
+# ON, DONE or OFF -- and "done" is a fact about the device, not about uhttpd.
+#
+# This used to read the state out of index_page, which worked only while the
+# summary page sat there holding the door. Now that the front door goes back to
+# LuCI when setup finishes, index_page cannot tell "finished" from "never had a
+# landing page", so the first-run record answers it instead: that is the thing
+# that actually records whether setup has run.
 landing_state() {
 	case " $(uci -q get uhttpd.main.index_page) " in
-		*" $LANDING_PAGE "*)     echo on ;;
-		*" boa-setup-done.html "*) echo done ;;
-		*)                       echo off ;;
+		*" $LANDING_PAGE "*)       echo on ;;
+		*" boa-setup-done.html "*) echo done ;;   # older boxes, before the summary left index_page
+		*) [ -f "$FIRSTRUN_STATE" ] && echo done || echo off ;;
 	esac
 }
 
@@ -1732,9 +1739,21 @@ cmd_landing() {
 			# read it instead, which is the same bar as the root password.
 			[ -f "$FIRSTRUN_STATE" ] || { echo "Nothing has run yet; leaving the setup page as it is." >&2; return 1; }
 			{
+				# THE HEADING FOLLOWS WHAT ACTUALLY HAPPENED. This page is
+				# written by both paths, and it used to say "this box set
+				# itself up -- nobody was here" even when somebody had just
+				# sat and filled the form in, which reads as the box ignoring
+				# them. The first line of the record says which it was.
+				if head -1 "$FIRSTRUN_STATE" | grep -q 'ran unattended'; then
+					head='This box set itself up'
+					sub='Nobody was here, so it used the answers it was given'
+				else
+					head='This box is set up'
+					sub='These are the settings it was given'
+				fi
 				sed -n '1,/^  <div class="card">/p' /www/boa-setup.html |
-					sed 's/<h1>Set up this box<\/h1>/<h1>This box set itself up<\/h1>/'
-				echo '    <h2>Nobody was here, so it used the answers it was given</h2>'
+					sed "s/<h1>Set up this box<\/h1>/<h1>$head<\/h1>/"
+				echo "    <h2>$sub</h2>"
 				echo '    <pre style="white-space:pre-wrap;font:13px\/1.5 ui-monospace,Menlo,monospace;color:var(--dim)">'
 				grep -v '^  passphrase:' "$FIRSTRUN_STATE" | sed 's/&/\&amp;/g; s/</\&lt;/g'
 				echo '    </pre>'
@@ -1745,8 +1764,29 @@ cmd_landing() {
 				echo '  <p class="note">This page goes away for good with <code>boa-setup landing off</code>.</p>'
 				echo '</main></body></html>'
 			} > /www/boa-setup-done.html
+			# READABLE BY THE WEB SERVER, explicitly.
+			#
+			# This inherits the umask of whoever called it, and cmd_apply runs
+			# under `umask 077` so the answers file it writes is root-only. The
+			# page came out 0600, uhttpd could not read it, and because it is
+			# first in index_page the whole document root answered 403 -- so
+			# http://<box>/ said "you don't have permission to access /" on a
+			# box that had just set itself up perfectly. Measured 2026-09-27.
+			chmod 644 /www/boa-setup-done.html
+
+			# AND THE FRONT DOOR GOES BACK TO LuCI.
+			#
+			# The landing page promises this in as many words -- "afterwards
+			# this address goes back to LuCI, and the setup page stays at
+			# Services -> boa setup" -- and for a while it did not: the summary
+			# was left sitting on index_page, so http://<box>/ kept answering
+			# with a setup page on a device that was finished. A page that
+			# contradicts itself is worse than either behaviour.
+			#
+			# The summary is still written, and still reachable at its own
+			# address for anyone who wants to read what the box did; it just
+			# stops standing in the doorway.
 			uci -q delete uhttpd.main.index_page
-			uci add_list uhttpd.main.index_page='boa-setup-done.html'
 			uci add_list uhttpd.main.index_page='index.html'
 			uci commit uhttpd
 			/etc/init.d/uhttpd reload >/dev/null 2>&1
