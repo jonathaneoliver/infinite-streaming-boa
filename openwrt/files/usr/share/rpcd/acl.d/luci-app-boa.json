@@ -51,6 +51,9 @@
 				],
 				"/usr/sbin/boa-setup stage get": [
 					"exec"
+				],
+				"/usr/sbin/boa-setup install-drivers --background": [
+					"exec"
 				]
 			}
 		}

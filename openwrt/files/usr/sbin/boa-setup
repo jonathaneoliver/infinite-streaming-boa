@@ -549,6 +549,23 @@ note_if_still_bare() {
 }
 
 cmd_install_drivers() {
+	# DETACHED, for the same reason apply is: this fetches and unpacks up to
+	# three dozen packages, which outlasts rpcd's exec timeout and the
+	# browser's. Measured 2026-09-27: the setup page called this straight,
+	# rpcd held the call, the request died, and the page sat on "no drivers"
+	# over a device whose drivers had just installed perfectly.
+	if [ "${1:-}" = --background ]; then
+		rm -f "$APPLY_LOG"
+		: > "$APPLY_LOG"
+		chmod 600 "$APPLY_LOG"
+		say "install-drivers: starting (detached), log $APPLY_LOG"
+		setsid sh -c '{ "$1" install-drivers; rc=$?; printf "'"$APPLY_DONE"' rc=%s\n" "$rc"; \
+		               "$1" keep-log; logger -t boa-setup "install-drivers: finished rc=$rc"; } >> "$2" 2>&1' \
+			sh "$0" "$APPLY_LOG" </dev/null >/dev/null 2>&1 &
+		echo "$APPLY_LOG"
+		return 0
+	fi
+
 	local dry=""
 	[ "${1:-}" = "--dry-run" ] && dry=1
 	WANT_PKGS=""; MISSING_IDS=""
@@ -1107,6 +1124,49 @@ cmd_wizard() {
 
 # The writes themselves, shared by the interactive wizard and --defaults, so
 # the two cannot drift into configuring a box differently.
+# A BAND THE RADIO CAN ACTUALLY SERVE.
+#
+# wifi-scripts picks a new radio's band from what the chip CAN do, and for a
+# Wi-Fi 6E part that is 6 GHz. The mt7921u will not run an access point there
+# -- measured on the x86-64 VM 2026-09-27, where an MT7921AU came up as
+# radio0 with band '6g' and `check` reported it twice over:
+#
+#   WARN  radio0 is set to 6 GHz, where the mt7921u will not run an access point
+#   FAIL  phy2-ap0 is not answering, not serving
+#
+# while the setup page still said "serving on 2 access point(s)", counting the
+# two that worked and never mentioning the third.
+#
+# The radio is not unusable, it is on the wrong band, so it is MOVED rather
+# than skipped: PRD.md:66 -- "Every radio present serves the AP" -- and a
+# three-radio box is meant to come up 2.4 + 5 + 5, which is the arrangement
+# plan-channels is written for. 5 GHz first, because that is where a spare
+# radio is worth having; 2.4 GHz only if the phy has nothing else.
+normalise_bands() {
+	local r band phy moved=0
+	for r in $(uci -q show wireless | sed -n 's/^wireless\.\([^.=]*\)=wifi-device$/\1/p'); do
+		band="$(uci -q get wireless.$r.band)"
+		[ "$band" = 6g ] || continue
+		phy="$(radio_phy "$r")" || continue
+
+		if [ -n "$(phy_channels "$phy" 5)" ]; then
+			uci set wireless.$r.band=5g
+		elif [ -n "$(phy_channels "$phy" 24)" ]; then
+			uci set wireless.$r.band=2g
+		else
+			echo "  $r is on 6 GHz and its radio offers no other band; leaving it alone." >&2
+			continue
+		fi
+		# The channel belonged to the old band. plan-channels gives it a real
+		# one a moment later; 'auto' is what keeps it up in between.
+		uci set wireless.$r.channel=auto
+		echo "  $r was set to 6 GHz, where its driver will not run an access point: moved to $(uci -q get wireless.$r.band)."
+		moved=$((moved + 1))
+	done
+	[ "$moved" -gt 0 ] && uci commit wireless
+	return 0
+}
+
 apply_wizard() {
 	local ssid="$1" key="$2" country="$3" ifaces devs i d n=0
 	ifaces="$(uci -q show wireless | sed -n 's/^wireless\.\([^.=]*\)=wifi-iface$/\1/p')"
@@ -1128,6 +1188,8 @@ apply_wizard() {
 		fi
 	done
 	[ "$n" -gt 0 ] || { echo "No access-point interfaces found to configure." >&2; return 1; }
+
+	[ -z "$dry" ] && normalise_bands
 
 	for d in $devs; do
 		[ -n "$dry" ] && { echo "  uci set wireless.$d.country='$country' (+disabled=0)"; continue; }
@@ -1267,6 +1329,32 @@ FIRSTRUN_WAIT=120
 # exact file it may read, so there is no wildcard for anything else to slip
 # through. The sentinel is how the page tells "still installing" from
 # "finished", which a log that simply stops growing cannot.
+# FOR THE POST-MORTEM, not for the operator.
+#
+# /tmp is a tmpfs: the log of the run that broke a box is gone the moment the
+# box reboots, which is exactly when it is wanted. Measured 2026-09-27 -- a run
+# ended with a device that emitted no packets on either NIC, and there was
+# nothing left anywhere to say what it had done. The last run is kept in /etc
+# so it survives, and every step is also announced to syslog, which persists
+# independently and interleaves with netifd and hostapd -- the two things most
+# likely to be involved when this goes wrong.
+#
+# It carries no secrets: the answers file is deleted before the slow work
+# starts, and nothing below echoes a passphrase. Mode 600 regardless.
+LAST_LOG=/etc/infinite-streaming-boa/last-apply.log
+
+# One line to syslog, tagged, so `logread -e boa-setup` is the whole story.
+say() {
+	logger -t boa-setup "$*" 2>/dev/null || true
+}
+
+keep_log() {
+	[ -f "$APPLY_LOG" ] || return 0
+	mkdir -p "$(dirname "$LAST_LOG")"
+	cp "$APPLY_LOG" "$LAST_LOG" 2>/dev/null && chmod 600 "$LAST_LOG"
+	return 0
+}
+
 APPLY_LOG=/tmp/boa-apply.log
 APPLY_ANSWERS=/tmp/boa-wizard.conf
 APPLY_DONE=__BOA_APPLY_DONE
@@ -1284,8 +1372,8 @@ APPLY_DONE=__BOA_APPLY_DONE
 # survive the one event this exists for.
 SETUP_STAGE=/etc/infinite-streaming-boa/setup-stage
 
-stage_set()   { mkdir -p "$(dirname "$SETUP_STAGE")"; printf '%s\n' "$1" > "$SETUP_STAGE"; }
-stage_clear() { rm -f "$SETUP_STAGE"; }
+stage_set()   { mkdir -p "$(dirname "$SETUP_STAGE")"; printf '%s\n' "$1" > "$SETUP_STAGE"; say "stage: $1"; }
+stage_clear() { [ -f "$SETUP_STAGE" ] && say "stage: cleared"; rm -f "$SETUP_STAGE"; return 0; }
 
 # SELF-HEALING, so the page needs one call and no rules of its own. A stage is
 # a claim about what still has to happen; when the box can be seen to have done
@@ -1296,7 +1384,15 @@ stage_get() {
 	s="$(cat "$SETUP_STAGE" 2>/dev/null)" || { echo none; return 0; }
 	case "$s" in
 		reboot-for-drivers)
-			if [ -n "$(uci -q show wireless 2>/dev/null | grep wifi-device)" ]; then
+			# ASK THE SAME QUESTION install-drivers ASKED, not an easier one.
+			# This used to clear as soon as ANY wifi-device existed, which is
+			# wrong the moment a device has two adapters: measured 2026-09-27
+			# with a USB mt7921u and a PCI MT7915E, the USB radio probed at
+			# once, a wifi-device appeared, and the stage cleared while the
+			# PCI radio was still bare and still needed the reboot.
+			STILL_BARE=""
+			walk_adapters note_if_still_bare 2>/dev/null
+			if [ -z "$STILL_BARE" ]; then
 				stage_clear; echo none; return 0
 			fi ;;
 	esac
@@ -1352,7 +1448,9 @@ cmd_apply() {
 		rm -f "$APPLY_LOG"
 		: > "$APPLY_LOG"
 		chmod 600 "$APPLY_LOG"
-		setsid sh -c '{ "$1" apply "$2"; printf "'"$APPLY_DONE"' rc=%s\n" "$?"; } >> "$3" 2>&1' \
+		say "apply: starting (detached), log $APPLY_LOG"
+		setsid sh -c '{ "$1" apply "$2"; rc=$?; printf "'"$APPLY_DONE"' rc=%s\n" "$rc"; \
+		               "$1" keep-log; logger -t boa-setup "apply: finished rc=$rc"; } >> "$3" 2>&1' \
 			sh "$0" "$conf" "$APPLY_LOG" </dev/null >/dev/null 2>&1 &
 		echo "$APPLY_LOG"
 		return 0
@@ -1383,8 +1481,9 @@ cmd_apply() {
 		*)  echo "A country code is two letters, or empty." >&2; return 1 ;;
 	esac
 
+	say "apply: ssid='$ssid' country='${country:-none}' convert='${doconv:-no}'"
 	wizard_prerequisites
-	apply_wizard "$ssid" "$key" "$country" || return 1
+	apply_wizard "$ssid" "$key" "$country" || { say "apply: apply_wizard FAILED"; return 1; }
 
 	rootpw="$(set_root_password "$rootpw" 'the setup page')"
 
@@ -1406,11 +1505,28 @@ cmd_apply() {
 
 	cmd_landing done >/dev/null 2>&1
 
+	# 36 and 149 for the first two 5 GHz radios, 6/1/11 for 2.4 GHz. Without
+	# this a box with two 5 GHz radios can bring both up on the same channel,
+	# where they share one channel's airtime and each makes the other look slow.
+	#
+	# BEFORE convert, not after. It reloads wifi, and convert tears the network
+	# down and rebuilds it -- doing both at once, in that order, is how this
+	# run ended with a box that emitted no packets at all on either NIC and had
+	# to be reset. Whether the reload was the cause was never established,
+	# because the guest has no console to post-mortem from; what is certain is
+	# that convert should be the LAST thing that happens, since everything
+	# after it runs on a network that has just been rebuilt.
+	echo
+	say "apply: planning channels"
+	cmd_plan_channels
+
 	case "$doconv" in
 		1|y|yes|true)
 			echo
 			echo "convert=yes: turning this into a transparent bridge."
-			cmd_convert ;;
+			say "apply: converting to a bridge -- the network restarts here"
+			cmd_convert
+			say "apply: convert returned $?" ;;
 	esac
 
 	echo
@@ -1913,10 +2029,13 @@ case "${1:-}" in
 	check)   cmd_check ;;
 	convert) cmd_convert "${2:-}" ;;
 	plan-channels) cmd_plan_channels "${2:-}" ;;
-	install-drivers) cmd_install_drivers "${2:-}" ;;
+	install-drivers) shift; cmd_install_drivers "$@" ;;
 	install-wpad)    shift; cmd_install_wpad "$@" ;;
 	install-mdns)    shift; cmd_install_mdns "$@" ;;
 	apply)           shift; cmd_apply "$@" ;;
+	keep-log)        keep_log ;;
+	logs)            echo "--- $LAST_LOG ---"; cat "$LAST_LOG" 2>/dev/null || echo "(none)"
+	                 echo; echo "--- syslog ---"; logread -e boa-setup 2>/dev/null | tail -60 ;;
 	stage)           cmd_stage "${2:-get}" ;;
 	wizard)  cmd_wizard "${2:-}" ;;
 	landing) cmd_landing "${2:-}" ;;
@@ -1949,6 +2068,10 @@ case "${1:-}" in
 		echo "                 Today the only one is reboot-for-drivers, set when a driver" >&2
 		echo "                 installed but its radio needs a restart to appear. It clears" >&2
 		echo "                 itself once the radios are there." >&2
+		echo "  logs           the last setup run and everything boa-setup told syslog." >&2
+		echo "                 The run log lives in /tmp and dies with a reboot, so the" >&2
+		echo "                 last one is kept in /etc -- read this first when a box" >&2
+		echo "                 came back from setup wrong." >&2
 		echo "  apply          apply a whole setup from a key=value answers file, without" >&2
 		echo "                 asking: the same keys as boa-firstrun.conf. This is what" >&2
 		echo "                 Services -> boa setup calls; the file is deleted as it is" >&2
