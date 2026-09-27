@@ -1345,6 +1345,58 @@ That last row is the part that is not guaranteed. On this board the other
 candidate card shared a group with the boot controller, which cannot be passed
 through; the slot a card sits in decides whether it can be given to a guest.
 
+##### How the Ubuntu host is set up, and what it did not need
+
+Read off a working host rather than written from a guide. Ubuntu 24.04 needed
+four packages and no kernel tuning at all:
+
+```sh
+sudo apt install qemu-system-x86 libvirt-daemon-system virtinst ovmf
+```
+
+**No `amd_iommu=on`, no `iommu=pt`, no `vfio-pci.ids=`.** This host's
+`GRUB_CMDLINE_LINUX` is empty and `/proc/cmdline` carries nothing but
+`quiet splash` — the IOMMU is enabled in the board's firmware and the kernel
+picks it up by itself. Nothing is pinned to `vfio-pci` at boot either: there is
+no file in `/etc/modprobe.d` or `/etc/modules-load.d` mentioning it. Almost
+every passthrough guide tells you to do both. Neither was necessary, and the
+cost of doing them anyway is a host that cannot use its own card.
+
+`<hostdev managed='yes'>` is what makes that work: libvirt unbinds the card from
+`mt7915e`, binds it to `vfio-pci` as the guest starts, and hands it back at
+shutdown. The card belongs to the host until the moment the guest wants it.
+
+**Two bridges, built two different ways** — worth knowing, because they fail
+differently:
+
+| | |
+|---|---|
+| `br-wan` | The uplink. A NetworkManager/netplan bridge over the onboard NIC, holding the host's own address (`192.168.0.106`). Permanent. |
+| `br-client` | The wired client port, over a USB ethernet adapter. **Created by a libvirt hook** at domain start and deleted at release — it does not exist while the guest is down. |
+
+The hook lives at `/etc/libvirt/hooks/qemu` and logs what it does. If the USB
+adapter is absent it says so and starts the guest anyway, with no wired client
+port, rather than refusing to boot.
+
+**The guest is deliberately plain**: `pc-i440fx` with legacy BIOS (ovmf is
+installed but unused), a virtio disk, two virtio NICs — `eth0` to `br-client`,
+`eth1` to `br-wan`, **in that order**, which is the order `boa-setup convert`
+assumes — and `autostart` off, so a host reboot does not bring the bench box up
+behind your back.
+
+**The disk is a disposable overlay.** `openwrt-x86-work.qcow2` is a qcow2 whose
+backing file is a read-only `…-VANILLA.qcow2` downloaded from OpenWrt and
+verified against their published checksums. Resetting to out-of-box is
+therefore "delete the overlay and make another", which takes about a second:
+
+```sh
+qemu-img create -f qcow2 -F qcow2 -b …-VANILLA.qcow2 openwrt-x86-work.qcow2
+```
+
+That is what makes the first-run testing in this repository honest — every
+out-of-box claim here was measured from that fixed point, not from a box
+someone had tidied up.
+
 **What the module is**, from the vendor page and from the bus:
 
 | | |
