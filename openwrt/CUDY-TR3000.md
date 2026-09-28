@@ -111,15 +111,26 @@ the labels below are this box's own LuCI 25.12 rather than a guess.
 | 1 | Stock, first contact | Cable to a **LAN** port; stock answers at `http://192.168.10.1`. Set its admin password |
 | 2 | Cudy's own OpenWrt build | Stock page → **Advanced Settings → System → Firmware**. Comes back as LuCI at `192.168.1.1` |
 | 3 | Official OpenWrt | **System → Backup / Flash Firmware → Flash new firmware image**. Untick **Keep settings** — that is `sysupgrade -n`. It verifies and shows the checksum before writing, which is the `-T` check |
-| 4 | Root password, SSH key | **System → Administration**: *Router Password*, then the **SSH-Keys** tab |
-| 5 | Bridge the ports | **Network → Interfaces → Devices**, edit `br-lan`, add both ports to *Bridge ports* |
-| 6 | Stop serving DHCP | **Network → Interfaces**, edit LAN: *Protocol* → **DHCP client**, then its **DHCP Server** tab → **DHCPv4 Service** → disabled (same for DHCPv6 and RA). Delete `wan` and `wan6` on the same page |
-| 7 | Rescue address | **Network → Interfaces → Add new interface**: static, device `br-lan`, `192.168.1.1/24` |
-| 8 | Swap wpad | **System → Software**: *Update lists*, remove `wpad-basic-mbedtls`, install `wpad-mbedtls` and `hostapd-utils`. Then **System → Startup** to enable and start `wpad` — the swap leaves it stopped |
-| 9 | Radios and SSIDs | **Network → Wireless**: per radio, *Operating frequency* and *Country Code*; in the interface below, *ESSID*, *Encryption* (WPA2/WPA3 mixed), and **Network → lan**, which is the bridged-AP setting. Then **Enable** — radios ship disabled |
-| 10 | 802.11k and v | Same SSID dialog → **WLAN roaming** tab → tick **802.11k RRM** and **BSS Transition** |
-| 11 | Install boa | **System → Software** → *Install package* `luci-app-boa`, once the feed is configured |
-| 12 | Point boa at the hardware | **Services → infinite-streaming-boa** — the settings page the package installs |
+| 4 | Trust the feed, add it | **Shell only** — see below. LuCI will not write either, and a feed you cannot verify is one you should not add |
+| 5 | Install boa | **System → Software** → *Install package* `luci-app-boa` |
+| 6 | **Everything else** | Open the box's own address, `http://192.168.1.1/`. It now shows **the setup page**, not LuCI. Four answers — network name, passphrase, country, root password — and Apply |
+
+**What the setup page does for you, and what this page used to list.** Steps 4 to 10 of
+the table as it used to read were, until the setup page existed, six things to do by
+hand: bridge the ports, stop serving DHCP, delete `wan`, add a rescue address,
+swap `wpad-basic-mbedtls` for the full build, and turn on 802.11k and BSS
+transition per access point. Applying does all six. They are written out below
+anyway, because a record of what this box took is the point of this file -- and
+because they are what to read when the setup page refuses, or when you want to
+do one of them on its own.
+
+**The order matters and is not the order above.** The setup page ships inside
+`luci-app-boa`, so the package goes on FIRST and the page exists afterwards. A
+device with no boa on it has no setup page, only LuCI.
+
+**Give it an uplink before any of this.** The setup page installs packages --
+radio drivers if they are missing, `wpad-mbedtls`, mDNS -- so `eth0` needs to
+reach the internet or the apply stalls part way.
 
 **The two that need a shell:** trusting the signing key
 (`/etc/apk/keys/boa-packages.pem`) and adding the feed line to
@@ -210,7 +221,39 @@ collides with another device in your `known_hosts`, use
 `ssh -o UserKnownHostsFile=/dev/null` rather than deleting an entry that belongs
 to something else.
 
-**4. Make it a bridge, not a router.** boa shapes each client's uplink by that
+**4. The short way: install boa, then open the box's own address.** Steps 4a to 4d
+below are what this does. Trust the feed and add it -- the two lines LuCI will
+not write -- then install, and the device's own address stops being LuCI and
+becomes the setup page:
+
+```sh
+wget -O /etc/apk/keys/boa-packages.pem \
+  https://jonathaneoliver.github.io/infinite-streaming-boa/openwrt/boa-packages.pem
+. /etc/openwrt_release          # aarch64_cortex-a53 on this box
+echo https://jonathaneoliver.github.io/infinite-streaming-boa/openwrt/25.12/$DISTRIB_ARCH/packages.adb \
+  >> /etc/apk/repositories.d/customfeeds.list
+apk update && apk add luci-app-boa
+```
+
+Then `http://192.168.1.1/` -- four answers, Apply. It installs `wpad-mbedtls`
+and mDNS, enables the radios, plans a channel each, sets the root password and
+converts the box to a transparent bridge. The page follows the device to its new
+address afterwards, because converting changes it.
+
+Measured on this unit, 2026-09-28: **2m 47s** from factory reset to a bridged box
+serving on three radios. `openwrt/README.md` walks the same flow screen by
+screen.
+
+**On this box the driver step does nothing**, and that is expected: the MT7981
+radios and both ethernet ports are in the Filogic image. It is the x86 target
+where that step does the work. A USB radio IS installed by the apply -- 2 phys
+before, 3 configured after.
+
+The rest of this section is what the setup page automates, kept because a record
+of what this box took is the point of the file, and because it is what to read
+when the page refuses or when you want one of these on its own.
+
+**4a. Make it a bridge, not a router.** boa shapes each client's uplink by that
 client's own address, and behind NAT every client leaves wearing the router's.
 So both ports join one bridge and the upstream router stays the only DHCP
 server:
@@ -238,7 +281,7 @@ The rescue address is not optional in practice: the box's DHCP lease moves, and
 without it a box that comes back on an unexpected address is a box you have to
 fetch a cable for.
 
-**5. Radios: full wpad, with 802.11k/v on.** The default `wpad-basic-mbedtls`
+**4b. Radios: full wpad, with 802.11k/v on.** The default `wpad-basic-mbedtls`
 has no BSS transition management, so steer answers `UNKNOWN COMMAND` and measure
 is refused outright:
 
@@ -280,7 +323,7 @@ experiment need a client that can choose between them without the user picking a
 network. `sae-mixed` is WPA2/WPA3 together, which is what a mixed household of
 clients needs.
 
-**6. Install boa.** From the signed feed, where `$DISTRIB_ARCH` picks
+**4c. Install boa.** From the signed feed, where `$DISTRIB_ARCH` picks
 `aarch64_cortex-a53`:
 
 ```sh
@@ -296,7 +339,7 @@ apk update && apk add luci-app-boa
 Or build and push in one step from a clone:
 `SDK_IMAGE=openwrt/sdk:mediatek-filogic-25.12.5 ./scripts/openwrt-package.sh root@<ip>`.
 
-**7. Point boa at the hardware**, in `/etc/config/boa` — note `wan` is `eth0`
+**4d. Point boa at the hardware**, in `/etc/config/boa` — note `wan` is `eth0`
 here, where the Pi uses `eth1`:
 
 ```
@@ -310,7 +353,7 @@ option state  '/etc/infinite-streaming-boa/policies.json'
 read-only, walks every prerequisite above and prints each as OK, WARN or FAIL
 with the command that fixes it. This unit: 0 failed.
 
-**8. Where the interface is.** boa serves its own page on port 8080, and
+**5. Where the interface is.** boa serves its own page on port 8080, and
 registers a LuCI entry:
 
 - **`http://<box>:8080`** — the appliance interface: the adapter rack, band
