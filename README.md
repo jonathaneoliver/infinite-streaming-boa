@@ -1382,11 +1382,36 @@ differently:
 | | |
 |---|---|
 | `br-wan` | The uplink. A NetworkManager/netplan bridge over the onboard NIC, holding the host's own address (`192.168.0.106`). Permanent. |
-| `br-client` | The wired client port, over a USB ethernet adapter. **Created by a libvirt hook** at domain start and deleted at release — it does not exist while the guest is down. |
+| `br-client` | The wired client ports, over every USB ethernet adapter. **Created by a libvirt hook** at domain start and deleted at release — it does not exist while the guest is down. |
 
-The hook lives at `/etc/libvirt/hooks/qemu` and logs what it does. If the USB
-adapter is absent it says so and starts the guest anyway, with no wired client
-port, rather than refusing to boot.
+The hook is in this repository, inside `scripts/vm-host-net.sh`, which installs
+it once per host. Install it with `scripts/target.sh vm setup` from the
+workstation, or with `sudo scripts/vm-host-net.sh install` on the host:
+
+- **The hook** goes to `/etc/libvirt/hooks/qemu.d/boa-br-client`, next to any
+  other hooks rather than replacing them, and logs to the journal as
+  `libvirt-hook-boa`. It **discovers** the ports: every network device on the
+  USB bus, radios excluded because they are passed through. It never uses a
+  list of names, because a list silently skips the adapter it doesn't mention.
+  If no adapter is present, it says so and starts the guest anyway, without a
+  wired client port, rather than refusing to boot.
+- **The host's own address on `br-client`**, `192.168.1.2/24`, is added by the
+  hook. It reaches OpenWrt at `192.168.1.1` both before and after the wizard
+  converts it to a bridge.
+- **IPv6 is turned off on `br-client`** before the bridge comes up. Once the
+  guest bridges it to the LAN, the host would take a SLAAC address there, mDNS
+  would publish it, and SSH from a Mac to the host would prefer it. Release
+  deletes the bridge, and every session using that address then hangs with no
+  error. While the address existed, IPv4 SSH to the host also stalled after key
+  exchange. Measured 2026-09-28.
+- **NetworkManager** is told to leave `enx*`, `wlx*` and `br-client` alone, in
+  its own `99-boa-vm-unmanaged.conf`. The file uses `+=`, so it adds to the
+  container's list in `99-boa-unmanaged.conf` instead of replacing it.
+- **`/etc/default/boa-vm`** holds the domain name and the host address, from
+  `BOA_VM_DOMAIN` and `BOA_VM_HOST_ADDR`.
+
+Installing restarts `libvirtd`, which only reads its hooks directory at startup.
+Running guests are unaffected.
 
 **Native, paravirtual, or passed through — three different things in one box:**
 
@@ -1433,6 +1458,7 @@ someone had tidied up.
 workstation. The host is `BOA_TARGET_HOST` in `.env`:
 
 ```sh
+scripts/target.sh vm setup            # once per host: the libvirt hook and NM config
 scripts/target.sh status              # which target holds the hardware
 scripts/target.sh vm reset            # out-of-box: vanilla disk, boot, install boa -> the wizard
 scripts/target.sh vm reset --no-install   # plain OpenWrt, no boa
@@ -1448,10 +1474,9 @@ and `down` does not return until every radio and adapter is back on the host.
 `vm reset` keeps the previous overlay as `….qcow2.prev`, and the install goes
 through the host with `openwrt-package.sh`, as `root@192.168.1.1`.
 
-`vm up` also takes the host's IPv6 off `br-client`. Once the guest bridges it to
-the LAN, the host would take a SLAAC address there, mDNS would publish it, and
-SSH from a Mac to the host would prefer it. `vm down` deletes the bridge, and
-every session using that address then hangs with no error. Measured 2026-09-28.
+`vm up` checks that the hook has done its job: the host's address is on
+`br-client` and IPv6 is off. If either is missing, it fails and names
+`vm setup`, rather than letting the next `vm down` hang its own SSH session.
 
 **What the module is**, from the vendor page and from the bus:
 

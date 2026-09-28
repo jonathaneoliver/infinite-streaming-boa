@@ -7,6 +7,7 @@
 #
 #   scripts/target.sh status
 #   scripts/target.sh container up|down
+#   scripts/target.sh vm setup        # once per host: the libvirt hook (vm-host-net.sh)
 #   scripts/target.sh vm up|down
 #   scripts/target.sh vm reset [--no-install]
 #   scripts/target.sh swap vm|container
@@ -51,9 +52,11 @@ if [ "${1:-}" = --on-host ]; then
 	# Vanilla OpenWrt puts its LAN on the first NIC, which is br-client, at
 	# 192.168.1.1. It is still there after the wizard converts the box to a
 	# bridge, as the rescue address. The host needs an address on that subnet
-	# to reach it.
+	# to reach it, which the libvirt hook adds from the settings read here.
 	VM_LAN=192.168.1.1
-	HOST_ON_VM_LAN=192.168.1.2/24
+	BOA_VM_HOST_ADDR=192.168.1.2/24
+	[ -r /etc/default/boa-vm ] && . /etc/default/boa-vm
+	HOST_ON_VM_LAN=$BOA_VM_HOST_ADDR
 
 	say() { printf '    %s\n' "$*"; }
 	fail() { printf '\033[31merror:\033[0m %s\n' "$*" >&2; exit 1; }
@@ -246,18 +249,14 @@ for h in ET.parse(sys.stdin).getroot().iter("hostdev"):
 	vm-up)
 		refuse_if_container
 		[ "$(vm_state)" = running ] || sudo -n virsh start "$DOMAIN" >/dev/null
-		# The hook rebuilds br-client on every start, so both of these go with
-		# it. They belong in the hook, and move there with #414.
-		#
-		# NO IPv6 ON br-client. Once the VM bridges it to the LAN, the host takes
-		# a SLAAC address there from the router's advertisements, mDNS publishes
-		# it, and a Mac then prefers it for SSH to the host. `vm down` deletes the
-		# bridge, and every SSH session using that address hangs with no error,
-		# this script's own included. While it held the address, IPv4 SSH to the
-		# host also stalled after key exchange. Measured 2026-09-28. The host's
-		# only business on this bridge is the IPv4 address below.
-		sudo -n sysctl -qw net.ipv6.conf.br-client.disable_ipv6=1
-		sudo -n ip addr replace "$HOST_ON_VM_LAN" dev br-client
+		# br-client is the hook's (scripts/vm-host-net.sh), and so are the two
+		# things checked here. Without them this script's own SSH hangs at the
+		# next `vm down`, when a Mac has been using the host's IPv6 address on
+		# the bridge that release deletes. Checked, not patched over: a fix
+		# applied here would hide a host whose hook is missing or stale.
+		[ "$(cat /proc/sys/net/ipv6/conf/br-client/disable_ipv6 2>/dev/null)" = 1 ] &&
+			ip -4 -o addr show dev br-client 2>/dev/null | grep -q " $HOST_ON_VM_LAN " ||
+			fail "br-client is missing its IPv4 address or still has IPv6, so the libvirt hook is absent or out of date; run 'scripts/target.sh vm setup'"
 		for _ in $(seq 180); do
 			curl -s -o /dev/null -m 2 "http://$VM_LAN/" 2>/dev/null && break
 			sleep 1
@@ -365,6 +364,14 @@ case "$target $action" in
 "container down")
 	log "container down on $HOST"
 	on_host container-down
+	;;
+"vm setup")
+	# Once per host, and again whenever the hook changes. It restarts libvirtd,
+	# which leaves running domains alone.
+	log "installing the VM's libvirt hook and NetworkManager config on $HOST"
+	ssh -o BatchMode=yes "$HOST" \
+		"sudo -n env BOA_VM_DOMAIN='$DOMAIN' BOA_VM_HOST_ADDR='${BOA_VM_HOST_ADDR:-192.168.1.2/24}' bash -s -- install" \
+		<"$REPO/scripts/vm-host-net.sh"
 	;;
 "vm up")
 	log "VM $DOMAIN up on $HOST"
