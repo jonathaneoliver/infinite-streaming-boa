@@ -5,6 +5,7 @@
 #
 #   ./scripts/openwrt-package.sh              -> dist/openwrt/*.apk
 #   ./scripts/openwrt-package.sh root@<host>  -> and install them there
+#   SSH_OPTS="-o ProxyJump=<jump>" ./scripts/openwrt-package.sh root@<host>
 #
 # Another target is another SDK; the package architecture is read from it:
 #
@@ -104,6 +105,12 @@ log "Built $OUT/:"; ls -1 "$OUT" | sed 's/^/    /'
 [ -n "$TARGET" ] || exit 0
 
 log "Installing on $TARGET"
+# SSH_OPTS reaches a device that is only reachable through another host, such
+# as the OpenWrt VM behind its host's br-client (scripts/target.sh). Word-split
+# on purpose: it is a list of options.
+SSH_OPTS="${SSH_OPTS:-}"
+# shellcheck disable=SC2086
+ssh() { command ssh $SSH_OPTS "$@"; }
 ssh -o BatchMode=yes "$TARGET" 'test -f /etc/openwrt_release' || die "cannot reach $TARGET, or it is not OpenWrt"
 # Trusted by name: apk reads every key in /etc/apk/keys, and this one signs
 # nothing but boa's index.
