@@ -101,6 +101,105 @@ Run against a copy of its config edited back to a router's -- `lan` static,
 `boa.main.wan` on the wrong port, no scan radio -- it reported all nine, as
 5 failures and 4 warnings, each with its fix.
 
+## Set a device up from a browser: the first-run wizard
+
+A device fresh from a flash is not yet a boa box: it has **no root password**,
+and every `wifi-iface` ships `option disabled '1'`. It cannot be set up over the
+air, because there is no access point to join.
+
+So **the device's own address shows the setup page** until it has been set up,
+and goes back to LuCI afterwards. The same page stays at **Services → boa
+setup** for changing any of it later. `PRD.md` §6.8 is the behaviour this
+implements.
+
+> Captured on target 5 — the x86-64 OpenWrt guest with an MT7915E passed
+> through — on 2026-09-28, from a vanilla image with the packages installed and
+> nothing else done to it.
+
+![The setup page on a device that has not been set up: a card saying it is
+running with factory settings and no root password, listing the two things it
+needs, above a button reading Open the setup page](../docs/images/wizard-1-landing.png)
+
+**Use a wired port.** Applying takes every radio down and back up, so a browser
+on Wi-Fi would cut itself off part-way through. The page says so, and on a fresh
+device there is no radio to be on anyway.
+
+There is no login. A device with no root password is open to anyone who can
+reach it — which is what the card says and what the last step fixes — so asking
+an operator to type nothing into a password box, under an "Authorization
+Required" heading, to reach the page that *sets* the password, would be a wrong
+turn that reads like a fault. It stops working the moment a password exists.
+
+### What it does before it asks anything
+
+![The Drivers step: the drivers are installed and the radios need a reboot to
+appear, above a log showing the kmod packages installed and a MediaTek MT7915E
+found at pci 0000:00:09.0 without a driver](../docs/images/wizard-2-drivers.png)
+
+**Anything missing is installed, not printed.** Radio drivers, `wpad` with the
+authentication `steer` and `measure` need, and mDNS. A command for an operator
+to retype is a step that can be skipped, mistyped, or run against the wrong
+device.
+
+A module is loaded before its firmware is unpacked and the probe is never
+retried, so a radio stays invisible until the device restarts. That is normal
+and happens once — and it is why this step exists at all rather than the wizard
+simply finding no radios.
+
+![The reboot control: Rebooting in 11 seconds, with Cancel and Reboot now, and a
+note that the device goes down for about half a minute and the page waits for it
+and comes back by itself](../docs/images/wizard-3-reboot.png)
+
+**Setup survives the reboot.** The page waits, comes back, and returns to the
+step it left rather than to the beginning.
+
+### The four questions
+
+![The Settings step, filled in: network name ubuntu1263, a masked passphrase
+twice, country US, a masked root password twice, and a ticked checkbox for Make
+this a transparent bridge](../docs/images/wizard-4-settings.png)
+
+The SSID is **suggested** from the board name and the last two octets of the LAN
+MAC — a MAC is in every beacon, so a name built from one reveals nothing.
+
+The country is optional but asked rather than guessed: it unlocks DFS channels,
+2.4 GHz ch 12/13 and 3–6 dB of power, and a wrong country is a regulatory
+answer.
+
+The root password is the step that closes the open door the landing page warned
+about, which is why it is part of setup rather than something to remember
+afterwards.
+
+**The bridge is ticked by default**, because becoming a transparent bridge is
+what makes the device a boa box rather than an access point. Untick it to do it
+later with `boa-setup convert`.
+
+### Applying, and where the device went
+
+![The Applying step, showing a log: a radio set to 6 GHz moved to 5g because its
+driver will not run an access point there, the box answering to
+openwrt-ubuntu1263.local, three access points configured, and channels planned
+for three radios](../docs/images/wizard-5-applying.png)
+
+Two things in that log are worth knowing about. A radio on **6 GHz is moved to
+5 GHz**, because the drivers here will not run an access point on it. And
+channels are **planned across the radios that serve**, so two 5 GHz radios do
+not end up sharing one.
+
+![The Done step with all four steps ticked: ubuntu1263 is serving on 3 access
+points, the root password is set and the next login will ask for it including
+SSH, and the device is now a transparent bridge whose address came from the
+upstream router, with buttons Go to boa, Go to OpenWrt and Stay here](../docs/images/wizard-6-done.png)
+
+**It ends by naming where the device now is.** Applying changes the address — a
+bridged box takes a lease from the upstream network — so the last thing setup
+does is say so, and offer the new address rather than leaving an operator to
+find a box that has moved. The old address stays on the bridge as a rescue
+address.
+
+The countdown is a convenience, not a trap: **Stay here** cancels it, and
+**Change these settings** goes back to the questions.
+
 ## Set a device up without touching it: `boa-firstrun.conf`
 
 A box that nobody sets up waits **two minutes from boot** for somebody to open
