@@ -96,7 +96,8 @@ log "shipping the build context to $HOST:$REMOTE_DIR"
 ssh "$HOST" "sudo install -d -o \$(id -u) -g \$(id -g) $REMOTE_DIR"
 # The context is small and specific: the Dockerfile needs docker/ for its own
 # pieces and overlay/ for radioplan, and nothing else.
-tar -C "$REPO" -czf - docker overlay scripts/docker-attach.sh scripts/docker-host-net.sh \
+tar -C "$REPO" -czf - docker overlay \
+  scripts/docker-attach.sh scripts/docker-detach.sh scripts/docker-host-net.sh \
   | ssh "$HOST" "tar -C $REMOTE_DIR -xzf -"
 
 # --- host-side plumbing ------------------------------------------------------
@@ -173,4 +174,7 @@ sleep 5
 log "container log:"
 ssh "$HOST" "docker logs --tail 40 boa 2>&1" || true
 
-log "done. Interface: http://$HOST:8080/"
+# 18080, matching UI_PORT in docker-attach.sh, which is what the DNAT is
+# actually installed on. This said 8080 and sent the operator to a port nothing
+# listens on -- or worse, on a shared host, to whatever else had taken it (#329).
+log "done. Interface: http://$HOST:${UI_PORT:-18080}/"
