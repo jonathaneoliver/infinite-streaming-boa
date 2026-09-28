@@ -328,6 +328,33 @@ registers a LuCI entry:
 > here — so treat those four lines as untested on this device, unlike everything
 > above them.
 
+### Back to out-of-box, from a workstation
+
+```sh
+scripts/target.sh cudy status
+scripts/target.sh cudy reset              # factory reset, then install boa -> the wizard
+scripts/target.sh cudy reset --no-install # plain OpenWrt
+```
+
+`cudy reset` is the Cudy's counterpart to `target.sh vm reset`. It refuses
+unless the board reads `cudy,tr3000-v1`, saves the configuration with
+`sysupgrade -b` into `cache/cudy-backups/`, and runs `firstboot`. That wipes
+boa as well, because apk installs into the overlay. It then waits for the box at
+`192.168.1.1` and installs boa with the filogic SDK. To put the old
+configuration back, copy the backup to the box and run `sysupgrade -r <file>`.
+
+After the reset the box is a router again, reachable only from its LAN port. So
+`BOA_CUDY_IF` in `.env` names the workstation's interface on that port, and
+every connection after the reset is pinned to it. `192.168.1.1` is also the
+OpenWrt VM's address while it is out-of-box. `BOA_CUDY_HOST` is where the box
+answers before the reset. That can be its IPv6 link-local on the same interface
+(`fe80::…%en12`), which survives DHCP handing it a new IPv4 address. The
+workstation's key must be in `/etc/dropbear/authorized_keys`.
+
+> **Untested on the device.** This was written and merged before it could be
+> run: the Cudy refused the workstation's key. Run `cudy status` first, and
+> expect to fix something on the first `cudy reset`.
+
 ## What AP-class silicon changes
 
 Every radio the appliance had before was a client chip serving an access point.

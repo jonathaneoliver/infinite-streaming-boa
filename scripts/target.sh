@@ -11,6 +11,8 @@
 #   scripts/target.sh vm up|down
 #   scripts/target.sh vm reset [--no-install]
 #   scripts/target.sh swap vm|container
+#   scripts/target.sh cudy status
+#   scripts/target.sh cudy reset [--no-install]
 #
 # The host comes from BOA_TARGET_HOST in .env. The VM settings are
 # BOA_VM_DOMAIN, BOA_VM_BASE_IMAGE and BOA_VM_SDK_IMAGE; see .env.example.
@@ -328,7 +330,9 @@ fi
 [ -f "$ENV_FILE" ] && { set -a; . "$ENV_FILE"; set +a; }
 
 HOST=${BOA_TARGET_HOST:-}
-[ -n "$HOST" ] || die "set BOA_TARGET_HOST in $ENV_FILE to the host that runs the container and the VM"
+need_host() {
+	[ -n "$HOST" ] || die "set BOA_TARGET_HOST in $ENV_FILE to the host that runs the container and the VM"
+}
 DOMAIN=${BOA_VM_DOMAIN:-openwrt-x86}
 BASE=${BOA_VM_BASE_IMAGE:-/var/lib/libvirt/images/openwrt-25.12.5-x86-64-VANILLA.qcow2}
 SDK=${BOA_VM_SDK_IMAGE:-openwrt/sdk:x86-64-25.12.5}
@@ -337,6 +341,7 @@ COMPOSE_DIR=/opt/infinite-streaming-boa/docker
 # Keepalives, because this script restarts the network it runs over. Without
 # them, a connection whose path disappears waits forever instead of failing.
 on_host() {
+	need_host
 	ssh -o BatchMode=yes -o ConnectTimeout=10 \
 		-o ServerAliveInterval=5 -o ServerAliveCountMax=6 "$HOST" \
 		bash -s -- --on-host "$DOMAIN" "$BASE" "$COMPOSE_DIR" "$@" <"$0"
@@ -348,6 +353,89 @@ vm_install() {
 	SDK_IMAGE=$SDK \
 		SSH_OPTS="-o ProxyJump=$HOST -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR" \
 		"$REPO/scripts/openwrt-package.sh" root@192.168.1.1
+}
+
+# --- the Cudy TR3000 (target 3 in openwrt/CUDY-TR3000.md) -------------------
+#
+# A physical box that owns its own radios, so it has no up, down or handover.
+# What it needs is the same out-of-box reset as the VM: `firstboot` wipes the
+# overlay, which takes boa's packages with it because apk installs there, and
+# leaves the OpenWrt image that was flashed. It then boots as a ROUTER at
+# 192.168.1.1 on its LAN port, so it is reachable only from whatever is cabled
+# to that port. That is BOA_CUDY_IF, the workstation's interface on it.
+#
+# EVERYTHING AFTER THE RESET IS PINNED TO BOA_CUDY_IF. 192.168.1.1 is also the
+# VM's address while it is out-of-box, and the workstation may be cabled to both,
+# so an unpinned connection may go to the wrong box.
+CUDY=${BOA_CUDY_HOST:-192.168.0.23}
+CUDY_IF=${BOA_CUDY_IF:-}
+CUDY_BOARD=${BOA_CUDY_BOARD:-cudy,tr3000-v1}
+CUDY_SDK=${BOA_CUDY_SDK_IMAGE:-openwrt/sdk:mediatek-filogic-25.12.5}
+# firstboot regenerates the host key, so no known_hosts entry can be right.
+CUDY_SSH_OPTS="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o ConnectTimeout=8 -o ServerAliveInterval=5 -o ServerAliveCountMax=6"
+
+cudy_ssh() {
+	# shellcheck disable=SC2086
+	ssh -o BatchMode=yes $CUDY_SSH_OPTS "root@$CUDY" "$@"
+}
+cudy_rescue_ssh() {
+	# shellcheck disable=SC2086
+	ssh -o BatchMode=yes $CUDY_SSH_OPTS -o BindInterface="$CUDY_IF" root@192.168.1.1 "$@"
+}
+need_cudy_if() {
+	[ -n "$CUDY_IF" ] ||
+		die "set BOA_CUDY_IF in $ENV_FILE to this machine's interface on the Cudy's LAN port (e.g. en12)"
+	ifconfig "$CUDY_IF" >/dev/null 2>&1 || die "no interface $CUDY_IF on this machine"
+}
+cudy_describe() {
+	"$@" 'printf "board:   %s\n" "$(cat /tmp/sysinfo/board_name)"
+		printf "openwrt: %s\n" "$(cat /etc/openwrt_version)"
+		printf "lan:     %s (%s)\n" "$(uci -q get network.lan.proto)" "$(ip -4 -o addr show br-lan | awk "{print \$4}" | tr "\n" " ")"
+		printf "boa:     %s\n" "$(apk list -I 2>/dev/null | sed -n "s/^boa-\([0-9][^ ]*\).*/\1/p")"
+		printf "stage:   %s\n" "$(cat /etc/infinite-streaming-boa/setup-stage 2>/dev/null || echo none)"' |
+		sed 's/^/    /'
+}
+
+cudy_reset() {
+	local install=$1 board backup stamp
+	need_cudy_if
+	# NEVER FIRSTBOOT THE WRONG BOX. The board name is read from the device, not
+	# assumed from an address that DHCP may since have handed to something else.
+	board=$(cudy_ssh 'cat /tmp/sysinfo/board_name' 2>/dev/null) ||
+		die "cannot reach root@$CUDY. Set BOA_CUDY_HOST to its current address; it needs this machine's key in /etc/dropbear/authorized_keys"
+	[ "$board" = "$CUDY_BOARD" ] || die "root@$CUDY is '$board', not $CUDY_BOARD; refusing to reset it"
+
+	# The reset wipes the bridge conversion, the SSIDs and the channel plan.
+	# Keep them, so `sysupgrade -r` can put the box back as it was.
+	stamp=$(date +%Y%m%d-%H%M%S)
+	backup="$REPO/cache/cudy-backups/cudy-$stamp.tar.gz"
+	mkdir -p "$(dirname "$backup")"
+	log "saving the Cudy's configuration to ${backup#"$REPO"/}"
+	cudy_ssh 'sysupgrade -b /tmp/boa-reset-backup.tar.gz >/dev/null && cat /tmp/boa-reset-backup.tar.gz' >"$backup"
+	gzip -t "$backup" 2>/dev/null && [ -s "$backup" ] || die "the backup is empty or corrupt; not resetting"
+	log "  $(tar -tzf "$backup" | wc -l | tr -d ' ') files. Restore: copy it to the box and run 'sysupgrade -r <file>'"
+
+	log "factory reset: firstboot, then reboot"
+	cudy_ssh 'firstboot -y >/dev/null 2>&1 && (sleep 1; reboot) >/dev/null 2>&1 &' || true
+
+	# The box drops the link as it reboots, and this machine takes a lease from
+	# its DHCP server when the link returns, which puts it on 192.168.1.0/24.
+	log "waiting for the Cudy at 192.168.1.1 on $CUDY_IF (up to 5 minutes)"
+	sleep 20
+	for _ in $(seq 140); do
+		curl -s -o /dev/null -m 2 --interface "$CUDY_IF" http://192.168.1.1/ && break
+		sleep 2
+	done
+	curl -s -o /dev/null -m 2 --interface "$CUDY_IF" http://192.168.1.1/ ||
+		die "no answer from 192.168.1.1 on $CUDY_IF. $CUDY_IF has: $(ipconfig getifaddr "$CUDY_IF" || echo 'no IPv4 address'); if it kept an old lease, 'sudo ipconfig set $CUDY_IF DHCP'"
+	log "the Cudy is back, out-of-box"
+	cudy_describe cudy_rescue_ssh
+
+	[ "$install" = 1 ] || return 0
+	log "installing boa on the Cudy"
+	SDK_IMAGE=$CUDY_SDK SSH_OPTS="$CUDY_SSH_OPTS -o BindInterface=$CUDY_IF" \
+		"$REPO/scripts/openwrt-package.sh" root@192.168.1.1
+	log "done. The wizard is at http://192.168.1.1/ on $CUDY_IF"
 }
 
 target=${1:-}
@@ -368,6 +456,7 @@ case "$target $action" in
 "vm setup")
 	# Once per host, and again whenever the hook changes. It restarts libvirtd,
 	# which leaves running domains alone.
+	need_host
 	log "installing the VM's libvirt hook and NetworkManager config on $HOST"
 	ssh -o BatchMode=yes "$HOST" \
 		"sudo -n env BOA_VM_DOMAIN='$DOMAIN' BOA_VM_HOST_ADDR='${BOA_VM_HOST_ADDR:-192.168.1.2/24}' bash -s -- install" \
@@ -399,6 +488,19 @@ case "$target $action" in
 	log "handing the hardware from the VM to the container"
 	on_host vm-down
 	on_host container-up
+	;;
+"cudy status")
+	log "Cudy at $CUDY"
+	if ! cudy_describe cudy_ssh; then
+		log "no answer at $CUDY; trying 192.168.1.1 on ${CUDY_IF:-<BOA_CUDY_IF unset>}"
+		need_cudy_if
+		cudy_describe cudy_rescue_ssh || die "the Cudy answers at neither address"
+	fi
+	;;
+"cudy reset")
+	install=1
+	[ "${3:-}" = --no-install ] && install=0
+	cudy_reset "$install"
 	;;
 *) usage ;;
 esac
