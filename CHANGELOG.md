@@ -15,6 +15,11 @@ deliberate and documented so they are not mistaken for defects — see
 
 ### Added
 
+- **`scripts/target.sh cudy reset` puts the Cudy TR3000 back to out-of-box**:
+  a configuration backup, `firstboot`, then boa reinstalled, which lands on the
+  wizard. `cudy status` reports what the box is running. It checks the board
+  name before resetting, and pins every connection after the reset to the
+  workstation's interface on the Cudy's LAN port. Not yet run on the device.
 - **The OpenWrt VM's libvirt hook is in the repository**, in
   `scripts/vm-host-net.sh`. Before this, target 5 couldn't be rebuilt from the
   repo, because the hook that builds `br-client` (the VM's whole wired client
