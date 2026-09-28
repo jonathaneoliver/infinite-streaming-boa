@@ -1559,6 +1559,34 @@ cmd_apply() {
 
 	cmd_landing done >/dev/null 2>&1
 
+	# THE NAME, BEFORE THE THING THAT MAKES IT NEEDED.
+	#
+	# boa_url runs after convert and is the better answer, because by then the
+	# lease has arrived and it can print the real address. But convert is
+	# exactly what makes the page asking for it unreachable: on a box reached
+	# over its own LAN port, restarting the network bounces the operator's
+	# cable, their machine renews DHCP onto the upstream subnet, and the page
+	# loses the address it was polling in the middle of the apply. It never
+	# sees the end of the log, so it never sees the URL that would have saved
+	# it. Measured on the Cudy twice, 2026-09-28; the x86-64 guest never
+	# reproduces it, because a host-side bridge absorbs the restart and the
+	# laptop's link never flaps.
+	#
+	# So the name goes out FIRST, while the page can still read it. It is the
+	# one address that survives the move, and the page starts watching for it
+	# from here. See #420.
+	if [ "$doconv" = 1 ] || [ "$doconv" = y ] || [ "$doconv" = yes ] || [ "$doconv" = true ]; then
+		if apk info 2>/dev/null | grep -qx umdns; then
+			_n="$(uci -q get system.@system[0].hostname)"
+			_p="$(uci -q get boa.main.addr)"; _p="${_p##*:}"; [ -n "$_p" ] || _p=8080
+			if [ -n "$_n" ]; then
+				printf '__BOA_URL http://%s.local:%s/\n' "$_n" "$_p"
+				echo "This device will answer to http://$_n.local:$_p/ once the network settles."
+				say "apply: announced $_n.local before convert"
+			fi
+		fi
+	fi
+
 	case "$doconv" in
 		1|y|yes|true)
 			echo
