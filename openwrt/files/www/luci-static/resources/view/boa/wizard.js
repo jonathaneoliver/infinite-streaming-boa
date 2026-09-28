@@ -248,6 +248,23 @@ function followDevice(url) {
 	}, 2000);
 }
 
+// DISARM IT THE MOMENT THE PAGE STILL HAS THE DEVICE.
+//
+// Without this, a run that SUCCEEDS is hijacked: followLog stops reading once
+// the sentinel lands, lastLogRead freezes, the 10s guard passes, the probe
+// answers -- and the page navigates away from the Done panel it just rendered,
+// overriding "Stay here" and "Change these settings" and the countdown alike.
+// The target where this fix was written never shows it, because there the page
+// loses the device and follows it before the log ever ends; the targets where
+// the page survives are the ones it would break.
+function stopFollowing(why) {
+	if (!followTimer)
+		return;
+	window.clearInterval(followTimer);
+	followTimer = null;
+	trace('follow: disarmed --', why);
+}
+
 function row(label, control, help) {
 	return E('div', { 'class': 'cbi-value' }, [
 		E('label', { 'class': 'cbi-value-title' }, [ label ]),
@@ -1006,6 +1023,13 @@ return view.extend({
 					trace('apply: started, following the log');
 					followLog(null, function(rc, text) {
 						trace('apply: finished rc =', rc);
+						// rc >= 0 means this page read the run to its end, so it
+						// still has the device and the panel's own buttons are
+						// in charge. rc == -2 is the opposite -- the box went
+						// away and never came back on this address -- so the
+						// follow stays armed, because it is the only way back.
+						if (rc >= 0)
+							stopFollowing('apply completed on this address');
 						var served = /Serving: ([1-9][0-9]*) access point/.exec(text || '');
 						var m = /__BOA_URL (\S+)/.exec(text || '');
 						if (m) {
