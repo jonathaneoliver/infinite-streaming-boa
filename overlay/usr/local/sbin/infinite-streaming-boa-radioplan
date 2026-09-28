@@ -72,6 +72,67 @@ phy_channels() {   # $1=phy  $2=band (24|5)
     }'
 }
 
+# --- what the radio will ADMIT it can receive --------------------------------
+#
+# hostapd does not advertise the hardware's VHT capabilities; it advertises the
+# hardware's capabilities MASKED BY vht_capab. With no vht_capab line the mask
+# is empty, so the beacon claims a Maximum A-MPDU Length Exponent of 0 -- "do
+# not send me more than 8KB at a time" -- from a card whose own capability word
+# says 7, a megabyte.
+#
+# That costs a factor of 3.6 on UPLINK and nothing on downlink, because uplink
+# aggregation is chosen from what the AP says IT can receive while downlink is
+# chosen from what the client advertises. MEASURED 2026-09-27, container target,
+# MT7915E on channel 149 at 80MHz, one client, PHY 1200.9 Mbit/s both ways:
+# 233 Mbit/s up without the line, 832 with it, downlink 801 -> 845. Bisected to
+# [MAX-A-MPDU-LEN-EXP7] alone -- removing only that token put it back to 233.
+# Nothing else was wrong: top HE-MCS, a Block Ack session up, zero
+# retransmits, air 59% idle and every core above 90%.
+#
+# DERIVED, never hardcoded, for two reasons. hostapd REFUSES TO START on a
+# token the driver does not support, so a fixed list takes the access point down
+# on the next adapter: this card's maximum MPDU is 7991 and [MAX-MPDU-11454]
+# is rejected outright. And the capability word is the only place some of this
+# is written down -- `iw` prints no A-MPDU exponent at all, so the bits are
+# decoded from the hex rather than parsed out of its prose.
+#
+# Beamforming is deliberately absent. It is not what was measured, and the
+# beamformer tokens interact with sounding-dimension settings whose failure mode
+# is a radio that does not come up at all.
+phy_vht_capab() {   # $1=phy -> echoes a vht_capab= line, or nothing
+  _w=$(iw phy "$1" info 2>/dev/null |
+         sed -n 's/.*VHT Capabilities (\(0x[0-9a-fA-F]*\)).*/\1/p' | head -1)
+  # A 2.4GHz-only radio has no VHT capability word, and must get no line.
+  [ -n "$_w" ] || return 0
+
+  _c=""
+  case $(( _w & 3 )) in                      # b0-1  maximum MPDU length
+    1) _c="$_c[MAX-MPDU-7991]" ;;
+    2) _c="$_c[MAX-MPDU-11454]" ;;
+  esac
+  case $(( (_w >> 2) & 3 )) in               # b2-3  supported channel width
+    1) _c="$_c[VHT160]" ;;
+    2) _c="$_c[VHT160-80PLUS80]" ;;
+  esac
+  [ $(( (_w >> 4) & 1 )) = 1 ] && _c="$_c[RXLDPC]"
+  [ $(( (_w >> 5) & 1 )) = 1 ] && _c="$_c[SHORT-GI-80]"
+  [ $(( (_w >> 6) & 1 )) = 1 ] && _c="$_c[SHORT-GI-160]"
+  [ $(( (_w >> 7) & 1 )) = 1 ] && _c="$_c[TX-STBC-2BY1]"
+  case $(( (_w >> 8) & 7 )) in               # b8-10 receive STBC streams
+    1) _c="$_c[RX-STBC-1]" ;;
+    2) _c="$_c[RX-STBC-12]" ;;
+    3) _c="$_c[RX-STBC-123]" ;;
+    4|5|6|7) _c="$_c[RX-STBC-1234]" ;;
+  esac
+  # b23-25, the whole point of this function.
+  _e=$(( (_w >> 23) & 7 ))
+  [ "$_e" -gt 0 ] && _c="$_c[MAX-A-MPDU-LEN-EXP$_e]"
+  [ $(( (_w >> 28) & 1 )) = 1 ] && _c="$_c[RX-ANTENNA-PATTERN]"
+  [ $(( (_w >> 29) & 1 )) = 1 ] && _c="$_c[TX-ANTENNA-PATTERN]"
+
+  [ -n "$_c" ] && printf 'vht_capab=%s\n' "$_c"
+}
+
 # --- the plan ----------------------------------------------------------------
 #
 # 5GHz first and in this order: 36 and 149 are the two non-overlapping non-DFS
@@ -101,12 +162,17 @@ pick_channel() {   # $1=phy -> echoes "channel band" or nothing
 }
 
 # --- render one config -------------------------------------------------------
-write_conf() {   # $1=iface  $2=channel  $3=hw_mode(a|g)
-  _if="$1"; _ch="$2"; _hw="$3"
+write_conf() {   # $1=iface  $2=channel  $3=hw_mode(a|g)  $4=phy
+  _if="$1"; _ch="$2"; _hw="$3"; _phy="$4"
   # 80MHz on 5GHz, 20MHz on 2.4. The centre index is the block's middle
   # channel: 42 covers 36-48, 155 covers 149-161.
+  #
+  # The capability line is asked of the phy and NOT of the channel plan: it says
+  # what the radio can receive, which does not change when the block does.
   _vht=""
+  _vhtcap=""
   if [ "$_hw" = a ]; then
+    _vhtcap=$(phy_vht_capab "$_phy")
     case "$_ch" in
       36|40|44|48)     _seg=42 ;;
       149|153|157|161) _seg=155 ;;
@@ -141,6 +207,7 @@ ieee80211n=1
 ieee80211ac=1
 ieee80211ax=1
 $_vht
+$_vhtcap
 # Advertise 802.11v BSS Transition Management, or a steer request is sent to a
 # client that was never told the AP supports one (#192).
 bss_transition=1
@@ -265,7 +332,7 @@ for link in /sys/class/net/*/phy80211; do
   ch=${plan% *}; hw=${plan#* }
   taken="$taken $ch"
 
-  write_conf "$iface" "$ch" "$hw"
+  write_conf "$iface" "$ch" "$hw" "$phy"
   forget_remembered_channel "$iface" "$ch"
   WANT="$WANT $iface"
   log "$iface ($phy): channel $ch, ${hw}"
