@@ -15,6 +15,14 @@ deliberate and documented so they are not mistaken for defects — see
 
 ### Added
 
+- **`scripts/target.sh` brings the container and the OpenWrt VM up, down and
+  back to out-of-box**, and hands the hardware between them. Both targets share
+  the same radios and USB ethernet, so `up` refuses while the other one runs,
+  and `down` waits until everything is back on the host. `vm reset` recreates
+  the VM's overlay on the vanilla image and installs boa, which lands on the
+  first-run wizard. Each of these was a sequence retyped over SSH before every
+  wizard run.
+
 - **Wireless radios on the PCI bus are handed to the container**, not just USB
   ones. An AP-class card could previously only go over as `SCAN_IF`, which makes
   it listen-only, so it could be installed, seen, and still not serve. Adapter

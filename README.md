@@ -1429,6 +1429,30 @@ That is what makes the first-run testing in this repository honest — every
 out-of-box claim here was measured from that fixed point, not from a box
 someone had tidied up.
 
+**`scripts/target.sh` drives it**, and the container on the same host, from the
+workstation. The host is `BOA_TARGET_HOST` in `.env`:
+
+```sh
+scripts/target.sh status              # which target holds the hardware
+scripts/target.sh vm reset            # out-of-box: vanilla disk, boot, install boa -> the wizard
+scripts/target.sh vm reset --no-install   # plain OpenWrt, no boa
+scripts/target.sh swap vm             # container down, hardware home, VM up
+scripts/target.sh swap container      # and back
+scripts/target.sh vm up|down, container up|down
+```
+
+The container and the VM want the same radios and the same USB ethernet, and
+starting one while the other holds them does not fail. It starts, and the loser
+fails later like a driver fault. So `up` refuses while the other target runs,
+and `down` does not return until every radio and adapter is back on the host.
+`vm reset` keeps the previous overlay as `….qcow2.prev`, and the install goes
+through the host with `openwrt-package.sh`, as `root@192.168.1.1`.
+
+`vm up` also takes the host's IPv6 off `br-client`. Once the guest bridges it to
+the LAN, the host would take a SLAAC address there, mDNS would publish it, and
+SSH from a Mac to the host would prefer it. `vm down` deletes the bridge, and
+every session using that address then hangs with no error. Measured 2026-09-28.
+
 **What the module is**, from the vendor page and from the bus:
 
 | | |
