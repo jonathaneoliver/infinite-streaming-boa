@@ -13,7 +13,31 @@ deliberate and documented so they are not mistaken for defects — see
 
 ## [Unreleased]
 
+### Added
+
+- **Wireless radios on the PCI bus are handed to the container**, not just USB
+  ones. An AP-class card could previously only go over as `SCAN_IF`, which makes
+  it listen-only, so it could be installed, seen, and still not serve. Adapter
+  discovery deliberately keeps the host's own PCIe NICs out of the container, and
+  that rule was right for ethernet and wrong for the one PCIe device class that
+  must be handed over: a radio in a slot.
+
+  It matters because every USB adapter this script was written for is client
+  silicon with AP mode bolted on; the MT7915E is a genuine access-point chip and
+  it arrives on PCIe. PCI radios are enumerated before the USB ones, since a card
+  in a slot is the serving radio on such a host and the dongles are spares.
+
 ### Fixed
+
+- **`scripts/docker-detach.sh` was never shipped to the target**, so the undo step
+  the README documents was absent on every deployed host. The deploy tar named the
+  attach half of the pair and not the detach half.
+
+- **The deploy's closing line pointed at port 8080**, where nothing listens. The
+  DNAT is installed on **18080** — the container publishes no Docker ports at all,
+  because `network_mode: none` leaves Docker no interface to bind. On a shared host
+  the old message pointed at whatever else had taken 8080, which is the collision
+  the port was moved away from in the first place.
 
 - **Every 5 GHz access point advertised a Maximum A-MPDU Length Exponent of 0**,
   asking clients for 8 KB aggregates from cards whose own capability word says
