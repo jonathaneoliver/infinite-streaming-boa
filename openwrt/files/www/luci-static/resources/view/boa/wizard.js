@@ -228,44 +228,63 @@ var followTimer = null;
 function followDevice(url) {
 	if (followTimer || !url)
 		return;
-	trace('follow: armed for', url);
-	// PROBE FROM NOW, NOT FROM WHEN THE DEVICE IS LOST.
+	var u;
+	try { u = new URL(url); } catch (e) { return; }
+
+	// TWO QUESTIONS, TWO PORTS, AND THEY ARE NOT THE SAME QUESTION.
 	//
-	// The name is settled before the bridge is touched -- apply_wizard sets the
-	// hostname and restarts umdns, tens of seconds before convert -- so the
-	// escape route can be TESTED while the old address still works. Waiting
-	// until the device has gone means finding out whether the way back exists
-	// at the one moment nothing can be done about it.
+	//   nameUrl   the device's web server, which is serving before the convert
+	//             and after it. Answers "does this browser resolve and reach
+	//             the name at all" -- the thing that can actually fail.
+	//   url       boa, which does NOT answer until the box is bridged. Its own
+	//             post-install says so: "not started -- this device still
+	//             routes rather than bridging". Answers "has the move
+	//             finished", and nothing else.
 	//
-	// Two things fall out of probing early. The browser resolves the name and
-	// warms its cache while mDNS is definitely working; and if it never answers
-	// -- no mDNS on this client, a network that blocks multicast -- that is
-	// known BEFORE the address changes, while the operator can still read the
-	// log and write the address down.
-	var reached = false, probes = 0;
+	// The first version probed boa for both. MEASURED on the x86-64 guest
+	// 2026-09-28: armed at +3s, "does not answer from this browser" at +13s --
+	// on a run that then succeeded. The warning fired because the service was
+	// not up yet, not because the way back was missing, and it would have fired
+	// on every run ever. A warning that is always wrong is worse than none: it
+	// teaches an operator to ignore the one case it exists for, which is a
+	// browser with no working mDNS.
+	var nameUrl = u.protocol + '//' + u.hostname + '/';
+	trace('follow: armed for', url, '(reachability via', nameUrl + ')');
+
+	var resolved = false, probes = 0;
+	function probe(target) {
+		return window.fetch(target, { mode: 'no-cors', cache: 'no-store' });
+	}
+
 	followTimer = window.setInterval(function() {
 		probes++;
-		// no-cors: the response cannot be read and does not need to be.
-		// Resolving at all means something answered on that host.
-		window.fetch(url, { mode: 'no-cors', cache: 'no-store' })
+
+		// Is the way back there at all? Asked from the start, while the old
+		// address still works and the answer is still actionable.
+		probe(nameUrl)
 			.then(function() {
-				if (!reached)
-					trace('follow: the name answers, the way back is open');
-				reached = true;
-				// Only MOVE once this page has actually lost the device. While
-				// the log is still readable the old address works, and moving
-				// would take the log away from an operator reading it.
-				if (Date.now() - lastLogRead < 10000)
-					return;
+				if (!resolved)
+					trace('follow: the name resolves, the way back is open');
+				resolved = true;
+			})
+			.catch(function() {
+				// Once, ~10s in, and only while the log is still live.
+				if (!resolved && probes === 5 && Date.now() - lastLogRead < 10000)
+					trace('follow: WARNING - this browser cannot reach', u.hostname,
+					      '-- note the address in the log before applying');
+			});
+
+		// Has the device finished moving? Only worth asking once this page has
+		// lost it: while the log is readable the old address works, and moving
+		// would take the log away from an operator reading it.
+		if (Date.now() - lastLogRead < 10000)
+			return;
+		probe(url)
+			.then(function() {
 				stopFollowing('followed the device');
 				window.location = url;
 			})
-			.catch(function() {
-				// Said once, ~10s in, and only while the log is still live --
-				// which is exactly when it is still actionable.
-				if (!reached && probes === 5 && Date.now() - lastLogRead < 10000)
-					trace('follow: WARNING -', url, 'does not answer from this browser');
-			});
+			.catch(function() {});
 	}, 2000);
 }
 
