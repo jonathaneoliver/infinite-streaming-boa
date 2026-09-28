@@ -1279,7 +1279,10 @@ Then open LuCI → **Services → infinite-streaming-boa**, or
 `http://<device>:8080/`.
 
 See [`openwrt/README.md`](openwrt/README.md) for preparing the device, the
-packages, configuration, and every control as measured.
+packages, configuration, and every control as measured. A device fresh from a
+flash shows a **setup page at its own address** until it has been set up —
+[walked through screen by screen](openwrt/README.md#set-a-device-up-from-a-browser-the-first-run-wizard),
+with the unattended equivalent beside it.
 
 ### 4. A Cudy TR3000, as a whole box
 
