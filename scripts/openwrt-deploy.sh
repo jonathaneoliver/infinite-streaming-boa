@@ -37,7 +37,7 @@ MACHINE="$(ssh -o ConnectTimeout=8 -o BatchMode=yes "$TARGET" \
 # The binary's architecture follows the device, not this script. It was
 # `GOARCH=arm64`, hardcoded, which was right for the Pi and the Cudy and wrong
 # for the x86-64 VM: the deploy reported success and shipped a boad that cannot
-# exec. openwrt-package.sh had the same bug for the SDK (#365).
+# exec. openwrt-boa-build.sh had the same bug for the SDK (#365).
 #
 # Unrecognised is fatal, not a guess: a binary that cannot run is a worse
 # outcome than stopping.

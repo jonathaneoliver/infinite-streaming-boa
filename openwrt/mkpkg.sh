@@ -2,7 +2,7 @@
 #
 # Package boa and luci-app-boa, and write a signed index for them.
 #
-# Runs INSIDE the OpenWrt SDK container, as root; scripts/openwrt-package.sh
+# Runs INSIDE the OpenWrt SDK container, as root; scripts/openwrt-boa-build.sh
 # starts it. Mounts: /src = openwrt/ (read-only), /in/boad = the cross-compiled
 # daemon, /keys = the signing key pair, /out = where the repository is written.
 #
