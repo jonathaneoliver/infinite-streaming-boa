@@ -487,24 +487,33 @@ pi_describe() {
 }
 
 pi_reset() {
-	local install=$1 board backup stamp wan
+	local install=$1 board backup stamp wan at=pi_ssh
 	need_pi_if
-	# NEVER FIRSTBOOT THE WRONG BOX, read from the device rather than trusted
-	# from an address DHCP may since have handed to something else.
-	board=$(pi_ssh 'cat /tmp/sysinfo/board_name' 2>/dev/null) ||
-		die "cannot reach root@$PI. Set BOA_PI_HOST to its current address; it needs this machine's key in /etc/dropbear/authorized_keys"
-	[ "$board" = "$PI_BOARD" ] || die "root@$PI is '$board', not $PI_BOARD; refusing to reset it"
+	# EITHER ADDRESS. A Pi that is bridged answers at BOA_PI_HOST; one that is
+	# still out-of-box -- or was reset and never set up -- answers only at
+	# 192.168.1.1 on the LAN cable, because that is all OpenWrt configures.
+	# Resetting an already-reset box is an ordinary thing to want.
+	#
+	# NEVER FIRSTBOOT THE WRONG BOX: the board name is read from the device
+	# either way, not trusted from an address DHCP may have moved.
+	board=$($at 'cat /tmp/sysinfo/board_name' 2>/dev/null) || {
+		at=pi_rescue_ssh
+		board=$($at 'cat /tmp/sysinfo/board_name' 2>/dev/null) ||
+			die "cannot reach the Pi at $PI or at 192.168.1.1 on $PI_IF. Set BOA_PI_HOST to its current address; it needs this machine's key in /etc/dropbear/authorized_keys"
+		log "no answer at $PI; using 192.168.1.1 on $PI_IF"
+	}
+	[ "$board" = "$PI_BOARD" ] || die "that device is '$board', not $PI_BOARD; refusing to reset it"
 
 	stamp=$(date +%Y%m%d-%H%M%S)
 	backup="$REPO/cache/pi-backups/pi-$stamp.tar.gz"
 	mkdir -p "$(dirname "$backup")"
 	log "saving the Pi's configuration to ${backup#"$REPO"/}"
-	pi_ssh 'sysupgrade -b /tmp/boa-reset-backup.tar.gz >/dev/null && cat /tmp/boa-reset-backup.tar.gz' >"$backup"
+	$at 'sysupgrade -b /tmp/boa-reset-backup.tar.gz >/dev/null && cat /tmp/boa-reset-backup.tar.gz' >"$backup"
 	gzip -t "$backup" 2>/dev/null && [ -s "$backup" ] || die "the backup is empty or corrupt; not resetting"
 	log "  $(tar -tzf "$backup" | wc -l | tr -d ' ') files. Restore: copy it to the box and run 'sysupgrade -r <file>'"
 
 	log "factory reset: firstboot, then reboot"
-	pi_ssh 'firstboot -y >/dev/null 2>&1 && (sleep 1; reboot) >/dev/null 2>&1 &' || true
+	$at 'firstboot -y >/dev/null 2>&1 && (sleep 1; reboot) >/dev/null 2>&1 &' || true
 
 	log "waiting for the Pi at 192.168.1.1 on $PI_IF (up to 5 minutes)"
 	sleep 20
@@ -533,6 +542,10 @@ pi_reset() {
 	SDK_IMAGE=$PI_SDK "$REPO/scripts/openwrt-boa-build.sh"
 	SSH_OPTS="$PI_SSH_OPTS -o BindInterface=$PI_IF" \
 		"$REPO/scripts/openwrt-boa-install.sh" root@192.168.1.1
+
+	# openwrt-boa-install.sh stops the unattended countdown for us -- see
+	# boa_hold_wizard -- so the box waits at the wizard rather than setting
+	# itself up two minutes from now.
 	log "done. The wizard is at http://192.168.1.1/ on $PI_IF"
 }
 

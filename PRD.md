@@ -1603,6 +1603,12 @@ because an open door is not a configuration.
   flash ends with a working box rather than an indefinitely open one. An owner
   who wants a specific configuration can write one to a file the first run reads,
   and a device that is already set up refuses to run first-run again.
+- **An install someone is watching waits for them instead.** The wait above is for
+  a box nobody is standing at. An install driven from a terminal has an operator
+  by definition, so those scripts hold the wizard open rather than racing them to
+  it: being handed a generated network name two minutes after an install is a
+  surprise, not a default. A bare package install still counts down, because
+  nothing about it says anyone is present.
 - **Conditioning is offered during setup, not after.** Becoming a transparent
   bridge is what makes the device a boa box rather than an access point, so it is
   the default, and it can be declined and done later.

@@ -31,14 +31,16 @@ die()  { printf '\033[31merror:\033[0m %s\n' "$*" >&2; exit 1; }
 
 TARGET=""
 CONFIGURE_WAN=1
+HOLD_WIZARD=1
 for a in "$@"; do
   case "$a" in
     --no-configure-wan) CONFIGURE_WAN=0 ;;
+    --unattended) HOLD_WIZARD=0 ;;
     -*) die "unknown option $a" ;;
     *)  TARGET="$a" ;;
   esac
 done
-[ -n "$TARGET" ] || die "usage: $0 [--no-configure-wan] root@<host>   (build first with scripts/openwrt-boa-build.sh)"
+[ -n "$TARGET" ] || die "usage: $0 [--no-configure-wan] [--unattended] root@<host>   (build first with scripts/openwrt-boa-build.sh)"
 
 KEYS=cache/openwrt-keys
 OUT=dist/openwrt
@@ -109,3 +111,18 @@ done
 # rewrites world -- it upgrades nothing -- so the feed can move them on.
 ssh "$TARGET" "apk add --repository /tmp/boa-repo/packages.adb boa=$V luci-app-boa=$V && apk add boa luci-app-boa >/dev/null"
 log "Installed. LuCI: Services -> infinite-streaming-boa"
+
+# HOLD THE WIZARD OPEN. Installing arms an unattended first run that brings the
+# box up by itself after about two minutes, with a generated SSID and no root
+# password -- measured on a Pi 5 2026-09-28, which had done exactly that two
+# minutes after a reset. That countdown is for a box nobody is standing at.
+# Somebody ran this script, so somebody is. --unattended leaves it armed.
+if [ "$HOLD_WIZARD" = 1 ]; then
+  if boa_hold_wizard; then
+    log "the unattended countdown is off; the wizard waits for you"
+  else
+    log "WARNING: could not stop the unattended countdown. This box will set"
+    log "         itself up in about two minutes, with a generated SSID and"
+    log "         no root password, unless you open the wizard before then."
+  fi
+fi

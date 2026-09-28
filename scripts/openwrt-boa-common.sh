@@ -77,6 +77,28 @@ boa_try_wan() {
 	return 1
 }
 
+# Stop the unattended first run, and put the front door back.
+#
+# 99-boa-landing arms /etc/init.d/boa-firstrun AT INSTALL TIME, and about two
+# minutes later it brings the box up by itself. MEASURED on raspberrypi,5-model-b
+# 2026-09-28: a reset finished at 22:01 and at 22:03 the box had set itself up
+# as `raspberry-0086` on a generated passphrase, installed the dongle driver,
+# taken the landing page down -- so / served LuCI -- and left the root password
+# UNSET, which its own record states in as many words: "anyone on the LAN can
+# log in".
+#
+# None of that is wrong. The countdown exists for a box nobody is standing at,
+# and its README says opening the setup page in time cancels it. But a reset
+# run from a terminal is only ever run by somebody standing at one, and its
+# whole point is to leave the wizard waiting for them -- for longer than two
+# minutes, and without a box whose SSH is open to the LAN if they take a break.
+boa_hold_wizard() {
+	box '/etc/init.d/boa-firstrun stop >/dev/null 2>&1
+	     /etc/init.d/boa-firstrun disable >/dev/null 2>&1
+	     /usr/sbin/boa-setup landing on >/dev/null 2>&1
+	     :' >/dev/null 2>&1 || return 1
+}
+
 # Find a WAN and configure it. Echoes the interface it settled on.
 #
 # ONE CANDIDATE IS NOT A GUESS -- it is the only USB port with a live cable, on
