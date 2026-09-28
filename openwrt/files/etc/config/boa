@@ -14,6 +14,12 @@ config boa 'main'
 	option lan ''
 	# Listen-only radios, never served on. Space-separated.
 	option scan ''
+	# The scanner's phy MAC, which is the hardware; `scan` above is a phy NAME,
+	# and names move. MEASURED on a Pi 5 2026-09-28: one reboot swapped the
+	# onboard brcmfmac and a USB mt7921u between phy0 and phy1, so a saved
+	# 'phy0-scan' came back meaning the dongle. The init script re-points
+	# `scan` at whichever phy carries this MAC before boad is told. #387.
+	option scan_mac ''
 	# /var is tmpfs on OpenWrt; policy has to live on the overlay to survive
 	# a reboot.
 	option state '/etc/infinite-streaming-boa/policies.json'

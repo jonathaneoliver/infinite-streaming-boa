@@ -125,9 +125,15 @@ rm -f "$OUT"/*.apk "$OUT"/packages.adb
 
 # boa
 R="$(mktemp -d)"
-install -d "$R/usr/libexec/boa" "$R/usr/sbin" "$R/etc/init.d" "$R/etc/config" "$R/lib/upgrade/keep.d"
+install -d "$R/usr/libexec/boa" "$R/usr/sbin" "$R/etc/init.d" "$R/etc/config" "$R/lib/upgrade/keep.d" \
+	"$R/lib/boa" "$R/etc/hotplug.d/ieee80211"
 install -m 0755 /in/boad "$R/usr/libexec/boa/boad"
 install -m 0755 "$F/usr/sbin/boa-setup" "$R/usr/sbin/boa-setup"
+# Sourced by the init script and the hotplug hook, so it has to land before
+# either runs -- and it is the only place that knows a phy index is not
+# identity. See the file.
+install -m 0644 "$F/lib/boa/radio.sh" "$R/lib/boa/radio.sh"
+install -m 0755 "$F/etc/hotplug.d/ieee80211/20-boa-radio" "$R/etc/hotplug.d/ieee80211/20-boa-radio"
 install -m 0755 "$F/etc/init.d/boa" "$R/etc/init.d/boa"
 install -m 0755 "$F/etc/init.d/boa-firstrun" "$R/etc/init.d/boa-firstrun"
 install -m 0644 "$F/etc/config/boa" "$R/etc/config/boa"
