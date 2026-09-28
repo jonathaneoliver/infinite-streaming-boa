@@ -15,6 +15,31 @@ deliberate and documented so they are not mistaken for defects — see
 
 ### Fixed
 
+- **Every 5 GHz access point advertised a Maximum A-MPDU Length Exponent of 0**,
+  asking clients for 8 KB aggregates from cards whose own capability word says
+  7 — a megabyte — and costing **3.6× on uplink**. `radioplan` wrote no
+  `vht_capab`, and hostapd advertises the hardware's VHT capabilities MASKED BY
+  that line, so an absent line is an empty mask.
+
+  It cost uplink and not downlink because uplink aggregation is chosen from what
+  the access point says IT can receive, while downlink is chosen from what the
+  client advertises. Measured on the container target, MT7915E on channel 149 at
+  80 MHz, one client, PHY 1200.9 Mbit/s both ways: **233 Mbit/s up before, 830
+  after**, with downlink 801 → 843. That is 19.7% to 69% of PHY, the efficiency
+  downlink already had. Bisected to `[MAX-A-MPDU-LEN-EXP7]` alone.
+
+  Nothing looked wrong while it lasted, which is why it went unnoticed: top
+  modulation, a Block Ack session established, frames genuinely aggregating,
+  zero retransmits, air 59% idle and every core above 90% idle. The line is
+  DERIVED per radio from the capability word rather than hardcoded, because
+  hostapd refuses to start on a token the driver does not support — one card
+  here takes `[MAX-MPDU-7991]` and another `[MAX-MPDU-11454]`.
+
+  Affects targets 1 and 2. Targets 3, 4 and 5 configure hostapd through
+  OpenWrt's `wifi-scripts`, which derive the line already. **The Pi's published
+  uplink figures have not yet been re-measured** and carry the same fault.
+
+
 - **A device running 0.5.0 on OpenWrt listed no Wi-Fi clients at all**, and its
   interface reported the box had no radio, while clients were associated and
   streaming through it. Measured on a Cudy TR3000 with two radios serving and
