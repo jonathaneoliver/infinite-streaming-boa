@@ -973,10 +973,19 @@ link, and it genuinely drives the radio — band switch, transmit power and deau
 through `hostapd_cli` and `iw`. It serves a NAT'd hotspot on its own subnet, so
 the device under test is re-homed onto its network and loses the lease and the
 address it had, which is the difference this whole section is about. It also
-does something this box does not: **mitmproxy reads the HLS and DASH manifests
-as they pass**, so bitrate switches and segment errors are named directly rather
-than inferred from the shape of the traffic. That idea deserves stealing. Four
-commits in April 2026 and silent since; treat it as one person's project.
+does something this box deliberately does not: **mitmproxy reads the HLS and
+DASH manifests as they pass**, so bitrate switches and segment errors are named
+directly rather than inferred from the shape of the traffic.
+
+That is more direct, and it costs a CA installed on the device under test. A
+pinned app refuses it, a DRM'd service refuses it, and Netflix is both — so the
+technique works on the devices that tolerate instrumentation and not on the ones
+most worth testing. **boa infers from the shape of the traffic on purpose**,
+because that works on anything with a MAC address, including a television that
+will never trust a certificate you made. What it gives up is naming a bitrate
+switch directly, which is a real cost and the reason this is a choice rather
+than an oversight. WiFry: four commits in April 2026 and silent since; treat it
+as one person's project.
 
 **What no one had built**, as far as four independent searches of the package
 feeds, the OpenWrt forum, GitHub and the commercial catalogues could establish:
