@@ -1122,7 +1122,7 @@ record.
 |---|---|---|---|
 | Wired downlink, 2.5 GbE | 1.91 Gbit/s | 1.95 Gbit/s | *not measured* |
 | Wired uplink, 2.5 GbE | 2.35 Gbit/s | 2.35 Gbit/s | *not measured* |
-| One radio, 80 MHz 802.11ax | 495–683 Mbit/s | 454 Mbit/s | 639–644 Mbit/s down, 469–564 up (ch 149) |
+| One radio, 80 MHz 802.11ax | 495–683 Mbit/s | **841 down, 830 up** (MT7915E, ch 149, after #407); 454 down on the `mt7921u` | 639–644 Mbit/s down, 469–564 up (ch 149) |
 | Two radios carrying clients at once | *not measured* | *not measured* | *not measured* |
 
 The wired figures agree to within 2%, on two machines with different CPUs, which
@@ -1135,7 +1135,7 @@ column, on channel 149; on channel 40 at the same address it was 400 down and
 | Through the box, or under a cap | Raspberry Pi 5 | Linux container |
 |---|---|---|
 | Wired through to an external host, down / up | *not measured* | 1.95 / 2.35 Gbit/s |
-| Wireless through to an external host | *not measured* | 423 Mbit/s |
+| Wireless through to an external host | *not measured* | **799 down / 850 up** (MT7915E, after #407); 423 down on the `mt7921u` |
 | Wired and wireless concurrently | *not measured* | 1819 + 586, and 1778 + 449 Mbit/s |
 | Enforcement, against a 90/40 Mbit/s cap | *not measured* | 86.0 / 38.1 Mbit/s |
 | Enforcement over the radio, 60/20 cap | *not measured* | 57 down / 13.6 up Mbit/s |
@@ -2479,7 +2479,7 @@ evidence that a cap is working.
 | | Downlink | Uplink |
 |---|---|---|
 | Wired, 2.5 GbE | **1945 Mbit/s** | **2353 Mbit/s** |
-| Wireless, 80 MHz 802.11ax | **454 Mbit/s** | 144 Mbit/s |
+| Wireless, 80 MHz 802.11ax | **454 Mbit/s** | 144 Mbit/s — see the retraction below |
 
 **Through the box to a host beyond it.** The only arrangement that shows both
 directions conditioned, and the one the Pi has never been run in.
@@ -2487,7 +2487,7 @@ directions conditioned, and the one the Pi has never been run in.
 | | Downlink | Uplink |
 |---|---|---|
 | Wired, 2.5 GbE, unshaped | **1945 Mbit/s** | **2353 Mbit/s** |
-| Wireless, unshaped | **423 Mbit/s** | — |
+| Wireless, unshaped | **423 Mbit/s** | — (measured below, after #407) |
 | Wireless, under a 60/20 Mbit/s cap | **57 Mbit/s** | **13.6 Mbit/s** |
 | Wired, under a 90/40 Mbit/s cap | **86.0 Mbit/s** | **38.1 Mbit/s** |
 
@@ -2507,7 +2507,53 @@ Neither starves the other, which is the question worth asking of a box that
 conditions both at once.
 
 The USB hub ceiling shared by three adapters is 5 Gbit/s. That is a bus limit
-rather than a boa limit, and it bounds every figure above.
+rather than a boa limit, and it bounds every figure above — but not the MT7915E
+figures below, which are on PCI and share nothing with the hub.
+
+#### RETRACTED: every wireless uplink figure above understates the radio (#407)
+
+> **Target 2, the `mt7921u` USB radio, 2026-09-09** for the retracted figures;
+> **target 2, the MT7915E on PCI, 2026-09-27/28** for the replacements. The two
+> are different radios, so the tables are not a before-and-after of one link.
+
+`radioplan` wrote no `vht_capab`, and hostapd advertises the hardware's VHT
+capabilities MASKED BY that line. An absent line is an empty mask, so every
+5GHz access point this box brought up beaconed a Maximum A-MPDU Length Exponent
+of **0** — "send me no more than 8KB at a time" — from cards whose own
+capability word says 7, a megabyte.
+
+**It cost uplink and not downlink**, because uplink aggregation is chosen from
+what the AP says IT can receive while downlink is chosen from what the client
+advertises. So **the downlink figures above stand** and the uplink ones are a
+measurement of the bug.
+
+With the line derived per radio, on the MT7915E at channel 149 and 80 MHz, one
+client at −37 dBm, PHY 1200.9 Mbit/s up:
+
+| | Downlink | Uplink |
+|---|---|---|
+| To the box | **841 Mbit/s** | **830 Mbit/s** |
+| Through the box, to a host beyond it | **799 Mbit/s** | **850 Mbit/s** |
+
+Uplink and downlink now sit within 2% of each other. **The asymmetry was never
+the client's**, and the explanation this README previously offered for it — that
+a client transmits with less aggregation than an access point does — was
+describing a limit this box had imposed on it. Uplink went 233 → 830 Mbit/s,
+19.7% → 69% of PHY, bisected to `[MAX-A-MPDU-LEN-EXP7]` alone.
+
+Nothing looked wrong while it was happening, which is why it lasted: top
+modulation, a Block Ack session established, frames genuinely aggregating, zero
+retransmits, air 59% idle and every one of 16 cores above 90% idle. The
+aggregates were simply 8KB against ~100 µs of fixed per-TXOP overhead. An
+aggregate CPU reading cannot detect this and a `station dump` taken while the
+link is idle reports a meaningless 24.0 MBit/s — it has to be sampled DURING a
+bulk transfer.
+
+**Targets 4 and 5 are unaffected.** They run OpenWrt's own `wifi-scripts`, which
+derive a full `vht_capab`, and the Cudy's ladder shows it: 643 Mbit/s up against
+576 down, uplink slightly ahead, which is what a correctly advertising access
+point looks like. **The Pi's figures have not yet been re-measured** and carry
+the same fault wherever they show uplink.
 
 **What has not been measured here**, listed so an absent run reads as absent
 rather than as a result:
