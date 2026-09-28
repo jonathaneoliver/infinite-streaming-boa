@@ -1505,6 +1505,31 @@ cmd_apply() {
 
 	rootpw="$(set_root_password "$rootpw" 'the setup page')"
 
+	# THE NAME, AS EARLY AS IT IS KNOWN.
+	#
+	# apply_wizard has just set the hostname and restarted umdns, so the mDNS
+	# name is settled from here -- tens of seconds before convert touches the
+	# bridge. It is the one address that survives the move, so the page is told
+	# it now, starts probing it while the old address still works, and follows
+	# the device there if convert takes that address away (#420).
+	#
+	# THE FIRST ATTEMPT PRINTED THIS IMMEDIATELY BEFORE cmd_convert AND NEVER
+	# WORKED. The page polls this log every 1.5s; the announcement and the
+	# network teardown landed inside one window, so no read ever saw it. The
+	# browser console proved it -- "apply: started, following the log" and then
+	# nothing, the follow never armed. Between here and the convert there is a
+	# verify_serving, a channel plan and a second verify_serving, which is tens
+	# of polls rather than none.
+	if apk info 2>/dev/null | grep -qx umdns; then
+		_n="$(uci -q get system.@system[0].hostname)"
+		_p="$(uci -q get boa.main.addr)"; _p="${_p##*:}"; [ -n "$_p" ] || _p=8080
+		if [ -n "$_n" ]; then
+			printf '__BOA_URL http://%s.local:%s/\n' "$_n" "$_p"
+			echo "This device answers to http://$_n.local:$_p/ -- that name follows it if its address changes."
+			say "apply: announced $_n.local early"
+		fi
+	fi
+
 	# 36 and 149 for the first two 5 GHz radios, 6/1/11 for 2.4 GHz. Without
 	# this a box with two 5 GHz radios can bring both up on the same channel,
 	# where they share one channel's airtime and each makes the other look slow.

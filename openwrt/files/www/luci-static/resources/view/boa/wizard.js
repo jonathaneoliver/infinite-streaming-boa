@@ -200,6 +200,92 @@ function dismissStalePasswordWarning() {
 	} catch (e) {}
 }
 
+// When did this page last manage to read the log? Used to tell "the device is
+// busy" from "the device is no longer at this address".
+var lastLogRead = 0;
+
+// Follow the device when convert moves it out from under this page.
+//
+// This page polls the log over whatever address it was opened on. convert
+// restarts the network, and on a box reached over its OWN LAN port that bounces
+// the operator's cable: their machine renews DHCP onto the upstream subnet and
+// this address stops being routable, in the middle of the apply. The poll then
+// retries an address that will never answer again, and the run appears to hang
+// on "Applying" for three minutes before giving up.
+//
+// Measured twice on a Cudy TR3000, 2026-09-28. The x86-64 guest never
+// reproduces it: a host-side bridge sits between the laptop and the guest, so
+// only the guest's virtual interface bounces and the laptop's link never flaps.
+// Reading the code on that target would suggest this works.
+//
+// boa-setup prints __BOA_URL BEFORE converting, so the page learns the mDNS
+// name while it can still read anything -- and that name is the one address
+// that survives the move. From then on two things race: the log poll on the old
+// address, and a probe of the new name. If the old one goes quiet and the new
+// one answers, the page follows the device instead of waiting to be rescued by
+// hand. See #420.
+var followTimer = null;
+function followDevice(url) {
+	if (followTimer || !url)
+		return;
+	trace('follow: armed for', url);
+	// PROBE FROM NOW, NOT FROM WHEN THE DEVICE IS LOST.
+	//
+	// The name is settled before the bridge is touched -- apply_wizard sets the
+	// hostname and restarts umdns, tens of seconds before convert -- so the
+	// escape route can be TESTED while the old address still works. Waiting
+	// until the device has gone means finding out whether the way back exists
+	// at the one moment nothing can be done about it.
+	//
+	// Two things fall out of probing early. The browser resolves the name and
+	// warms its cache while mDNS is definitely working; and if it never answers
+	// -- no mDNS on this client, a network that blocks multicast -- that is
+	// known BEFORE the address changes, while the operator can still read the
+	// log and write the address down.
+	var reached = false, probes = 0;
+	followTimer = window.setInterval(function() {
+		probes++;
+		// no-cors: the response cannot be read and does not need to be.
+		// Resolving at all means something answered on that host.
+		window.fetch(url, { mode: 'no-cors', cache: 'no-store' })
+			.then(function() {
+				if (!reached)
+					trace('follow: the name answers, the way back is open');
+				reached = true;
+				// Only MOVE once this page has actually lost the device. While
+				// the log is still readable the old address works, and moving
+				// would take the log away from an operator reading it.
+				if (Date.now() - lastLogRead < 10000)
+					return;
+				stopFollowing('followed the device');
+				window.location = url;
+			})
+			.catch(function() {
+				// Said once, ~10s in, and only while the log is still live --
+				// which is exactly when it is still actionable.
+				if (!reached && probes === 5 && Date.now() - lastLogRead < 10000)
+					trace('follow: WARNING -', url, 'does not answer from this browser');
+			});
+	}, 2000);
+}
+
+// DISARM IT THE MOMENT THE PAGE STILL HAS THE DEVICE.
+//
+// Without this, a run that SUCCEEDS is hijacked: followLog stops reading once
+// the sentinel lands, lastLogRead freezes, the 10s guard passes, the probe
+// answers -- and the page navigates away from the Done panel it just rendered,
+// overriding "Stay here" and "Change these settings" and the countdown alike.
+// The target where this fix was written never shows it, because there the page
+// loses the device and follows it before the log ever ends; the targets where
+// the page survives are the ones it would break.
+function stopFollowing(why) {
+	if (!followTimer)
+		return;
+	window.clearInterval(followTimer);
+	followTimer = null;
+	trace('follow: disarmed --', why);
+}
+
 function row(label, control, help) {
 	return E('div', { 'class': 'cbi-value' }, [
 		E('label', { 'class': 'cbi-value-title' }, [ label ]),
@@ -285,7 +371,11 @@ function fireAndForget(command, params) {
 	} catch (e) { trace('fireAndForget threw', e); }
 }
 
-function followLog(pre, onDone) {
+// onText, when given, is handed the log on EVERY successful read rather than
+// only at the end. The end is not good enough for anything the page needs in
+// order to survive convert: by the time the sentinel lands, the address this
+// poll is running against may be one the browser can no longer reach. See #420.
+function followLog(pre, onDone, onText) {
 	var stop = false;
 	// The network goes down and comes back during convert, so a read failing
 	// is expected and must not end the follow. Only a run of them from the
@@ -299,6 +389,7 @@ function followLog(pre, onDone) {
 			everRead = true;
 			misses = 0;
 			text = text || '';
+			if (onText) try { onText(text); } catch (e) {}
 			var end = text.indexOf(DONE);
 			// Machine-readable lines are for this code, not for the operator.
 			var el = logEl();
@@ -953,6 +1044,13 @@ return view.extend({
 					trace('apply: started, following the log');
 					followLog(null, function(rc, text) {
 						trace('apply: finished rc =', rc);
+						// rc >= 0 means this page read the run to its end, so it
+						// still has the device and the panel's own buttons are
+						// in charge. rc == -2 is the opposite -- the box went
+						// away and never came back on this address -- so the
+						// follow stays armed, because it is the only way back.
+						if (rc >= 0)
+							stopFollowing('apply completed on this address');
 						var served = /Serving: ([1-9][0-9]*) access point/.exec(text || '');
 						var m = /__BOA_URL (\S+)/.exec(text || '');
 						if (m) {
@@ -970,6 +1068,22 @@ return view.extend({
 						if (st.mode == 'done')
 							startGoCountdown();
 						try { ui.changes.init(); } catch (e) {}
+					}, function(text) {
+						// Every read, not just the last one: the name has to be
+						// in hand BEFORE convert takes this address away.
+						lastLogRead = Date.now();
+						if (st.boaHref)
+							return;
+						var em = /__BOA_URL (\S+)/.exec(text || '');
+						if (!em)
+							return;
+						st.boaHref = em[1];
+						try {
+							var eu = new URL(em[1]);
+							st.boaHost  = eu.hostname;
+							st.luciHref = eu.protocol + '//' + eu.hostname + '/cgi-bin/luci/';
+						} catch (e) {}
+						followDevice(em[1]);
 					});
 				})
 				// Only fs.write reaches here, and it runs before anything on the
