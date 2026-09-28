@@ -121,8 +121,9 @@ commands, because the four differ more in setup than in use.
 | [2. A Linux host, as a container](#2-a-linux-host-from-a-container) | Hardware you already have, nothing to flash | The fastest start, and PCIe slots for better radios later |
 | [3. An OpenWrt device, as packages](#3-an-openwrt-device-as-packages) | Two packages beside LuCI — measured on target 1's own Pi and radios | A Pi or router that should stay an OpenWrt box |
 | [4. A Cudy TR3000](#4-a-cudy-tr3000-as-a-whole-box) | The same packages, on AP-class radios | Channel moves that drop nobody, and distance imposed rather than modelled |
+| [5. OpenWrt in a VM](#5-openwrt-in-a-vm-with-an-ap-class-card-passed-through) | A KVM guest on Ubuntu, with an AP-class card passed through | AP radios in a machine you already own, and a box you can reset to pristine in a minute |
 
-The Pi and the container read the same `.env`; both OpenWrt targets are
+The Pi and the container read the same `.env`; all three OpenWrt targets are
 configured from UCI. Building any of them needs `docker` on the machine you
 build from, including on Linux —
 [Requirements for the build and control host](#requirements-for-the-build-and-control-host)
@@ -1314,9 +1315,199 @@ has the buying case and the limits; [`openwrt/CUDY-TR3000.md`](openwrt/CUDY-TR30
 is the full record of what one unit took, from stock firmware to serving
 traffic, with every measurement above.
 
+### 5. OpenWrt in a VM, with an AP-class card passed through
+
+The Cudy proves the point about access-point silicon, but it proves it as a
+whole appliance. This target separates the two. **OpenWrt runs as a KVM guest on
+an ordinary Ubuntu machine**, and the radio is a **MediaTek MT7915 M.2 A/E-key
+module** — [AsiaRF AW7915-AED](https://asiarf.com/product/80211ax-mt7915-mini-pcie-wifi6-module/)
+— handed to that guest whole, by PCI passthrough. Same two packages, same UCI,
+same LuCI page; the difference is that the radio is an AP part rather than a
+client part with AP mode bolted on, and that it arrives as a card in a slot
+rather than as a router in a box.
+
+The virtualisation is not incidental. It is why the card can be moved between
+hosts, and why a broken guest is a `qemu-img create` away from being a clean
+one — which is how every out-of-box test in this repository is run.
+
+**How it is put together**, read off the host:
+
+| | |
+|---|---|
+| Host | Ubuntu 24.04.4 LTS, kernel 7.0.0, libvirt 10.0.0 |
+| Guest | OpenWrt 25.12.5 x86-64, **2 vCPU, 512 MiB** |
+| Passthrough | `<hostdev managed='yes'>` on `01:00.0`; libvirt rebinds `mt7915e` → `vfio-pci` at start and hands it back at shutdown |
+| IOMMU | **group 9, containing only the card** — a clean group, which is what makes this passthrough possible at all |
+
+That last row is the part that is not guaranteed. On this board the other
+candidate card shared a group with the boot controller, which cannot be passed
+through; the slot a card sits in decides whether it can be given to a guest.
+
+##### How the Ubuntu host is set up, and what it did not need
+
+Read off a working host rather than written from a guide. Ubuntu 24.04 needed
+four packages and no kernel tuning at all:
+
+```sh
+sudo apt install qemu-system-x86 libvirt-daemon-system virtinst ovmf
+```
+
+**No `amd_iommu=on`, no `iommu=pt`, no `vfio-pci.ids=`.** This host's
+`GRUB_CMDLINE_LINUX` is empty and `/proc/cmdline` carries nothing but
+`quiet splash` — the IOMMU is enabled in the board's firmware and the kernel
+picks it up by itself. Nothing is pinned to `vfio-pci` at boot either: there is
+no file in `/etc/modprobe.d` or `/etc/modules-load.d` mentioning it. Almost
+every passthrough guide tells you to do both. Neither was necessary, and the
+cost of doing them anyway is a host that cannot use its own card.
+
+`<hostdev managed='yes'>` is what makes that work: libvirt unbinds the card from
+`mt7915e`, binds it to `vfio-pci` as the guest starts, and hands it back at
+shutdown. The card belongs to the host until the moment the guest wants it.
+
+**Two bridges, built two different ways** — worth knowing, because they fail
+differently:
+
+| | |
+|---|---|
+| `br-wan` | The uplink. A NetworkManager/netplan bridge over the onboard NIC, holding the host's own address (`192.168.0.106`). Permanent. |
+| `br-client` | The wired client port, over a USB ethernet adapter. **Created by a libvirt hook** at domain start and deleted at release — it does not exist while the guest is down. |
+
+The hook lives at `/etc/libvirt/hooks/qemu` and logs what it does. If the USB
+adapter is absent it says so and starts the guest anyway, with no wired client
+port, rather than refusing to boot.
+
+**Native, paravirtual, or passed through — three different things in one box:**
+
+| Layer | What it is | How you can tell |
+|---|---|---|
+| **CPU** | **Native.** Guest instructions run on the host silicon through AMD-V; KVM only traps privileged ones | The guest reports `AMD Ryzen 7 5700G`, the host's own part. Under emulation it would say "QEMU Virtual CPU" |
+| **Disk, NICs** | **Paravirtual** (`virtio`). Not emulated hardware — the guest knows it is virtual and uses a shared-memory queue — but still host-mediated: every packet crosses into the host | `<model type='virtio'/>` on both NICs and the disk |
+| **The Wi-Fi card** | **Real.** Assigned by VFIO with the IOMMU, so the guest's `mt7915e` programs the actual MT7915 registers with nothing in between | `<hostdev mode='subsystem' type='pci' managed='yes'>` |
+
+This rests on one firmware setting. **`SVM` must be enabled in the board's
+UEFI** — AMD's name for AMD-V. Without it `/dev/kvm` does not exist, the `svm`
+CPU flag is absent entirely so the machine reads as though it cannot virtualise
+at all, and QEMU silently falls back to **TCG**: software instruction
+translation, roughly an order of magnitude slower, with everything still
+apparently working. It is worth checking `virsh dumpxml` says `type='kvm'` and
+not `type='qemu'` before trusting any number off a guest.
+
+That split is worth holding on to when reading the measurements below. A figure
+taken *through* the box exercises the radio and the bridge; one taken *on* it
+also exercises the guest's virtio NIC and its two vCPUs. Measured here, the
+difference is a few per cent — but it is the first thing to check if the two
+ever diverge sharply.
+
+**The guest is deliberately plain**: `pc-i440fx` with legacy BIOS (ovmf is
+installed but unused), a virtio disk, two virtio NICs — `eth0` to `br-client`,
+`eth1` to `br-wan`, **in that order**, which is the order `boa-setup convert`
+assumes — and `autostart` off, so a host reboot does not bring the bench box up
+behind your back.
+
+**The disk is a disposable overlay.** `openwrt-x86-work.qcow2` is a qcow2 whose
+backing file is a read-only `…-VANILLA.qcow2` downloaded from OpenWrt and
+verified against their published checksums. Resetting to out-of-box is
+therefore "delete the overlay and make another", which takes about a second:
+
+```sh
+qemu-img create -f qcow2 -F qcow2 -b …-VANILLA.qcow2 openwrt-x86-work.qcow2
+```
+
+That is what makes the first-run testing in this repository honest — every
+out-of-box claim here was measured from that fixed point, not from a box
+someone had tidied up.
+
+**What the module is**, from the vendor page and from the bus:
+
+| | |
+|---|---|
+| Model | AW7915-AED, M.2 A/E key (the vendor's page URL says mini-PCIe; its specification table is the M.2 part) |
+| Chipset | MT7915DAN (`14c3:7915`, driver `mt7915e`) |
+| Radio | 2T2R, dual-band concurrent 2.4 + 5 GHz, 802.11a/b/g/n/ac/ax |
+| Channel widths | 20 / 40 / 80 MHz |
+| Vendor PHY ceiling | 573 Mbit/s on 2.4 GHz, 1201 on 5 GHz, 1800 combined |
+| Antennas | 2 × IPEX |
+| Power | 3.3 V, 3 A recommended, 4–9 W |
+| Measured bus link | **PCIe 2.0 x1** (`5.0 GT/s x1`) — ample for 1201 Mbit/s |
+
+One caution on identity: the card presents a **generic subsystem ID**
+(`14c3:7915`, identical to its device ID), so nothing on the bus names the
+vendor, the model or the form factor. The specification above is the vendor's;
+only the bus link width and the driver binding were read off the machine. If
+you need to know which board is in a slot, read the label on it.
+
+It presents as **two phys**, one per band, which is why a three-radio box in
+this repository is usually this card plus a USB adapter, and why
+[`boa-setup`](openwrt/README.md) plans 2.4 GHz and two 5 GHz channels rather
+than one of each.
+
+#### Measured, x86-64 KVM guest, MT7915E on PCI passthrough, 2026-09-27
+
+The USB `mt7921u` is in the same table for contrast, on the same box, on the
+same afternoon. **It is not a fair chip comparison** — that adapter reports
+`txpower 3.00 dBm` whatever it is asked for, so its link is power-limited long
+before it is silicon-limited. It is here to show what the card is worth, not to
+rank two chips.
+
+MacBook Pro as the client over real antennas, `iperf3` 10 s, source-bound to the
+Wi-Fi address so nothing escapes over ethernet. The other radios were disabled
+for each run: all three share one SSID, so that is the only way to pin a client
+to a band.
+
+| Radio | TO the box, down | TO, up | THROUGH, down | THROUGH, up |
+|---|---|---|---|---|
+| **5 GHz, ch 149, HE80** (4 runs) | 854, 864, 859, 876 | 791, 776, 810 | 861, 851, 863, 847 | 847, 845, 841, 839 |
+| 2.4 GHz, ch 6, HE20 (1 run) | 86.8 | 51.0 | 86.6 | 74.2 |
+| mt7921u USB, ch 40, 80 MHz (3 runs) | 75.6, 77.6, 90.3 | 94.5, 59.1, 67.9 | 83.2, 87.0, 99.5 | 75.1, 38.7, 61.5 |
+
+**854-876 Mbit/s down is 75-77 % of the 1134 Mbit/s PHY the box reported for
+that link** — against a vendor ceiling of 1201. That is a good HE80 result and
+the highest this project has measured on any radio. The USB adapter beside it
+manages 75-100 Mbit/s, an order of magnitude less, at 3 dBm.
+
+**The USB path also costs the host far more.** Sampled during its runs the guest
+was **14-48 % idle carrying ~95 Mbit/s**, against 73-88 % idle carrying ~850 on
+the PCI card. USB passthrough traps every transfer through QEMU; PCI
+passthrough does not. On this platform a USB radio is expensive in CPU as well
+as slow on air.
+
+Latency, 30 pings at 5/s, idle and while the link is saturated:
+
+| Radio | idle → box | idle → through | loaded → box | loaded → through |
+|---|---|---|---|---|
+| 2.4 GHz | 1.8 min, 5.6 avg | 2.0 min, 3.6 avg | 23.5 avg, 50.6 max | 22.9 avg, 33.3 max |
+| 5 GHz | 1.9 min, 14.7 avg | 2.0 min, 28.5 avg | 35.6 avg, 180.2 max | 23.9 avg, 33.3 max |
+
+No packet loss in any run. The 2.4 GHz throughput row and both latency rows
+are single runs; only the 5 GHz and USB throughput figures were repeated.
+
+The floor is **~2 ms on both bands**, and saturation adds roughly **20 ms**.
+That matters for this product specifically: a box whose job is to *impose*
+delay has a ~20 ms noise floor under load, so a configured 10 ms target is
+below the resolution of the link it is being applied to.
+
+**Read the idle minimum, not the idle average.** Idle runs were noisier than
+loaded ones — 5 GHz idle averaged 14.7 ms with a 133 ms tail, while loaded
+through the box averaged 23.9 ms with a 3.2 ms standard deviation. That
+inversion is client power-save: an idle MacBook sleeps between beacons and pays
+to wake. Once traffic flows the link is tight and predictable.
+
+**Let the link settle before timing it.** A run started immediately after
+association gave 500 Mbit/s uplink, against 776-810 once the link had settled —
+so the first run after joining is not a measurement.
+
+**The guest is not the bottleneck.** Sampled while `iperf3` terminated on it, it
+was **73 % idle on uplink and 88 % idle on downlink**. Uplink *through* the box
+runs a few per cent ahead of uplink terminating *on* it (≈840 against ≈790),
+which is the ordinary cost of the guest being an endpoint rather than a
+bridge.
+
+None of this transfers to the Cudy: `mt798x` is different silicon, and the
+targets disagree.
+
 ## Requirements for the build and control host
 
-**This is a toolchain, not a parts list**, and it applies to all four targets:
+**This is a toolchain, not a parts list**, and it applies to all five targets:
 every one of them is built or deployed from another machine.
 
 Three machines have requirements in this repository and only one of them is the
@@ -1494,6 +1685,7 @@ is measured rather than argued.
 | mt7921u (Panda PAU0F) | USB, both targets | Client sibling of the mt7915/mt7916 AP line |
 | BCM43455 | Onboard, Pi | Embedded client chip |
 | Intel AX200 | PCIe, the container host | Laptop client card, self-managed regulatory domain |
+| MT7915 (AsiaRF AW7915-AED) | M.2 A/E, passed through to the VM | **An AP part**, not a client one — see [target 5](#5-openwrt-in-a-vm-with-an-ap-class-card-passed-through) |
 
 That single fact explains most of the limits catalogued in
 [what the radios will not do](#channel-manipulation-what-client-class-silicon-will-not-do):
