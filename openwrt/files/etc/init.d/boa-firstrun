@@ -1,0 +1,21 @@
+#!/bin/sh /etc/rc.common
+# Give an operator two minutes from boot, then bring the box up anyway.
+#
+# COUNTED FROM BOOT, not from a page load: the window that matters is the one
+# after the network comes up, whether or not anyone is watching. Opening the
+# setup page cancels it, so a person who arrives in time is never raced.
+#
+# Only ever arms itself on a box that is still unconfigured -- the landing page
+# being on is exactly that condition, and it is turned off the moment setup has
+# run by hand.
+START=99
+USE_PROCD=1
+
+start_service() {
+	[ "$(/usr/sbin/boa-setup landing status 2>/dev/null | head -1)" = "landing page: on" ] || return 0
+	procd_open_instance boa-firstrun
+	procd_set_param command /usr/sbin/boa-setup firstrun wait
+	procd_set_param stdout 1
+	procd_set_param stderr 1
+	procd_close_instance
+}

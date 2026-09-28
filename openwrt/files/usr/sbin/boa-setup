@@ -4,6 +4,10 @@
 #
 #   boa-setup check      read-only: every prerequisite, OK / WARN / FAIL,
 #                        with the command that fixes each one
+#   boa-setup wizard     the first-run questions -- SSID, passphrase, country,
+#                        root password -- asked once, over the wired LAN. The
+#                        same ground as the LuCI page, for a device with no
+#                        LuCI on it (the Pi image, the container, x86).
 #   boa-setup convert    turn a stock router into the transparent bridge boa
 #                        needs. Asked for, never automatic: see cmd_convert.
 #   boa-setup install-wpad
@@ -545,6 +549,23 @@ note_if_still_bare() {
 }
 
 cmd_install_drivers() {
+	# DETACHED, for the same reason apply is: this fetches and unpacks up to
+	# three dozen packages, which outlasts rpcd's exec timeout and the
+	# browser's. Measured 2026-09-27: the setup page called this straight,
+	# rpcd held the call, the request died, and the page sat on "no drivers"
+	# over a device whose drivers had just installed perfectly.
+	if [ "${1:-}" = --background ]; then
+		rm -f "$APPLY_LOG"
+		: > "$APPLY_LOG"
+		chmod 600 "$APPLY_LOG"
+		say "install-drivers: starting (detached), log $APPLY_LOG"
+		setsid sh -c '{ "$1" install-drivers; rc=$?; printf "'"$APPLY_DONE"' rc=%s\n" "$rc"; \
+		               "$1" keep-log; logger -t boa-setup "install-drivers: finished rc=$rc"; } >> "$2" 2>&1' \
+			sh "$0" "$APPLY_LOG" </dev/null >/dev/null 2>&1 &
+		echo "$APPLY_LOG"
+		return 0
+	fi
+
 	local dry=""
 	[ "${1:-}" = "--dry-run" ] && dry=1
 	WANT_PKGS=""; MISSING_IDS=""
@@ -592,6 +613,9 @@ cmd_install_drivers() {
 	walk_adapters note_if_still_bare
 	echo
 	if [ -n "$STILL_BARE" ]; then
+		# Recorded so the setup page can pick up here after the restart,
+		# instead of showing the same "no radios" screen it opened with.
+		stage_set reboot-for-drivers
 		printf 'Installed, but still without a driver:\n%s' "$STILL_BARE"
 		echo "A module is usually loaded before its firmware is unpacked, and the probe"
 		echo "is not retried. Reload it, or reboot:"
@@ -600,6 +624,7 @@ cmd_install_drivers() {
 		echo "Then: boa-setup check"
 		return 1
 	fi
+	stage_clear
 	echo "Installed, and every adapter boa recognises now has a driver."
 	echo "Check with: boa-setup check"
 	return 0
@@ -644,6 +669,68 @@ cmd_install_drivers() {
 # before the swap and after it. That is the case this automates. A box already
 # carrying clients is the case that still wants a human, and says so.
 running_aps() { ubus list 2>/dev/null | grep -c '^hostapd\.'; }
+
+# DID IT ACTUALLY COME UP?
+#
+# apply_wizard writes uci and reloads wifi. Whether an access point is SERVING
+# afterwards is a different question, and it is the only one an operator cares
+# about. hostapd registers a ubus object per running AP, so running_aps answers
+# it from the box rather than from what we asked the box for.
+#
+# Measured on the x86-64 VM 2026-09-26: the LuCI wizard reported `"ubuntu1263"
+# is up on 2 radio(s)` -- counted from the uci sections it had just written --
+# while running_aps was 0, because wpad was missing and netifd prepared both
+# interfaces and tore them down again. A confident success message over a box
+# serving nothing is worse than an error. See #406.
+#
+# It WAITS rather than reading once: hostapd registers a moment after a reload,
+# and a single early read would call every slow start a failure.
+verify_serving() {
+	local n last=-1 stable=0 i=0
+	# WAITS FOR THE COUNT TO SETTLE, not for the first radio.
+	#
+	# This used to return the moment one hostapd object appeared, so on a box
+	# with three radios it reported "serving on 1 access point(s)" while the
+	# other two were still registering -- measured 2026-09-27 on a device that
+	# was in fact serving all three. Radios come up over several seconds, and
+	# they do not come up together, so the only honest answer is the one that
+	# has stopped changing.
+	while [ "$i" -lt 30 ]; do
+		n="$(running_aps)"; n="${n:-0}"
+		if [ "$n" -gt 0 ] && [ "$n" = "$last" ]; then
+			stable=$((stable + 1))
+			[ "$stable" -ge 3 ] && { printf '%s' "$n"; return 0; }
+		else
+			stable=0
+		fi
+		last="$n"
+		i=$((i + 1))
+		sleep 1
+	done
+	# Still moving after 30s: report what is up rather than nothing.
+	n="$(running_aps)"; n="${n:-0}"
+	printf '%s' "$n"
+	[ "$n" -gt 0 ]
+}
+
+
+# The root password, from a value a person wrote down -- into a file before the
+# box booted, or into the setup page. NEVER invented: a random one would lock
+# the owner out of a device with no screen to read it back from.
+#
+# Prints what happened rather than returning it, because every caller records
+# the same sentence in the first-run note.
+set_root_password() {
+	if [ -z "$1" ]; then
+		printf 'not set: anyone on the LAN can log in'
+		return 0
+	fi
+	if printf '%s\n%s\n' "$1" "$1" | passwd root >/dev/null 2>&1; then
+		printf 'set from %s' "$2"
+	else
+		printf 'FAILED to set -- the box is still open'
+	fi
+}
 
 cmd_install_wpad() {
 	local dry="" force="" basic="" full="" p aps
@@ -707,6 +794,1016 @@ cmd_install_wpad() {
 	echo "if one did not, bring it up with: wifi up <radio>"
 	echo "Check with: boa-setup check"
 	return 0
+}
+
+# --- install-mdns ------------------------------------------------------------
+
+# The name the box answers to on the link, derived from the SSID so that an
+# operator who knows the network knows the box: the network `ubuntu1263` is
+# served by openwrt-ubuntu1263.local. One thing to remember, not two.
+#
+# A TRANSLATION, NOT A COPY. An SSID is 32 arbitrary bytes -- spaces,
+# punctuation and UTF-8 are all legal in one -- and a DNS label is not: ASCII
+# letters, digits and hyphens, no leading or trailing hyphen. So `My Bench AP!`
+# becomes openwrt-my-bench-ap, and an SSID that survives none of that (all
+# emoji, say) falls back to the board-and-MAC name rather than producing
+# `openwrt-` and an invalid label.
+mdns_hostname() {
+	local n
+	n="$(printf '%s' "$1" | tr 'A-Z' 'a-z' | sed 's/[^a-z0-9-]/-/g; s/--*/-/g; s/^-*//; s/-*$//')"
+	[ -n "$n" ] || n="$(default_ssid)"
+	printf 'openwrt-%s' "$n"
+}
+
+# Set the hostname, and make mDNS announce it.
+#
+# THE RESTART IS NOT OPTIONAL. Measured on the x86-64 guest 2026-09-26: umdns
+# reads the hostname once at start and caches it. After `uci set` plus
+# `/etc/init.d/system reload` the kernel hostname had changed and the box went
+# on announcing the OLD name, with the new one resolving to nothing from a
+# MacBook on the same link; a umdns restart was what made the new name answer.
+set_hostname() {
+	local want="$1"
+	[ "$(uci -q get system.@system[0].hostname)" = "$want" ] && return 0
+	uci set system.@system[0].hostname="$want"
+	uci commit system
+	/etc/init.d/system reload 2>/dev/null
+	[ -x /etc/init.d/umdns ] && /etc/init.d/umdns restart >/dev/null 2>&1
+	echo "This box is now '$want', and answers to $want.local"
+	return 0
+}
+
+# mDNS, so the box can be found by name.
+#
+# This matters most at the moment its address is least knowable. `convert` moves
+# lan to DHCP, and the lease it gets is the upstream router's business: the one
+# address an operator was told to use is the one that stops being true. A .local
+# name is multicast on the link and carries whatever addresses the box currently
+# holds, so it survives the change that breaks everything else.
+#
+# Measured from a MacBook on the same link, x86-64 guest, 2026-09-26:
+# openwrt-ubuntu1263.local answered with BOTH 192.168.1.1 (the rescue address
+# convert leaves behind) and 192.168.0.66 (the new lease) at once, and
+# http://openwrt-ubuntu1263.local:8080/ served the boa UI. No firewall rule was
+# needed -- 5353/udp arrives on the lan zone, which accepts input, and after
+# convert the uplink is a port of that same bridge.
+#
+# umdns rather than avahi: it is OpenWrt's own, it reads the hostname straight
+# out of uci with no service file to write, and it is a fraction of the size --
+# avahi wants dbus with it, on a box whose whole point is to stay small.
+cmd_install_mdns() {
+	local dry="" p
+	for p in "$@"; do
+		case "$p" in
+			--dry-run) dry=1 ;;
+		esac
+	done
+
+	if apk info 2>/dev/null | grep -qx umdns; then
+		if /etc/init.d/umdns running >/dev/null 2>&1; then
+			echo "Nothing to do: umdns is running, so this box answers to $(uci -q get system.@system[0].hostname).local."
+			return 0
+		fi
+		echo "umdns is installed but not running."
+		[ -n "$dry" ] && { echo "--dry-run: nothing changed."; return 0; }
+		/etc/init.d/umdns enable
+		/etc/init.d/umdns start
+		return 0
+	fi
+
+	echo "apk add umdns   (so the box answers to <hostname>.local)"
+	echo "/etc/init.d/umdns enable && /etc/init.d/umdns start"
+	if [ -n "$dry" ]; then
+		echo "--dry-run: nothing installed."
+		return 0
+	fi
+
+	# BEST EFFORT, and it returns 0 either way: a box with no mDNS is reachable
+	# by address and correct in every other respect, so this must not fail a
+	# wizard that is otherwise succeeding. It still REPORTS -- a silent failure
+	# here leaves an operator typing a name that will never resolve, with
+	# nothing to say why.
+	if ! apk add umdns; then
+		echo "umdns did not install, so this box will NOT answer to a .local name." >&2
+		echo "Reach it by address. To retry once the network is working:" >&2
+		echo "  boa-setup install-mdns" >&2
+		return 0
+	fi
+	/etc/init.d/umdns enable
+	/etc/init.d/umdns start
+	echo "Installed: this box answers to $(uci -q get system.@system[0].hostname).local"
+	return 0
+}
+
+# --- wizard ------------------------------------------------------------------
+#
+# The first-boot questions, asked once, over the wired LAN.
+#
+# OVER THE WIRE IS NOT A CHOICE. A device fresh from a flash ships both
+# wifi-ifaces with `option disabled '1'`, so there is no access point to join --
+# measured on a factory-reset Cudy TR3000, 2026-09-24: 0 wireless interfaces and
+# no hostapd running. Wi-Fi cannot be configured over Wi-Fi here, and the LAN
+# port is the way in (`br-lan` holds only the lan port at that stage).
+#
+# NOT A uci-defaults SCRIPT, for the reason spelled out above cmd_convert:
+# OpenWrt runs those AT INSTALL TIME as well as on a first boot, so a wizard
+# there would reconfigure a router somebody is using. A boot-time script also
+# has no terminal to ask from. So the operator runs this, and it asks.
+#
+# WHAT IT ASKS FOR, in the order that matters:
+#
+#  - The root password. A fresh box has NONE: on the same reset device, ssh
+#    logged in with no password at all and ubus accepted {"password":""}. This
+#    is the most valuable thing here, and it is what `check` fails on.
+#  - The SSID, defaulting to the board name and the last two octets of the LAN
+#    MAC. A MAC is in every beacon, so a name built from it gives nothing away.
+#  - The passphrase. NEVER derived from the MAC, for exactly that reason --
+#    a derived key is readable by anyone in radio range.
+#  - The country, OPTIONAL. Measured on the same box: with no country set
+#    anywhere and the regulatory domain at 00, both radios came up ENABLED,
+#    2.4 GHz ch 1 and 5 GHz ch 40, capped at 20 dBm. A country is worth having
+#    -- it unlocks DFS, ch 12/13 and 3-6 dB -- but it is not a prerequisite,
+#    and a wrong one is a regulatory answer, so this offers and never guesses.
+#
+# It also turns on ieee80211k and bss_transition per AP. Those are not cosmetic
+# here: without them `measure` is refused and `steer` fails, which is most of
+# what boa does to a radio, and `check` warns about each one separately.
+default_ssid() {
+	local m mac
+	m="$(awk '{print tolower($1)}' /tmp/sysinfo/model 2>/dev/null | tr -cd 'a-z0-9')"
+	[ -n "$m" ] || m=boa
+	mac="$(cat /sys/class/net/br-lan/address 2>/dev/null ||
+	       cat /sys/class/net/eth0/address 2>/dev/null)"
+	mac="$(printf '%s' "$mac" | tr -d ':' | tr 'A-Z' 'a-z' | sed 's/.*\(....\)$/\1/')"
+	[ -n "$mac" ] && printf '%s-%s' "$m" "$mac" || printf '%s' "$m"
+}
+
+ask() {
+	local p="$1" d="$2" a
+	[ -n "$d" ] && printf '%s [%s]: ' "$p" "$d" >&2 || printf '%s: ' "$p" >&2
+	read -r a
+	[ -n "$a" ] || a="$d"
+	printf '%s' "$a"
+}
+
+# The steps that have to happen before an access point can exist, in the order
+# they depend on each other.
+#
+# THE WIZARD DOES THEM, rather than telling an operator which commands to type
+# next. All three verbs are idempotent and say so -- install-drivers reports
+# "nothing to install" when every adapter is driven, install-wpad reports
+# "nothing to do" when the full build is already there, install-mdns the same
+# once umdns is running -- so running them always costs a line of output and
+# nothing else.
+#
+# Drivers first: a radio that has no driver has no phy, so there is no
+# wifi-device for wpad to serve and nothing for the wizard to name. wpad second:
+# without it netifd starts a radio, finds no hostapd to hand it to, and tears it
+# down again every 30 seconds. Measured on the x86-64 guest, where skipping this
+# left two configured radios and `no access point is serving`.
+#
+# mDNS last, and unlike the other two it is a convenience rather than a
+# prerequisite: nothing about an access point depends on it. It runs here
+# because this is the one moment the box is guaranteed to be reachable at a
+# known address, and the next thing that may happen is `convert`, after which
+# the address is the upstream router's business and nobody's guess.
+wizard_prerequisites() {
+	echo "Checking what this device needs first."
+	cmd_install_drivers "$@" 2>&1 | sed 's/^/  /'
+	cmd_install_wpad "$@" 2>&1 | sed 's/^/  /'
+	cmd_install_mdns "$@" 2>&1 | sed 's/^/  /'
+	echo
+}
+
+cmd_wizard() {
+	local dry="" ssid key key2 country cur ifaces devs i d n=0
+	[ "${1:-}" = "--dry-run" ] && dry=1
+
+	# UNATTENDED, when the box has waited and nobody came. Same writes as the
+	# interactive path below, with everything it would have asked either
+	# derived or generated -- never invented. See cmd_firstrun for what is
+	# deliberately left alone: the root password, and convert.
+	if [ "${1:-}" = "--defaults" ]; then
+		local conf="" rootpw="" doconv="" src="generated"
+		conf="$(firstrun_conf_find)" && src="$conf"
+		if [ -n "$conf" ]; then
+			ssid="$(firstrun_conf_get ssid "$conf")"
+			key="$(firstrun_conf_get key "$conf")"
+			country="$(firstrun_conf_get country "$conf" | tr 'a-z' 'A-Z')"
+			rootpw="$(firstrun_conf_get root_password "$conf")"
+			doconv="$(firstrun_conf_get convert "$conf")"
+		fi
+		[ -n "$ssid" ] || ssid="$(default_ssid)"
+		# /dev/urandom through tr, because a box this fresh has no openssl and
+		# no password manager. 16 characters from an unambiguous alphabet: it
+		# gets read off a screen and typed into a phone.
+		[ -n "$key" ] || key="$(tr -dc 'abcdefghjkmnpqrstuvwxyz23456789' < /dev/urandom | head -c 16)"
+		case "$country" in
+			00) echo "firstrun: country '00' is not a country; hostapd rejects it. Ignoring." >&2
+			    country="" ;;
+			''|[A-Z][A-Z]) ;;
+			*)  echo "firstrun: country '$country' is not two letters. Ignoring." >&2
+			    country="" ;;
+		esac
+
+		wizard_prerequisites
+		apply_wizard "$ssid" "$key" "$country" || return 1
+
+		# THE TWO A BOX MAY NOT DECIDE, done here only because a person wrote
+		# them down. Without the file they stay undone and check keeps saying so.
+		rootpw="$(set_root_password "$rootpw" "$src")"
+
+		# Same question the setup page asks: is anything actually serving? An
+		# unattended run has nobody watching it, so a box that configured two
+		# access points and started none would otherwise sit there looking
+		# finished. See #406.
+		local aps
+		aps="$(verify_serving)" || true
+
+		firstrun_note "ran unattended $(date '+%Y-%m-%d %H:%M'), from $src
+  SSID:          $ssid
+  passphrase:    $key
+  country:       ${country:-none -- the world domain, 20 dBm, no DFS}
+  root password: $rootpw
+  serving:       ${aps:-0} access point(s)
+  Change any of it: boa-setup wizard, or Services -> boa setup"
+
+		# Removed once read: it carries a password in clear, and what it did is
+		# recorded above instead.
+		[ -n "$conf" ] && rm -f "$conf"
+
+		# REPORTED, NOT RETIRED. Taking the page down left whoever arrived a
+		# minute later looking at LuCI with no sign anything had happened. It
+		# now says what the box did instead of asking to be set up.
+		cmd_landing done >/dev/null 2>&1
+		echo "No one set this box up, so it brought itself up:"
+		sed 's/^/  /' "$FIRSTRUN_STATE"
+
+		case "$doconv" in
+			1|y|yes|true)
+				echo
+				echo "convert=yes in $src: turning this into a transparent bridge."
+				cmd_convert ;;
+			*) [ -n "$conf" ] && echo "  the bridge was NOT converted (set convert=yes to ask for it)" ;;
+		esac
+		return 0
+	fi
+
+	# Refused rather than half-done: without a terminal every prompt would take
+	# its default silently, and the operator would be told a box was configured
+	# with an SSID and no passphrase that nobody chose.
+	[ -t 0 ] || { echo "boa-setup wizard has to be run interactively (it asks questions)." >&2
+	              echo "Open an ssh session to the device and run it there." >&2; return 1; }
+
+	ifaces="$(uci -q show wireless | sed -n 's/^wireless\.\([^.=]*\)=wifi-iface$/\1/p')"
+	devs="$(uci -q show wireless | sed -n 's/^wireless\.\([^.=]*\)=wifi-device$/\1/p')"
+	[ -n "$devs" ] || { echo "No radios in /etc/config/wireless: nothing to configure." >&2; return 1; }
+
+	echo "boa-setup wizard -- what this device needs before it can serve clients."
+	echo "Blank keeps the value in brackets. Ctrl-C leaves everything unchanged."
+	echo
+
+	cur="$(uci -q get wireless.$(echo "$ifaces" | head -1).ssid)"
+	[ -z "$cur" ] || [ "$cur" = OpenWrt ] && cur="$(default_ssid)"
+	ssid="$(ask 'Wi-Fi network name (SSID)' "$cur")"
+	case "${#ssid}" in 0) echo "An SSID is required." >&2; return 1 ;; esac
+	[ "${#ssid}" -gt 32 ] && { echo "An SSID is at most 32 characters." >&2; return 1; }
+
+	echo "Passphrase: 8-63 characters, or empty for an open network."
+	printf 'Wi-Fi passphrase: ' >&2; read -s -r key; printf '\n' >&2
+	if [ -n "$key" ]; then
+		[ "${#key}" -lt 8 ] || [ "${#key}" -gt 63 ] && {
+			echo "A WPA passphrase is 8 to 63 characters." >&2; return 1; }
+		printf 'Again: ' >&2; read -s -r key2; printf '\n' >&2
+		[ "$key" = "$key2" ] || { echo "They do not match." >&2; return 1; }
+	else
+		echo "  (open network -- anyone in range can join and boa will shape them)"
+	fi
+
+	echo
+	echo "Country unlocks DFS channels, 2.4 GHz ch 12/13 and 3-6 dB of power."
+	echo "Leave it empty and the radios still work, on the world domain's"
+	echo "channels at 20 dBm. A wrong one is a regulatory answer, so it is asked."
+	country="$(ask 'Country code (GB, US, DE, ... or empty)' "$(uci -q get wireless.$(echo "$devs" | head -1).country)")"
+	country="$(printf '%s' "$country" | tr 'a-z' 'A-Z')"
+	case "$country" in
+		'') ;;
+		00) echo "'00' is not a country: hostapd rejects it as an invalid country_code." >&2
+		    echo "Leave it empty instead -- that is the world domain, and it works." >&2; return 1 ;;
+		[A-Z][A-Z]) ;;
+		*)  echo "A country code is two letters." >&2; return 1 ;;
+	esac
+
+	echo
+	echo "About to set, on every access point on this device:"
+	echo "  SSID:       $ssid"
+	echo "  Encryption: $( [ -n "$key" ] && echo 'psk2 (WPA2)' || echo 'none (open)' )"
+	echo "  Country:    ${country:-<unset -- world domain>}"
+	echo "  Also:       radios enabled, ieee80211k and bss_transition on,"
+	echo "              LuCI's check-for-firmware-upgrades popup turned off"
+	[ "$(ask 'Apply' 'yes')" = yes ] || { echo "Nothing changed."; return 0; }
+
+	wizard_prerequisites
+	apply_wizard "$ssid" "$key" "$country" || return 1
+	echo "Configured the access points."
+
+	# LAST, and on purpose: it replaces this session's own credentials. Anything
+	# that failed above is still fixable over the ssh session that is open.
+	case "$(awk -F: '$1 == "root" { print $2 }' /etc/shadow 2>/dev/null)" in
+		''|'*'|'!')
+			echo
+			echo "This device has no root password: anyone on the LAN can log in."
+			passwd root ;;
+		*)  echo "root already has a password (change it with: passwd)" ;;
+	esac
+	cmd_landing off >/dev/null 2>&1
+
+	# THE LAST STEP, and the one that cannot be undone from here: it deletes
+	# the wan interface, moves lan to DHCP and changes the device's address. So
+	# it is asked, never assumed, and the answer defaults to no.
+	echo
+	if [ "$(uci -q get network.lan.proto)" = dhcp ] && [ -z "$(uci -q get network.wan)" ]; then
+		echo "Already a transparent bridge, so there is nothing left to convert."
+	else
+		echo "This device still routes. boa needs a transparent bridge to tell one"
+		echo "client from another -- behind NAT they all leave with one address."
+		echo "Converting interrupts the network and changes this device's address."
+		if [ "$(ask 'Convert it now' 'no')" = yes ]; then
+			cmd_convert
+		else
+			echo "Left as it is. When you want it: boa-setup convert"
+		fi
+	fi
+
+	echo
+	echo "Done. Check it with: boa-setup check"
+	return 0
+}
+
+# The writes themselves, shared by the interactive wizard and --defaults, so
+# the two cannot drift into configuring a box differently.
+# A BAND THE RADIO CAN ACTUALLY SERVE.
+#
+# wifi-scripts picks a new radio's band from what the chip CAN do, and for a
+# Wi-Fi 6E part that is 6 GHz. The mt7921u will not run an access point there
+# -- measured on the x86-64 VM 2026-09-27, where an MT7921AU came up as
+# radio0 with band '6g' and `check` reported it twice over:
+#
+#   WARN  radio0 is set to 6 GHz, where the mt7921u will not run an access point
+#   FAIL  phy2-ap0 is not answering, not serving
+#
+# while the setup page still said "serving on 2 access point(s)", counting the
+# two that worked and never mentioning the third.
+#
+# The radio is not unusable, it is on the wrong band, so it is MOVED rather
+# than skipped: PRD.md:66 -- "Every radio present serves the AP" -- and a
+# three-radio box is meant to come up 2.4 + 5 + 5, which is the arrangement
+# plan-channels is written for. 5 GHz first, because that is where a spare
+# radio is worth having; 2.4 GHz only if the phy has nothing else.
+normalise_bands() {
+	local r band phy moved=0
+	for r in $(uci -q show wireless | sed -n 's/^wireless\.\([^.=]*\)=wifi-device$/\1/p'); do
+		band="$(uci -q get wireless.$r.band)"
+		[ "$band" = 6g ] || continue
+		phy="$(radio_phy "$r")" || continue
+
+		if [ -n "$(phy_channels "$phy" 5)" ]; then
+			uci set wireless.$r.band=5g
+		elif [ -n "$(phy_channels "$phy" 24)" ]; then
+			uci set wireless.$r.band=2g
+		else
+			echo "  $r is on 6 GHz and its radio offers no other band; leaving it alone." >&2
+			continue
+		fi
+		# The channel belonged to the old band. plan-channels gives it a real
+		# one a moment later; 'auto' is what keeps it up in between.
+		uci set wireless.$r.channel=auto
+		echo "  $r was set to 6 GHz, where its driver will not run an access point: moved to $(uci -q get wireless.$r.band)."
+		moved=$((moved + 1))
+	done
+	[ "$moved" -gt 0 ] && uci commit wireless
+	return 0
+}
+
+apply_wizard() {
+	local ssid="$1" key="$2" country="$3" ifaces devs i d n=0
+	ifaces="$(uci -q show wireless | sed -n 's/^wireless\.\([^.=]*\)=wifi-iface$/\1/p')"
+	devs="$(uci -q show wireless | sed -n 's/^wireless\.\([^.=]*\)=wifi-device$/\1/p')"
+	for i in $ifaces; do
+		[ "$(uci -q get wireless.$i.mode)" = ap ] || continue
+		n=$((n + 1))
+		[ -n "$dry" ] && { echo "  uci set wireless.$i.ssid='$ssid' (+encryption, key, 11k/v, disabled=0)"; continue; }
+		uci set wireless.$i.ssid="$ssid"
+		uci set wireless.$i.disabled=0
+		uci set wireless.$i.ieee80211k=1
+		uci set wireless.$i.bss_transition=1
+		if [ -n "$key" ]; then
+			uci set wireless.$i.encryption=psk2
+			uci set wireless.$i.key="$key"
+		else
+			uci set wireless.$i.encryption=none
+			uci -q delete wireless.$i.key
+		fi
+	done
+	[ "$n" -gt 0 ] || { echo "No access-point interfaces found to configure." >&2; return 1; }
+
+	[ -z "$dry" ] && normalise_bands
+
+	for d in $devs; do
+		[ -n "$dry" ] && { echo "  uci set wireless.$d.country='$country' (+disabled=0)"; continue; }
+		uci -q delete wireless.$d.disabled
+		if [ -n "$country" ]; then uci set wireless.$d.country="$country"
+		# An empty answer means the world domain, which is what an ABSENT option
+		# gives. A literal '00' written here is what hostapd refuses to parse, so
+		# the option is deleted rather than blanked.
+		else uci -q delete wireless.$d.country; fi
+	done
+
+	if [ -n "$dry" ]; then
+		echo "  uci commit wireless && wifi"
+		[ "$(uci -q get system.@system[0].hostname)" != "$(mdns_hostname "$ssid")" ] &&
+			echo "  uci set system.@system[0].hostname='$(mdns_hostname "$ssid")' (+umdns restart)"
+		[ -z "$(uci -q get attendedsysupgrade.client.login_check_for_upgrades)" ] &&
+			echo "  uci set attendedsysupgrade.client.login_check_for_upgrades='0'"
+		echo "  passwd   (asked for separately, interactively)"
+		echo "--dry-run: nothing changed."
+		return 0
+	fi
+
+	# Before the wifi reload, not after: the reload takes seconds and an
+	# operator watching for the name to appear should not be waiting on radios.
+	set_hostname "$(mdns_hostname "$ssid")"
+
+	uci commit wireless
+	echo "Reloading Wi-Fi..."
+	# NOT A GIVEN. A stock OpenWrt x86 image has no `wifi` at all -- measured on
+	# the 25.12.5 guest, where wifi-scripts, wpad and hostapd were all absent
+	# until a radio driver pulled them in. Nothing here reaches this line on a
+	# box with no access points, so today it is guarded by accident; said out
+	# loud rather than relying on that.
+	if command -v wifi >/dev/null 2>&1; then
+		# ubus objects for a radio appear as it comes up, so a reload can ask
+		# for one a moment early and print `Command failed: Not found` from
+		# /bin/ubus. Harmless -- the radios come up -- but it reads as an error
+		# an operator should act on, and there is nothing to act on.
+		wifi 2>&1 | grep -v '^Command failed: Not found$'
+	else
+		echo "  no 'wifi' command on this device, so the radios were not reloaded." >&2
+		echo "  It arrives with wifi-scripts, which a radio driver pulls in." >&2
+	fi
+	echo "Configured $n access point(s)."
+
+	# LuCI's firmware-upgrade dialog, which asks on EVERY Status -> Overview
+	# load until it is answered once. It is driven by the preference being
+	# UNSET, not by checking being enabled -- 0 is "do not check", 1 is "check
+	# and notify", and absent is "ask me again". A factory-reset box is absent,
+	# so the popup is the default experience and the `Close` button dismisses
+	# it without recording anything.
+	#
+	# Off, because answering yes has LuCI fetch .versions.json, a profiles.json
+	# and the sysupgrade API from the downloads site every time that page is
+	# opened, and a box sitting on a bench conditioning traffic should not make
+	# outbound calls nobody asked for. Only when UNSET: an operator who turned
+	# checking on meant it.
+	if [ -z "$(uci -q get attendedsysupgrade.client.login_check_for_upgrades)" ]; then
+		uci set attendedsysupgrade.client.login_check_for_upgrades='0'
+		uci commit attendedsysupgrade
+		echo "Turned off LuCI's check-for-firmware-upgrades popup."
+	fi
+
+	return 0
+}
+
+# --- first run ---------------------------------------------------------------
+#
+# The box waits a couple of minutes for somebody to set it up, and gets on with
+# it if nobody does.
+#
+# WHAT "DEFAULTS" CAN AND CANNOT BE. Two of the steps a person does are not
+# things a box may decide on its own:
+#
+#  - The ROOT PASSWORD stays unset. A random one would lock the operator out of
+#    their own device -- there is no screen to read it from and no label to
+#    print it on. `check` goes on failing until a person sets one, which is the
+#    honest state.
+#  - `convert` is NOT run. It changes the device's address and takes the
+#    network down with it; unattended that can strand the box somewhere nobody
+#    can reach. See the comment above cmd_convert.
+#
+# What it does do is bring the radios up so the box is useful:
+#
+#  - SSID from the board name and the LAN MAC, as the wizard derives it.
+#  - A RANDOM passphrase, per device, recorded where the operator can read it.
+#    Not a fixed default: that is published credentials on every unit, and not
+#    derived from the MAC, which is in every beacon.
+#  - No country, so the world domain applies -- measured: both bands come up at
+#    20 dBm. Guessing a country is a regulatory answer, not a default.
+# A FILE THE OWNER WROTE, which is different from a default the box invented.
+#
+# This is what lets an unattended first boot finish the job. Everything the
+# wizard asks can be answered here, INCLUDING the two things a box may not
+# decide for itself -- the root password, and whether to convert -- because a
+# file is a person's instruction, not a guess.
+#
+# Looked for in the order below. /boot is first because on x86 and the Pi the
+# partition is mountable from another machine, so the file can be dropped in
+# before the device has ever been switched on -- the same trick as a Pi's
+# userconf. On a device with no removable media it is baked into the image, or
+# copied over before the first boot.
+#
+# Keys, all optional:
+#
+#	ssid=bench-3
+#	key=a passphrase, 8-63 characters
+#	country=GB              omit for the world domain
+#	root_password=...       omitted leaves the box open, and check keeps failing
+#	convert=yes             turn the device into a transparent bridge
+#
+# Anything absent falls back to what the box would have chosen on its own. The
+# file is REMOVED once read, because it carries a password in clear and its
+# work is done -- what it did is recorded in the firstrun state instead.
+FIRSTRUN_CONF_PATHS="/boot/boa-firstrun.conf /etc/boa-firstrun.conf"
+
+# Reads one key, never sourcing the file: it is data somebody dropped on a
+# partition, and `.` would run whatever was in it as root.
+firstrun_conf_get() {
+	local f="$2"
+	sed -n "s/^[[:space:]]*$1[[:space:]]*=[[:space:]]*//p" "$f" 2>/dev/null | head -1
+}
+
+firstrun_conf_find() {
+	local f
+	for f in $FIRSTRUN_CONF_PATHS; do
+		[ -r "$f" ] && { echo "$f"; return 0; }
+	done
+	return 1
+}
+
+FIRSTRUN_STATE=/etc/infinite-streaming-boa/firstrun
+FIRSTRUN_WAIT=120
+
+# Where a detached `apply` writes, and the line it ends with. The path is FIXED
+# rather than a mktemp: the LuCI ACL names the exact command it may run and the
+# exact file it may read, so there is no wildcard for anything else to slip
+# through. The sentinel is how the page tells "still installing" from
+# "finished", which a log that simply stops growing cannot.
+# FOR THE POST-MORTEM, not for the operator.
+#
+# /tmp is a tmpfs: the log of the run that broke a box is gone the moment the
+# box reboots, which is exactly when it is wanted. Measured 2026-09-27 -- a run
+# ended with a device that emitted no packets on either NIC, and there was
+# nothing left anywhere to say what it had done. The last run is kept in /etc
+# so it survives, and every step is also announced to syslog, which persists
+# independently and interleaves with netifd and hostapd -- the two things most
+# likely to be involved when this goes wrong.
+#
+# It carries no secrets: the answers file is deleted before the slow work
+# starts, and nothing below echoes a passphrase. Mode 600 regardless.
+LAST_LOG=/etc/infinite-streaming-boa/last-apply.log
+
+# One line to syslog, tagged, so `logread -e boa-setup` is the whole story.
+say() {
+	logger -t boa-setup "$*" 2>/dev/null || true
+}
+
+keep_log() {
+	[ -f "$APPLY_LOG" ] || return 0
+	mkdir -p "$(dirname "$LAST_LOG")"
+	cp "$APPLY_LOG" "$LAST_LOG" 2>/dev/null && chmod 600 "$LAST_LOG"
+	return 0
+}
+
+APPLY_LOG=/tmp/boa-apply.log
+APPLY_ANSWERS=/tmp/boa-wizard.conf
+APPLY_DONE=__BOA_APPLY_DONE
+
+# WHERE SETUP HAD GOT TO, across a reboot.
+#
+# Installing a radio driver needs one: the module is loaded before its firmware
+# is unpacked and the probe is never retried, so the radios do not appear until
+# the box restarts. That restart takes the setup page with it, and an operator
+# who comes back to a page that has forgotten everything is looking at the same
+# "no radios" screen they started from, with no way to tell whether their last
+# click did anything.
+#
+# So it is written to /etc rather than /tmp, which is a tmpfs and would not
+# survive the one event this exists for.
+SETUP_STAGE=/etc/infinite-streaming-boa/setup-stage
+
+stage_set()   { mkdir -p "$(dirname "$SETUP_STAGE")"; printf '%s\n' "$1" > "$SETUP_STAGE"; say "stage: $1"; }
+stage_clear() { [ -f "$SETUP_STAGE" ] && say "stage: cleared"; rm -f "$SETUP_STAGE"; return 0; }
+
+# SELF-HEALING, so the page needs one call and no rules of its own. A stage is
+# a claim about what still has to happen; when the box can be seen to have done
+# it, the claim is stale and is dropped here rather than left for every caller
+# to reason about.
+stage_get() {
+	local s
+	s="$(cat "$SETUP_STAGE" 2>/dev/null)" || { echo none; return 0; }
+	case "$s" in
+		reboot-for-drivers)
+			# ASK THE SAME QUESTION install-drivers ASKED, not an easier one.
+			# This used to clear as soon as ANY wifi-device existed, which is
+			# wrong the moment a device has two adapters: measured 2026-09-27
+			# with a USB mt7921u and a PCI MT7915E, the USB radio probed at
+			# once, a wifi-device appeared, and the stage cleared while the
+			# PCI radio was still bare and still needed the reboot.
+			STILL_BARE=""
+			walk_adapters note_if_still_bare 2>/dev/null
+			if [ -z "$STILL_BARE" ]; then
+				stage_clear; echo none; return 0
+			fi ;;
+	esac
+	echo "$s"
+}
+
+cmd_stage() {
+	case "${1:-get}" in
+		get)   stage_get ;;
+		clear) stage_clear ;;
+		*)     echo "usage: boa-setup stage get|clear" >&2; return 2 ;;
+	esac
+}
+
+firstrun_note() { mkdir -p "$(dirname "$FIRSTRUN_STATE")"; printf '%s\n' "$1" > "$FIRSTRUN_STATE"; chmod 600 "$FIRSTRUN_STATE"; }
+
+# --- apply --------------------------------------------------------------------
+
+# Everything the wizard collects, applied without asking anything.
+#
+# THE LUCI PAGE CALLS THIS rather than writing uci itself. It used to be a
+# second implementation of apply_wizard written in JavaScript, and it had
+# already drifted from this one in five ways: no prerequisites, so a box with
+# no wpad configured two access points that netifd immediately tore down; no
+# hostname and no mDNS; no verification, so it reported success over a box
+# serving nothing; and no convert, so a web-only owner never got a bridge.
+# One implementation, and the web path inherits everything the shell path has
+# learned -- including the measurements written into these comments. See #406.
+#
+# THE ANSWERS ARRIVE IN A FILE, not in argv. A passphrase and a root password
+# on a command line are readable by anyone who can list /proc for as long as
+# the command runs, and this one runs for minutes while it installs packages.
+# The file is the same key=value format as boa-firstrun.conf, read by the same
+# parser, and is deleted as soon as it has been read -- before any of the slow
+# work starts, so it is not sitting there for the length of an apk install.
+cmd_apply() {
+	local conf="${1:-}" dry="" ssid key country rootpw doconv n
+	[ -n "$conf" ] || { echo "usage: boa-setup apply <answers-file> [--background]" >&2; return 2; }
+	[ -r "$conf" ] || { echo "boa-setup apply: cannot read $conf" >&2; return 1; }
+
+	# DETACHED, because this takes minutes and its caller cannot wait.
+	#
+	# The work below installs packages -- drivers, wpad, umdns -- over whatever
+	# uplink the box has. rpcd's exec has a timeout and the browser has its own,
+	# and a setup that is still installing when one of them fires looks to the
+	# operator exactly like a setup that hung. Measured on the x86-64 VM: the
+	# driver install alone pulled 28 packages.
+	#
+	# So the caller gets the log path back immediately and follows the file.
+	# setsid, because rpcd reaps the process group when the exec call returns,
+	# which would kill the install halfway through.
+	if [ "${2:-}" = --background ]; then
+		rm -f "$APPLY_LOG"
+		: > "$APPLY_LOG"
+		chmod 600 "$APPLY_LOG"
+		say "apply: starting (detached), log $APPLY_LOG"
+		setsid sh -c '{ "$1" apply "$2"; rc=$?; printf "'"$APPLY_DONE"' rc=%s\n" "$rc"; \
+		               "$1" keep-log; logger -t boa-setup "apply: finished rc=$rc"; } >> "$3" 2>&1' \
+			sh "$0" "$conf" "$APPLY_LOG" </dev/null >/dev/null 2>&1 &
+		echo "$APPLY_LOG"
+		return 0
+	fi
+
+	ssid="$(firstrun_conf_get ssid "$conf")"
+	key="$(firstrun_conf_get key "$conf")"
+	country="$(firstrun_conf_get country "$conf" | tr 'a-z' 'A-Z')"
+	rootpw="$(firstrun_conf_get root_password "$conf")"
+	doconv="$(firstrun_conf_get convert "$conf")"
+	rm -f "$conf"
+
+	# Validated here as well as in the form. The form is one caller, and a
+	# value that reaches hostapd malformed takes the radios down rather than
+	# being rejected: '00' in particular is refused as an invalid country_code
+	# and the access point never starts.
+	[ -n "$ssid" ] || { echo "An SSID is required." >&2; return 1; }
+	[ "${#ssid}" -gt 32 ] && { echo "An SSID is at most 32 characters." >&2; return 1; }
+	if [ -n "$key" ]; then
+		[ "${#key}" -lt 8 ] || [ "${#key}" -gt 63 ] && {
+			echo "A WPA passphrase is 8 to 63 characters." >&2; return 1; }
+	fi
+	case "$country" in
+		'') ;;
+		00) echo "'00' is not a country: hostapd rejects it as an invalid country_code." >&2
+		    echo "Leave it empty instead -- that is the world domain, and it works." >&2; return 1 ;;
+		[A-Z][A-Z]) ;;
+		*)  echo "A country code is two letters, or empty." >&2; return 1 ;;
+	esac
+
+	say "apply: ssid='$ssid' country='${country:-none}' convert='${doconv:-no}'"
+	wizard_prerequisites
+	apply_wizard "$ssid" "$key" "$country" || { say "apply: apply_wizard FAILED"; return 1; }
+
+	rootpw="$(set_root_password "$rootpw" 'the setup page')"
+
+	# 36 and 149 for the first two 5 GHz radios, 6/1/11 for 2.4 GHz. Without
+	# this a box with two 5 GHz radios can bring both up on the same channel,
+	# where they share one channel's airtime and each makes the other look slow.
+	#
+	# BEFORE convert, not after. It reloads wifi, and convert tears the network
+	# down and rebuilds it -- doing both at once, in that order, is how this
+	# run ended with a box that emitted no packets at all on either NIC and had
+	# to be reset. Whether the reload was the cause was never established,
+	# because the guest has no console to post-mortem from; what is certain is
+	# that convert should be the LAST thing that happens, since everything
+	# after it runs on a network that has just been rebuilt.
+	# LET THE RADIOS FINISH COMING UP FIRST.
+	#
+	# plan-channels only plans for radios that are serving, and a radio that
+	# is still starting is not. Measured 2026-09-27 on a three-radio box: run
+	# straight after the wifi reload, one 5 GHz radio was skipped because it
+	# had not registered yet, so it never reserved a channel -- and both 5 GHz
+	# radios ended up on 36, which is the exact collision this planner exists
+	# to prevent. The same wait the count uses, for the same reason.
+	verify_serving >/dev/null || true
+
+	echo
+	say "apply: planning channels"
+	cmd_plan_channels
+
+	# COUNTED LAST, after everything that touches a radio.
+	#
+	# This used to run before plan-channels, which reloads wifi -- so it
+	# measured a state that was about to be torn down and rebuilt, and
+	# reported whichever radios happened to be up at that instant. Measured
+	# 2026-09-27 on a three-radio box: it said 1, then 2 once it waited for the
+	# count to settle, while three were serving. Nothing after this line
+	# touches the radios, so this is the first point at which the answer is
+	# stable.
+	echo
+	if n="$(verify_serving)"; then
+		echo "Serving: $n access point(s) are up."
+		say "apply: serving $n access point(s)"
+	else
+		echo "WARNING: the settings were written, but NO access point is serving." >&2
+		echo "The radios were configured and reloaded, and hostapd registered none." >&2
+		echo "Find out why with:  boa-setup check, and boa-setup logs" >&2
+		say "apply: NO access point is serving"
+	fi
+
+	firstrun_note "set up $(date '+%Y-%m-%d %H:%M') from the setup page
+  SSID:          $ssid
+  country:       ${country:-none -- the world domain, 20 dBm, no DFS}
+  root password: $rootpw
+  serving:       ${n:-0} access point(s)
+  Change any of it: boa-setup wizard, or Services -> boa setup"
+
+	cmd_landing done >/dev/null 2>&1
+
+	case "$doconv" in
+		1|y|yes|true)
+			echo
+			echo "convert=yes: turning this into a transparent bridge."
+			say "apply: converting to a bridge -- the network restarts here"
+			cmd_convert
+			say "apply: convert returned $?" ;;
+	esac
+
+	echo
+	boa_url
+	return 0
+}
+
+# WHERE TO FIND THE BOX NOW.
+#
+# Setup starts on the factory address and convert moves the device off it, so
+# the browser finishes on an address that is no longer the device's -- and the
+# obvious link, the one relative to the page, points straight back at it.
+# Measured 2026-09-27: after convert the MacBook driving the wizard renewed
+# onto the upstream subnet and could no longer reach the old address at all,
+# because the rescue address only answers to something still on that subnet.
+#
+# The NAME is preferred over the lease. The lease is the upstream router's to
+# change and it does; the name is not, which is what umdns was installed for a
+# few lines earlier. The addresses are printed too, because mDNS is not
+# guaranteed on every client.
+boa_url() {
+	local port name ip rescue addrs i=0
+	port="$(uci -q get boa.main.addr)"; port="${port##*:}"
+	[ -n "$port" ] || port=8080
+
+	if apk info 2>/dev/null | grep -qx umdns; then
+		name="$(uci -q get system.@system[0].hostname)"
+		[ -n "$name" ] && name="$name.local"
+	fi
+
+	# Waited for: convert has just restarted the network, and the lease that
+	# replaces the static address takes a moment to arrive. Reading once here
+	# would print the rescue address as though it were the answer.
+	# network.rescue is what convert leaves behind. The value can carry a
+	# prefix length -- lan.ipaddr is '192.168.1.1/24' on this image, which
+	# already broke one comparison written against the bare address -- so the
+	# suffix is stripped before it is compared with anything.
+	rescue="$(uci -q get network.rescue.ipaddr)"; rescue="${rescue%%/*}"
+	while [ "$i" -lt 20 ]; do
+		addrs="$(ip -4 -o addr show br-lan 2>/dev/null | awk '{print $4}' | cut -d/ -f1)"
+		ip="$(printf '%s\n' $addrs | grep -v "^${rescue:-__none__}$" | head -1)"
+		[ -n "$ip" ] && break
+		i=$((i + 1)); sleep 1
+	done
+	[ -n "$ip" ] || ip="$(printf '%s\n' $addrs | head -1)"
+
+	# A machine-readable line for the setup page, which uses it for its
+	# "Open boa" button so the operator is not sent back to an address the
+	# device has just stopped using. Hidden from the page's own log view.
+	[ -n "$name" ] && printf '__BOA_URL http://%s:%s/\n' "$name" "$port" \
+	                || printf '__BOA_URL http://%s:%s/\n' "$ip" "$port"
+
+	echo "Open boa at:"
+	[ -n "$name" ] && echo "  http://$name:$port/     (this name follows the device if its address changes)"
+	for a in $addrs; do
+		if [ "$a" = "$rescue" ]; then
+			echo "  http://$a:$port/     (rescue address -- only from a host on that subnet)"
+		else
+			echo "  http://$a:$port/"
+		fi
+	done
+	return 0
+}
+
+cmd_firstrun() {
+	case "${1:-status}" in
+		status)
+			if [ -f "$FIRSTRUN_STATE" ]; then sed 's/^/  /' "$FIRSTRUN_STATE"; else echo "  armed: nothing has run yet"; fi
+			return 0 ;;
+		cancel)
+			# Somebody turned up. Opening the wizard is what calls this, so the
+			# countdown stops the moment a person is looking at it.
+			firstrun_note "cancelled: an operator opened the setup page"
+			return 0 ;;
+		wait)
+			# Counted FROM BOOT, not from a page load: the window is the one
+			# after the network comes up, whether or not anyone is watching.
+			sleep "$FIRSTRUN_WAIT"
+			[ -f "$FIRSTRUN_STATE" ] && return 0
+			cmd_wizard --defaults
+			return 0 ;;
+		now|--force|force)
+			# GUARDED, because this verb is destructive and reads as harmless.
+			# It reassigns the SSID and passphrase, so on a box that has already
+			# been set up it drops every associated client and hands back
+			# credentials nobody has. Measured 2026-09-25: running it a second
+			# time to count some output silently replaced a file-driven
+			# configuration with a fresh random one.
+			#
+			# The timed path has always checked this; the verb an operator types
+			# did not, which is the wrong way round.
+			if [ "${1:-}" = now ] && [ -f "$FIRSTRUN_STATE" ]; then
+				echo "This device has already been set up:" >&2
+				sed 's/^/  /' "$FIRSTRUN_STATE" >&2
+				echo >&2
+				echo "Running this again would give it a new SSID and passphrase, and every" >&2
+				echo "client on it would drop. To change something, use the wizard:" >&2
+				echo "  boa-setup wizard          (or Services -> boa setup)" >&2
+				echo "To do it anyway: boa-setup firstrun --force" >&2
+				return 1
+			fi
+			cmd_wizard --defaults; return 0 ;;
+		*) echo "usage: boa-setup firstrun status|cancel|now|--force" >&2; return 2 ;;
+	esac
+}
+
+# --- landing -----------------------------------------------------------------
+#
+# Whether http://<this box>/ shows the setup page or LuCI.
+#
+# uhttpd serves the first file in `index_page` that exists, so naming ours
+# ahead of LuCI's index.html takes the web root WITHOUT touching a file another
+# package owns -- /www/index.html belongs to luci-base, and overwriting it
+# would be modified-by-hand as far as apk is concerned and reverted by the next
+# upgrade.
+#
+# RETIRED, NOT DELETED. The wizard turns this off when it has run, so the
+# address goes back to meaning LuCI. The page itself stays on disk and the
+# wizard stays in the menu at Services -> boa setup, because coming back later
+# to change a passphrase or a country is an ordinary thing to want -- `landing
+# on` puts the front door back for anyone who would rather have it.
+LANDING_PAGE=boa-setup.html
+
+# ON, DONE or OFF -- and "done" is a fact about the device, not about uhttpd.
+#
+# This used to read the state out of index_page, which worked only while the
+# summary page sat there holding the door. Now that the front door goes back to
+# LuCI when setup finishes, index_page cannot tell "finished" from "never had a
+# landing page", so the first-run record answers it instead: that is the thing
+# that actually records whether setup has run.
+landing_state() {
+	case " $(uci -q get uhttpd.main.index_page) " in
+		*" $LANDING_PAGE "*)       echo on ;;
+		*" boa-setup-done.html "*) echo done ;;   # older boxes, before the summary left index_page
+		*) [ -f "$FIRSTRUN_STATE" ] && echo done || echo off ;;
+	esac
+}
+
+cmd_landing() {
+	local want="${1:-status}" cur
+	cur="$(landing_state)"
+	case "$want" in
+		status)
+			echo "landing page: $cur"
+			[ -f "/www/$LANDING_PAGE" ] || echo "  (the page itself is missing: reinstall luci-app-boa)"
+			return 0 ;;
+		on)
+			[ "$cur" = on ] && { echo "Already on: / shows the setup page."; return 0; }
+			# Rebuilt rather than appended to: index_page is unset on a stock box,
+			# where uhttpd falls back to index.html on its own. Naming both, in
+			# order, means ours wins while it exists and LuCI's takes over the
+			# moment it does not -- no list that depends on a file having been
+			# deleted.
+			uci -q delete uhttpd.main.index_page
+			uci add_list uhttpd.main.index_page="$LANDING_PAGE"
+			uci add_list uhttpd.main.index_page='index.html'
+			uci commit uhttpd
+			/etc/init.d/uhttpd reload >/dev/null 2>&1
+			echo "On: http://<this box>/ now shows the setup page."
+			return 0 ;;
+		done)
+			# NOT RETIRED, REPORTED. A box that set itself up used to take the
+			# front door down, so whoever wandered over a minute later found
+			# LuCI and no sign anything had been offered or done. The page
+			# stays; it just stops claiming the box is unconfigured.
+			#
+			# THE PASSPHRASE IS NOT ON IT. The firstrun record is root-only for
+			# a reason, and after `convert` this web root is reachable from the
+			# whole upstream network -- publishing the Wi-Fi key there would
+			# hand it to anyone who can load a page. The page says where to
+			# read it instead, which is the same bar as the root password.
+			[ -f "$FIRSTRUN_STATE" ] || { echo "Nothing has run yet; leaving the setup page as it is." >&2; return 1; }
+			{
+				# THE HEADING FOLLOWS WHAT ACTUALLY HAPPENED. This page is
+				# written by both paths, and it used to say "this box set
+				# itself up -- nobody was here" even when somebody had just
+				# sat and filled the form in, which reads as the box ignoring
+				# them. The first line of the record says which it was.
+				if head -1 "$FIRSTRUN_STATE" | grep -q 'ran unattended'; then
+					head='This box set itself up'
+					sub='Nobody was here, so it used the answers it was given'
+				else
+					head='This box is set up'
+					sub='These are the settings it was given'
+				fi
+				sed -n '1,/^  <div class="card">/p' /www/boa-setup.html |
+					sed "s/<h1>Set up this box<\/h1>/<h1>$head<\/h1>/"
+				echo "    <h2>$sub</h2>"
+				echo '    <pre style="white-space:pre-wrap;font:13px\/1.5 ui-monospace,Menlo,monospace;color:var(--dim)">'
+				grep -v '^  passphrase:' "$FIRSTRUN_STATE" | sed 's/&/\&amp;/g; s/</\&lt;/g'
+				echo '    </pre>'
+				echo '    <p>The passphrase is not shown here: this page is readable by anyone who'
+				echo '       can reach the box. Read it with <code>boa-setup firstrun status</code>.</p>'
+				echo '    <a class="go" href="/cgi-bin/luci/admin/services/boa_wizard">Change any of it</a>'
+				echo '  </div>'
+				echo '  <p class="note">This page goes away for good with <code>boa-setup landing off</code>.</p>'
+				echo '</main></body></html>'
+			} > /www/boa-setup-done.html
+			# READABLE BY THE WEB SERVER, explicitly.
+			#
+			# This inherits the umask of whoever called it, and cmd_apply runs
+			# under `umask 077` so the answers file it writes is root-only. The
+			# page came out 0600, uhttpd could not read it, and because it is
+			# first in index_page the whole document root answered 403 -- so
+			# http://<box>/ said "you don't have permission to access /" on a
+			# box that had just set itself up perfectly. Measured 2026-09-27.
+			chmod 644 /www/boa-setup-done.html
+
+			# AND THE FRONT DOOR GOES BACK TO LuCI.
+			#
+			# The landing page promises this in as many words -- "afterwards
+			# this address goes back to LuCI, and the setup page stays at
+			# Services -> boa setup" -- and for a while it did not: the summary
+			# was left sitting on index_page, so http://<box>/ kept answering
+			# with a setup page on a device that was finished. A page that
+			# contradicts itself is worse than either behaviour.
+			#
+			# The summary is still written, and still reachable at its own
+			# address for anyone who wants to read what the box did; it just
+			# stops standing in the doorway.
+			uci -q delete uhttpd.main.index_page
+			uci add_list uhttpd.main.index_page='index.html'
+			uci commit uhttpd
+			/etc/init.d/uhttpd reload >/dev/null 2>&1
+			echo "The setup page now reports what the box did, instead of asking."
+			return 0 ;;
+		off)
+			[ "$cur" = off ] && { echo "Already off: / shows LuCI."; return 0; }
+			uci del_list uhttpd.main.index_page='boa-setup-done.html' 2>/dev/null
+			uci del_list uhttpd.main.index_page="$LANDING_PAGE"
+			uci commit uhttpd
+			/etc/init.d/uhttpd reload >/dev/null 2>&1
+			echo "Off: / goes back to LuCI. The setup page stays at Services -> boa setup."
+			return 0 ;;
+		*)
+			echo "usage: boa-setup landing on|done|off|status" >&2
+			return 2 ;;
+	esac
 }
 
 # --- convert -----------------------------------------------------------------
@@ -1011,20 +2108,56 @@ case "${1:-}" in
 	check)   cmd_check ;;
 	convert) cmd_convert "${2:-}" ;;
 	plan-channels) cmd_plan_channels "${2:-}" ;;
-	install-drivers) cmd_install_drivers "${2:-}" ;;
+	install-drivers) shift; cmd_install_drivers "$@" ;;
 	install-wpad)    shift; cmd_install_wpad "$@" ;;
+	install-mdns)    shift; cmd_install_mdns "$@" ;;
+	apply)           shift; cmd_apply "$@" ;;
+	keep-log)        keep_log ;;
+	logs)            echo "--- $LAST_LOG ---"; cat "$LAST_LOG" 2>/dev/null || echo "(none)"
+	                 echo; echo "--- syslog ---"; logread -e boa-setup 2>/dev/null | tail -60 ;;
+	stage)           cmd_stage "${2:-get}" ;;
+	wizard)  cmd_wizard "${2:-}" ;;
+	landing) cmd_landing "${2:-}" ;;
+	firstrun) cmd_firstrun "${2:-}" ;;
 	*)
-		echo "usage: boa-setup check | convert [--dry-run] | plan-channels [--dry-run]" >&2
-		echo "                | install-drivers [--dry-run] | install-wpad [--dry-run] [--force]" >&2
+		echo "usage: boa-setup check | wizard [--dry-run] | convert [--dry-run]" >&2
+		echo "                | plan-channels [--dry-run] | install-drivers [--dry-run]" >&2
+		echo "                | install-wpad [--dry-run] [--force]" >&2
+		echo "                | install-mdns [--dry-run]" >&2
 		echo "  check          read-only: what this device still needs before boa can run on it" >&2
+		echo "  wizard         ask for the SSID, passphrase, country and root password a fresh" >&2
+		echo "                 device needs, and set them. Over the wired LAN: a fresh device" >&2
+		echo "                 has its radios disabled, so there is no network to join." >&2
 		echo "  convert        turn a stock OpenWrt router into the transparent bridge boa needs." >&2
 		echo "                 Interrupts the network and changes the device's address. Never" >&2
 		echo "                 runs on its own -- see the comment above cmd_convert for why." >&2
+		echo "  firstrun       status | cancel | now. The box waits two minutes from boot" >&2
+		echo "                 for somebody to set it up, then brings the radios up itself" >&2
+		echo "                 with a random passphrase. It never sets a root password or" >&2
+		echo "                 converts the bridge: both wait for a person." >&2
+		echo "  landing        whether http://<this box>/ shows the setup page or LuCI." >&2
+		echo "                 on | off | status. Turned off once the wizard has run." >&2
 		echo "  plan-channels  give each serving radio a channel that does not clash with the" >&2
 		echo "                 others: 36 and 149 for the first two 5 GHz radios, 6/1/11 for" >&2
 		echo "                 2.4 GHz. Reloads Wi-Fi, so associated clients reconnect." >&2
 		echo "  install-drivers" >&2
 		echo "                 install the kmod packages for USB adapters that have no" >&2
 		echo "                 driver. Drivers only; the wpad swap stays in your hands." >&2
+		echo "  stage          get | clear -- what setup still has to do, across a reboot." >&2
+		echo "                 Today the only one is reboot-for-drivers, set when a driver" >&2
+		echo "                 installed but its radio needs a restart to appear. It clears" >&2
+		echo "                 itself once the radios are there." >&2
+		echo "  logs           the last setup run and everything boa-setup told syslog." >&2
+		echo "                 The run log lives in /tmp and dies with a reboot, so the" >&2
+		echo "                 last one is kept in /etc -- read this first when a box" >&2
+		echo "                 came back from setup wrong." >&2
+		echo "  apply          apply a whole setup from a key=value answers file, without" >&2
+		echo "                 asking: the same keys as boa-firstrun.conf. This is what" >&2
+		echo "                 Services -> boa setup calls; the file is deleted as it is" >&2
+		echo "                 read, because it carries passwords in clear." >&2
+		echo "  install-mdns   install umdns, so the box answers to <hostname>.local. The" >&2
+		echo "                 wizard names it after the SSID -- openwrt-ubuntu1263.local" >&2
+		echo "                 -- and the name keeps working after convert, when the" >&2
+		echo "                 address does not. The wizard runs this itself." >&2
 		exit 2 ;;
 esac

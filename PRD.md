@@ -1557,6 +1557,52 @@ damages packets, never link state.
   both Wi-Fi and cable is two paths, and only the one carrying the client's own
   address is conditioned by that client's policy.
 
+### 6.8 First run
+
+A device fresh from a flash is not yet a boa box: it has **no root password**,
+and every `wifi-iface` ships `option disabled '1'`. It cannot be set up over the
+air, because there is no access point to join, and it cannot be left as it is,
+because an open door is not a configuration.
+
+- **Setup happens over the wired LAN, and that is not a preference.** There is no
+  radio to join before setup, and applying takes every radio down and back up, so
+  a browser on Wi-Fi would cut itself off part-way through. The page says so.
+- **The device's own address shows the setup page until it is set up**, and goes
+  back to LuCI afterwards. A box that has been configured must not keep offering
+  to configure itself, and an operator who reaches the address later expects the
+  interface, not the wizard.
+- **The setup page is reachable without logging in while — and only while —
+  there is no password.** Asking an operator to type nothing into a password box,
+  under an "Authorization Required" heading, to reach the page that sets the
+  password, is a wrong turn that looks like a fault. This grants nothing that was
+  not already granted, and it stops working the moment a root password exists.
+- **It asks four things**: network name, passphrase, country, and a root
+  password. The root password is the step that closes the open door above, so it
+  is part of setup rather than something to remember afterwards.
+- **Anything missing is installed, not printed.** Radio drivers, `wpad` with the
+  authentication the access point needs, and mDNS are installed by the box during
+  setup. A command for an operator to retype is a step that can be skipped,
+  mistyped, or run against the wrong device.
+- **Setup is one process, and it survives a reboot.** A driver installation that
+  needs a restart returns to the step it left, rather than to the beginning or to
+  a page that has forgotten what it was doing.
+- **It ends by naming where the device now is.** Applying changes the address —
+  a bridged box takes a lease from the upstream network — so the last thing
+  setup does is state the name and URL the device answers to, rather than leaving
+  an operator to find a box that has moved.
+- **The box answers to a name, not only an address**, before and after setup, so
+  it can be found on a network whose DHCP server the box does not control.
+- **A box nobody configures brings itself up anyway.** If setup is not completed,
+  the device applies a default configuration after a short wait, so an unattended
+  flash ends with a working box rather than an indefinitely open one. An owner
+  who wants a specific configuration can write one to a file the first run reads,
+  and a device that is already set up refuses to run first-run again.
+- **Conditioning is offered during setup, not after.** Becoming a transparent
+  bridge is what makes the device a boa box rather than an access point, so it is
+  the default, and it can be declined and done later.
+- **The setup page remains available** once the device is configured, so the same
+  answers can be changed without a reflash.
+
 ## 7) Constraints & Accepted Limitations
 
 - **Clients depend on upstream DHCP.** Being invisible means issuing no

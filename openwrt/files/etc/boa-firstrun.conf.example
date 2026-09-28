@@ -1,0 +1,52 @@
+# boa-firstrun.conf -- what this device should set itself up as.
+#
+# Copy to one of these, WITHOUT the .example, before the first boot:
+#
+#   /boot/boa-firstrun.conf      on x86 and the Pi, where the partition can be
+#                                mounted from another machine and the file
+#                                written before the device is ever switched on
+#   /etc/boa-firstrun.conf       anywhere else: baked into the image, or copied
+#                                over before the box is set up
+#
+# The box waits two minutes from boot for somebody to open the setup page. If
+# nobody does, it reads this file and brings itself up from it.
+#
+# Every key is optional. Anything left out falls back to what the box would
+# have chosen on its own -- a file naming only an SSID still gets a generated
+# passphrase, so a half-filled file is not a half-configured box.
+#
+# THE FILE IS DELETED once it has been read: it carries a password in clear and
+# its work is done. What it did is recorded in
+# /etc/infinite-streaming-boa/firstrun instead, readable by root only.
+
+# The network name. Left out, the box derives one from its board name and the
+# last two octets of its LAN MAC -- cudy-3f16, qemu-1252. A MAC is in every
+# beacon, so a name built from one gives nothing away.
+#ssid=bench-3
+
+# The passphrase, 8 to 63 characters. Left out, the box generates a random one
+# per device and writes it into the firstrun record above, where you can read
+# it over the wire. NEVER derived from the MAC, which anyone in radio range
+# can read, and never a fixed default, which would be published credentials on
+# every unit.
+#key=choose something
+
+# Two letters, or left out for the world domain. A country unlocks DFS
+# channels, 2.4 GHz ch 12/13 and 3-6 dB of power. Without one the radios still
+# work -- measured: both bands come up at 20 dBm. '00' is refused: hostapd
+# rejects it as an invalid country_code and the access point never starts.
+#country=GB
+
+# The root password. THIS IS THE ONE THAT MATTERS. Without it the device comes
+# up with no password at all -- anyone on the LAN can log in over SSH and into
+# LuCI -- and `boa-setup check` goes on failing until a person sets one. A box
+# cannot invent this for itself: a random one would lock you out, because there
+# is no screen to read it from. A file can, because you chose it.
+#root_password=
+
+# Turn the device into a transparent bridge as the last step. Off by default:
+# it deletes the wan interface, moves lan to DHCP and changes the device's
+# address, so if the upstream network is not what you expect the box can end up
+# somewhere you cannot reach. The old address is kept as a rescue interface
+# either way. Run `boa-setup convert --dry-run` first if unsure.
+#convert=no

@@ -2,7 +2,60 @@
 	"luci-app-boa": {
 		"description": "Open the boa link conditioner from LuCI",
 		"read": {
-			"uci": [ "boa" ]
+			"uci": [
+				"boa"
+			]
+		}
+	},
+	"luci-app-boa-wizard": {
+		"description": "Set a device's Wi-Fi and root password from the boa setup page",
+		"read": {
+			"uci": [
+				"wireless",
+				"attendedsysupgrade"
+			],
+			"ubus": {
+				"system": [
+					"board"
+				],
+				"luci-rpc": [
+					"getNetworkDevices"
+				]
+			},
+			"file": {
+				"/tmp/boa-apply.log": [
+					"read"
+				]
+			}
+		},
+		"write": {
+			"uci": [
+				"wireless",
+				"attendedsysupgrade"
+			],
+			"file": {
+				"/tmp/boa-wizard.conf": [
+					"write"
+				],
+				"/usr/sbin/boa-setup firstrun cancel": [
+					"exec"
+				],
+				"/usr/sbin/boa-setup install-drivers": [
+					"exec"
+				],
+				"/usr/sbin/boa-setup apply /tmp/boa-wizard.conf --background": [
+					"exec"
+				],
+				"/sbin/reboot": [
+					"exec"
+				],
+				"/usr/sbin/boa-setup stage get": [
+					"exec"
+				],
+				"/usr/sbin/boa-setup install-drivers --background": [
+					"exec"
+				]
+			}
 		}
 	}
 }
