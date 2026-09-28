@@ -229,22 +229,43 @@ function followDevice(url) {
 	if (followTimer || !url)
 		return;
 	trace('follow: armed for', url);
+	// PROBE FROM NOW, NOT FROM WHEN THE DEVICE IS LOST.
+	//
+	// The name is settled before the bridge is touched -- apply_wizard sets the
+	// hostname and restarts umdns, tens of seconds before convert -- so the
+	// escape route can be TESTED while the old address still works. Waiting
+	// until the device has gone means finding out whether the way back exists
+	// at the one moment nothing can be done about it.
+	//
+	// Two things fall out of probing early. The browser resolves the name and
+	// warms its cache while mDNS is definitely working; and if it never answers
+	// -- no mDNS on this client, a network that blocks multicast -- that is
+	// known BEFORE the address changes, while the operator can still read the
+	// log and write the address down.
+	var reached = false, probes = 0;
 	followTimer = window.setInterval(function() {
-		// Only once this page has actually lost the device. While the log is
-		// still readable the old address is working, and moving would take the
-		// log away from an operator who is reading it.
-		if (Date.now() - lastLogRead < 10000)
-			return;
+		probes++;
 		// no-cors: the response cannot be read and does not need to be.
 		// Resolving at all means something answered on that host.
 		window.fetch(url, { mode: 'no-cors', cache: 'no-store' })
 			.then(function() {
-				window.clearInterval(followTimer);
-				followTimer = null;
-				trace('follow: it answered, going there');
+				if (!reached)
+					trace('follow: the name answers, the way back is open');
+				reached = true;
+				// Only MOVE once this page has actually lost the device. While
+				// the log is still readable the old address works, and moving
+				// would take the log away from an operator reading it.
+				if (Date.now() - lastLogRead < 10000)
+					return;
+				stopFollowing('followed the device');
 				window.location = url;
 			})
-			.catch(function() {});
+			.catch(function() {
+				// Said once, ~10s in, and only while the log is still live --
+				// which is exactly when it is still actionable.
+				if (!reached && probes === 5 && Date.now() - lastLogRead < 10000)
+					trace('follow: WARNING -', url, 'does not answer from this browser');
+			});
 	}, 2000);
 }
 
