@@ -86,6 +86,12 @@ Intended for:
 - A production traffic shaper or QoS system. It exists to degrade links
   deliberately, not to manage them.
 - Decrypting or inspecting application payloads. Conditioning is transport-level.
+  Not merely out of scope: the alternative needs a CA the device under test
+  trusts, and a pinned app refuses one, a DRM'd service refuses one, and the
+  streaming services worth testing against are both. So manifest inspection
+  reaches the devices that tolerate instrumentation rather than the ones the box
+  exists for, and inferring from the shape of the traffic is what §1's "neither
+  end has to cooperate" both costs and buys.
 - Application-level fault injection or content manipulation. HTTP status codes,
   stalled or truncated responses, corrupted segments and rewritten manifests all
   sit above the transport. That work belongs on the origin path — the
