@@ -81,6 +81,32 @@ usb_net_devices() {
   done
 }
 
+# Wireless radios on the PCI bus, which usb_net_devices deliberately does not
+# see -- the comment above is about keeping the host's own PCIe NICs, and a radio
+# in a slot is the one PCIe device that has to be handed over anyway.
+#
+# A PCI radio is handed over exactly like a USB one: the move, the rename and the
+# rfkill clear do not care what the wiphy is attached to, so this only has to
+# produce the list.
+#
+# It exists because an AP-class card is a PCIe part. Every USB adapter this
+# script was written for is client silicon with AP mode bolted on; the first
+# radio in this project that is genuinely an access-point chip arrives in a slot,
+# and without this it could only be handed over as SCAN_IF, which makes it
+# listen-only.
+pci_wifi_devices() {
+  local path iface
+  for path in /sys/class/net/*; do
+    iface=$(basename "$path")
+    [ -e "$path/phy80211" ] || continue
+    [ -e "$path/device" ] || continue
+    case "$(readlink -f "$path/device")" in
+      */usb[0-9]*|*//usb*) continue ;;   # the USB loop owns these
+    esac
+    printf '%s\n' "$iface"
+  done
+}
+
 MGMT_HOST_IP=${MGMT_HOST_IP:-10.123.0.1}
 MGMT_CONT_IP=${MGMT_CONT_IP:-10.123.0.2}
 MGMT_PREFIX=30
@@ -245,6 +271,16 @@ if [ -n "$SCAN_IF" ]; then
     radio_specs="$radio_specs wlan-scan/$scan_mac"
   fi
 fi
+# PCI radios first: an AP-class card in a slot is the serving radio on this
+# host, and the USB adapters are the spares.
+for host_if in $(pci_wifi_devices); do
+  mac=$(cat "/sys/class/net/$host_if/address" 2>/dev/null) || continue
+  # SCAN_IF is handled above and must not be handed over twice.
+  [ "$host_if" = "${scan_if:-}" ] && continue
+  case " $radio_specs " in *"/$mac "*) continue ;; esac
+  radio_specs="$radio_specs wlan-pci/$mac"
+done
+
 for host_if in $(usb_net_devices); do
   mac=$(cat "/sys/class/net/$host_if/address" 2>/dev/null) || continue
   if [ -e "/sys/class/net/$host_if/phy80211" ]; then
