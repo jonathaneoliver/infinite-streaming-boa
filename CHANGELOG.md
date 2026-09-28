@@ -15,6 +15,15 @@ deliberate and documented so they are not mistaken for defects — see
 
 ### Added
 
+- **The OpenWrt VM's libvirt hook is in the repository**, in
+  `scripts/vm-host-net.sh`. Before this, target 5 couldn't be rebuilt from the
+  repo, because the hook that builds `br-client` (the VM's whole wired client
+  side) existed only on the one host that ran it, where it named its adapter.
+  It now discovers every USB ethernet adapter, adds the host's address on the
+  guest's LAN, and turns IPv6 off on the bridge. With IPv6 on, the host's SLAAC
+  address there caused SSH sessions to hang when the VM stopped. The
+  NetworkManager config now uses globs and appends to the container's list
+  instead of replacing it. Install with `scripts/target.sh vm setup`.
 - **`scripts/target.sh` brings the container and the OpenWrt VM up, down and
   back to out-of-box**, and hands the hardware between them. Both targets share
   the same radios and USB ethernet, so `up` refuses while the other one runs,
