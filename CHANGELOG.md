@@ -46,7 +46,7 @@ And one fix is worth taking on its own: **every 5 GHz access point on the Pi
 and container targets asked clients for 8 KB aggregates**, which cost 3.6× on
 uplink and looked healthy on every figure boa shows.
 
-29 pull requests.
+30 pull requests.
 
 ### Added
 
@@ -291,6 +291,13 @@ uplink and looked healthy on every figure boa shows.
   which cost a client 7 s and a disassociation on target 5 for nothing. Each
   radio now scans only the channels it has enabled, and a rejected request is
   reported as one, with the access point left serving.
+- **boa stopped hearing a radio's steering answers after the radio was
+  rebuilt** (#443), by `wifi up`, netifd, or the wizard. hostapd makes a new
+  control socket and forgets the old one's monitors, and a datagram socket
+  never says so. Every answer on that radio was then reported as "did not
+  answer" until boad restarted. The monitor now re-attaches when the socket
+  is replaced; measured on target 5, that is when its inode changes. Each
+  steer request is also logged once, where it used to be logged twice.
 
 - **`scripts/docker-detach.sh` was never shipped to the target**, so the undo step
   the README documents was absent on every deployed host. The deploy tar named the
@@ -421,10 +428,8 @@ uplink and looked healthy on every figure boa shows.
 - **The Pi's published uplink figures predate the A-MPDU fix** and have not
   been re-measured.
 - **`target.sh cudy reset` has not been run on the device.**
-- **Three bugs found measuring target 5 are still open**; #441 and #442 are
-  fixed above:
-  - steering answers are lost on a radio rebuilt with `wifi up` until boad
-    restarts (#443);
+- **Two bugs found measuring target 5 are still open**; #441, #442 and #443
+  are fixed above:
   - OpenWrt's hostapd rejects `bss_load_test` every 15 s while the API reports
     the BSS Load correction as applied (#444);
   - a forced move to 40 MHz once left the access point down (#445).
