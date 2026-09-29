@@ -2043,7 +2043,7 @@ serves_ap_enabled() {
 # one reboot on a Pi 5 swapped the onboard radio and a dongle between phy0 and
 # phy1, and the saved name then meant the wrong hardware. #387.
 set_scanner_radio() {
-	local phy radio mac
+	local phy radio mac ch
 
 	[ -r /lib/boa/radio.sh ] || return 0
 	# shellcheck source=/dev/null
@@ -2060,6 +2060,51 @@ set_scanner_radio() {
 	mac=$(boa_phy_mac "$phy")
 
 	uci set "wireless.default_$radio.disabled=1"
+
+	# A RESTING CHANNEL THE FIRMWARE CAN RESOLVE, or the scanner never sweeps.
+	#
+	# MEASURED on a Raspberry Pi 5, 2026-09-29, straight out of this wizard on
+	# a box flashed minutes earlier. This function disabled the access point
+	# and left the rest of the radio as wifi-detect had it --
+	# `band=5g channel=auto htmode=NOHT` -- and every scan on it failed:
+	#
+	#	ieee80211 phy0: brcmf_cfg80211_get_channel: chanspec failed (-52)
+	#	ieee80211 phy0: brcmf_run_escan: error (-52)
+	#
+	# `auto` is the cause and NOHT compounds it. A SERVING radio is given a
+	# concrete channel and a width when hostapd brings its access point up; a
+	# scanner has no access point, so nothing ever applies one, and brcmfmac
+	# refuses an escan while its own chanspec is unresolvable. Nothing else
+	# explained it: the failure survived a driver reload, an interface
+	# retype, downing the spare AP netdev, and both bands. Setting a concrete
+	# channel and a real width fixed it -- 0 errors from cold, 15 networks on
+	# the first sweep.
+	#
+	# 2.4 GHz ch 11 because the serving radios take 5 GHz -- 36 and 149 are
+	# the first two entries of PLAN -- so the instrument rests out of their
+	# spectrum; and 11 is the LAST of the three 2.4 GHz entries, so a radio
+	# that later needs 2.4 GHz takes 6, then 1, before anything wants this.
+	#
+	# THE HARDWARE STILL DECIDES, as it does in cmd_plan_channels. A scanner
+	# that cannot do 2.4 GHz keeps 5 GHz and is merely given a width, because
+	# a channel it is not allowed to sit on is no better than `auto`.
+	if phy_channels "$phy" 24 | grep -qx 11; then
+		uci set "wireless.$radio.band=2g"
+		uci set "wireless.$radio.channel=11"
+		uci set "wireless.$radio.htmode=HT20"
+		say "apply: scanner rests on 2.4 GHz ch 11 at 20 MHz"
+	else
+		ch=$(phy_channels "$phy" 5 | head -1)
+		if [ -n "$ch" ]; then
+			uci set "wireless.$radio.band=5g"
+			uci set "wireless.$radio.channel=$ch"
+			uci set "wireless.$radio.htmode=HT20"
+			say "apply: scanner has no 2.4 GHz; resting on 5 GHz ch $ch at 20 MHz"
+		else
+			say "apply: $phy reports no channel it may use; leaving it on $(uci -q get "wireless.$radio.channel")"
+		fi
+	fi
+
 	uci commit wireless
 	# Additive, because a box can have several scanners and `uci set` would
 	# drop the others -- issue #351 found exactly that.
@@ -2076,6 +2121,7 @@ set_scanner_radio() {
 cmd_plan_channels() {
 	local dry="" r band phy scan scandev taken="" ch plan n=0
 	local scanradio="" scanphy="" scanband="" candidates="" cand cur keep=""
+	local revplan="" scanht="" curch="" curht=""
 	local curw cov clash entry eb ec ew rest chw chb newht
 	[ "${1:-}" = "--dry-run" ] && dry=1
 
@@ -2248,30 +2294,57 @@ cmd_plan_channels() {
 		# serving radios draw on. Sharing one with a serving radio is harmless
 		# -- a scanner transmits nothing -- and by this point the serving
 		# radios have already claimed theirs, so sharing displaces nobody.
+		# FROM THE BACK OF THE PLAN, because the plan is in the order a
+		# SERVING radio wants. Taking the front of it put the scanner on
+		# 2.4 GHz ch 6 -- the first channel the next radio to need 2.4 GHz
+		# would be given -- so the instrument sat exactly where a future
+		# access point wants to go. Reversed, it rests on 11 and a radio
+		# that later needs 2.4 GHz still gets 6, then 1, before anything
+		# has to share. Sharing is harmless (a scanner transmits nothing),
+		# but not having to is better, and it costs one loop.
 		ch=""
 		if [ -n "$band" ]; then
-			for c in $plan; do
+			revplan=""
+			for c in $plan; do revplan="$c${revplan:+ $revplan}"; done
+			for c in $revplan; do
 				case " $taken " in *" $c "*) continue ;; esac
 				is_control_chan "$band" "$c" || continue
 				phy_channels "$scanphy" "$band" | grep -qx "$c" || continue
 				ch="$c"; break
 			done
-			[ -n "$ch" ] || for c in $plan; do
+			[ -n "$ch" ] || for c in $revplan; do
 				is_control_chan "$band" "$c" || continue
 				phy_channels "$scanphy" "$band" | grep -qx "$c" || continue
 				ch="$c"; break
 			done
 		fi
+		# A WIDTH AS WELL AS A CHANNEL, or the channel does not take.
+		#
+		# This pass used to set `channel` alone and leave `htmode` as
+		# wifi-detect wrote it, which on a scanner is NOHT -- and NOHT is
+		# not a width, so the radio still had no resolvable chanspec and
+		# brcmfmac still answered -52 to every sweep. MEASURED 2026-09-29 on
+		# a Pi 5 flashed minutes earlier: `band=5g channel=auto htmode=NOHT`
+		# gave `brcmf_cfg80211_get_channel: chanspec failed (-52)`, and a
+		# concrete channel AT A REAL WIDTH swept 15 networks from cold.
+		#
+		# HT20, because a scanner wants somewhere legal to rest between
+		# sweeps, not bandwidth. Anything wider would also reserve spectrum
+		# the serving radios could have used.
+		scanht=HT20
+		curch="$(uci -q get wireless.$scanradio.channel)"
+		curht="$(uci -q get wireless.$scanradio.htmode)"
 		if [ -z "$ch" ]; then
-			warn "$scanradio ($scanphy): no legal channel to rest on; leaving it on $(uci -q get wireless.$scanradio.channel)"
-		elif [ "$(uci -q get wireless.$scanradio.channel)" = "$ch" ]; then
-			ok "$scanradio ($scanphy): listens, already resting on $ch"
+			warn "$scanradio ($scanphy): no legal channel to rest on; leaving it on $curch"
+		elif [ "$curch" = "$ch" ] && [ "$curht" = "$scanht" ]; then
+			ok "$scanradio ($scanphy): listens, already resting on $ch at 20 MHz"
 		elif [ -n "$dry" ]; then
-			printf '  would set wireless.%s.channel=%s (was %s) -- the scan radio\n' \
-				"$scanradio" "$ch" "$(uci -q get wireless.$scanradio.channel)"
+			printf '  would set wireless.%s.channel=%s htmode=%s (was %s/%s) -- the scan radio\n' \
+				"$scanradio" "$ch" "$scanht" "$curch" "${curht:-unset}"
 		else
-			ok "$scanradio ($scanphy): listens -- rests on $ch, taking none of the plan"
+			ok "$scanradio ($scanphy): listens -- rests on $ch at 20 MHz, taking none of the plan"
 			uci set wireless.$scanradio.channel="$ch"
+			uci set wireless.$scanradio.htmode="$scanht"
 			n=$((n + 1))
 		fi
 	fi
