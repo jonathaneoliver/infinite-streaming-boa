@@ -13,7 +13,139 @@ deliberate and documented so they are not mistaken for defects — see
 
 ## [Unreleased]
 
+Nothing yet.
+
+## [0.6.0] — 2026-09-29
+
+**A freshly flashed OpenWrt router becomes a boa box from one install and a
+four-question page, and a box with more than one radio stops tripping over
+them.**
+
+0.5.0 put boa on OpenWrt, but getting from a flashed device to a working one was
+still a sequence of commands typed over SSH: swap the wpad build, install the
+drivers, set a root password nobody had set, convert, restart. 0.6.0 replaces
+everything after the install with **a four-question wizard** in the browser.
+The install itself still needs a shell once: LuCI cannot add the feed's
+signing key, and will not until boa is in the official feed (#359). Scripts
+take each target back to out-of-box so the wizard can be run again from
+nothing, and it was run from nothing, repeatedly, on a Cudy TR3000, an x86-64
+virtual machine carrying a PCIe MT7915E, and a Raspberry Pi 5 running OpenWrt,
+which is new to this release.
+
+The Pi is where the second theme came from. With an onboard radio and two
+dongles it is the first target with more radios than jobs, and it found most of
+what this release fixes: two 5 GHz radios planned onto the same spectrum, a
+listening radio that became a different radio after a reboot, a dongle plugged
+into a running box that never came back, and one radio drawn as four adapters.
+Radios are now **planned by the spectrum they occupy**, the listening radio is
+**recorded against its hardware** rather than a phy number the kernel reassigns,
+and a radio plugged into a running box **joins the network the box already
+serves**.
+
+And one fix is worth taking on its own: **every 5 GHz access point on the Pi
+and container targets asked clients for 8 KB aggregates**, which cost 3.6× on
+uplink and looked healthy on every figure boa shows.
+
+32 pull requests.
+
 ### Added
+
+- **A fifth target: OpenWrt in a VM, with an access-point card passed
+  through**, which brings the Cudy's capabilities to an ordinary host computer.
+  The card is AP-class silicon, not a client chip with AP mode bolted on, so the
+  controls that client parts refuse work on it as they do on the Cudy, and
+  they were measured against the Cudy's figures on 2026-09-29:
+  - **Channel moves are announced and clients follow**: ten switches with no
+    drop, and the MacBook lost 0.4 s once and nothing otherwise.
+  - **Transmit power is honoured live**: 23 / 10 / 3 dBm moved the client's
+    signal −31 / −43 / −49 dBm, with no reassociation and no lost pings.
+  - **A survey runs while serving**: 9 BSSes in 4 s, clients still associated,
+    at a cost of 3.2 s of lost pings.
+  - **The steering ladder behaves as on the Cudy**: an iPhone and a MacBook
+    both declined a plain request and honoured Disassociation Imminent.
+
+  The same interface combinations are advertised, and DFS is advertised but
+  untested. The full comparison is in the README's target 5 section.
+
+  The Cudy shows what access-point silicon can do, but only as a whole router.
+  This target separates the two: OpenWrt runs as a KVM guest on an ordinary
+  Ubuntu machine, and the radio is a MediaTek MT7915 M.2 card
+  ([AsiaRF AW7915-AED](https://asiarf.com/product/80211ax-mt7915-mini-pcie-wifi6-module/),
+  MT7915DAN, 2T2R, dual-band concurrent), handed to the guest whole by PCI
+  passthrough. It is ordered direct from AsiaRF, a Taiwanese vendor, so budget
+  for shipping and import duties on top of the listed price: $38 shipping and
+  about $25 in duties and fees on the unit here. It uses the same two packages and the same LuCI page. Because it is a VM, a broken guest is one `qemu-img create` away
+  from a clean one, and every out-of-box test in this release was run that
+  way. See README target 5 for how it is put together.
+
+  Measured 2026-09-27, MacBook client over real antennas, `iperf3` 10 s,
+  5 GHz ch 149 HE80, 4 runs: **854–876 Mbit/s down to the box**, 75–77% of
+  the 1134 Mbit/s PHY the link reported, and 839–847 up through it. That is
+  the highest this project has measured on any radio. A USB `mt7921u` on the
+  same guest, stuck at 3 dBm, managed 75–100 down while leaving the guest
+  14–48% idle, against 73–88% idle on the card: USB passthrough traps every
+  transfer through QEMU and PCI passthrough does not.
+
+  **Under load the link adds roughly 20 ms**, from a ~2 ms idle floor, on
+  both bands, measured over single runs. For a box whose job is to impose
+  delay, that is a noise floor: a 10 ms target is below what this link can
+  resolve while it is saturated.
+- **`boa-setup plan-channels`**: a channel plan across every radio on an
+  OpenWrt box, which had none. Each radio was configured on its own, so two
+  5 GHz radios could land on the same channel, each halving the other's airtime
+  while both were reported healthy. The Pi image and the container already got
+  a plan from `radioplan`; this applies the same policy through uci.
+
+  Channels 36 and 149 first at 80 MHz, the two non-overlapping non-DFS blocks,
+  and 6/1/11 at 2.4 GHz. A third 5 GHz radio falls back to 2.4 GHz rather than
+  to a DFS block, because a radio that must listen for radar before it beacons,
+  and leave if it hears some, disappears without notice. A reservation covers
+  **every 20 MHz channel the radio occupies**, not just the number it is set
+  to: a radio on 36 at 80 MHz holds 36–48, and a radio promoted beside it was
+  measured landing on 40. Each channel is checked against what the phy says it
+  may use, and the width is written with it.
+
+  A radio keeps a channel it already holds legally, and only the rest are
+  placed, so plugging in a third radio does not move one that is serving
+  clients. Channel 34 is no longer one to leave a radio on: `iw` lists it as
+  usable, but it is 802.11j on 10 MHz spacing and overlaps 36.
+
+  Run by the wizard, by the hotplug hook, and after a radio is promoted to
+  serving from the interface.
+- **The listening radio is recorded against its hardware**, as
+  `boa.main.scan_mac`, and resolved to a phy each time the daemon starts. Phy
+  numbers follow probe order: on a Pi 5 one reboot moved the onboard radio from
+  phy0 to phy1 and gave phy0 to a dongle, so a saved `phy0-scan` came back
+  meaning the dongle, and no access point came up at all. The wizard, the
+  hotplug hook and the interface's role button all record it.
+
+  The wizard now keeps a radio for listening when there is one to spare. The
+  rule is narrow on purpose: the Pi's onboard `brcmfmac`, and only when another
+  radio can serve. Measured on a Pi 5: a client on the onboard radio while it
+  swept both bands got 51 Mbit/s, against 442 on a dongle that only served.
+  "The radio not on USB scans" would be wrong on the other two OpenWrt targets,
+  whose soldered-down radios are their best ones.
+- **A radio plugged into a running box joins the network**. OpenWrt's own
+  detection writes a section for the new radio that cannot serve (6 GHz on a
+  driver that will not run an access point there, SSID `OpenWrt`, disabled).
+  boa's hotplug hook copies the settings of a radio that IS serving, moves the
+  new one off 6 GHz and re-plans channels. With nothing serving to copy, it
+  does nothing, and the box belongs to the wizard. A replugged radio that comes
+  back on a new phy number is brought up again, where before it never
+  reappeared.
+- **`scripts/target.sh pi status` and `pi reset`**, the same shape as the Cudy,
+  for a Raspberry Pi 5 running OpenWrt.
+- **Changing a radio's role says when the access point did not start.**
+  `wifi reload` succeeds either way, so a radio the driver refused looked
+  exactly like one that worked. The request now fails with the reason, and a
+  radio that was being promoted is put back to listening rather than left
+  serving nobody:
+
+  ```
+  502 phy1-scan was set to serve but no access point came up on phy1, so it
+      has been left listening: the driver may have refused its channel
+      (band 2g, channel 1) -- check `logread` for start_ap failures
+  ```
 
 - **`scripts/target.sh cudy reset` puts the Cudy TR3000 back to out-of-box**:
   a configuration backup, `firstboot`, then boa reinstalled, which lands on the
@@ -50,12 +182,13 @@ deliberate and documented so they are not mistaken for defects — see
   in a slot is the serving radio on such a host and the dongles are spares.
 
 
-- **A first-run setup wizard**, in two places: **Services → boa setup** in
-  LuCI, and **`boa-setup wizard`** for a device with no LuCI on it. Both ask
-  the same four questions — SSID, passphrase, country and root password — and
-  both are used over the wired LAN, which is not a choice: a device fresh from
-  a flash ships every `wifi-iface` with `option disabled '1'`, so there is no
-  access point to join, and applying takes the radios down and back up.
+- **A first-run setup wizard** in the browser: the device's own address shows
+  it until the box is set up, and it stays at **Services → boa setup** in LuCI
+  afterwards. It asks four questions — SSID, passphrase, country and root
+  password — and is used over the wired LAN, which is not a choice: a device
+  fresh from a flash ships every `wifi-iface` with `option disabled '1'`, so
+  there is no access point to join, and applying takes the radios down and back
+  up.
 
   The root password is the point of it. A factory-reset device has none at
   all — SSH accepts a blank password and LuCI shows its own "No password set!"
@@ -79,6 +212,24 @@ deliberate and documented so they are not mistaken for defects — see
   preference being *unset* rather than by checking being enabled; a
   factory-reset device is unset, so the popup is the default experience. It is
   left alone if you have already answered it.
+
+  **The page follows the device when converting moves it.** Converting bounces
+  the cable the page is being read over, so the operator's machine renews onto
+  the upstream subnet and the address the page was polling stops answering
+  partway through the apply. The run then looked hung on "Applying". The wizard
+  now announces the device's mDNS name while the page can still read it, and the
+  page navigates there once the old address has gone quiet. Measured on a Cudy:
+  the tab moved from `192.168.1.1` to `openwrt-cudy1263.local:8080` with no
+  action taken. The x86-64 guest never shows the problem, because a host-side
+  bridge keeps the laptop's own link up.
+
+  **An install someone is watching waits for them.** Installing arms a
+  countdown that sets the box up on its own after about two minutes, which is
+  right for a box nobody is standing at. It is wrong for one being installed
+  from a terminal: a Pi installed and left at the wizard was found two minutes
+  later serving an SSID nobody chose, with the root password still unset. The
+  install scripts now hold the wizard open; a bare `apk add` still counts
+  down, and `--unattended` restores it.
 - **`boa-setup install-drivers`**, which installs the kmod packages for USB
   adapters that have no driver — what `check` already described, done rather
   than printed for retyping. Drivers only, and an adapter boa does not
@@ -97,7 +248,62 @@ deliberate and documented so they are not mistaken for defects — see
   `DEPENDS:=+wpad-mbedtls` would not install the full hostapd beside the basic
   one — it would make boa uninstallable on a stock image.
 
+### Changed
+
+- **`openwrt-package.sh` is split into building and installing**, so a
+  repeated out-of-box test no longer rebuilds identical packages on every cycle
+  (1.0 s against 14.7 s):
+  `openwrt-boa-build.sh` builds and signs, `openwrt-boa-install.sh` installs
+  what was built, and `openwrt-boa-feed.sh` installs the last tagged release
+  from the published feed, with neither a build nor a signing key.
+
+  **A Raspberry Pi on OpenWrt has no WAN**, by OpenWrt's design: its board
+  file names the onboard port as the LAN and nothing else, so installing boa
+  failed inside apk, resolving a feed it had no route to. Both install scripts
+  now configure one when there is nothing to break (no WAN configured AND no
+  route to a feed), choosing the USB adapter with a live cable rather than an
+  interface number, which follows enumeration order. `--no-configure-wan` opts
+  out.
+- **The listening radio is parked on 2.4 GHz channel 11 at HT20**, clear of the
+  serving radios' 5 GHz spectrum, instead of being left on `channel=auto`. A
+  radio with no access point never has a channel applied to it, and `brcmfmac`
+  refuses every scan while its own channel is unresolvable. Measured on a Pi 5
+  from cold boot: 0 scan errors and 14 networks on the first sweep, where
+  before every sweep failed. A scanner with no 2.4 GHz band keeps 5 GHz.
+
 ### Fixed
+
+- **An announced channel move could be undone within about 2 s** by the loop
+  that restores a remembered channel (#441). The move switches the radio
+  before it records the new channel, and for 1.4 s on every move (measured on
+  target 5) the loop could read it as a drift and put it back. It happened on
+  three moves out of three, while the API and the event log both said the
+  move had succeeded. The loop now skips a radio that is being moved, and
+  re-checks before it acts. It no longer runs on OpenWrt at all, where uci
+  already keeps the channel across a restart.
+- **A scan failed on any radio that lacked a channel in boa's fixed list**, and
+  then took the access point down to retry (#442). `iw` rejects the whole scan
+  if one listed frequency is not enabled on the radio, and the list covered
+  both bands plus 2.4 GHz channels 12 and 13. So a single-band radio, such as
+  either half of a dual-band card, never scanned. Neither did any 2.4 GHz radio
+  in a domain without those two channels, the US among them. The fallback read
+  the refusal as "will not scan while serving" and stopped the access point,
+  which cost a client 7 s and a disassociation on target 5 for nothing. Each
+  radio now scans only the channels it has enabled, and a rejected request is
+  reported as one, with the access point left serving.
+- **boa stopped hearing a radio's steering answers after the radio was
+  rebuilt** (#443), by `wifi up`, netifd, or the wizard. hostapd makes a new
+  control socket and forgets the old one's monitors, and a datagram socket
+  never says so. Every answer on that radio was then reported as "did not
+  answer" until boad restarted. The monitor now re-attaches when the socket
+  is replaced; measured on target 5, that is when its inode changes. Each
+  steer request is also logged once, where it used to be logged twice.
+- **On OpenWrt, boa re-sent a BSS Load setting that hostapd refuses, every
+  15 s, and reported it applied** (#444). hostapd answers `FAIL` to
+  `bss_load_test`, and boa read that as success. It logged nothing, and put
+  738 rejections into hostapd's log in 49 minutes, which rolled the log over
+  and erased the evidence for #445. boa now reads the reply, asks each radio
+  once, warns once, and reports the panel unavailable with the reason.
 
 - **`scripts/docker-detach.sh` was never shipped to the target**, so the undo step
   the README documents was absent on every deployed host. The deploy tar named the
@@ -157,9 +363,92 @@ deliberate and documented so they are not mistaken for defects — see
   frame looked as though it came from upstream and no client was ever named.
   It now follows the bridge too.
 
+  So do the **pair counters**, the last reader still on the command line: on
+  every OpenWrt device the flow figure was hidden, and the nftables counting
+  rules kept whatever ports a previous daemon had named. Measured on the
+  x86-64 guest: 875 MB counted against a pair the interface never drew.
+- **`boa-setup convert` left the daemon on the old uplink.** Converting moves
+  the uplink onto a bridge port, and boad reads it once, at start. Measured on a
+  Cudy: the real uplink was classed as a client port with 20 "clients" on it,
+  the upstream router among them, while a phone streaming through one of the
+  radios was absent. The header read `WAN eth1`. Convert now restarts boa.
+- **`boa-setup check` described hardware it had not looked at:**
+  - It passed a listening radio that could not scan. A monitor-mode interface
+    exists and serves nobody, which were the only two things tested, and answers
+    every scan with `Not supported`. The neighbourhood view never appeared, and
+    `check` reported `0 failed` for an hour. It now checks the interface type
+    rather than running a scan, so `check` stays safe on a box carrying traffic.
+  - Its driver section walked only USB, so an undriven PCIe radio was invisible.
+    The MT7915E reports PCI class `0x000280`, "unclassified", so it is found by
+    known id and by what the kernel has bound, not by class alone.
+  - A configured radio whose adapter is unplugged is now a note, not a failure.
+    "No access point is serving" still fails a box where nothing is.
+  - It trusted netifd, which keeps reporting a pulled radio as serving, over
+    the kernel.
+- **The two halves of a dual-band card were confused.** An MT7915E is one PCI
+  device carrying two phys, and matching by device path gave both halves the
+  2.4 GHz radio's interface, so the channel planner did not recognise its own
+  scanner.
+- **A listening radio that went missing went unnoticed.** Unplugging it left
+  `boa.main.scan` naming an interface that no longer existed, and the box
+  quietly went back to taking a serving radio off channel for every survey.
+  The absence is now a notice in the interface for as long as it lasts, and the
+  listening interface is rebuilt on a two-minute timer as well as at start, so
+  a replugged adapter is picked up without a restart.
+- **One radio was drawn as several adapters.** `brcmfmac` will not let go of an
+  interface it has served on, so a Pi 5 whose onboard radio was listening showed
+  four rows for two radios, two of them as faulted radios offering controls
+  that could not act. An idle interface on a radio that is already listening is
+  now folded into it, decided from sysfs and immediately, so the extra row does
+  not flicker in during a role change either.
+- **A channel move on a radio without HT wrote `NOHT20`**, which no OpenWrt
+  release accepts, and netifd then refused the radio without a word in any log.
+- **A role change that failed partway left the config disagreeing with
+  itself**: the wireless change committed and boa's own staged, so the radio
+  reverted at the next read. The commit now comes first.
+- **`openwrt-boa-install.sh` did not restart what it upgraded.** apk replaces
+  the files on an upgrade and leaves the running daemon alone, so the binary on
+  disk, its version and its checksum were all new while the process answering
+  requests was forty minutes old.
+- **`openwrt-deploy.sh` built for arm64 whatever the target**, so a deploy to
+  the x86-64 guest reported success and shipped a binary that could not run. It
+  now asks the device and refuses an architecture it does not know.
+- **Pressing serve on a radio with a hand-made interface name looked like it
+  did nothing.** The interface waited for a renamed row it could not match;
+  the old row disappearing is now enough.
+
+### Known limitations
+
+- **A radio can come back from listening on the wrong band.** A radio demoted
+  and promoted again was found at `band=2g channel=1` having been 5 GHz, and
+  the cause is not found. Promotion now fails loudly and falls back to
+  listening rather than serving nobody, but `hostapd.add_iface failed` on a Pi
+  with a valid 5 GHz channel, and `country_code=00` reaching hostapd while uci
+  says US, are both unexplained.
+- **A listening radio's channel takes effect at boot, not live.** It has no
+  access point, and netifd applies a channel only when it starts one, so a
+  planned or changed channel for the scanner reaches the hardware on the next
+  boot (it is parked on 2.4 GHz channel 11 at HT20, clear of the serving
+  radios). That only matters to the Pi's onboard `brcmfmac`, which refuses
+  to scan without a resolvable channel. Whether it scans after a runtime
+  role change, before a reboot, is untested (#449).
+- **A replugged adapter is not re-adopted as the listening radio** if it comes
+  back under a new phy number, outside what the recorded MAC covers at start.
+  The notice says what is missing. #387.
+- **The Pi's published uplink figures predate the A-MPDU fix** and have not
+  been re-measured.
+- **`target.sh cudy reset` has not been run on the device.**
+- **No advertised BSS Load on OpenWrt.** The "Advertised, not enforced" panel
+  works through hostapd's `bss_load_test`, which OpenWrt's `wpad` does not
+  include, so on every OpenWrt target the panel says so in place of its
+  controls. The Pi and the container are unaffected.
+- **A forced move to 40 MHz once left the access point down** (#445), found
+  measuring target 5 and not reproduced. The other four bugs that run found
+  (#441–#444) are fixed above.
+
 ## [0.5.0] — 2026-09-24
 
-**boa installs on a router now — and on a router's own radios, it stops being
+**boa installs on an OpenWrt router now — and on a router's own radios, it stops being
 told no.**
 
 Until this release boa needed hardware of its own: a Raspberry Pi flashed from
@@ -1197,7 +1486,8 @@ device under test and no cooperation from either end.
 - **A rotating (private) MAC strands a device's policy and its measured ladder.**
   Pin the address on any device you control before a long measurement.
 
-[Unreleased]: https://github.com/jonathaneoliver/infinite-streaming-boa/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/jonathaneoliver/infinite-streaming-boa/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/jonathaneoliver/infinite-streaming-boa/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/jonathaneoliver/infinite-streaming-boa/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/jonathaneoliver/infinite-streaming-boa/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/jonathaneoliver/infinite-streaming-boa/compare/v0.2.0...v0.3.0

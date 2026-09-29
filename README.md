@@ -1491,6 +1491,7 @@ through the host with `openwrt-boa-install.sh`, as `root@192.168.1.1`.
 | Antennas | 2 × IPEX |
 | Power | 3.3 V, 3 A recommended, 4–9 W |
 | Measured bus link | **PCIe 2.0 x1** (`5.0 GT/s x1`) — ample for 1201 Mbit/s |
+| Buying it | [Direct from AsiaRF](https://asiarf.com/product/80211ax-mt7915-mini-pcie-wifi6-module/), a Taiwanese vendor. **Budget for shipping and import duties on top of the listed price**: $38 shipping and about $25 in duties and fees on the unit bought for this project |
 
 One caution on identity: the card presents a **generic subsystem ID**
 (`14c3:7915`, identical to its device ID), so nothing on the bus names the
@@ -1566,6 +1567,84 @@ bridge.
 
 None of this transfers to the Cudy: `mt798x` is different silicon, and the
 targets disagree.
+
+#### What AP-class silicon does here, measured against the Cudy
+
+> Target 5, the MT7915E's 5 GHz half (`phy1-ap0`, `mt7915e`), boa
+> `v0.5.0-26-gf8d1092` on OpenWrt 25.12.5, 2026-09-29. The clients were a
+> MacBook Pro over real antennas, pinging the Ubuntu host through the box 5
+> times a second, plus an iPhone and a Watch where named. Each test repeats one in
+> [`openwrt/CUDY-TR3000.md`](openwrt/CUDY-TR3000.md#what-ap-class-silicon-changes),
+> so the two columns compare.
+
+**The card does what the Cudy does**, and in several rows does it with less
+disruption:
+
+| | Cudy MT7981 (2026-09-22/23) | MT7915E in the VM |
+|---|---|---|
+| Announced channel switch | 3 of 3 clients followed; a client loses 0.4–1.2 s | **Followed every time**: ten switches with the MacBook, and one with MacBook, iPhone and Watch together (0 of 3 dropped). The MacBook lost 0.4 s once and nothing the other nine times |
+| Forced teardown | AP out of service 1.0–1.1 s | AP out 0.83–1.18 s, and **the client lost 7.6–9 s** noticing, rescanning and rejoining |
+| Transmit power, live | ~7 dB per step, nobody reassociated | 23 / 10 / 3 / 23 dBm read back exactly, and the MacBook heard **−31 / −43 / −49 / −31 dBm**. Its connected time rose straight through, and 0 pings were lost across two passes |
+| Scan while serving | 13 BSSes in 3 s; 18 pings lost, then a backlog draining over 1.9 s | **9 BSSes in 4 s**, AP up, client still associated; **16 pings lost** (3.2 s) and no backlog, with the worst round trip afterwards 133 ms |
+| Interface combinations | AP ≤ 16, managed ≤ 19, total ≤ 19, one channel | **Identical**, on both phys |
+| DFS | advertised on 52–144, untested | 16 radar channels advertised on the 5 GHz phy, radar detection up to 160 MHz; **untested** |
+
+**Channel and width, one client alone on the radio** (Mbit/s, `iperf3` 10 s,
+after a warm-up run, MacBook at −30 to −34 dBm):
+
+| Channel | Width | To the box, down / up | Through, down / up |
+|---|---|---|---|
+| 149 | 80 MHz | **850 / 791** | **870 / 844** |
+| 149 | 40 MHz | 453 / 453 | 462 / 459 |
+| 149 | 20 MHz | 220 / 238 | 220 / 239 |
+| 36–48 (primary landed on 40) | 80 MHz | 686 / 631 | 696 / 554 |
+| 36 | 20 MHz | 146 / 197 | 170 / 186 |
+
+The channel matters less here than it did on the Cudy's bench: 36–48 gives
+about 80% of 149, where the Cudy saw about 25%. That is the air on the day, not
+the chip, and the scanner is what says which to pick. Width scales almost
+linearly. The 36 at 80 MHz row is really 40: hostapd's 20/40 MHz coexistence
+scan swapped primary and secondary to avoid neighbours, as the error from the
+move says, and a 20 MHz move is the way to land exactly on 36.
+
+**A contended radio is a different measurement.** With an iPhone streaming
+23 Mbit/s on the same radio at one spatial stream, the MacBook's downlink on
+149/80 fell to 180–519 Mbit/s against 850 alone, while its uplink held at
+700–747. Every figure above was taken with the other clients off the radio,
+and the 2.4 GHz radio and the USB `mt7921u` taken down so the MacBook could not
+land on them.
+
+**Roaming under power, coarse.** Stepping the 5 GHz radio 23 → 10 → 3 dBm:
+the iPhone left for the 2.4 GHz AP 15 s after 10 dBm was set, the Watch 1 s
+after 3 dBm, and the iPhone came back 14 s after 23 dBm was restored. All three
+were the devices' own decisions, from boa's event log. The Cudy's 2 dB walk put
+the iPhone's thresholds at 11 dBm leaving and 19 returning. These steps are too
+coarse to say more than "between 23 and 10".
+
+**Steering, an iPhone and a MacBook side by side**, the same four requests
+15 s apart. The answers are hostapd's, and boa reported them identically:
+
+| Mode | iPhone | MacBook |
+|---|---|---|
+| `suggest` | refused, no reason (1) | refused, offering its own candidates (6) |
+| `imminent` | **accepted**, moved to 2.4 GHz, and **back to 5 GHz on its own within 15 s** | **accepted**, moved, and stayed |
+| `terminate` | accepted, moved, and stayed | accepted, moved |
+| `insist` | accepted, moved | accepted, moved |
+
+Both refuse the plain request and both honour Disassociation Imminent, which is
+the Cudy's finding on a second device. Only the iPhone undid the move, as the
+Cudy's iPhone did. **The same MacBook refused `imminent` and `terminate` half
+an hour earlier** (code 7 three times, moving only on `insist`), just after it
+had been dropped and rejoined during the channel sweep, so one ladder is not a
+device's answer.
+
+**Five bugs this run found**, all filed: an announced move reverted by the
+channel restore loop (#441, since fixed); a scan that fails on a single-band phy and takes
+the AP down for nothing (#442, since fixed); steering answers lost on a radio rebuilt with
+`wifi up` until boad restarts (#443, since fixed); `bss_load_test` rejected by OpenWrt's
+hostapd every 15 s while the API says it is applied (#444, since fixed); and a forced move to
+40 MHz that once left the AP down (#445). The steering table above was taken
+after a restart, so #443 does not affect it.
 
 ## Requirements for the build and control host
 
@@ -1732,6 +1811,49 @@ hub ceiling measured here was 5 Gbit/s shared across three adapters, which is
 the same constraint the Pi has and the same one the
 [powered hub figures](#what-a-hub-costs-a-radio-separated-from-what-the-channel-is-worth)
 below quantify.
+
+### One radio per band, or one radio for every band
+
+The two kinds of radio in this repository divide the bands in opposite ways,
+and that decides what "change band" can mean on each target.
+
+> Scope: the MT7915E's two phys and a USB `mt7921u` were read with `iw phy
+> info` on target 5, 2026-09-29, US domain. The Cudy's split is from
+> [`openwrt/CUDY-TR3000.md`](openwrt/CUDY-TR3000.md) (2026-09-22). The Pi's
+> onboard `brcmfmac` and the Ubuntu host's AX200 were not re-read that day.
+
+| Radio | Where | Radios per device | Bands per radio |
+|---|---|---|---|
+| **MT7915E** (AsiaRF AW7915-AED) | target 5; target 2 via PCI | **two**: `phy0`, `phy1` | **one each, fixed**: 2.4 GHz only (2412–2484 MHz) and 5 GHz only (5180–5885 MHz) |
+| **MT7981** `mt798x`, built in | target 4, the Cudy | **two**, on one device path | **one each, fixed**: 2.4 GHz and 5 GHz |
+| **`mt7921u`** USB adapter | targets 1, 2, 3 and 5 | one | **three, switchable**: 11 channels at 2.4 GHz, 28 at 5 GHz, 59 at 6 GHz |
+| **`brcmfmac`** BCM43455, the Pi's onboard | targets 1 and 3 | one | **two, switchable**: 2.4 and 5 GHz |
+
+**The AP parts are dual-band because they carry two radios**, one per band,
+running at once. That is what "dual-band concurrent" means, and why the MT7915E
+appears as two adapters in the rack. Neither radio can be moved to the other's
+band: `iw phy info` lists only its own band's channels, so there is no
+channel of the other band to give it, and boa reports `bands: ["5GHz"]` or
+`["2.4GHz"]` for it. So on targets 4 and 5, changing a client's band
+means moving the *client* to the other radio (steer, gather, evict), never
+retuning a radio.
+
+**The client parts are the reverse**: one radio that covers several bands and
+tunes between them, which is why these boxes need a second adapter to serve both
+bands at once. It is also why two failures here can only happen on them:
+
+- **Coming up on 6 GHz.** OpenWrt's defaults give a new `mt7921u` its highest
+  band, 6 GHz, where that driver will not run an access point. The wizard and
+  the hotplug hook move it to 5 GHz for this reason.
+- **A band that changes under a radio.** A radio found on 2.4 GHz after being
+  set to 5 GHz (#429) is only possible where one radio has both.
+
+**And one that hit the AP parts hardest.** A scan used one fixed list of 2.4
+and 5 GHz channels, and `iw` rejects a whole scan that names a frequency the
+radio does not have. On a fixed single-band radio that is every scan: measured
+on target 5, boa's own scan failed on the 5 GHz radio and then took its access
+point down (#442, fixed). Any radio in a domain without channels 12 and 13 hit
+the same thing, because those are marked disabled there.
 
 ### The radios on targets 1, 2 and 3 are client parts, and that is their ceiling
 
@@ -3698,7 +3820,7 @@ An AP-class part with DFS would have five more.
 |---|---|---|
 | **OFDMA / MU-MIMO scheduling** | not done | Driver, and specific to this chip. The hardware advertises HE and `Full Bandwidth UL MU-MIMO`, but `mt7921` exposes no MU counters and every frame is single-user. `mt7915` does expose them — see [above](#the-mt7921u-adapters-do-not-do-ofdma-and-that-bounds-every-figure-they-produced) |
 | **160 MHz channels** | not possible | Hardware. `iw phy` lists no 160 MHz capability on either adapter |
-| **6 GHz (Wi-Fi 6E)** | **not implemented** | **Ours.** The adapter is an AX**E**3000 and the PHY offers 59 usable 6 GHz channels with AP mode among its HE Iftypes. boa neither scans nor serves there because `scanFreqs()` and `apChannels` stop at 5 GHz |
+| **6 GHz (Wi-Fi 6E)** | **not implemented** | **Ours.** The adapter is an AX**E**3000 and the PHY offers 59 usable 6 GHz channels with AP mode among its HE Iftypes. boa neither scans nor serves there because `scanChannels()` and `apChannels` stop at 5 GHz |
 | **Mesh / 802.11s** | not used | Ours. Both adapters list `mesh point` among their interface modes; nothing here builds on it |
 | **WPA3 / SAE, and PMF** | not configured | Ours. hostapd supports `sae_password`; the generated config is `wpa=2`, `WPA-PSK`, `CCMP`, with no `ieee80211w`. Two neighbours here already run WPA3 transition mode |
 | **Band steering** | manual | Ours. 802.11v BSS Transition is advertised and the controls exist, but nothing steers on its own — deliberately, since a destination that moves with transient state is one you cannot run the same test against twice |
