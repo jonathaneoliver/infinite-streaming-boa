@@ -17,15 +17,18 @@ Nothing yet.
 
 ## [0.6.0] — 2026-09-29
 
-**A freshly flashed router becomes a boa box without a shell, and a box with
-more than one radio stops tripping over them.**
+**A freshly flashed OpenWrt router becomes a boa box from one install and a
+four-question page, and a box with more than one radio stops tripping over
+them.**
 
 0.5.0 put boa on OpenWrt, but getting from a flashed device to a working one was
 still a sequence of commands typed over SSH: swap the wpad build, install the
 drivers, set a root password nobody had set, convert, restart. 0.6.0 replaces
-that with **a four-question wizard**, in LuCI or at a shell, and with scripts
-that take each target back to out-of-box so the wizard can be run again from
-nothing. It was run from nothing, repeatedly, on a Cudy TR3000, an x86-64
+everything after the install with **a four-question wizard**, in LuCI or at a
+shell. The install itself still needs a shell once: LuCI cannot add the feed's
+signing key, and will not until boa is in the official feed (#359). Scripts
+take each target back to out-of-box so the wizard can be run again from
+nothing, and it was run from nothing, repeatedly, on a Cudy TR3000, an x86-64
 virtual machine carrying a PCIe MT7915E, and a Raspberry Pi 5 running OpenWrt,
 which is new to this release.
 
