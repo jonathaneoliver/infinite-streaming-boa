@@ -46,7 +46,7 @@ And one fix is worth taking on its own: **every 5 GHz access point on the Pi
 and container targets asked clients for 8 KB aggregates**, which cost 3.6× on
 uplink and looked healthy on every figure boa shows.
 
-31 pull requests.
+32 pull requests.
 
 ### Added
 
