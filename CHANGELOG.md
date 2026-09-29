@@ -46,7 +46,7 @@ And one fix is worth taking on its own: **every 5 GHz access point on the Pi
 and container targets asked clients for 8 KB aggregates**, which cost 3.6× on
 uplink and looked healthy on every figure boa shows.
 
-30 pull requests.
+31 pull requests.
 
 ### Added
 
@@ -298,6 +298,12 @@ uplink and looked healthy on every figure boa shows.
   answer" until boad restarted. The monitor now re-attaches when the socket
   is replaced; measured on target 5, that is when its inode changes. Each
   steer request is also logged once, where it used to be logged twice.
+- **On OpenWrt, boa re-sent a BSS Load setting that hostapd refuses, every
+  15 s, and reported it applied** (#444). hostapd answers `FAIL` to
+  `bss_load_test`, and boa read that as success. It logged nothing, and put
+  738 rejections into hostapd's log in 49 minutes, which rolled the log over
+  and erased the evidence for #445. boa now reads the reply, asks each radio
+  once, warns once, and reports the panel unavailable with the reason.
 
 - **`scripts/docker-detach.sh` was never shipped to the target**, so the undo step
   the README documents was absent on every deployed host. The deploy tar named the
@@ -432,11 +438,13 @@ uplink and looked healthy on every figure boa shows.
 - **The Pi's published uplink figures predate the A-MPDU fix** and have not
   been re-measured.
 - **`target.sh cudy reset` has not been run on the device.**
-- **Two bugs found measuring target 5 are still open**; #441, #442 and #443
-  are fixed above:
-  - OpenWrt's hostapd rejects `bss_load_test` every 15 s while the API reports
-    the BSS Load correction as applied (#444);
-  - a forced move to 40 MHz once left the access point down (#445).
+- **No advertised BSS Load on OpenWrt.** The "Advertised, not enforced" panel
+  works through hostapd's `bss_load_test`, which OpenWrt's `wpad` does not
+  include, so on every OpenWrt target the panel says so in place of its
+  controls. The Pi and the container are unaffected.
+- **A forced move to 40 MHz once left the access point down** (#445), found
+  measuring target 5 and not reproduced. The other four bugs that run found
+  (#441–#444) are fixed above.
 
 ## [0.5.0] — 2026-09-24
 

@@ -1642,7 +1642,7 @@ device's answer.
 channel restore loop (#441, since fixed); a scan that fails on a single-band phy and takes
 the AP down for nothing (#442, since fixed); steering answers lost on a radio rebuilt with
 `wifi up` until boad restarts (#443, since fixed); `bss_load_test` rejected by OpenWrt's
-hostapd every 15 s while the API says it is applied (#444); and a forced move to
+hostapd every 15 s while the API says it is applied (#444, since fixed); and a forced move to
 40 MHz that once left the AP down (#445). The steering table above was taken
 after a restart, so #443 does not affect it.
 
