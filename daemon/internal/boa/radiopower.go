@@ -1938,9 +1938,26 @@ func (e *Engine) scanBand(iface string, apply, allowOutage, background bool) (Sc
 	// associated throughout and nobody is dropped.
 	// Restricted to the channels that can actually matter -- see scanFreqs for
 	// the measurement. A third of the time off channel, for the same answer.
-	scanArgs := append([]string{"dev", iface, "scan", "freq"}, scanFreqs()...)
+	freqs, _ := scanPlanFor(iface)
+	if len(freqs) == 0 {
+		return ScanResult{}, fmt.Errorf(
+			"%s's radio has none of the channels a scan covers enabled, so there is nothing to scan", iface)
+	}
+	scanArgs := append([]string{"dev", iface, "scan", "freq"}, freqs...)
 	raw, err := scanCmd(iface, scanArgs)
 	disrupted := false
+	// A REFUSED REQUEST IS NOT A REFUSAL TO SCAN WHILE SERVING. EINVAL is the
+	// kernel rejecting the arguments, which taking the access point down
+	// cannot change: before #442 it did exactly that, retried the same bad
+	// list, failed again, and the clients paid for it -- 7 s and a
+	// disassociation on target 5 for a scan that returned nothing. Nor is it
+	// remembered as this radio's scan cost, which would bar the background
+	// poll from a radio that scans for free.
+	if badScanRequest(err) {
+		return ScanResult{}, fmt.Errorf(
+			"scan on %s was rejected as an invalid request (%w); the access point "+
+				"was left serving", iface, err)
+	}
 	if err != nil {
 		// This driver will not scan while it is serving. Take the BSS down,
 		// bring the interface back up, scan, and put it back.
@@ -2350,7 +2367,7 @@ func (e *Engine) rememberScan(iface string, res ScanResult) {
 		Channels: res.Channels, Best: res.Best, Ours: ours,
 		Neighbours: neighbours, Heard: heard,
 		// What was LISTENED to, not what was heard. See ScanSummary.Looked.
-		Looked: scanChannels(),
+		Looked: scanLooked(iface),
 	}
 	e.mu.Lock()
 	if e.scanSeen == nil {

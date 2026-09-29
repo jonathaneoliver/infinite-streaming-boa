@@ -1,0 +1,16 @@
+	Band 1:
+		Frequencies:
+			* 2412.0 MHz [1] (26.0 dBm)
+			* 2417.0 MHz [2] (26.0 dBm)
+			* 2422.0 MHz [3] (26.0 dBm)
+			* 2427.0 MHz [4] (26.0 dBm)
+			* 2432.0 MHz [5] (26.0 dBm)
+			* 2437.0 MHz [6] (26.0 dBm)
+			* 2442.0 MHz [7] (26.0 dBm)
+			* 2447.0 MHz [8] (26.0 dBm)
+			* 2452.0 MHz [9] (26.0 dBm)
+			* 2457.0 MHz [10] (26.0 dBm)
+			* 2462.0 MHz [11] (26.0 dBm)
+			* 2467.0 MHz [12] (disabled)
+			* 2472.0 MHz [13] (disabled)
+			* 2484.0 MHz [14] (disabled)

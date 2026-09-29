@@ -92,7 +92,7 @@ var apChannels = map[int]apChannel{
 // go stale the next time the table changes.
 const offeredChannels = "2.4GHz 1/6/11, 5GHz 36/40/44/48 and 149/153/157/161/165"
 
-// scanFreqs is where a scan actually has to LISTEN, which is a wider set than
+// scanChannels is where a scan actually has to LISTEN, which is a wider set than
 // apChannels and a much narrower one than everything the regulatory domain
 // allows.
 //
@@ -117,9 +117,12 @@ const offeredChannels = "2.4GHz 1/6/11, 5GHz 36/40/44/48 and 149/153/157/161/165
 // scanning is the one thing here that takes a serving radio away from its
 // clients, and it is the difference between a poll that costs 2.2% of the radio
 // and one that costs 6.7%.
-// scanChannels is scanFreqs as channel numbers -- what a scan LISTENED to,
-// recorded on the result so a channel it heard nothing on can be told from a
-// channel it never visited. See ScanSummary.Looked.
+//
+// It is the list for a radio that has every one of these channels. What one
+// radio actually scans is this narrowed to its phy by scanPlan, and that
+// narrowed list is also what the result records as LISTENED to, so a channel
+// it heard nothing on can be told from a channel it never visited. See
+// ScanSummary.Looked.
 func scanChannels() []int {
 	out := make([]int, 0, 22)
 	for ch := 1; ch <= 13; ch++ {
@@ -129,18 +132,108 @@ func scanChannels() []int {
 	return out
 }
 
-func scanFreqs() []string {
-	// Every 2.4GHz channel, not just 1/6/11: they all overlap each other, so a
-	// neighbour on 2 is a neighbour on 1 and on 6.
-	out := make([]string, 0, 22)
-	for ch := 1; ch <= 13; ch++ {
-		out = append(out, strconv.Itoa(2407+5*ch))
+// scanChanMHz is a scanChannels entry's centre frequency. 2.4GHz is arithmetic;
+// 5GHz comes from apChannels, which is where every 5GHz channel here is listed.
+func scanChanMHz(ch int) int {
+	if ch <= 14 {
+		return 2407 + 5*ch
 	}
-	// 5GHz: the non-DFS blocks only, which is exactly what apChannels offers.
-	for _, ch := range []int{36, 40, 44, 48, 149, 153, 157, 161, 165} {
-		out = append(out, strconv.Itoa(apChannels[ch].FreqMHz))
+	return apChannels[ch].FreqMHz
+}
+
+// scanPlan narrows scanChannels to the channels one phy has enabled, and
+// returns them both as `iw scan freq` arguments and as channel numbers -- the
+// second is what the scan records as having LISTENED to (ScanSummary.Looked),
+// so the two must be the same list.
+//
+// PER PHY, because `iw` rejects the WHOLE scan when any listed frequency is not
+// on the phy: `Invalid argument (-22)`. The fixed list is both bands, and a
+// radio that is one half of a dual-band card is one band only. MEASURED
+// 2026-09-29 on target 5, the MT7915E's 5GHz phy: `scan freq 5180 5745`
+// succeeded while serving, `scan freq 2412 5745` failed -22 (#442). Channels
+// 12 and 13 fail the same way on any 2.4GHz radio in a domain without them.
+//
+// Only "disabled" is dropped. "no IR" forbids transmitting first, which is
+// what an access point needs (see phyBands) but not what a scan needs: it
+// listens there passively. MEASURED the same day: `scan freq 5845`, a no-IR
+// channel, succeeded; `scan freq 2467`, channel 12 marked disabled in the US
+// domain, failed -22. So the fixed list failed on EVERY 2.4GHz radio in a
+// domain without 12 and 13, not only on single-band phys.
+//
+// A nil enabled set means the phy could not be read, and gives the whole list,
+// which is what every scan did before. That is no worse than before: a wrong
+// list now fails as a bad request, and no longer takes the access point down.
+func scanPlan(enabled map[int]bool) (freqs []string, chans []int) {
+	for _, ch := range scanChannels() {
+		mhz := scanChanMHz(ch)
+		if enabled != nil && !enabled[mhz] {
+			continue
+		}
+		freqs = append(freqs, strconv.Itoa(mhz))
+		chans = append(chans, ch)
+	}
+	return freqs, chans
+}
+
+// phyEnabledMHz reads `iw phy <phy> info` for the frequencies the phy has
+// enabled. The channel lines are "* 5180.0 MHz [36] (22.0 dBm)", with
+// "(disabled)" or "(no IR)" appended where they apply. nil when there are no
+// channel lines at all, so an unreadable phy is told apart from one with
+// nothing enabled.
+func phyEnabledMHz(info string) map[int]bool {
+	var out map[int]bool
+	for _, line := range strings.Split(info, "\n") {
+		if !strings.Contains(line, " MHz [") {
+			continue
+		}
+		if out == nil {
+			out = map[int]bool{}
+		}
+		if strings.Contains(line, "disabled") {
+			continue
+		}
+		var mhz float64
+		if _, err := fmt.Sscanf(strings.TrimSpace(line), "* %f MHz", &mhz); err != nil {
+			continue
+		}
+		out[int(mhz)] = true
 	}
 	return out
+}
+
+// phyInfoFor is the seam a test replaces: `iw phy <phy> info` for the phy
+// behind an interface.
+var phyInfoFor = func(iface string) (string, error) {
+	phy, err := phyName(iface)
+	if err != nil {
+		return "", err
+	}
+	out, err := exec.Command("iw", "phy", phy, "info").Output()
+	return string(out), err
+}
+
+// scanPlanFor is scanPlan for one interface's phy.
+func scanPlanFor(iface string) (freqs []string, chans []int) {
+	info, err := phyInfoFor(iface)
+	if err != nil {
+		return scanPlan(nil)
+	}
+	return scanPlan(phyEnabledMHz(info))
+}
+
+// scanLooked is the channel list a scan of this interface covers, for the
+// record of what it listened to.
+func scanLooked(iface string) []int {
+	_, chans := scanPlanFor(iface)
+	return chans
+}
+
+// badScanRequest reports whether a scan failed because the REQUEST was wrong,
+// as opposed to the driver refusing to scan while serving. EINVAL is the
+// kernel rejecting the arguments: stopping the access point cannot change that,
+// so it must not be read as a reason to.
+func badScanRequest(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "(-22)")
 }
 
 // is24 reports whether a channel is in the 2.4GHz band, where neither 40MHz
