@@ -111,7 +111,17 @@ func uciChannelSets(radio string, channel, widthMHz int, htmode string) ([]strin
 		if gen == "VHT" && band == "2g" {
 			gen = "HT"
 		}
-		if gen != "" {
+		// NOHT TAKES NO WIDTH, and gluing one on produces `NOHT20` -- a value
+		// no OpenWrt release accepts. netifd then refuses the whole radio
+		// SILENTLY: hostapd is never asked to start, so there is no start_ap
+		// failure to find, no error anywhere, and the interface simply never
+		// appears. MEASURED on a Pi 5 2026-09-29, where an operator pressed
+		// serve, watched the row never populate, and the radio fell back to
+		// listening with nothing in the log but unrelated noise. #429.
+		//
+		// A radio with no HT has one width by definition, so there is nothing
+		// to write: leave the htmode it has.
+		if gen != "" && gen != "NOHT" {
 			sets = append(sets, p+"htmode="+gen+strconv.Itoa(widthMHz))
 		}
 	}
