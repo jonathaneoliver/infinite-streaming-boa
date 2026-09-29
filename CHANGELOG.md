@@ -361,7 +361,7 @@ uplink and looked healthy on every figure boa shows.
 
 ## [0.5.0] — 2026-09-24
 
-**boa installs on a router now — and on a router's own radios, it stops being
+**boa installs on an OpenWrt router now — and on a router's own radios, it stops being
 told no.**
 
 Until this release boa needed hardware of its own: a Raspberry Pi flashed from
