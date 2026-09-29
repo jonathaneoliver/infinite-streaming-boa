@@ -46,7 +46,7 @@ And one fix is worth taking on its own: **every 5 GHz access point on the Pi
 and container targets asked clients for 8 KB aggregates**, which cost 3.6× on
 uplink and looked healthy on every figure boa shows.
 
-27 pull requests.
+28 pull requests.
 
 ### Added
 
@@ -273,6 +273,15 @@ uplink and looked healthy on every figure boa shows.
 
 ### Fixed
 
+- **An announced channel move could be undone within about 2 s** by the loop
+  that restores a remembered channel (#441). The move switches the radio
+  before it records the new channel, and for 1.4 s on every move (measured on
+  target 5) the loop could read it as a drift and put it back. It happened on
+  three moves out of three, while the API and the event log both said the
+  move had succeeded. The loop now skips a radio that is being moved, and
+  re-checks before it acts. It no longer runs on OpenWrt at all, where uci
+  already keeps the channel across a restart.
+
 - **`scripts/docker-detach.sh` was never shipped to the target**, so the undo step
   the README documents was absent on every deployed host. The deploy tar named the
   attach half of the pair and not the detach half.
@@ -402,9 +411,8 @@ uplink and looked healthy on every figure boa shows.
 - **The Pi's published uplink figures predate the A-MPDU fix** and have not
   been re-measured.
 - **`target.sh cudy reset` has not been run on the device.**
-- **Five bugs found measuring target 5**, filed and open at the time of writing:
-  - an announced channel move is reverted by the restore loop within about 2 s
-    (#441);
+- **Four bugs found measuring target 5 are still open**; a fifth, #441, is fixed
+  above:
   - a scan on a single-band radio fails and takes the access point down (#442);
   - steering answers are lost on a radio rebuilt with `wifi up` until boad
     restarts (#443);

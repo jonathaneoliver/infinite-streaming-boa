@@ -1639,7 +1639,7 @@ had been dropped and rejoined during the channel sweep, so one ladder is not a
 device's answer.
 
 **Five bugs this run found**, all filed: an announced move reverted by the
-channel restore loop (#441); a scan that fails on a single-band phy and takes
+channel restore loop (#441, since fixed); a scan that fails on a single-band phy and takes
 the AP down for nothing (#442); steering answers lost on a radio rebuilt with
 `wifi up` until boad restarts (#443); `bss_load_test` rejected by OpenWrt's
 hostapd every 15 s while the API says it is applied (#444); and a forced move to
