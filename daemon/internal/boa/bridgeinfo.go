@@ -591,6 +591,39 @@ func (e *Engine) buildBridgeState() BridgeInfo {
 				}
 			}
 		}
+		// ONE RADIO IS ONE ADAPTER, even when it wears several netdev names.
+		//
+		// MEASURED on a Raspberry Pi 5, 2026-09-28, with the onboard brcmfmac
+		// listening and one mt7921u serving. The rack drew FOUR adapters for
+		// two radios: phy0-ap0 serving, phy1-scan sweeping, and phy1-ap0 and
+		// wlan0 -- both the SAME brcmfmac as phy1-scan -- as ordinary radios.
+		//
+		// They exist because brcmfmac will not let its interfaces go. netifd
+		// renames the driver's own netdev to phyN-ap0 to serve on it, and
+		// demoting the radio cannot remove it:
+		//
+		//	# iw dev phy1-ap0 del
+		//	command failed: No error information (-524)      // ENOTSUPP
+		//
+		// Deleting the wifi-iface section does not remove it either, nor does
+		// `wifi down`. Left alone from boot it keeps the name wlan0 instead.
+		// Either way the phy carries a spare netdev that cannot serve and
+		// cannot be deleted.
+		//
+		// Listing it is worse than untidy: RoleRadio MEANS A FAULT -- a radio
+		// carrying clients nobody conditions, drawn with a dashed link and a
+		// warning -- so a box doing exactly what it was told reported its
+		// healthy instrument twice as broken hardware, and offered serve,
+		// scan, deauth and steer on netdevs that cannot act. That is #288's
+		// mistake with a different cause, and #427.
+		//
+		// So an idle wireless netdev on a phy that is already listening is
+		// folded into that instrument rather than announced as a second radio.
+		// Idle is required: a phy only ever has one live interface, so this
+		// cannot hide anything that is serving or scanning.
+		if e.isSpareScannerIface(in) {
+			continue
+		}
 		bi.Ifaces = append(bi.Ifaces, in)
 	}
 	sort.SliceStable(bi.Ifaces, func(i, j int) bool {
@@ -1263,4 +1296,35 @@ func firstNonEmpty(vals ...string) string {
 		}
 	}
 	return ""
+}
+
+// isSpareScannerIface reports whether a wireless interface is a leftover
+// netdev on a phy this box is already using as an instrument.
+//
+// Three things must hold, and the first two are what keep it safe: the
+// interface is doing nothing (not serving, no access point, not itself a
+// scanner), and something else on the SAME phy is a configured scanner. A phy
+// carries one live interface, so an idle sibling of a scanner has no work it
+// could be doing.
+//
+// Deliberately not "is it named phyN-ap0": netifd picks these names and has
+// used at least two (phyN-ap0 when it renamed one to serve, wlan0 when it
+// never did). The relationship is the phy, so that is what is asked.
+func (e *Engine) isSpareScannerIface(in IfaceInfo) bool {
+	if !in.Wireless || in.Serving || in.AP != nil || in.Role == RoleScanner {
+		return false
+	}
+	phy, err := phyName(in.Name)
+	if err != nil || phy == "" {
+		return false
+	}
+	for _, s := range e.cfg.ScanPorts {
+		if s == "" || s == in.Name {
+			continue
+		}
+		if sp, err := phyName(s); err == nil && sp == phy {
+			return true
+		}
+	}
+	return false
 }
