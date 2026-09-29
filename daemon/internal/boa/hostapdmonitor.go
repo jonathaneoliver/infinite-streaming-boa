@@ -3,8 +3,10 @@ package boa
 import (
 	"fmt"
 	"net"
+	"os"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -217,7 +219,11 @@ func (e *Engine) watchOneRadio(iface string) {
 			time.Sleep(retry)
 			continue
 		}
-		e.readHostapdEvents(iface, conn)
+		// Read AFTER attaching, so a restart between the two is caught on
+		// the first check rather than missed: the worst case is one extra
+		// re-attach, never a monitor pinned to the wrong socket.
+		id, _ := hostapdSocketID(iface)
+		e.readHostapdEvents(iface, conn, id)
 		// Say goodbye before dropping the socket, so hostapd forgets this
 		// monitor rather than discovering it is gone one failed send at a
 		// time. Best effort by nature -- the usual reason the read loop ended
@@ -283,21 +289,54 @@ func hostapdDetach(conn *net.UnixConn) {
 	_, _ = conn.Write([]byte("DETACH"))
 }
 
-// readHostapdEvents reads until the connection fails, which is how a hostapd
-// restart is noticed.
-func (e *Engine) readHostapdEvents(iface string, conn *net.UnixConn) {
+// monitorQuietCheck is how long the monitor waits for an event before checking
+// that the socket it attached to is still the one hostapd is serving. It sets
+// how soon a rebuilt radio is heard again, so it is short; each check is one
+// stat.
+var monitorQuietCheck = 5 * time.Second
+
+// hostapdSocketID is the identity of a radio's control socket -- its inode --
+// and false when there is none. The seam a test replaces.
+var hostapdSocketID = func(iface string) (uint64, bool) {
+	fi, err := os.Stat(hostapdSocket(iface))
+	if err != nil {
+		return 0, false
+	}
+	st, ok := fi.Sys().(*syscall.Stat_t)
+	if !ok {
+		return 0, false
+	}
+	return uint64(st.Ino), true
+}
+
+// readHostapdEvents reads until hostapd is no longer sending to this monitor.
+//
+// A FAILED READ IS NOT HOW THAT IS NOTICED, whatever this used to say. The
+// connection is a datagram socket, and a datagram socket has no end: when a
+// radio is rebuilt -- `wifi up`, netifd reconfiguring it, the wizard -- hostapd
+// makes a NEW control socket at the same path and forgets every monitor the
+// old one had. Nothing arrives to say so. The read just times out, the path
+// still exists, and the monitor waited there for good. MEASURED on target 5,
+// 2026-09-29: after `wifi up radio2` every steer answer on that radio was lost
+// until boad restarted, reported as "did not answer" when the client had
+// (#443).
+//
+// So each quiet spell checks the socket's IDENTITY, not merely that one
+// exists. Measured the same day: `wifi up radio2` moved phy1-ap0's socket from
+// inode 356 to 368, while a forced channel move -- DISABLE and ENABLE inside
+// the same process -- left it at 356 with the monitor still attached. A
+// changed or missing socket ends the read, and watchOneRadio attaches afresh.
+func (e *Engine) readHostapdEvents(iface string, conn *net.UnixConn, attached uint64) {
 	buf := make([]byte, 4096)
 	for {
-		// A deadline rather than a blocking read, so a socket whose hostapd
-		// died quietly is noticed rather than held open forever. A timeout is
-		// not an error: most of the time nothing has happened, which is the
-		// normal state of a radio.
-		_ = conn.SetReadDeadline(time.Now().Add(30 * time.Second))
+		// A deadline rather than a blocking read, so the checks below run
+		// even on a radio where nothing is happening, which is most of them.
+		_ = conn.SetReadDeadline(time.Now().Add(monitorQuietCheck))
 		n, err := conn.Read(buf)
 		if err != nil {
 			if ne, ok := err.(net.Error); ok && ne.Timeout() {
-				if !hostapdAvailable(iface) {
-					return // hostapd has gone; reconnect when it comes back
+				if now, ok := hostapdSocketID(iface); !ok || now != attached {
+					return // gone, or replaced: attach to whatever is there now
 				}
 				continue
 			}
