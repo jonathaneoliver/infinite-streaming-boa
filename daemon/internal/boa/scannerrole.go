@@ -283,6 +283,19 @@ func (e *Engine) SetRadioRole(iface string, scanner bool) (string, error) {
 		if err := setScanMAC(phyMAC(phy), false); err != nil {
 			return "", err
 		}
+		// COMMIT BEFORE THE SLOW PART, so there is never a window where uci
+		// holds staged-but-uncommitted changes. Waiting for an access point
+		// takes seconds, and this daemon can be killed during them -- the role
+		// change ends by spawning a detached restart, and a second request
+		// arriving while that is pending dies with it. Observed on the Pi,
+		// 2026-09-29: the wireless config was committed as serving while the
+		// boa deletions were still staged, so /etc/config/boa went on naming
+		// the radio a scanner and it reverted on the next read. Committing
+		// here means the worst case is a config that is merely WRONG, not one
+		// that disagrees with itself.
+		if err := uciCommit("boa"); err != nil {
+			return "", err
+		}
 		if out, err := exec.Command("wifi", "reload").CombinedOutput(); err != nil {
 			return "", fmt.Errorf("wifi reload: %v: %s", err, strings.TrimSpace(string(out)))
 		}
@@ -294,10 +307,29 @@ func (e *Engine) SetRadioRole(iface string, scanner bool) (string, error) {
 		// MEASURED on a Pi 5 2026-09-28, where an illegal channel left exactly
 		// that state and the operator had no way to know. Issue #429.
 		if !apCameUpOn(phy) {
-			return "", fmt.Errorf("%s was set to serve but no access point came up on %s; "+
-				"the driver may have refused its channel (band %s, channel %s) -- check "+
-				"`logread` for start_ap failures", iface, phy,
-				uciGet("wireless."+radio+".band"), uciGet("wireless."+radio+".channel"))
+			// PUT IT BACK, because a half-applied change is worse than a
+			// refused one. Reporting the failure and returning here left the
+			// wireless config committed as SERVING while the boa config's
+			// deletions were still staged, so /etc/config/boa went on naming
+			// this radio a scanner: the box had a radio that served nobody,
+			// listened to nobody, and came back as a scanner on the next read.
+			// Observed on the Pi, 2026-09-29, by an operator who pressed the
+			// button and watched the row never populate and then revert.
+			band, ch := uciGet("wireless."+radio+".band"), uciGet("wireless."+radio+".channel")
+			_ = uciSet("wireless." + sec + ".disabled=1")
+			_ = uciCommit("wireless")
+			_ = setScanPort(scan, true)
+			_ = setScanMAC(phyMAC(phy), true)
+			_ = uciCommit("boa")
+			_ = exec.Command("wifi", "reload").Run()
+			if !LinkExists(scan) {
+				_ = exec.Command("iw", "phy", phy, "interface", "add", scan, "type", "managed").Run()
+			}
+			_ = exec.Command("ip", "link", "set", scan, "up").Run()
+			return "", fmt.Errorf("%s was set to serve but no access point came up on %s, "+
+				"so it has been left listening: the driver may have refused its channel "+
+				"(band %s, channel %s) -- check `logread` for start_ap failures",
+				iface, phy, band, ch)
 		}
 	}
 	if err := uciCommit("boa"); err != nil {
