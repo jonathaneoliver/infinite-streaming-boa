@@ -233,13 +233,21 @@ check_hostapd() {
 # 1 and 5 ch 40, at 20 dBm. A literal '00' is what hostapd refuses to parse --
 # `Invalid country_code '00'` -- and the access point never starts. So an empty
 # country is a WARN naming what it costs, and '00' is the failure.
+#
+# $5 is "scanner" for boa's listen-only radio, which skips only the empty-
+# country warning: a scanner serves nothing, and runs under whatever domain
+# the serving radios set, so it has no country of its own to need. Since
+# #434 most multi-radio boxes have one, and warning about it would put a
+# warning on nearly every box about something that is fine. '00' and 6 GHz
+# are still reported, because they bite the moment it is made to serve.
 check_radio_landmines() {
-	local r="$1" band="$2" country="$3" level="$4"
+	local r="$1" band="$2" country="$3" level="$4" role="${5:-}"
 	case "$country" in
 		00) "$level" "$r has country '00', which hostapd rejects: the access point will not start"
 		    fix "uci delete wireless.$r.country (the world domain works) or set a real one" ;;
-		'') warn "$r has no country: it runs on the world domain -- no DFS, no ch 12/13, and 20 dBm"
-		    fix "uci set wireless.$r.country=<CC> && uci commit wireless && wifi reload" ;;
+		'') [ "$role" = scanner ] ||
+		    { warn "$r has no country: it runs on the world domain -- no DFS, no ch 12/13, and 20 dBm"
+		      fix "uci set wireless.$r.country=<CC> && uci commit wireless && wifi reload"; } ;;
 	esac
 	# `wifi config` offers 6g first on these radios, and the mt7921u will not
 	# start a 6 GHz access point.
@@ -247,6 +255,24 @@ check_radio_landmines() {
 		"$level" "$r is set to 6 GHz, where the mt7921u will not run an access point"
 		fix "uci set wireless.$r.band=5g (or 2g) && uci commit wireless && wifi reload"; }
 	return 0
+}
+
+# Whether wifi-device $1 is one of boa's listen-only radios.
+#
+# A MEMBERSHIP TEST BOTH WAYS, never string equality. boa.main.scan is a LIST
+# since #434 -- a box can keep two scanners -- and a phy can carry more than one
+# interface (a demoted Pi radio keeps wlan0 beside phy1-scan), so radio_ifname
+# prints several. The old `[ "$scan" = "$(radio_ifname "$r")" ]` was wrong both
+# ways, and with both sides empty -- no scanner set, a radio with no interface
+# yet -- it was TRUE, and named every idle radio boa's scanner.
+is_scan_radio() {
+	local scan n
+	scan="$(uci -q get boa.main.scan)"
+	[ -n "$scan" ] || return 1
+	for n in $(radio_ifname "$1"); do
+		case " $scan " in *" $n "*) return 0 ;; esac
+	done
+	return 1
 }
 
 # Whether wifi-device $1 has an enabled access-point interface configured.
@@ -313,7 +339,7 @@ radio_hw_present() {
 
 check_wifi() {
 	section "Wi-Fi"
-	local r band country dis scan serving=0 i dev mode ifname st k v
+	local r band country dis serving=0 i dev mode ifname st k v
 	for r in $(uci -q show wireless | sed -n 's/^wireless\.\([^.=]*\)=wifi-device$/\1/p'); do
 		dis="$(uci -q get wireless.$r.disabled)"
 		band="$(uci -q get wireless.$r.band)"
@@ -326,13 +352,15 @@ check_wifi() {
 		# is one for the whole system, and a listen-only scanner -- the onboard
 		# radio on a Pi 5 -- runs under whatever the serving radios set.
 		if ! serves_ap "$r"; then
-			# The scan radio is only named when there IS one. Both sides of
-			# this comparison are empty on a device with no scan radio and a
-			# radio that has no netdev yet, and '' = '' called every such radio
-			# boa's scanner -- measured on the Cudy the moment a USB adapter
-			# was plugged in.
-			scan="$(uci -q get boa.main.scan)"
-			note "$r ($band) runs no access point$( [ -n "$scan" ] && [ "$scan" = "$(radio_ifname "$r")" ] && echo ": boa's scan radio")"
+			# Named boa's scanner only when it is one -- see is_scan_radio for
+			# the '' = '' that once named every idle radio so, measured on the
+			# Cudy the moment a USB adapter was plugged in.
+			if is_scan_radio "$r"; then
+				note "$r ($band) runs no access point: boa's scan radio"
+				check_radio_landmines "$r" "$band" "$country" warn scanner
+				continue
+			fi
+			note "$r ($band) runs no access point"
 			# NOT skipped with it. A radio that serves nothing YET still
 			# carries whatever `wifi config` wrote for it, and the two things
 			# below stop it dead the moment it is enabled. Measured on the
