@@ -423,7 +423,9 @@ uplink and looked healthy on every figure boa shows.
   access point, and netifd applies a channel only when it starts one, so a
   planned or changed channel for the scanner reaches the hardware on the next
   boot (it is parked on 2.4 GHz channel 11 at HT20, clear of the serving
-  radios). The rest of #431, planning by spectrum, is fixed above.
+  radios). That only matters to the Pi's onboard `brcmfmac`, which refuses
+  to scan without a resolvable channel. Whether it scans after a runtime
+  role change, before a reboot, is untested (#449).
 - **A replugged adapter is not re-adopted as the listening radio** if it comes
   back under a new phy number, outside what the recorded MAC covers at start.
   The notice says what is missing. #387.
