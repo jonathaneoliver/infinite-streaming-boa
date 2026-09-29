@@ -36,7 +36,7 @@ architecture-agnostic; only the package label was wrong. Built against the
 Filogic SDK:
 
 ```sh
-SDK_IMAGE=openwrt/sdk:mediatek-filogic-25.12.5 ./scripts/openwrt-package.sh
+SDK_IMAGE=openwrt/sdk:mediatek-filogic-25.12.5 ./scripts/openwrt-boa-build.sh
 ```
 
 The CI workflow now publishes both feeds from one release, so `$DISTRIB_ARCH`
@@ -336,8 +336,9 @@ echo $FEED/25.12/$DISTRIB_ARCH/packages.adb \
 apk update && apk add luci-app-boa
 ```
 
-Or build and push in one step from a clone:
-`SDK_IMAGE=openwrt/sdk:mediatek-filogic-25.12.5 ./scripts/openwrt-package.sh root@<ip>`.
+Or build and push from a clone:
+`SDK_IMAGE=openwrt/sdk:mediatek-filogic-25.12.5 ./scripts/openwrt-boa-build.sh`,
+then `./scripts/openwrt-boa-install.sh root@<ip>`.
 
 **4d. Point boa at the hardware**, in `/etc/config/boa` — note `wan` is `eth0`
 here, where the Pi uses `eth1`:

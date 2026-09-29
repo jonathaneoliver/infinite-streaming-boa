@@ -1106,7 +1106,7 @@ already has all four.
 
 | | Raspberry Pi 5 | Linux container | OpenWrt (either) |
 |---|---|---|---|
-| Install | Flash an image, once | `scripts/docker-deploy.sh <host>` | `scripts/openwrt-package.sh <device>`: two signed apk packages |
+| Install | Flash an image, once | `scripts/docker-deploy.sh <host>` | `scripts/openwrt-boa-build.sh` then `scripts/openwrt-boa-install.sh <device>`: two signed apk packages |
 | Update the daemon | `scripts/deploy.sh`, ~10 s | `scripts/docker-deploy.sh`, rebuild and restart | The same script, ~20 s, upgrading only boa's packages |
 | Reflash needed for | Units, packages, kernel settings, network profiles | Nothing — the image is rebuilt every deploy | Nothing |
 | Bridge built by | NetworkManager | The container entrypoint | netifd, from UCI — set up by hand, once |
@@ -1283,7 +1283,8 @@ echo https://jonathaneoliver.github.io/infinite-streaming-boa/openwrt/25.12/$DIS
 apk update && apk add luci-app-boa
 ```
 
-or built from this checkout with `scripts/openwrt-package.sh root@<device>`.
+or built from this checkout with `scripts/openwrt-boa-build.sh`, then installed
+with `scripts/openwrt-boa-install.sh root@<device>`.
 Then open LuCI → **Services → infinite-streaming-boa**, or
 `http://<device>:8080/`.
 
@@ -1472,7 +1473,7 @@ starting one while the other holds them does not fail. It starts, and the loser
 fails later like a driver fault. So `up` refuses while the other target runs,
 and `down` does not return until every radio and adapter is back on the host.
 `vm reset` keeps the previous overlay as `….qcow2.prev`, and the install goes
-through the host with `openwrt-package.sh`, as `root@192.168.1.1`.
+through the host with `openwrt-boa-install.sh`, as `root@192.168.1.1`.
 
 `vm up` checks that the hook has done its job: the host's address is on
 `br-client` and IPv6 is off. If either is missing, it fails and names
@@ -3929,9 +3930,10 @@ First-run setup is separate and documented in
 ### 5. Full deploy to an OpenWrt box — under a minute
 
 ```sh
-./scripts/openwrt-package.sh root@<device>                         # a Pi on OpenWrt
-SDK_IMAGE=openwrt/sdk:mediatek-filogic-25.12.5 \
-  ./scripts/openwrt-package.sh root@192.168.0.23                   # the Cudy
+./scripts/openwrt-boa-build.sh                                     # dist/openwrt/*.apk
+./scripts/openwrt-boa-install.sh root@<device>                      # a Pi on OpenWrt
+SDK_IMAGE=openwrt/sdk:mediatek-filogic-25.12.5 ./scripts/openwrt-boa-build.sh
+./scripts/openwrt-boa-install.sh root@192.168.0.23                  # the Cudy
 ```
 
 Cross-compiles the daemon with the interface embedded, has the OpenWrt SDK

@@ -5,7 +5,7 @@
 # ONE workflow for both because a Pages deploy replaces the whole site: two
 # workflows would each publish a site without the other's feed.
 #
-# Built by the same scripts/openwrt-package.sh and scripts/deb-package.sh a
+# Built by the same scripts/openwrt-boa-build.sh and scripts/deb-package.sh a
 # developer runs, so the feeds and a local build cannot drift. On an x86-64
 # runner the OpenWrt SDK container runs natively rather than under emulation.
 #
@@ -105,7 +105,7 @@ jobs:
           export BOA_RELEASE="$(date -u +%Y%m%d%H%M)"
           for t in $OPENWRT_TARGETS; do
             sdk="${t%%:*}" arch="${t##*:}"
-            SDK_IMAGE="openwrt/sdk:$sdk-$OPENWRT_SDK_VERSION" ./scripts/openwrt-package.sh \
+            SDK_IMAGE="openwrt/sdk:$sdk-$OPENWRT_SDK_VERSION" ./scripts/openwrt-boa-build.sh \
               | tee build.log
             grep -q "^packed boa-.* ($arch):" build.log \
               || { echo "::error::$sdk did not produce $arch packages"; exit 1; }

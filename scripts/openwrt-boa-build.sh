@@ -3,13 +3,22 @@
 # Build signed OpenWrt packages: boa (the daemon) and luci-app-boa (the LuCI
 # page), for OpenWrt 25.12 on bcm27xx/bcm2712 (Raspberry Pi 5) by default.
 #
-#   ./scripts/openwrt-package.sh              -> dist/openwrt/*.apk
-#   ./scripts/openwrt-package.sh root@<host>  -> and install them there
-#   SSH_OPTS="-o ProxyJump=<jump>" ./scripts/openwrt-package.sh root@<host>
+#   ./scripts/openwrt-boa-build.sh   -> dist/openwrt/*.apk and packages.adb
+#
+# Installing them on a device is openwrt-boa-install.sh, which never builds.
+# The two were one script; they split because a repeated out-of-box test
+# reinstalls the same bytes many times and rebuilt them every time -- npm ci, a
+# full interface build and a Go build, to produce packages byte-for-byte
+# identical to the ones already in dist/openwrt/.
+#
+# THIS SIDE OWNS THE VERSION. It mints BOA_VERSION-rBOA_RELEASE from the tag
+# and a clock, and writes it into the package filenames. The install side reads
+# that version off the filenames rather than recomputing it: a second clock
+# reading would pin `apk add` to a version that was never built.
 #
 # Another target is another SDK; the package architecture is read from it:
 #
-#   SDK_IMAGE=openwrt/sdk:mediatek-filogic-25.12.5 ./scripts/openwrt-package.sh
+#   SDK_IMAGE=openwrt/sdk:mediatek-filogic-25.12.5 ./scripts/openwrt-boa-build.sh
 #
 # builds aarch64_cortex-a53, for MediaTek Filogic routers such as the Cudy
 # TR3000, and an x86-64 SDK builds for a PC or a virtual machine. boad is
@@ -33,7 +42,6 @@ log()  { printf '\033[36m==>\033[0m %s\n' "$*"; }
 die()  { printf '\033[31merror:\033[0m %s\n' "$*" >&2; exit 1; }
 
 SDK_IMAGE="${SDK_IMAGE:-openwrt/sdk:bcm27xx-bcm2712-25.12.5}"
-TARGET="${1:-}"
 
 # THE BINARY'S ARCHITECTURE FOLLOWS THE SDK, and it has to be derived rather
 # than assumed. This was `GOARCH=arm64`, hardcoded, which was accidentally
@@ -101,32 +109,3 @@ docker run --rm --platform linux/amd64 --user 0 \
   "$SDK_IMAGE" bash /src/mkpkg.sh "$BOA_VERSION-r$BOA_RELEASE"
 [ -f "$OUT/packages.adb" ] || die "the SDK produced no signed index"
 log "Built $OUT/:"; ls -1 "$OUT" | sed 's/^/    /'
-
-[ -n "$TARGET" ] || exit 0
-
-log "Installing on $TARGET"
-# SSH_OPTS reaches a device that is only reachable through another host, such
-# as the OpenWrt VM behind its host's br-client (scripts/target.sh). Word-split
-# on purpose: it is a list of options.
-SSH_OPTS="${SSH_OPTS:-}"
-# shellcheck disable=SC2086
-ssh() { command ssh $SSH_OPTS "$@"; }
-ssh -o BatchMode=yes "$TARGET" 'test -f /etc/openwrt_release' || die "cannot reach $TARGET, or it is not OpenWrt"
-# Trusted by name: apk reads every key in /etc/apk/keys, and this one signs
-# nothing but boa's index.
-ssh "$TARGET" 'cat > /etc/apk/keys/boa-packages.pem' < "$KEYS/public-key.pem"
-ssh "$TARGET" 'rm -rf /tmp/boa-repo && mkdir -p /tmp/boa-repo'
-for f in "$OUT"/*.apk "$OUT"/packages.adb; do
-  ssh "$TARGET" "cat > /tmp/boa-repo/$(basename "$f")" < "$f"
-done
-# From the signed index, so apk verifies the packages against the key above.
-# Pinned to this build. A bare `apk add` leaves an installed package at its old
-# version, and `apk add --upgrade` upgrades its dependencies too -- measured:
-# a boa reinstall also moved rpcd, luci-base and ten other system packages.
-# A version constraint moves only these two. apk then records that constraint
-# in /etc/apk/world, where it pins the packages for good: measured, a later
-# `apk upgrade` from the feed did nothing. Adding them again unversioned only
-# rewrites world -- it upgrades nothing -- so the feed can move them on.
-V="$BOA_VERSION-r$BOA_RELEASE"
-ssh "$TARGET" "apk add --repository /tmp/boa-repo/packages.adb boa=$V luci-app-boa=$V && apk add boa luci-app-boa >/dev/null"
-log "Installed. LuCI: Services -> infinite-streaming-boa"

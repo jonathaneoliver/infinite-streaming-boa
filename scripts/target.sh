@@ -13,6 +13,8 @@
 #   scripts/target.sh swap vm|container
 #   scripts/target.sh cudy status
 #   scripts/target.sh cudy reset [--no-install]
+#   scripts/target.sh pi status
+#   scripts/target.sh pi reset [--no-install]
 #
 # The host comes from BOA_TARGET_HOST in .env. The VM settings are
 # BOA_VM_DOMAIN, BOA_VM_BASE_IMAGE and BOA_VM_SDK_IMAGE; see .env.example.
@@ -350,9 +352,9 @@ on_host() {
 # The VM's LAN is only reachable through the host, so the install jumps.
 vm_install() {
 	log "installing boa on the VM (through $HOST)"
-	SDK_IMAGE=$SDK \
-		SSH_OPTS="-o ProxyJump=$HOST -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR" \
-		"$REPO/scripts/openwrt-package.sh" root@192.168.1.1
+	SDK_IMAGE=$SDK "$REPO/scripts/openwrt-boa-build.sh"
+	SSH_OPTS="-o ProxyJump=$HOST -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR" \
+		"$REPO/scripts/openwrt-boa-install.sh" root@192.168.1.1
 }
 
 # --- the Cudy TR3000 (target 3 in openwrt/CUDY-TR3000.md) -------------------
@@ -433,9 +435,118 @@ cudy_reset() {
 
 	[ "$install" = 1 ] || return 0
 	log "installing boa on the Cudy"
-	SDK_IMAGE=$CUDY_SDK SSH_OPTS="$CUDY_SSH_OPTS -o BindInterface=$CUDY_IF" \
-		"$REPO/scripts/openwrt-package.sh" root@192.168.1.1
+	SDK_IMAGE=$CUDY_SDK "$REPO/scripts/openwrt-boa-build.sh"
+	SSH_OPTS="$CUDY_SSH_OPTS -o BindInterface=$CUDY_IF" \
+		"$REPO/scripts/openwrt-boa-install.sh" root@192.168.1.1
 	log "done. The wizard is at http://192.168.1.1/ on $CUDY_IF"
+}
+
+# --- the Raspberry Pi on OpenWrt (target 3) --------------------------------
+#
+# The same shape as the Cudy -- a physical box, reset with `firstboot` -- with
+# one stage the others do not need. OpenWrt's board profile for a Pi sets LAN
+# on eth0 and NO WAN AT ALL (`/etc/board.json` carries a lan key and nothing
+# else), so a Pi fresh from a flash can reach no package feed, and installing
+# boa pulls fifteen dependencies from one. A Cudy and an x86 guest both get a
+# wan from their profiles; this is the only target where the install would fail
+# on a box that is working exactly as OpenWrt intends.
+#
+# WHICH PORT IS THE WAN IS MEASURED, NOT ASSUMED. See openwrt-boa-common.sh:
+# the onboard socket is the LAN because that is where the setup page is served
+# and where the operator's computer must be, so the wan is a USB adapter, and
+# the one with a live cable wins. Never the interface NUMBER -- that follows
+# USB enumeration order and moves when a dongle is replugged.
+PI=${BOA_PI_HOST:-192.168.0.200}
+PI_IF=${BOA_PI_IF:-}
+PI_BOARD=${BOA_PI_BOARD:-raspberrypi,5-model-b}
+PI_SDK=${BOA_PI_SDK_IMAGE:-openwrt/sdk:bcm27xx-bcm2712-25.12.5}
+# firstboot regenerates the host key, so no known_hosts entry can be right.
+PI_SSH_OPTS="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o ConnectTimeout=8 -o ServerAliveInterval=5 -o ServerAliveCountMax=6"
+
+pi_ssh() {
+	# shellcheck disable=SC2086
+	ssh -o BatchMode=yes $PI_SSH_OPTS "root@$PI" "$@"
+}
+pi_rescue_ssh() {
+	# shellcheck disable=SC2086
+	ssh -o BatchMode=yes $PI_SSH_OPTS -o BindInterface="$PI_IF" root@192.168.1.1 "$@"
+}
+need_pi_if() {
+	[ -n "$PI_IF" ] ||
+		die "set BOA_PI_IF in $ENV_FILE to this machine's interface on the Pi's ONBOARD ethernet socket (e.g. en12)"
+	ifconfig "$PI_IF" >/dev/null 2>&1 || die "no interface $PI_IF on this machine"
+}
+pi_describe() {
+	"$@" 'printf "board:   %s\n" "$(cat /tmp/sysinfo/board_name)"
+		printf "openwrt: %s\n" "$(cat /etc/openwrt_version)"
+		printf "lan:     %s (%s)\n" "$(uci -q get network.lan.proto)" "$(ip -4 -o addr show br-lan | awk "{print \$4}" | tr "\n" " ")"
+		printf "wan:     %s\n" "$(uci -q get network.wan.device || echo "none -- OpenWrt gives a Pi no wan")"
+		printf "radios:  %s\n" "$(ls /sys/class/ieee80211 2>/dev/null | tr "\n" " ")"
+		printf "boa:     %s\n" "$(apk list -I 2>/dev/null | sed -n "s/^boa-\([0-9][^ ]*\).*/\1/p")"' |
+		sed 's/^/    /'
+}
+
+pi_reset() {
+	local install=$1 board backup stamp wan at=pi_ssh
+	need_pi_if
+	# EITHER ADDRESS. A Pi that is bridged answers at BOA_PI_HOST; one that is
+	# still out-of-box -- or was reset and never set up -- answers only at
+	# 192.168.1.1 on the LAN cable, because that is all OpenWrt configures.
+	# Resetting an already-reset box is an ordinary thing to want.
+	#
+	# NEVER FIRSTBOOT THE WRONG BOX: the board name is read from the device
+	# either way, not trusted from an address DHCP may have moved.
+	board=$($at 'cat /tmp/sysinfo/board_name' 2>/dev/null) || {
+		at=pi_rescue_ssh
+		board=$($at 'cat /tmp/sysinfo/board_name' 2>/dev/null) ||
+			die "cannot reach the Pi at $PI or at 192.168.1.1 on $PI_IF. Set BOA_PI_HOST to its current address; it needs this machine's key in /etc/dropbear/authorized_keys"
+		log "no answer at $PI; using 192.168.1.1 on $PI_IF"
+	}
+	[ "$board" = "$PI_BOARD" ] || die "that device is '$board', not $PI_BOARD; refusing to reset it"
+
+	stamp=$(date +%Y%m%d-%H%M%S)
+	backup="$REPO/cache/pi-backups/pi-$stamp.tar.gz"
+	mkdir -p "$(dirname "$backup")"
+	log "saving the Pi's configuration to ${backup#"$REPO"/}"
+	$at 'sysupgrade -b /tmp/boa-reset-backup.tar.gz >/dev/null && cat /tmp/boa-reset-backup.tar.gz' >"$backup"
+	gzip -t "$backup" 2>/dev/null && [ -s "$backup" ] || die "the backup is empty or corrupt; not resetting"
+	log "  $(tar -tzf "$backup" | wc -l | tr -d ' ') files. Restore: copy it to the box and run 'sysupgrade -r <file>'"
+
+	log "factory reset: firstboot, then reboot"
+	$at 'firstboot -y >/dev/null 2>&1 && (sleep 1; reboot) >/dev/null 2>&1 &' || true
+
+	log "waiting for the Pi at 192.168.1.1 on $PI_IF (up to 5 minutes)"
+	sleep 20
+	for _ in $(seq 140); do
+		curl -s -o /dev/null -m 2 --interface "$PI_IF" http://192.168.1.1/ && break
+		sleep 2
+	done
+	curl -s -o /dev/null -m 2 --interface "$PI_IF" http://192.168.1.1/ ||
+		die "no answer from 192.168.1.1 on $PI_IF. $PI_IF has: $(ipconfig getifaddr "$PI_IF" || echo 'no IPv4 address'); the Pi's ONBOARD socket must be the one cabled to $PI_IF -- that is the LAN"
+	log "the Pi is back, out-of-box"
+	pi_describe pi_rescue_ssh
+
+	[ "$install" = 1 ] || return 0
+
+	# THE STAGE NO OTHER TARGET HAS. Without it the install dies inside apk,
+	# resolving a feed it has no route to.
+	log "giving the Pi an uplink (OpenWrt's board profile gives it none)"
+	box() { pi_rescue_ssh "$@"; }
+	# shellcheck source=scripts/openwrt-boa-common.sh
+	. "$REPO/scripts/openwrt-boa-common.sh"
+	wan="$(boa_configure_wan)" ||
+		die "the Pi has no usable uplink, so boa cannot be installed"
+	log "  wan is $wan (the USB adapter with a live cable)"
+
+	log "installing boa on the Pi"
+	SDK_IMAGE=$PI_SDK "$REPO/scripts/openwrt-boa-build.sh"
+	SSH_OPTS="$PI_SSH_OPTS -o BindInterface=$PI_IF" \
+		"$REPO/scripts/openwrt-boa-install.sh" root@192.168.1.1
+
+	# openwrt-boa-install.sh stops the unattended countdown for us -- see
+	# boa_hold_wizard -- so the box waits at the wizard rather than setting
+	# itself up two minutes from now.
+	log "done. The wizard is at http://192.168.1.1/ on $PI_IF"
 }
 
 target=${1:-}
@@ -501,6 +612,19 @@ case "$target $action" in
 	install=1
 	[ "${3:-}" = --no-install ] && install=0
 	cudy_reset "$install"
+	;;
+"pi status")
+	log "Pi at $PI"
+	if ! pi_describe pi_ssh; then
+		log "no answer at $PI; trying 192.168.1.1 on ${PI_IF:-<BOA_PI_IF unset>}"
+		need_pi_if
+		pi_describe pi_rescue_ssh || die "the Pi answers at neither address"
+	fi
+	;;
+"pi reset")
+	install=1
+	[ "${3:-}" = --no-install ] && install=0
+	pi_reset "$install"
 	;;
 *) usage ;;
 esac

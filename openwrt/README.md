@@ -255,6 +255,52 @@ echo https://jonathaneoliver.github.io/infinite-streaming-boa/openwrt/25.12/$DIS
 apk update && apk add luci-app-boa
 ```
 
+`scripts/openwrt-boa-feed.sh root@<device>` does exactly that over SSH, reading
+`DISTRIB_ARCH` from the device rather than guessing it and adding the feed line
+once rather than once per run.
+
+**This is the step LuCI cannot do.** System -> Software can add a repository and
+install a package, but it has no interface for `/etc/apk/keys/` and no
+`--allow-untrusted`, so `apk` rejects the signed index and the page just fails.
+Until boa is in the official feed (#359), installing it needs a shell exactly
+once, for the key.
+
+### On a Raspberry Pi, give it a WAN first
+
+**OpenWrt's board profile gives a Pi no WAN at all.** `02_network` matches
+`raspberrypi,*` and sets `lan` on `eth0`, then flushes -- so the generic
+`wan=eth1` fallback in `99-default_network` hits its `json_is_a network object`
+guard and never runs. `/etc/board.json` on a Pi 5 carries a `lan` key and
+nothing else. USB ethernet adapters are ignored even though their driver
+(`kmod-usb-net-rtl8152`) is in the image.
+
+So a Pi fresh from a flash can reach no feed, and every install of boa needs
+one -- `tc-full`, `kmod-netem`, `kmod-ifb`, `kmod-sched-core` and the rest come
+from `downloads.openwrt.org`. A Cudy and an x86 guest both get a `wan` from
+their profiles, which is why this bites only here.
+
+Cable it so the roles match what OpenWrt already decided:
+
+- your computer -> the Pi's **built-in** ethernet socket (that is the LAN, and
+  where the setup page is served)
+- your router -> **any** USB ethernet adapter
+
+Then, in LuCI at `http://192.168.1.1/` -> Network -> Interfaces -> Add, or:
+
+```sh
+uci set network.wan=interface
+uci set network.wan.device='eth1'   # the adapter facing your router
+uci set network.wan.proto='dhcp'
+uci commit network && /etc/init.d/network reload
+```
+
+`openwrt-boa-feed.sh` and `openwrt-boa-install.sh` do this for you when the
+device has no `wan` and cannot reach a feed, choosing the USB adapter that has
+a live cable -- never by interface number, which follows USB enumeration order
+and moves when an adapter is replugged. Pass `--no-configure-wan` to stop them.
+`boa-setup convert` deletes the `wan` again when it bridges the box, so this is
+scaffolding rather than the finished shape.
+
 Then `boa-setup check` says what the device still needs. Later releases arrive
 with `apk upgrade`, or from LuCI -> System -> Software.
 The workflow signs with the repository secret `BOA_APK_PRIVATE_KEY`, the same
@@ -265,8 +311,8 @@ Actions tab.
 ## Build the packages yourself
 
 ```sh
-./scripts/openwrt-package.sh                     # dist/openwrt/: boa, luci-app-boa, packages.adb
-./scripts/openwrt-package.sh root@<device>       # and install them there
+./scripts/openwrt-boa-build.sh                     # dist/openwrt/: boa, luci-app-boa, packages.adb
+./scripts/openwrt-boa-install.sh root@<device>     # install what was built, no rebuild
 ```
 
 Two packages, as OpenWrt splits an application from its LuCI page:
