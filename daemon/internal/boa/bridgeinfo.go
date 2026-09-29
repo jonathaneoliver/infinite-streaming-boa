@@ -1332,7 +1332,15 @@ func (e *Engine) isSpareScannerIface(in IfaceInfo) bool {
 	// The interface this box makes is named after its phy, so the relationship
 	// is visible without asking anything: a sibling called <phy>-scan IS the
 	// instrument.
-	if scan := scanIfaceFor(phy); scan != in.Name && LinkExists(scan) {
+	//
+	// FROM SYSFS, NOT `ip link show`. LinkExists forks a process per call, and
+	// this runs inside the rebuild loop for every idle wireless interface --
+	// so it is both slow and fallible, and a single failed fork makes the fold
+	// decline for that tick. The rack then draws one radio as two for a beat,
+	// which is the sub-second flicker reported on 2026-09-29 after the stale-
+	// config fix had already removed the long one. The phy's own directory
+	// lists its netdevs and cannot fail that way.
+	if scan := scanIfaceFor(phy); scan != in.Name && phyHasNetdev(phy, scan) {
 		return true
 	}
 
@@ -1343,6 +1351,21 @@ func (e *Engine) isSpareScannerIface(in IfaceInfo) bool {
 			continue
 		}
 		if sp, err := phyName(s); err == nil && sp == phy {
+			return true
+		}
+	}
+	return false
+}
+
+// phyHasNetdev reports whether a phy carries a netdev of that name, read from
+// the phy's own directory. One readdir, no subprocess.
+func phyHasNetdev(phy, name string) bool {
+	ents, err := os.ReadDir(filepath.Join("/sys/class/ieee80211", phy, "device", "net"))
+	if err != nil {
+		return false
+	}
+	for _, ent := range ents {
+		if ent.Name() == name {
 			return true
 		}
 	}
