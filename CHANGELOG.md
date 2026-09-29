@@ -50,6 +50,28 @@ uplink and looked healthy on every figure boa shows.
 
 ### Added
 
+- **A fifth target: OpenWrt in a VM, with an access-point card passed
+  through.** The Cudy shows what access-point silicon can do, but only as a
+  whole router. This target separates the two: OpenWrt runs as a KVM guest on
+  an ordinary Ubuntu machine, and the radio is a MediaTek MT7915 M.2 card
+  (AsiaRF AW7915-AED, MT7915DAN, 2T2R, dual-band concurrent), handed to the
+  guest whole by PCI passthrough. It uses the same two packages and the same
+  LuCI page. Because it is a VM, a broken guest is one `qemu-img create` away
+  from a clean one, and every out-of-box test in this release was run that
+  way. See README target 5 for how it is put together.
+
+  Measured 2026-09-27, MacBook client over real antennas, `iperf3` 10 s,
+  5 GHz ch 149 HE80, 4 runs: **854–876 Mbit/s down to the box**, 75–77% of
+  the 1134 Mbit/s PHY the link reported, and 839–847 up through it. That is
+  the highest this project has measured on any radio. A USB `mt7921u` on the
+  same guest, stuck at 3 dBm, managed 75–100 down while leaving the guest
+  14–48% idle, against 73–88% idle on the card: USB passthrough traps every
+  transfer through QEMU and PCI passthrough does not.
+
+  **Under load the link adds roughly 20 ms**, from a ~2 ms idle floor, on
+  both bands, measured over single runs. For a box whose job is to impose
+  delay, that is a noise floor: a 10 ms target is below what this link can
+  resolve while it is saturated.
 - **`boa-setup plan-channels`**: a channel plan across every radio on an
   OpenWrt box, which had none. Each radio was configured on its own, so two
   5 GHz radios could land on the same channel, each halving the other's airtime
