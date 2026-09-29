@@ -46,10 +46,10 @@ done
 scanner=$(boa_scanner_phy || true)
 if [ -n "$scanner" ] && [ "$scanner" = "$PHYNAME" ]; then
 	uci set "wireless.default_$radio.disabled=1"
-	uci set boa.main.scan_mac="$(boa_phy_mac "$PHYNAME")"
-	uci set boa.main.scan="$PHYNAME-scan"
 	uci commit wireless
-	uci commit boa
+	# Additive: a box can have several scanners, and `uci set` would drop the
+	# others. See boa_scan_add and issue #351.
+	boa_scan_add "$PHYNAME"
 	say "$PHYNAME ($radio): scanner -- access point off, boa will listen on $PHYNAME-scan"
 	wifi reload >/dev/null 2>&1
 	/etc/init.d/boa restart >/dev/null 2>&1

@@ -104,19 +104,57 @@ boa_scanner_phy() {
 }
 
 # Re-point boa.main.scan at the hardware it was recorded against. Called
-# before boad starts and after a radio appears; prints the name it settled on.
+# before boad starts; prints the list it settled on.
 #
-# boa.main.scan_mac is what makes this possible: boa.main.scan alone is a phy
-# NAME, and a name is exactly what moves.
+# boa.main.scan_mac is what makes this possible: boa.main.scan alone holds phy
+# NAMES, and a name is exactly what moves.
+#
+# BOTH ARE LISTS. A box can have several scanners -- issue #351 found that
+# treating boa.main.scan as a single value silently un-made one radio while
+# making another -- so this resolves every recorded MAC and rebuilds the whole
+# list. The MACs are a SET rather than a list aligned with the names by index:
+# two lists that must stay in step is a bug waiting for the first radio that
+# does not resolve.
+#
+# A MAC THAT RESOLVES TO NOTHING IS DROPPED, LOUDLY. That is a radio which was
+# a scanner and is now unplugged, and keeping its name would have boad poll an
+# interface that cannot exist. Silence here would be the half-working state
+# this repository keeps finding.
+# Record a phy as a scanner, in both lists, WITHOUT removing any other.
+#
+# `uci set` replaces, and replacing is how issue #351 un-made one radio while
+# making another: a box with two scanners kept only the one set last. Both
+# writers this file has are additive for that reason.
+boa_scan_add() {
+	local phy="$1" mac name have
+	mac=$(boa_phy_mac "$phy")
+	name="$phy-scan"
+	have=$(uci -q get boa.main.scan)
+	case " $have " in *" $name "*) ;; *) uci set boa.main.scan="${have:+$have }$name" ;; esac
+	if [ -n "$mac" ]; then
+		have=$(uci -q get boa.main.scan_mac)
+		case " $have " in *" $mac "*) ;; *) uci set boa.main.scan_mac="${have:+$have }$mac" ;; esac
+	fi
+	uci commit boa
+}
+
 boa_resolve_scan() {
-	local mac phy want
-	mac=$(uci -q get boa.main.scan_mac)
-	[ -n "$mac" ] || return 1
-	phy=$(boa_phy_for_mac "$mac") || return 1
-	want="$phy-scan"
-	[ "$(uci -q get boa.main.scan)" = "$want" ] || {
+	local macs mac phy want= changed=0
+	macs=$(uci -q get boa.main.scan_mac)
+	[ -n "$macs" ] || return 1
+	for mac in $macs; do
+		if phy=$(boa_phy_for_mac "$mac"); then
+			want="${want:+$want }$phy-scan"
+		else
+			logger -t boa "scanner $mac is not on this box any more; dropping it"
+			changed=1
+		fi
+	done
+	[ -n "$want" ] || return 1
+	[ "$(uci -q get boa.main.scan)" = "$want" ] || changed=1
+	if [ "$changed" = 1 ]; then
 		uci set boa.main.scan="$want"
 		uci commit boa
-	}
+	fi
 	printf '%s' "$want"
 }

@@ -143,3 +143,40 @@ func TestNoScanPortsMeansNoComplaint(t *testing.T) {
 		t.Errorf("missingPorts() = %v, want none when none are configured", got)
 	}
 }
+
+// A radio brought back to serving must not be left on `auto`: on a Pi 5,
+// 2026-09-28, automatic selection chose channel 34 -- an 802.11j channel
+// illegal under country=US -- and the firmware refused it with
+// `start_ap: Set Channel failed: chspec=53282, -52`. Nothing beaconed and
+// nothing said why. Issue #429.
+func TestServingChannelFor(t *testing.T) {
+	for _, c := range []struct {
+		name      string
+		band, ch  string
+		want      int
+		wantWrite bool
+	}{
+		{"5g on auto takes the bottom of the band", "5g", "auto", 36, true},
+		{"5g unset", "5g", "", 36, true},
+		{"5g zero is hostapd's auto", "5g", "0", 36, true},
+		{"2g on auto", "2g", "auto", 6, true},
+		{"a legal 5g channel is left alone", "5g", "149", 0, false},
+		{"a legal 2g channel is left alone", "2g", "11", 0, false},
+		{"ch1 under band 5g is from the wrong band", "5g", "1", 36, true},
+		{"ch36 under band 2g is from the wrong band", "2g", "36", 6, true},
+		// 34 IS a 5GHz channel (5170 MHz, 802.11j), so this leaves it: what
+		// makes it fail on the Pi is the REGULATORY domain, not the band, and
+		// this does not model regulatory domains. apCameUp is what catches it.
+		{"ch34 is band-legal, so it is left alone", "5g", "34", 0, false},
+		{"6g is left alone rather than guessed at", "6g", "auto", 0, false},
+		{"an unknown band is left alone", "", "auto", 0, false},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			got, write := servingChannelFor(c.band, c.ch)
+			if write != c.wantWrite || got != c.want {
+				t.Errorf("servingChannelFor(%q, %q) = %d, %v; want %d, %v",
+					c.band, c.ch, got, write, c.want, c.wantWrite)
+			}
+		})
+	}
+}
