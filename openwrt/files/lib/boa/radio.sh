@@ -138,6 +138,45 @@ boa_scan_add() {
 	uci commit boa
 }
 
+# Bring a radio back after its hardware reappeared.
+#
+# `wifi up <radio>`, NOT `wifi reload` and NOT `ubus call network.wireless
+# retry`. MEASURED on a Raspberry Pi 5, 2026-09-29, by unplugging a serving
+# mt7921u and plugging it back into the same port:
+#
+#   the phy comes back RENUMBERED   phy2 -> phy3, same MAC, same USB path
+#   uci is still correct            wireless.radio2.path still matches 4-1.3
+#   the hotplug event fires         ieee80211 ACTION=add DEVICENAME=phy3
+#   netifd is STALE                 network.wireless still reports radio2 as
+#                                   "up": true on ifname phy2-ap0, a netdev
+#                                   that no longer exists
+#
+# and that last line is the whole problem. OpenWrt's own 10-wifi-detect answers
+# the event with `ubus call network.wireless retry`, which asks netifd to
+# retry anything it thinks is DOWN -- and netifd thinks this radio is UP. So
+# retry is a no-op, no netdev is created, and the radio sits on the bus doing
+# nothing with every individual piece of config correct. That is exactly the
+# state issue #432 described and nobody could explain.
+#
+# `wifi up <radio>` tears the radio's state down and re-instantiates it, which
+# creates phy3-ap0 and puts it back in the bridge -- measured, 8 seconds.
+# `wifi reload` would also work but reloads EVERY radio, dropping the clients
+# on the ones that never went anywhere; a replug of one dongle must not
+# interrupt the other.
+boa_radio_reinstate() {
+	local radio="$1"
+	[ -n "$radio" ] || return 1
+	# /sbin, not /usr/sbin. A non-login SSH shell's PATH misses one of them and
+	# the absolute path is the only thing that behaves the same everywhere --
+	# see CLAUDE.md. `wifi` lives in /sbin.
+	if [ -x /sbin/wifi ]; then
+		/sbin/wifi up "$radio" >/dev/null 2>&1
+	else
+		logger -t boa "no /sbin/wifi: cannot reinstate $radio"
+		return 1
+	fi
+}
+
 boa_resolve_scan() {
 	local macs mac phy want= changed=0
 	macs=$(uci -q get boa.main.scan_mac)
