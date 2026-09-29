@@ -1318,6 +1318,26 @@ func (e *Engine) isSpareScannerIface(in IfaceInfo) bool {
 	if err != nil || phy == "" {
 		return false
 	}
+
+	// ASKED OF THE HARDWARE FIRST, because the config answer is stale exactly
+	// when it matters. e.cfg.ScanPorts is fixed at daemon start -- effectiveConfig
+	// refreshes WlanPorts and LanPorts and not this one -- so during a role
+	// change the listen-only interface EXISTS while the config boa was started
+	// with does not mention it. For the few seconds until the restart lands,
+	// the fold below would decline and the rack would draw one radio as two,
+	// one of them a fault. Reported 2026-09-29: "it transited through a view
+	// with 2 APs on that radio". That is #366's stale-list lesson in the one
+	// port field it did not cover.
+	//
+	// The interface this box makes is named after its phy, so the relationship
+	// is visible without asking anything: a sibling called <phy>-scan IS the
+	// instrument.
+	if scan := scanIfaceFor(phy); scan != in.Name && LinkExists(scan) {
+		return true
+	}
+
+	// And the config as well, for a scan port somebody named by hand: it will
+	// not follow the <phy>-scan convention, so the check above cannot see it.
 	for _, s := range e.cfg.ScanPorts {
 		if s == "" || s == in.Name {
 			continue
