@@ -1812,6 +1812,49 @@ the same constraint the Pi has and the same one the
 [powered hub figures](#what-a-hub-costs-a-radio-separated-from-what-the-channel-is-worth)
 below quantify.
 
+### One radio per band, or one radio for every band
+
+The two kinds of radio in this repository divide the bands in opposite ways,
+and that decides what "change band" can mean on each target.
+
+> Scope: the MT7915E's two phys and a USB `mt7921u` were read with `iw phy
+> info` on target 5, 2026-09-29, US domain. The Cudy's split is from
+> [`openwrt/CUDY-TR3000.md`](openwrt/CUDY-TR3000.md) (2026-09-22). The Pi's
+> onboard `brcmfmac` and the Ubuntu host's AX200 were not re-read that day.
+
+| Radio | Where | Radios per device | Bands per radio |
+|---|---|---|---|
+| **MT7915E** (AsiaRF AW7915-AED) | target 5; target 2 via PCI | **two**: `phy0`, `phy1` | **one each, fixed**: 2.4 GHz only (2412–2484 MHz) and 5 GHz only (5180–5885 MHz) |
+| **MT7981** `mt798x`, built in | target 4, the Cudy | **two**, on one device path | **one each, fixed**: 2.4 GHz and 5 GHz |
+| **`mt7921u`** USB adapter | targets 1, 2, 3 and 5 | one | **three, switchable**: 11 channels at 2.4 GHz, 28 at 5 GHz, 59 at 6 GHz |
+| **`brcmfmac`** BCM43455, the Pi's onboard | targets 1 and 3 | one | **two, switchable**: 2.4 and 5 GHz |
+
+**The AP parts are dual-band because they carry two radios**, one per band,
+running at once. That is what "dual-band concurrent" means, and why the MT7915E
+appears as two adapters in the rack. Neither radio can be moved to the other's
+band: `iw phy info` lists only its own band's channels, so there is no
+channel of the other band to give it, and boa reports `bands: ["5GHz"]` or
+`["2.4GHz"]` for it. So on targets 4 and 5, changing a client's band
+means moving the *client* to the other radio (steer, gather, evict), never
+retuning a radio.
+
+**The client parts are the reverse**: one radio that covers several bands and
+tunes between them, which is why these boxes need a second adapter to serve both
+bands at once. It is also why two failures here can only happen on them:
+
+- **Coming up on 6 GHz.** OpenWrt's defaults give a new `mt7921u` its highest
+  band, 6 GHz, where that driver will not run an access point. The wizard and
+  the hotplug hook move it to 5 GHz for this reason.
+- **A band that changes under a radio.** A radio found on 2.4 GHz after being
+  set to 5 GHz (#429) is only possible where one radio has both.
+
+**And one that hit the AP parts hardest.** A scan used one fixed list of 2.4
+and 5 GHz channels, and `iw` rejects a whole scan that names a frequency the
+radio does not have. On a fixed single-band radio that is every scan: measured
+on target 5, boa's own scan failed on the 5 GHz radio and then took its access
+point down (#442, fixed). Any radio in a domain without channels 12 and 13 hit
+the same thing, because those are marked disabled there.
+
 ### The radios on targets 1, 2 and 3 are client parts, and that is their ceiling
 
 Every radio the Pi and the container have ever run is a **station chip with AP
@@ -3777,7 +3820,7 @@ An AP-class part with DFS would have five more.
 |---|---|---|
 | **OFDMA / MU-MIMO scheduling** | not done | Driver, and specific to this chip. The hardware advertises HE and `Full Bandwidth UL MU-MIMO`, but `mt7921` exposes no MU counters and every frame is single-user. `mt7915` does expose them — see [above](#the-mt7921u-adapters-do-not-do-ofdma-and-that-bounds-every-figure-they-produced) |
 | **160 MHz channels** | not possible | Hardware. `iw phy` lists no 160 MHz capability on either adapter |
-| **6 GHz (Wi-Fi 6E)** | **not implemented** | **Ours.** The adapter is an AX**E**3000 and the PHY offers 59 usable 6 GHz channels with AP mode among its HE Iftypes. boa neither scans nor serves there because `scanFreqs()` and `apChannels` stop at 5 GHz |
+| **6 GHz (Wi-Fi 6E)** | **not implemented** | **Ours.** The adapter is an AX**E**3000 and the PHY offers 59 usable 6 GHz channels with AP mode among its HE Iftypes. boa neither scans nor serves there because `scanChannels()` and `apChannels` stop at 5 GHz |
 | **Mesh / 802.11s** | not used | Ours. Both adapters list `mesh point` among their interface modes; nothing here builds on it |
 | **WPA3 / SAE, and PMF** | not configured | Ours. hostapd supports `sae_password`; the generated config is `wpa=2`, `WPA-PSK`, `CCMP`, with no `ieee80211w`. Two neighbours here already run WPA3 transition mode |
 | **Band steering** | manual | Ours. 802.11v BSS Transition is advertised and the controls exist, but nothing steers on its own — deliberately, since a destination that moves with transient state is one you cannot run the same test against twice |

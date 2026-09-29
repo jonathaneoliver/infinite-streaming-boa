@@ -419,9 +419,11 @@ uplink and looked healthy on every figure boa shows.
   listening rather than serving nobody, but `hostapd.add_iface failed` on a Pi
   with a valid 5 GHz channel, and `country_code=00` reaching hostapd while uci
   says US, are both unexplained.
-- **A channel planned for a listening radio does not reach the hardware**
-  unless it has an enabled interface, and what a listening radio's channel
-  should mean is undecided. #431.
+- **A listening radio's channel takes effect at boot, not live.** It has no
+  access point, and netifd applies a channel only when it starts one, so a
+  planned or changed channel for the scanner reaches the hardware on the next
+  boot (it is parked on 2.4 GHz channel 11 at HT20, clear of the serving
+  radios). The rest of #431, planning by spectrum, is fixed above.
 - **A replugged adapter is not re-adopted as the listening radio** if it comes
   back under a new phy number, outside what the recorded MAC covers at start.
   The notice says what is missing. #387.
