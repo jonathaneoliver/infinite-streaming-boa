@@ -33,6 +33,22 @@ channel move costs nothing. The same daemon binary and the same interface serve
 all four; on OpenWrt one flag, `-openwrt`, keeps OpenWrt's own configuration in
 step with what boa does — see [Four ways to run it](#four-ways-to-run-it).
 
+> **If I were starting again today, I would just run boa on OpenWrt, on a
+> [Cudy TR3000](#4-a-cudy-tr3000-as-a-whole-box) or an equivalent OpenWrt
+> router.** Of everything I have tried, it is the simplest. There is no image to
+> build and no container host to prepare: a one-time install from a shell, then
+> a four-question setup page in the browser. Its radios are access-point parts,
+> so channel moves, live transmit power and scanning while serving simply work.
+>
+> That does not make the rest wasted. The Pi and the container are how I found
+> out what client-class radios cannot do, and the comparisons in this README
+> between the Cudy and the Pi were measured on both. They still do things a
+> pocket router does not: the Pi carries ntopng and glances, and the container
+> runs on hardware you already own. The OpenWrt VM puts the same class of
+> access-point radio into an ordinary PC. The Cudy's own trade-offs (two small
+> cores, little room for packages) are in
+> [what it will not host](openwrt/CUDY-TR3000.md#what-it-will-not-host).
+
 It is a **transparent bridge**, not a router. Devices under test keep their
 normal addresses on your normal network, discovery protocols keep working, and
 the box never appears as a hop in `traceroute`. Nothing being tested can tell it
@@ -1261,7 +1277,9 @@ the upstream router and the `192.168.1.1` rescue address.
 
 Choose it when the device should stay a normal OpenWrt box with LuCI, when you
 want boa's controls alongside OpenWrt's own, or when the hardware is a router
-rather than a Pi.
+rather than a Pi. OpenWrt can already drive its radios over the network, but it
+has nothing that conditions a link; see
+[what OpenWrt already does, and what boa adds](openwrt/README.md#what-openwrt-already-does-and-what-boa-adds).
 
 It asks more of you before it installs than the other two, because a package
 must never rewire a router's network: the device has to be a **transparent

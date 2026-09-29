@@ -500,6 +500,64 @@ up 10 Mbit/s:
 Disabling the policy returned the ping to 4.8 ms with no netem left installed.
 Stopping the service removed every qdisc it had added.
 
+## What OpenWrt already does, and what boa adds
+
+OpenWrt already has networked control of the **radios**. It has none of
+**link conditioning**: no network API rate-limits, delays or drops one
+client's traffic. That split is most of the case for installing boa on a
+router that could otherwise be driven through ubus.
+
+> Read off target 5, the OpenWrt 25.12.5 x86-64 guest, on 2026-09-29, with
+> `ubus -v list` and `apk info`. Stock packages plus boa's dependencies. SQM
+> was not installed, so what is said about it below is from how it is
+> configured, not measured.
+
+**The radios, over the network: yes.** hostapd publishes a ubus object per
+access point, and `uhttpd-mod-ubus` serves ubus over HTTP at `/ubus`, behind an
+rpcd login session. `hostapd.<ap>` offers:
+
+| Method | What it does |
+|---|---|
+| `del_client` | deauthenticate or disassociate a client, optionally with a ban |
+| `switch_chan` | an announced channel switch (802.11h) |
+| `bss_transition_request` | an 802.11v request to move |
+| `rrm_beacon_req`, `link_measurement_req` | 802.11k measurement requests |
+| `get_clients`, `list_bans`, `get_status` | who is connected, what is banned, the AP's state |
+| `update_beacon`, `reload` | rebuild the beacon; reload the AP |
+
+Alongside it, `network.wireless` brings radios up and down, and `iwinfo`
+reads scans and station lists. **Transmit power has no live method**: over
+the network it is a `uci` change followed by a radio reload, which drops every
+client. boa sets it live on the phy, with nobody dropped: measured on the Cudy
+([power, distance and roaming](CUDY-TR3000.md#power-distance-and-roaming)) and
+on target 5, 23 / 10 / 3 dBm with no reassociation.
+
+**Conditioning the link, over the network: no.** `ubus list` has no object for
+`tc`, `netem`, QoS or shaping. `tc-full` and `kmod-netem` are on this box only
+because boa depends on them. Where SQM is installed, its rate can be changed
+remotely through the `uci` object and a service restart, but that is one rate
+per interface, with no delay, jitter or loss. It is built to take bufferbloat
+away, not to impose an impairment.
+
+**So boa adds three things**, and uses the radio control that is already
+there:
+
+- **Per-device conditioning, live**: rate, delay, jitter and loss, in each
+  direction, for each client, changed without a restart. Plus timed patterns
+  and rendition-ladder sweeps built on it. None of this exists in OpenWrt.
+- **The radio controls on one page, as a test tool.** The steering ladder
+  (`suggest`, `imminent`, `terminate`, `insist`) rather than one request;
+  gather and evict, with the alternatives held off; deadzones; live transmit
+  power. All sit beside the conditioning, so a run can use both.
+- **A record of what the clients did**: who followed a channel switch, what
+  each client answered to a steer and whether it later moved back, per-client
+  airtime, channel utilisation from its own scans. ubus can issue a request.
+  It keeps no account of the result, and for a test the result is the point.
+
+boa drives hostapd through its control sockets rather than ubus, apart from
+mirroring its bans onto `list_bans` so OpenWrt's own tooling sees them (next
+section).
+
 ## Who owns the radios
 
 OpenWrt does: netifd creates the APs and starts hostapd from
