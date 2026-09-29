@@ -18,7 +18,9 @@ Pi's and the Cudy's radios and NICs are in their images, and the generic x86
 image ships neither USB ethernet nor USB Wi-Fi drivers. A `mt7921u` adapter
 needs `kmod-mt7921u`, an RTL8153 needs `kmod-usb-net-rtl8152`, and without them
 the adapter is simply absent while `boa-setup check` still reports boa's
-dependencies as installed. See #368.
+dependencies as installed. See #368. The setup page installs them, and
+[`boa-setup install-drivers`](#boa-setup-install-drivers) does it on a box that
+is already set up.
 
 ![boa inside LuCI: Services -> infinite-streaming-boa](../docs/images/openwrt-luci.png)
 
@@ -238,6 +240,107 @@ including whether the root password was actually set.
 `/etc/boa-firstrun.conf.example` ships with the `boa` package and documents
 every key. Opening the setup page cancels the countdown, so an operator who
 arrives in time is never raced.
+
+### Watching the countdown: `boa-setup firstrun`
+
+```sh
+boa-setup firstrun status    # what first run did, or "armed: nothing has run yet"
+boa-setup firstrun cancel    # stop the countdown, as opening the setup page does
+boa-setup firstrun now       # bring the box up unattended now, without waiting
+```
+
+`status` prints the record kept in `/etc/infinite-streaming-boa/firstrun`,
+**including the generated passphrase**. It is the one place to read that
+passphrase, which is deliberately not shown on the setup page: after `convert`,
+that page can be reached from the whole upstream network.
+
+`now` refuses on a box that has already been set up. It would give the box a
+new SSID and passphrase and drop every client on it, and running it a second
+time once replaced a file-driven setup with a random one. `firstrun --force`
+does it anyway.
+
+## The other `boa-setup` commands
+
+The setup page runs each of these for you. They exist separately for a box
+that is already set up and has changed: a new adapter, a new radio, a lost
+mDNS name. Each one takes `--dry-run` to print what it would do and change
+nothing. The two installers say "nothing to do" when there is nothing to do, so
+running them again is safe; `plan-channels` is not quite, see below.
+
+### `boa-setup install-drivers`
+
+```sh
+boa-setup install-drivers --dry-run
+boa-setup install-drivers
+```
+
+Installs the kmod packages for adapters that have no driver, on both the USB
+and the PCI bus. It installs only for adapters boa recognises. An unknown
+adapter is listed under "No package known for" to be reported, not guessed at.
+
+**A radio may need a reboot after this.** apk can install a module before its
+firmware, and the kernel loads the module as soon as it lands, fails to find
+the firmware, and never retries. Measured on the x86-64 guest with an
+MT7915E. `install-drivers` checks afterwards rather than assuming, names any
+adapter that is still without a driver, and exits 1. A reboot fixes it, and so
+does reloading the module.
+
+This is the command for the x86 image, which ships no USB Wi-Fi or USB
+ethernet drivers (see the top of this file).
+
+### `boa-setup install-mdns`
+
+```sh
+boa-setup install-mdns
+```
+
+Installs and starts `umdns`, so the box answers to `<hostname>.local`. The
+name matters most when the address is least predictable: `convert` moves the
+LAN to DHCP, so the lease is the upstream router's choice, while the name
+follows the box to whatever address it gets. The setup page sets the hostname
+from the SSID.
+
+If the install fails, the box still works, but it will not answer to a
+`.local` name. The command says so rather than failing quietly. Re-run it once
+the uplink is working.
+
+### `boa-setup plan-channels`
+
+```sh
+boa-setup plan-channels --dry-run
+boa-setup plan-channels
+```
+
+Gives each radio that serves an access point a channel that does not clash
+with the others. Without a plan, OpenWrt configures each radio on its own, and
+two 5 GHz radios can land on the same channel. Each then halves the other's
+airtime while both are reported healthy.
+
+| Band | In order of preference |
+|---|---|
+| 5 GHz | 36 and 149 at 80 MHz, the only two non-DFS 80 MHz blocks |
+| 2.4 GHz | 6, 1, 11 |
+
+- **A third 5 GHz radio moves to 2.4 GHz**, not to the other 5 GHz blocks.
+  Those are all DFS: a radio there must listen for radar before it may beacon,
+  and leave the channel if it hears some, so it can disappear without notice.
+- **A reservation covers everything the radio occupies.** A radio on 36 at
+  80 MHz holds 36 to 48, so nothing else is placed on 40.
+- **Width is set together with the channel.** A radio's channel and width
+  (`htmode`) are never left disagreeing.
+- **Every channel is checked against the radio.** Channels its phy marks
+  disabled or no-IR are skipped, so 149 is never written in a regulatory domain
+  that lacks it.
+- **A radio already on a legal, unclaimed channel keeps it.** Only the rest are
+  placed, so running this after plugging in a new radio does not move one that
+  is carrying clients.
+- **The listening radio is placed separately**, from the back of the plan,
+  so it does not sit on the channel the next serving radio would be given.
+
+**It reloads Wi-Fi every time it runs, even when no channel changed**, so every
+client on the box briefly reconnects. Use `--dry-run` first on a box carrying
+traffic. The setup page runs it after the radios are up, and so does the
+hotplug hook when a radio is plugged into a running box.
 
 ## Install from the package feed
 
