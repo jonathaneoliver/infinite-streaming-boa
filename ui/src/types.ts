@@ -925,6 +925,14 @@ export interface BSSLoadState {
    *  floor is zero for want of a measurement rather than because the radio is
    *  idle. The onboard brcmfmac radio is that case. */
   floor_known: boolean;
+  /**
+   * Why this radio cannot advertise a BSS Load value at all; absent where it
+   * can. Set when its hostapd refuses the setting -- OpenWrt's wpad builds do
+   * not include `bss_load_test` (#444). Where it is set, `on` and `fix` are
+   * what was asked, not what is on the air: the beacon carries hostapd's own
+   * figure.
+   */
+  unavailable?: string;
 }
 
 export interface ScanAP {

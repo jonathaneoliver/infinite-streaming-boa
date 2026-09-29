@@ -444,7 +444,7 @@ client for every per-device control.
 | Gather/evict, other clients | An iPhone and a Watch left the SSID for another saved network rather than land on the target radio: a ban only covers this box's radios |
 | Power | Fails: `no rfkill switch`. OpenWrt's kernel has no rfkill (`/dev/rfkill` is absent) |
 | Channel (CSA) | Fails on `mt7921u`: hostapd returns `FAIL` to `CHAN_SWITCH`. The box falls back to the restart in the same request (#154, #349) |
-| BSS load | Fails every tick: `bss_load_test` exists only in hostapd builds with testing options |
+| BSS load | Not available: hostapd answers `FAIL`, because `bss_load_test` exists only in hostapd builds with testing options. Before #444 boa retried it every 15 s and reported it applied |
 
 And on a Cudy TR3000 (`mediatek/filogic`, MT7981 radios, 2026-09-22), a MacBook,
 an iPhone and a Watch on the 5 GHz AP, each radio-wide steer naming the USB
@@ -465,6 +465,16 @@ an iPhone and a Watch on the 5 GHz AP, each radio-wide steer naming the USB
 
 ## Not yet working on OpenWrt
 
+- **Advertised BSS Load: the "Advertised, not enforced" panel.** It
+  corrects the utilisation a radio's beacon advertises, or claims more load to
+  give a client a reason to roam, through hostapd's `bss_load_test`. That
+  option exists only in hostapd builds with testing options, and OpenWrt's
+  `wpad` is not one: hostapd answers `FAIL` and logs `unknown configuration
+  item 'bss_load_test'` (measured on target 5, 2026-09-29,
+  `wpad-mbedtls 2025.08.26`). boa asks once when it starts, warns once per
+  radio, and the panel says why in place of its controls. The beacon keeps
+  hostapd's own figure. The Pi and the container are unaffected: their hostapd
+  has the option.
 - **Restarting a wedged AP.** `restartHostapd` finds hostapd through
   `systemctl`, which OpenWrt does not have, so it logs that no unit serves the
   interface and gives up. The control-socket path (DISABLE/ENABLE) is unaffected

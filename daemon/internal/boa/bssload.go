@@ -2,9 +2,11 @@ package boa
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 )
@@ -131,6 +133,13 @@ type BSSLoadState struct {
 	Fix        bool    `json:"fix"`
 	FixUtilPct float64 `json:"fix_util_pct"`
 	FixKnown   bool    `json:"fix_known"`
+
+	// Unavailable says why this radio cannot advertise a BSS Load value at
+	// all, and is empty where it can. Set when its hostapd refuses the
+	// setting: OpenWrt's wpad builds do not include bss_load_test (#444). Where
+	// it is set, On and Fix are what was ASKED, not what is on the air -- the
+	// beacon carries hostapd's own figure.
+	Unavailable string `json:"unavailable,omitempty"`
 }
 
 /*
@@ -162,6 +171,23 @@ type bssLoadStore struct {
 	mu   sync.RWMutex
 	path string
 	by   map[string]bssLoadOverride
+	// refused holds, per radio, why its hostapd will not take a BSS Load
+	// value. In memory only, and deliberately: it is a property of the hostapd
+	// BUILD, so a daemon restart -- which is what an install or a wpad swap
+	// comes with -- asks again rather than carrying a stale answer forward.
+	refused map[string]string
+}
+
+// errBSSLoadRefused marks a hostapd that answered FAIL to the BSS Load setting,
+// as opposed to one that could not be reached.
+var errBSSLoadRefused = errors.New("hostapd refused the BSS Load setting")
+
+// bssLoadRefusal is why this radio's hostapd will not take a BSS Load value, or
+// "" if it has not refused.
+func (e *Engine) bssLoadRefusal(iface string) string {
+	e.bssLoad.mu.RLock()
+	defer e.bssLoad.mu.RUnlock()
+	return e.bssLoad.refused[iface]
 }
 
 func (s *bssLoadStore) load() {
@@ -217,8 +243,11 @@ func (e *Engine) assertBSSLoad() {
 		}
 		ov := e.bssOverride(w)
 		if err := e.applyBSSLoad(w); err != nil {
-			e.logEvent(EventRadio, w, "",
-				"could not restore %s's advertised BSS Load at startup: %v", w, err)
+			// A refusal has already been said, once, by applyBSSLoad.
+			if !errors.Is(err, errBSSLoadRefused) {
+				e.logEvent(EventRadio, w, "",
+					"could not restore %s's advertised BSS Load at startup: %v", w, err)
+			}
 			continue
 		}
 		if ov.On {
@@ -466,10 +495,43 @@ func (e *Engine) applyBSSLoad(iface string) error {
 		ov.On = true // so bssLoadArg emits the values rather than 0:0:0
 		ov.Stations, ov.UtilPct = capToRange(floor.FloorStations, util)
 	}
-	if _, err := hostapdSend(iface, "SET bss_load_test "+bssLoadArg(ov)); err != nil {
+	// THE REPLY IS READ, NOT JUST THE TRANSPORT. hostapdSend's error covers a
+	// socket that could not be reached; hostapd's own "FAIL" comes back as a
+	// successful exchange carrying that word. Treated as success, it left every
+	// OpenWrt radio "advertising" a correction that never reached a beacon.
+	// MEASURED on target 5, 2026-09-29, wpad-mbedtls 2025.08.26: hostapd
+	// logged "Failed to set configuration field 'bss_load_test'" 738 times in
+	// 49 minutes, while /api/bridge said fix_known and no event said anything
+	// (#444). bss_load_test is a testing option, which that build does not
+	// compile in.
+	reply, err := hostapdSend(iface, "SET bss_load_test "+bssLoadArg(ov))
+	if err != nil {
 		return fmt.Errorf("setting bss_load_test on %s: %w", iface, err)
 	}
-	if _, err := hostapdSend(iface, "UPDATE_BEACON"); err != nil {
+	if !strings.HasPrefix(reply, "OK") {
+		why := fmt.Sprintf("its hostapd answered %q to bss_load_test, which this "+
+			"hostapd build does not support", strings.TrimSpace(reply))
+		e.bssLoad.mu.Lock()
+		first := e.bssLoad.refused[iface] == ""
+		if e.bssLoad.refused == nil {
+			e.bssLoad.refused = map[string]string{}
+		}
+		e.bssLoad.refused[iface] = why
+		e.bssLoad.mu.Unlock()
+		// ONCE, where it used to be never: the refresh loop would otherwise
+		// repeat this every 15 s for the life of the daemon.
+		if first {
+			e.logEvent(EventWarning, iface, "",
+				"%s cannot advertise a BSS Load value: %s. Its beacon keeps "+
+					"hostapd's own figure, and boa has stopped sending it", iface, why)
+		}
+		return fmt.Errorf("%s: %w: %s", iface, errBSSLoadRefused, why)
+	}
+	reply, err = hostapdSend(iface, "UPDATE_BEACON")
+	if err == nil && !strings.HasPrefix(reply, "OK") {
+		err = fmt.Errorf("hostapd answered %q", strings.TrimSpace(reply))
+	}
+	if err != nil {
 		return fmt.Errorf(
 			"%s accepted the BSS Load value but would not rebuild its beacon, so "+
 				"nothing changed on the air: %w", iface, err)
@@ -499,7 +561,16 @@ func (e *Engine) reapplyBSSLoad() {
 		if e.radioReady(w) != nil {
 			continue
 		}
+		// A hostapd that has refused once will refuse again: the refusal is
+		// its build, not its state. Asking every 15 s is what flooded
+		// logread until it pushed out the evidence for #445.
+		if e.bssLoadRefusal(w) != "" {
+			continue
+		}
 		if err := e.applyBSSLoad(w); err != nil {
+			if errors.Is(err, errBSSLoadRefused) {
+				continue // said once, by applyBSSLoad
+			}
 			e.logEvent(EventRadio, w, "",
 				"could not restore %s's advertised BSS Load after a restart, so it "+
 					"is telling clients nothing: %v", w, err)
@@ -572,6 +643,7 @@ func (e *Engine) BSSLoadStates(ifaces []string, air map[string]AirView) map[stri
 	out := map[string]BSSLoadState{}
 	for _, w := range ifaces {
 		st := e.bssLoadFloor(w)
+		st.Unavailable = e.bssLoadRefusal(w)
 		ov := e.bssOverride(w)
 		st.On, st.Fix = ov.On, ov.Fix
 		st.Stations, st.UtilPct = ov.Stations, ov.UtilPct

@@ -1153,6 +1153,13 @@ BSSLoadState is one radio's override and the floor it may not go below.
 
 **`fix_known`** `bool`
 
+**`unavailable`** `string` _(omitted when empty)_
+> Unavailable says why this radio cannot advertise a BSS Load value at
+> all, and is empty where it can. Set when its hostapd refuses the
+> setting: OpenWrt's wpad builds do not include bss_load_test (#444). Where
+> it is set, On and Fix are what was ASKED, not what is on the air -- the
+> beacon carries hostapd's own figure.
+
 ### BeaconReport
 
 BeaconReport is one client's own measurement of one BSS.

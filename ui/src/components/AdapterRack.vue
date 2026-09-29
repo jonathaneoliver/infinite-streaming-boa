@@ -811,6 +811,12 @@ function bssOf(r: IfaceInfo): BSSLoadState | undefined {
   return props.bridge.bssLoad.value[r.name];
 }
 
+/** Why this radio's hostapd will not take a BSS Load value at all, or '' --
+ *  set by the daemon from hostapd's own refusal (#444). */
+function bssUnavailable(r: IfaceInfo): string {
+  return bssOf(r)?.unavailable ?? '';
+}
+
 function bssOn(r: IfaceInfo): boolean {
   return bssOf(r)?.on === true;
 }
@@ -1785,6 +1791,15 @@ Clients ARE told it has gone, unlike a power cut.`
             device a <em>reason</em> to move rather than ordering it to. Nobody
             is dropped, and nothing lifts on its own.
           </p>
+          <!-- A hostapd that refuses the setting gets a sentence, not dead
+               controls: OpenWrt's wpad builds do not include bss_load_test, and
+               ticking a box that cannot reach the air is the silent failure
+               #444 was. The daemon says why, once, and stops sending. -->
+          <p v-if="bssUnavailable(r)" class="warn-line">
+            This radio cannot advertise a BSS Load value: {{ bssUnavailable(r) }}.
+            Its beacon carries hostapd's own figure.
+          </p>
+          <template v-else>
           <div class="action-row beacon">
             <label class="chk"
               title="hostapd fills in a BSS Load element in every beacon from the driver&#39;s survey counter. On this hardware that counter is broken: measured over one 22.3s window at 494 Mbit/s it reported the channel 11.9% busy while the radio&#39;s own transmit and receive counters — from the same command — said 71.6%, and boa&#39;s per-station figures said 78.9%. So hostapd advertises a permanent 0%.&#10;&#10;Ticking this replaces it with the larger of what this radio measures at its own antenna and what the busiest neighbour on the channel reports. Still a lower bound: neither half can see a source that does not beacon, because this box has no spectral scan.&#10;&#10;Unticking is NOT silence. The element cannot be taken out of the beacon on this build — verified three ways — so unticked means advertising a 0% nobody chose, which is wrong in the direction that pulls clients towards us.">
@@ -1850,6 +1865,7 @@ Clients ARE told it has gone, unlike a power cut.`
             </span>
           </div>
           </div>
+          </template>
           </section>
 
         </template>
