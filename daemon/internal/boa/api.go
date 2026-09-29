@@ -2617,14 +2617,12 @@ func (a *API) linkSteer(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadGateway, err.Error())
 		return
 	}
-	// Logged as an OPERATOR action, like deauth and disassoc, through the same
-	// helper SteerClient's demo path uses so both read identically in the log.
-	// The join on the other radio, if the client accepts, is recorded
-	// separately by the station watcher -- and the gap between the two, or the
-	// absence of a join at all, is exactly what this button is for.
-	if !a.e.cfg.Demo {
-		a.e.noteSteer(mac, from, to)
-	}
+	// Logged by SteerClient itself, on the demo path and the real one, once
+	// hostapd has accepted the request. Logging it here as well put every
+	// steer in the activity log twice (#443). The join on the other radio, if
+	// the client accepts, is recorded separately by the station watcher -- and
+	// the gap between the two, or the absence of a join at all, is exactly what
+	// this button is for.
 	writeJSON(w, http.StatusOK, map[string]any{
 		"mac": mac, "action": "steer", "from": from, "to": to,
 		"mode": mode.String(),
