@@ -1286,7 +1286,13 @@ func (e *Engine) MoveChannel(iface string, channel, widthMHz int, mode string) (
 	// quick to set up for no benefit.
 	unlock := e.lockRadio(iface)
 	defer unlock()
+	return e.moveChannelLocked(iface, channel, widthMHz, mode)
+}
 
+// moveChannelLocked is MoveChannel's body, for a caller that already holds the
+// radio's lock. restoreOne is that caller: it has to re-check the preference
+// under the lock before acting on it, and the lock is not re-entrant.
+func (e *Engine) moveChannelLocked(iface string, channel, widthMHz int, mode string) (ChannelMove, error) {
 	ch, ok := apChannels[channel]
 	if !ok {
 		return ChannelMove{}, fmt.Errorf(

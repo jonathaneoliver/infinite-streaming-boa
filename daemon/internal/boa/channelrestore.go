@@ -25,6 +25,26 @@ func (e *Engine) lockRadio(iface string) func() {
 	return m.Unlock
 }
 
+// radioBusy reports whether a reconfiguration of this radio is under way.
+//
+// A try, not a wait: the tick asks many times a second's worth of radios and
+// must never block behind a move that takes seconds. A true answer is only as
+// good as the instant it was taken, which is all the tick needs -- it will ask
+// again in a second.
+func (e *Engine) radioBusy(iface string) bool {
+	e.radioMu.Lock()
+	m, ok := e.radioLocks[iface]
+	e.radioMu.Unlock()
+	if !ok {
+		return false
+	}
+	if m.TryLock() {
+		m.Unlock()
+		return false
+	}
+	return true
+}
+
 /*
  * Putting a radio back on the channel it was told to be on.
  *
@@ -100,9 +120,32 @@ func (e *Engine) restoreChannels() {
 	if e.cfg.Demo {
 		return
 	}
+	// NOT ON OPENWRT, where there is nothing for it to restore. The loop exists
+	// because on the Pi and the container a move lives only in the running
+	// hostapd: a restarted process reads a config that still names the old
+	// channel. On OpenWrt, rememberChannel also writes the move into
+	// /etc/config/wireless, and netifd rebuilds hostapd from exactly that, so
+	// a restarted radio comes back where it was put. Measured on target 5,
+	// 2026-09-29: `wifi up` and forced restarts all returned on the chosen
+	// channel. The only thing the loop ever did there was #441 -- undo a
+	// deliberate move it caught halfway. A failed uci write is already
+	// reported loudly by rememberChannel.
+	if e.cfg.OpenWrt {
+		return
+	}
 	for _, iface := range e.WlanPorts() {
 		pref, ok := e.chp.Get(iface)
 		if !ok {
+			continue
+		}
+		// NOT WHILE THE RADIO IS BEING MOVED. An announced move switches the
+		// radio when the countdown ends and writes the new preference only
+		// after that, so for over a second the radio is on the new channel
+		// while the preference still names the old one. Measured 2026-09-29 on
+		// target 5: 1.4 s on every move. A tick landing there read a
+		// deliberate move as a drift and undid it, three moves out of three
+		// (#441). A move in flight is not a drift, by definition.
+		if e.radioBusy(iface) {
 			continue
 		}
 		// SERVING ONLY, and this is the guard that matters most.
@@ -114,11 +157,8 @@ func (e *Engine) restoreChannels() {
 		//	down       powered but no BSS. A move cannot fix that and would
 		//	           fight whatever recovery is under way.
 		//	unmanaged  no control socket; there is nothing to move.
-		if e.apServiceState(iface) != "serving" {
-			continue
-		}
-		r := e.radioOnFor(iface)
-		if r == nil {
+		state, r := restoreReadRadio(e, iface)
+		if state != "serving" || r == nil {
 			continue
 		}
 		if pref.satisfiedBy(r.Channel, r.WidthMHz) {
@@ -131,12 +171,50 @@ func (e *Engine) restoreChannels() {
 		// In the background: MoveChannel takes seconds and the tick must not
 		// block behind it, or every client's counters stall while a radio
 		// comes back.
-		go e.restoreOne(iface, pref, r.Channel)
+		go e.restoreOne(iface)
 	}
 }
 
-func (e *Engine) restoreOne(iface string, pref ChannelPref, was int) {
+// restoreReadRadio and restoreMove are the seams a test replaces, so the
+// restore's decisions can be exercised without a hostapd to read or move. In
+// production they are the methods they wrap.
+var (
+	restoreReadRadio = func(e *Engine, iface string) (string, *RadioOn) {
+		return e.apServiceState(iface), e.radioOnFor(iface)
+	}
+	restoreMove = (*Engine).moveChannelLocked
+)
+
+func (e *Engine) restoreOne(iface string) {
 	defer e.restore.done(iface)
+
+	// DECIDED AGAIN UNDER THE LOCK. The tick decided from what it read a
+	// moment ago, and a move can have started since then: the tick's check
+	// that no move is in flight and this goroutine taking the lock are two
+	// separate instants. The lock is what a move holds from its first SET to
+	// writing the new preference, so once it is ours the preference and the
+	// radio agree with each other, and what the tick saw may no longer be
+	// true. Acting on it anyway is what undid a deliberate move (#441): the
+	// restore waited for the lock and then put the radio back on the channel
+	// the operator had just moved it off.
+	unlock := e.lockRadio(iface)
+	defer unlock()
+
+	pref, ok := e.chp.Get(iface)
+	if !ok {
+		return
+	}
+	// A fresh read, not the cache: the cache is up to 15 s old, and the move
+	// that just released the lock is exactly what it would be stale about.
+	e.forgetRadioOn()
+	state, r := restoreReadRadio(e, iface)
+	if state != "serving" || r == nil {
+		return
+	}
+	if pref.satisfiedBy(r.Channel, r.WidthMHz) {
+		e.restore.settled(iface)
+		return
+	}
 
 	// Said BEFORE the move, not after, so the log explains what is about to
 	// happen rather than accounting for it afterwards. What that IS now
@@ -145,9 +223,9 @@ func (e *Engine) restoreOne(iface string, pref ChannelPref, was int) {
 	// happened is in the move's own event, so this one no longer promises
 	// either.
 	e.logEvent(EventRadio, iface, "",
-		"%s is on channel %d but was set to %d — putting it back", iface, was, pref.Channel)
+		"%s is on channel %d but was set to %d — putting it back", iface, r.Channel, pref.Channel)
 
-	move, err := e.MoveChannel(iface, pref.Channel, pref.WidthMHz, MethodAnnounce)
+	move, err := restoreMove(e, iface, pref.Channel, pref.WidthMHz, MethodAnnounce)
 	if err != nil {
 		// MoveChannel already logs a warning naming the channel it came back
 		// on, so this adds only what that cannot know: whether anything will
