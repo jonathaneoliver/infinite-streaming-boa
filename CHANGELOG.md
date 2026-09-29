@@ -51,9 +51,15 @@ uplink and looked healthy on every figure boa shows.
 ### Added
 
 - **A fifth target: OpenWrt in a VM, with an access-point card passed
-  through.** The Cudy shows what access-point silicon can do, but only as a
-  whole router. This target separates the two: OpenWrt runs as a KVM guest on
-  an ordinary Ubuntu machine, and the radio is a MediaTek MT7915 M.2 card
+  through**, which brings the Cudy's capabilities to an ordinary host computer.
+  The card is AP-class silicon, not a client chip with AP mode bolted on, so the
+  controls that client parts refuse work on it as they do on the Cudy. Channel
+  changes and the other radio controls were tested by hand from the interface
+  on this target, not measured the way the Cudy's were for 0.5.0.
+
+  The Cudy shows what access-point silicon can do, but only as a whole router.
+  This target separates the two: OpenWrt runs as a KVM guest on an ordinary
+  Ubuntu machine, and the radio is a MediaTek MT7915 M.2 card
   ([AsiaRF AW7915-AED](https://asiarf.com/product/80211ax-mt7915-mini-pcie-wifi6-module/),
   MT7915DAN, 2T2R, dual-band concurrent), handed to the guest whole by PCI
   passthrough. It is ordered direct from AsiaRF, a Taiwanese vendor, so budget
