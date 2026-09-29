@@ -1491,7 +1491,7 @@ through the host with `openwrt-boa-install.sh`, as `root@192.168.1.1`.
 | Antennas | 2 × IPEX |
 | Power | 3.3 V, 3 A recommended, 4–9 W |
 | Measured bus link | **PCIe 2.0 x1** (`5.0 GT/s x1`) — ample for 1201 Mbit/s |
-| Buying it | [Direct from AsiaRF](https://asiarf.com/product/80211ax-mt7915-mini-pcie-wifi6-module/), a Taiwanese vendor. **Budget for import duties and fees on top of the listed price**: about $25 on the unit bought for this project |
+| Buying it | [Direct from AsiaRF](https://asiarf.com/product/80211ax-mt7915-mini-pcie-wifi6-module/), a Taiwanese vendor. **Budget for shipping and import duties on top of the listed price**: $38 shipping and about $25 in duties and fees on the unit bought for this project |
 
 One caution on identity: the card presents a **generic subsystem ID**
 (`14c3:7915`, identical to its device ID), so nothing on the bus names the

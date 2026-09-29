@@ -57,8 +57,8 @@ uplink and looked healthy on every figure boa shows.
   ([AsiaRF AW7915-AED](https://asiarf.com/product/80211ax-mt7915-mini-pcie-wifi6-module/),
   MT7915DAN, 2T2R, dual-band concurrent), handed to the guest whole by PCI
   passthrough. It is ordered direct from AsiaRF, a Taiwanese vendor, so budget
-  for import duties and fees on top of the listed price: about $25 on the unit
-  here. It uses the same two packages and the same LuCI page. Because it is a VM, a broken guest is one `qemu-img create` away
+  for shipping and import duties on top of the listed price: $38 shipping and
+  about $25 in duties and fees on the unit here. It uses the same two packages and the same LuCI page. Because it is a VM, a broken guest is one `qemu-img create` away
   from a clean one, and every out-of-box test in this release was run that
   way. See README target 5 for how it is put together.
 
