@@ -1885,6 +1885,95 @@ cmd_landing() {
 PLAN_5="36 149"
 PLAN_24="6 1 11"
 
+# THE PLAN, IN PREFERENCE ORDER, AS band:channel:width.
+#
+# The two 80 MHz blocks come first because they are what a radio serving
+# clients wants, and they are the only two non-DFS ones: 36 covers 36-48 and
+# 149 covers 149-161. After that the plan falls back rather than running out --
+# a third 5 GHz radio used to get "no free channel it can use" and be left
+# wherever it happened to be. Measured on a Pi 5 with two dongles and the
+# onboard radio, 2026-09-29. See #431.
+#
+# 2.4 GHz BEFORE THE OTHER 5 GHz BLOCKS, and that is a judgement: the blocks
+# left at 5 GHz (52, 100, 116, 132) are all DFS, where the radio must listen
+# for radar before it may beacon and must leave the channel if it hears one. A
+# radio that silently disappears is worse than a slower one, so the narrow,
+# dependable band is preferred and DFS is not planned onto at all -- the same
+# reason the two blocks above were chosen non-DFS.
+#
+# A WIDTH IS PART OF AN ENTRY, not an afterthought. An 80 MHz radio occupies
+# four 20 MHz channels, so reserving the number alone reserved a quarter of
+# what the radio actually used, and the planner could hand out two channels
+# inside one block believing them distinct.
+PLAN="5:36:80 5:149:80 24:6:20 24:1:20 24:11:20"
+
+# THE CHANNELS A RADIO MAY BE PUT ON, which is not the same as the channels it
+# reports.
+#
+# `iw phy info` on a Pi 5 lists 34, 38, 42 and 46 alongside 36, 40, 44 and 48,
+# none of them marked disabled or no-IR. They are not control channels: 38, 42
+# and 46 are the CENTRE frequencies of wider blocks, and 34 is an 802.11j
+# channel on 10 MHz spacing, so 5170 overlaps 5180 while the arithmetic below
+# -- which assumes 5 GHz channels step by 4 and do not overlap -- says it does
+# not. MEASURED 2026-09-29: the planner kept a radio on 34 believing it clear
+# of a radio on 36, and 34 is where this box's scanner sat while its firmware
+# refused every sweep.
+#
+# Listed rather than computed, because a rule does not fit: 36 to 144 are all
+# 0 mod 4 and 149 to 165 are 1 mod 4, so the obvious test drops the whole
+# UNII-3 band.
+CONTROL_5="36 40 44 48 52 56 60 64 100 104 108 112 116 120 124 128 132 136 140 144 149 153 157 161 165"
+
+is_control_chan() {   # $1=band(5|24) $2=channel
+	if [ "$1" = 5 ]; then
+		case " $CONTROL_5 " in *" $2 "*) return 0 ;; *) return 1 ;; esac
+	fi
+	[ "$2" -ge 1 ] 2>/dev/null && [ "$2" -le 14 ] 2>/dev/null
+}
+
+# The 20 MHz channels an entry actually occupies, so a reservation covers the
+# spectrum rather than the label on it.
+#
+# 5 GHz channels step by 4 and blocks start where the plan says, so an 80 MHz
+# entry at 36 holds 36 40 44 48. At 2.4 GHz the channels overlap their
+# neighbours by design -- 1, 6 and 11 are the usual trio precisely because they
+# do not -- so an entry there holds itself and two either side.
+chan_covers() {   # $1=band(5|24) $2=channel $3=width
+	local b="$1" c="$2" w="$3" i n
+	if [ "$b" = 5 ]; then
+		n=$((w / 20)); [ "$n" -ge 1 ] || n=1
+		i=0
+		while [ "$i" -lt "$n" ]; do printf '%s ' "$((c + i * 4))"; i=$((i + 1)); done
+	else
+		i=$((c - 2))
+		while [ "$i" -le $((c + 2)) ]; do [ "$i" -ge 1 ] && printf '%s ' "$i"; i=$((i + 1)); done
+	fi
+}
+
+# The htmode to write beside a channel, keeping the PHY generation the radio
+# already has and giving it the new width.
+#
+# The same rule the daemon's uciChannelSets applies, and for the same reasons:
+# VHT does not exist at 2.4 GHz so it falls back to HT, and NOHT takes NO width
+# -- gluing one on produces `NOHT20`, which netifd rejects silently, so the
+# radio never comes up and nothing says why.
+# The width an htmode means, in MHz. NOHT and a bare generation are 20.
+width_of() {   # $1=htmode
+	local w
+	w="$(printf '%s' "$1" | sed 's/[^0-9]//g')"
+	case "$w" in "" ) printf 20 ;; *) printf '%s' "$w" ;; esac
+}
+
+htmode_for() {   # $1=current htmode $2=width $3=band(5|24)
+	local gen
+	gen="$(printf '%s' "$1" | sed 's/[0-9+-]*$//')"
+	[ "$gen" = VHT ] && [ "$3" = 24 ] && gen=HT
+	case "$gen" in
+		NOHT|"") return 0 ;;
+		*) printf '%s%s' "$gen" "$2" ;;
+	esac
+}
+
 # The phy behind wifi-device $1, by the same path match as radio_hw_present.
 #
 # THE +N SUFFIX SELECTS AMONG PHYS ON ONE DEVICE, and dropping it is not enough:
@@ -1986,25 +2075,56 @@ set_scanner_radio() {
 
 cmd_plan_channels() {
 	local dry="" r band phy scan scandev taken="" ch plan n=0
+	local scanradio="" scanphy="" scanband="" candidates="" cand cur keep=""
+	local curw cov clash entry eb ec ew rest chw chb newht
 	[ "${1:-}" = "--dry-run" ] && dry=1
 
 	scan="$(uci -q get boa.main.scan)"
 	printf 'Planning channels for the radios that serve.\n'
 
+	# TWO PASSES, SO A RADIO THAT IS ALREADY RIGHT IS LEFT ALONE.
+	#
+	# This used to hand out the plan's channels in uci order, which REASSIGNS
+	# from scratch: plug a third radio into a working box and the planner could
+	# move a radio that was serving clients onto a different channel, dropping
+	# every association on it to make room for the newcomer. A hotplug has to
+	# be able to place ONE radio without disturbing the others.
+	#
+	# So: claim first, assign second. Pass one lets every radio keep the
+	# channel it already holds, if that channel is legal for its hardware and
+	# nobody else has claimed it. Pass two places only what is left. That also
+	# makes the planner idempotent -- running it twice changes nothing -- and
+	# order-independent, where the single loop gave the first radio in uci
+	# order first refusal.
+	candidates=""
 	for r in $(uci -q show wireless | sed -n 's/^wireless\.\([^.=]*\)=wifi-device$/\1/p'); do
 		radio_hw_present "$r" || { note "$r: adapter not present"; continue; }
 		[ "$(uci -q get wireless.$r.disabled)" = 1 ] && { note "$r: disabled"; continue; }
-		serves_ap_enabled "$r" || { note "$r: serves no access point"; continue; }
 		phy="$(radio_phy "$r")" || { note "$r: no phy"; continue; }
 
+		# FOUND BEFORE THE SERVING TEST, because having no enabled access point
+		# is precisely what makes a radio a scanner -- so serves_ap_enabled
+		# rejects it, and a check placed after that one never runs at all.
+		# Measured: the scanner pass below was dead code until this moved up,
+		# and the instrument stayed on whatever channel it happened to hold.
+		#
 		# The scan radio never takes a channel from the plan -- radioplan's
 		# reason: giving one to a radio that never transmits pushes a radio that
 		# DOES onto a worse channel. Compared by PHY rather than by interface
 		# name, so a radio with several netdevs still matches.
 		if [ -n "$scan" ] && [ -e "/sys/class/net/$scan/phy80211" ]; then
 			scandev="$(basename "$(readlink -f "/sys/class/net/$scan/phy80211")")"
-			[ "$scandev" = "$phy" ] && { note "$r ($phy): boa's scan radio"; continue; }
+			if [ "$scandev" = "$phy" ]; then
+				# Held back, NOT skipped. It takes none of the good channels --
+				# the reason above stands -- but it is dealt with after the
+				# loop, because a radio still needs a channel it is ALLOWED to
+				# sit on between sweeps.
+				scanradio="$r"; scanphy="$phy"
+				scanband="$(uci -q get wireless.$r.band)"
+				continue
+			fi
 		fi
+		serves_ap_enabled "$r" || { note "$r: serves no access point"; continue; }
 
 		band="$(uci -q get wireless.$r.band)"
 		case "$band" in
@@ -2013,30 +2133,148 @@ cmd_plan_channels() {
 			*)  note "$r: band '$band' is not one this plans for"; continue ;;
 		esac
 
-		ch=""
-		for c in $plan; do
-			case " $taken " in *" $c "*) continue ;; esac
-			phy_channels "$phy" "$band" | grep -qx "$c" || continue
-			ch="$c"; break
+		candidates="$candidates $r:$band"
+	done
+
+	# PASS ONE: keep what is already legal and unclaimed.
+	for cand in $candidates; do
+		r="${cand%%:*}"; band="${cand##*:}"
+		phy="$(radio_phy "$r")" || continue
+		cur="$(uci -q get wireless.$r.channel)"
+		case "$cur" in ""|auto|0) continue ;; esac
+		# Not a control channel -- 34, 38, 42, 46 and friends -- so it is not
+		# somewhere this planner will leave a radio sitting. Fall through to
+		# pass two and give it a real one.
+		is_control_chan "$band" "$cur" || continue
+		phy_channels "$phy" "$band" | grep -qx "$cur" || continue
+		# RESERVED AT ITS REAL WIDTH. A radio on 36 at 80 MHz holds 36 40 44
+		# 48, so claiming only "36" left three quarters of its spectrum
+		# available to the next radio -- which is how a promoted radio landed
+		# on 36 beside one already running 80 MHz on 40. #431.
+		curw="$(width_of "$(uci -q get wireless.$r.htmode)")"
+		cov="$(chan_covers "$band" "$cur" "$curw")"
+		clash=""
+		for c in $cov; do case " $taken " in *" $c "*) clash=1 ;; esac; done
+		[ -n "$clash" ] && continue
+		taken="$taken $cov"
+		keep="$keep $r"
+		n=$((n + 1))
+		ok "$r ($phy): already on $cur at ${curw}MHz"
+	done
+
+	# PASS TWO: place the rest, out of what pass one did not claim.
+	for cand in $candidates; do
+		r="${cand%%:*}"; band="${cand##*:}"
+		case " $keep " in *" $r "*) continue ;; esac
+		phy="$(radio_phy "$r")" || continue
+		# FROM THE WHOLE PLAN, NOT JUST THIS RADIO'S BAND. The first two
+		# entries are the 80 MHz blocks a serving radio wants; after those it
+		# falls back to 2.4 GHz rather than reporting no channel and leaving
+		# the radio wherever it was. A radio only takes an entry its hardware
+		# supports, so a 5 GHz-only part simply skips the 2.4 GHz entries.
+		ch=""; chw=""; chb=""
+		for entry in $PLAN; do
+			eb="${entry%%:*}"; rest="${entry#*:}"; ec="${rest%%:*}"; ew="${rest##*:}"
+			# THE HARDWARE DECIDES, NOT THE CONFIGURED BAND. Filtering on
+			# wireless.radioN.band would stop a 5 GHz-configured radio ever
+			# falling back to 2.4 GHz, which is the whole point of the entries
+			# below the blocks. phy_channels answers what this radio can
+			# actually use, and the band is rewritten with the channel when it
+			# moves.
+			phy_channels "$phy" "$eb" | grep -qx "$ec" || continue
+			cov="$(chan_covers "$eb" "$ec" "$ew")"
+			clash=""
+			for c in $cov; do case " $taken " in *" $c "*) clash=1 ;; esac; done
+			[ -n "$clash" ] && continue
+			ch="$ec"; chw="$ew"; chb="$eb"; break
 		done
 		if [ -z "$ch" ]; then
 			warn "$r ($phy): no free channel it can use; leaving it on $(uci -q get wireless.$r.channel)"
 			continue
 		fi
-		taken="$taken $ch"
+		taken="$taken $(chan_covers "$chb" "$ch" "$chw")"
 		n=$((n + 1))
-		if [ "$(uci -q get wireless.$r.channel)" = "$ch" ]; then
-			ok "$r ($phy): already on $ch"
-			continue
-		fi
+		newht="$(htmode_for "$(uci -q get wireless.$r.htmode)" "$chw" "$chb")"
 		if [ -n "$dry" ]; then
-			printf '  would set wireless.%s.channel=%s (was %s)\n' \
-				"$r" "$ch" "$(uci -q get wireless.$r.channel)"
+			printf '  would set wireless.%s.channel=%s htmode=%s (was %s/%s)\n' \
+				"$r" "$ch" "${newht:-unchanged}" \
+				"$(uci -q get wireless.$r.channel)" "$(uci -q get wireless.$r.htmode)"
 		else
-			ok "$r ($phy): $(uci -q get wireless.$r.channel) -> $ch"
+			ok "$r ($phy): $(uci -q get wireless.$r.channel) -> $ch at ${chw}MHz"
 			uci set wireless.$r.channel="$ch"
+			# WIDTH WITH THE CHANNEL, always. Writing one without the other is
+			# how a radio ends up on a channel that cannot start a block at its
+			# configured width -- a config no reload can satisfy. #431.
+			[ -n "$newht" ] && uci set wireless.$r.htmode="$newht"
+			[ "$chb" = "$band" ] || uci set wireless.$r.band="$( [ "$chb" = 5 ] && echo 5g || echo 2g )"
 		fi
 	done
+
+	# THE SCANNER GETS A LEGAL CHANNEL, JUST NOT A GOOD ONE.
+	#
+	# It used to be skipped outright, and skipping it is how a Pi 5 ended up
+	# with its instrument parked on channel 34 -- an 802.11j channel that
+	# country=US forbids. MEASURED 2026-09-29, straight out of the wizard: the
+	# firmware refused every sweep with -52, `iw scan` failed the same way, and
+	# an access point would not start on that radio either. boa showed an empty
+	# neighbourhood and said nothing, and it read for most of a day like a
+	# driver that wedges at random.
+	#
+	# "Do not give it one of the scarce channels" is right. "Do not give it any
+	# channel" was the bug: a radio that transmits nothing still has to REST
+	# somewhere legal between sweeps, and where it rests is decided by whatever
+	# was in the config -- which is not guaranteed to be allowed here.
+	#
+	# So it is served last, from what the serving radios did not take, and only
+	# from channels phy_channels offers -- that list already excludes anything
+	# disabled or no-IR in this regulatory domain, which is exactly what 34 is.
+	if [ -n "$scanradio" ]; then
+		case "$scanband" in
+			5g) plan="$PLAN_5"; band=5 ;;
+			2g) plan="$PLAN_24"; band=24 ;;
+			*)  plan=""; band="" ;;
+		esac
+		# ONLY FROM THE PLAN, NEVER FROM WHAT THE RADIO CLAIMS TO SUPPORT.
+		#
+		# The obvious version of this -- "any channel phy_channels offers that
+		# nobody took" -- picks channel 34 on a Pi 5, because `iw phy info`
+		# lists 34 with no `disabled` and no `no IR` marker and the firmware
+		# refuses it anyway. MEASURED 2026-09-29: the driver advertises a
+		# channel it will not use, which is how the scanner came to rest there
+		# and answer -52 to every sweep. Caught by a --dry-run that offered to
+		# set exactly the channel this whole fix exists to avoid.
+		#
+		# So the rest channel comes from the same short, known-good list the
+		# serving radios draw on. Sharing one with a serving radio is harmless
+		# -- a scanner transmits nothing -- and by this point the serving
+		# radios have already claimed theirs, so sharing displaces nobody.
+		ch=""
+		if [ -n "$band" ]; then
+			for c in $plan; do
+				case " $taken " in *" $c "*) continue ;; esac
+				is_control_chan "$band" "$c" || continue
+				phy_channels "$scanphy" "$band" | grep -qx "$c" || continue
+				ch="$c"; break
+			done
+			[ -n "$ch" ] || for c in $plan; do
+				is_control_chan "$band" "$c" || continue
+				phy_channels "$scanphy" "$band" | grep -qx "$c" || continue
+				ch="$c"; break
+			done
+		fi
+		if [ -z "$ch" ]; then
+			warn "$scanradio ($scanphy): no legal channel to rest on; leaving it on $(uci -q get wireless.$scanradio.channel)"
+		elif [ "$(uci -q get wireless.$scanradio.channel)" = "$ch" ]; then
+			ok "$scanradio ($scanphy): listens, already resting on $ch"
+		elif [ -n "$dry" ]; then
+			printf '  would set wireless.%s.channel=%s (was %s) -- the scan radio\n' \
+				"$scanradio" "$ch" "$(uci -q get wireless.$scanradio.channel)"
+		else
+			ok "$scanradio ($scanphy): listens -- rests on $ch, taking none of the plan"
+			uci set wireless.$scanradio.channel="$ch"
+			n=$((n + 1))
+		fi
+	fi
 
 	[ "$n" -gt 0 ] || { echo "No serving radio to plan for." >&2; return 1; }
 	if [ -n "$dry" ]; then

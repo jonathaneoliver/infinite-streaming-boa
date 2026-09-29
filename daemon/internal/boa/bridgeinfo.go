@@ -1344,16 +1344,17 @@ func (e *Engine) isSpareScannerIface(in IfaceInfo) bool {
 		return true
 	}
 
-	// And the config as well, for a scan port somebody named by hand: it will
-	// not follow the <phy>-scan convention, so the check above cannot see it.
-	for _, s := range e.cfg.ScanPorts {
-		if s == "" || s == in.Name {
-			continue
-		}
-		if sp, err := phyName(s); err == nil && sp == phy {
-			return true
-		}
-	}
+	// AND NOT THE CONFIG. An earlier version also matched e.cfg.ScanPorts, for
+	// a scan port somebody named by hand. It is not worth what it costs:
+	//
+	//   - that list is fixed at daemon start, and consulting it is exactly
+	//     what made this fold decline for the seconds after a role change;
+	//   - every listen-only interface this box makes is named <phy>-scan, so
+	//     the check above already sees all of them;
+	//   - and the failure modes are not symmetrical. Missing a hand-named
+	//     scanner's spare netdev shows one extra row. A STALE entry matching
+	//     hides a radio that really has failed, which is the one thing a rack
+	//     must never do.
 	return false
 }
 

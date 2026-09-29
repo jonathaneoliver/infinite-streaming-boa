@@ -487,7 +487,7 @@ pi_describe() {
 }
 
 pi_reset() {
-	local install=$1 board backup stamp wan at=pi_ssh
+	local install=$1 board backup stamp at=pi_ssh
 	need_pi_if
 	# EITHER ADDRESS. A Pi that is bridged answers at BOA_PI_HOST; one that is
 	# still out-of-box -- or was reset and never set up -- answers only at
@@ -528,16 +528,15 @@ pi_reset() {
 
 	[ "$install" = 1 ] || return 0
 
-	# THE STAGE NO OTHER TARGET HAS. Without it the install dies inside apk,
-	# resolving a feed it has no route to.
-	log "giving the Pi an uplink (OpenWrt's board profile gives it none)"
-	box() { pi_rescue_ssh "$@"; }
-	# shellcheck source=scripts/openwrt-boa-common.sh
-	. "$REPO/scripts/openwrt-boa-common.sh"
-	wan="$(boa_configure_wan)" ||
-		die "the Pi has no usable uplink, so boa cannot be installed"
-	log "  wan is $wan (the USB adapter with a live cable)"
-
+	# THE UPLINK IS THE INSTALLER'S JOB, not this one's. A Pi has no wan --
+	# OpenWrt's board profile gives it none -- and the install needs a feed for
+	# boa's fifteen dependencies, so openwrt-boa-install.sh configures one when
+	# there is no route out. Doing it here as well was the same mutation in two
+	# places, which is how the two drift.
+	#
+	# It also made `pi reset --no-install` wrong: that is meant to leave a box
+	# exactly as a flash leaves it, and it was handing back one with a wan this
+	# script had added.
 	log "installing boa on the Pi"
 	SDK_IMAGE=$PI_SDK "$REPO/scripts/openwrt-boa-build.sh"
 	SSH_OPTS="$PI_SSH_OPTS -o BindInterface=$PI_IF" \
