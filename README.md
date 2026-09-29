@@ -1568,6 +1568,84 @@ bridge.
 None of this transfers to the Cudy: `mt798x` is different silicon, and the
 targets disagree.
 
+#### What AP-class silicon does here, measured against the Cudy
+
+> Target 5, the MT7915E's 5 GHz half (`phy1-ap0`, `mt7915e`), boa
+> `v0.5.0-26-gf8d1092` on OpenWrt 25.12.5, 2026-09-29. The clients were a
+> MacBook Pro over real antennas, pinging the Ubuntu host through the box 5
+> times a second, plus an iPhone and a Watch where named. Each test repeats one in
+> [`openwrt/CUDY-TR3000.md`](openwrt/CUDY-TR3000.md#what-ap-class-silicon-changes),
+> so the two columns compare.
+
+**The card does what the Cudy does**, and in several rows does it with less
+disruption:
+
+| | Cudy MT7981 (2026-09-22/23) | MT7915E in the VM |
+|---|---|---|
+| Announced channel switch | 3 of 3 clients followed; a client loses 0.4–1.2 s | **Followed every time**: ten switches with the MacBook, and one with MacBook, iPhone and Watch together (0 of 3 dropped). The MacBook lost 0.4 s once and nothing the other nine times |
+| Forced teardown | AP out of service 1.0–1.1 s | AP out 0.83–1.18 s, and **the client lost 7.6–9 s** noticing, rescanning and rejoining |
+| Transmit power, live | ~7 dB per step, nobody reassociated | 23 / 10 / 3 / 23 dBm read back exactly, and the MacBook heard **−31 / −43 / −49 / −31 dBm**. Its connected time rose straight through, and 0 pings were lost across two passes |
+| Scan while serving | 13 BSSes in 3 s; 18 pings lost, then a backlog draining over 1.9 s | **9 BSSes in 4 s**, AP up, client still associated; **16 pings lost** (3.2 s) and no backlog, with the worst round trip afterwards 133 ms |
+| Interface combinations | AP ≤ 16, managed ≤ 19, total ≤ 19, one channel | **Identical**, on both phys |
+| DFS | advertised on 52–144, untested | 16 radar channels advertised on the 5 GHz phy, radar detection up to 160 MHz; **untested** |
+
+**Channel and width, one client alone on the radio** (Mbit/s, `iperf3` 10 s,
+after a warm-up run, MacBook at −30 to −34 dBm):
+
+| Channel | Width | To the box, down / up | Through, down / up |
+|---|---|---|---|
+| 149 | 80 MHz | **850 / 791** | **870 / 844** |
+| 149 | 40 MHz | 453 / 453 | 462 / 459 |
+| 149 | 20 MHz | 220 / 238 | 220 / 239 |
+| 36–48 (primary landed on 40) | 80 MHz | 686 / 631 | 696 / 554 |
+| 36 | 20 MHz | 146 / 197 | 170 / 186 |
+
+The channel matters less here than it did on the Cudy's bench: 36–48 gives
+about 80% of 149, where the Cudy saw about 25%. That is the air on the day, not
+the chip, and the scanner is what says which to pick. Width scales almost
+linearly. The 36 at 80 MHz row is really 40: hostapd's 20/40 MHz coexistence
+scan swapped primary and secondary to avoid neighbours, as the error from the
+move says, and a 20 MHz move is the way to land exactly on 36.
+
+**A contended radio is a different measurement.** With an iPhone streaming
+23 Mbit/s on the same radio at one spatial stream, the MacBook's downlink on
+149/80 fell to 180–519 Mbit/s against 850 alone, while its uplink held at
+700–747. Every figure above was taken with the other clients off the radio,
+and the 2.4 GHz radio and the USB `mt7921u` taken down so the MacBook could not
+land on them.
+
+**Roaming under power, coarse.** Stepping the 5 GHz radio 23 → 10 → 3 dBm:
+the iPhone left for the 2.4 GHz AP 15 s after 10 dBm was set, the Watch 1 s
+after 3 dBm, and the iPhone came back 14 s after 23 dBm was restored. All three
+were the devices' own decisions, from boa's event log. The Cudy's 2 dB walk put
+the iPhone's thresholds at 11 dBm leaving and 19 returning. These steps are too
+coarse to say more than "between 23 and 10".
+
+**Steering, an iPhone and a MacBook side by side**, the same four requests
+15 s apart. The answers are hostapd's, and boa reported them identically:
+
+| Mode | iPhone | MacBook |
+|---|---|---|
+| `suggest` | refused, no reason (1) | refused, offering its own candidates (6) |
+| `imminent` | **accepted**, moved to 2.4 GHz, and **back to 5 GHz on its own within 15 s** | **accepted**, moved, and stayed |
+| `terminate` | accepted, moved, and stayed | accepted, moved |
+| `insist` | accepted, moved | accepted, moved |
+
+Both refuse the plain request and both honour Disassociation Imminent, which is
+the Cudy's finding on a second device. Only the iPhone undid the move, as the
+Cudy's iPhone did. **The same MacBook refused `imminent` and `terminate` half
+an hour earlier** (code 7 three times, moving only on `insist`), just after it
+had been dropped and rejoined during the channel sweep, so one ladder is not a
+device's answer.
+
+**Five bugs this run found**, all filed: an announced move reverted by the
+channel restore loop (#441); a scan that fails on a single-band phy and takes
+the AP down for nothing (#442); steering answers lost on a radio rebuilt with
+`wifi up` until boad restarts (#443); `bss_load_test` rejected by OpenWrt's
+hostapd every 15 s while the API says it is applied (#444); and a forced move to
+40 MHz that once left the AP down (#445). The steering table above was taken
+after a restart, so #443 does not affect it.
+
 ## Requirements for the build and control host
 
 **This is a toolchain, not a parts list**, and it applies to all five targets:

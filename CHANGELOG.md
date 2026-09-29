@@ -53,9 +53,19 @@ uplink and looked healthy on every figure boa shows.
 - **A fifth target: OpenWrt in a VM, with an access-point card passed
   through**, which brings the Cudy's capabilities to an ordinary host computer.
   The card is AP-class silicon, not a client chip with AP mode bolted on, so the
-  controls that client parts refuse work on it as they do on the Cudy. Channel
-  changes and the other radio controls were tested by hand from the interface
-  on this target, not measured the way the Cudy's were for 0.5.0.
+  controls that client parts refuse work on it as they do on the Cudy, and
+  they were measured against the Cudy's figures on 2026-09-29:
+  - **Channel moves are announced and clients follow**: ten switches with no
+    drop, and the MacBook lost 0.4 s once and nothing otherwise.
+  - **Transmit power is honoured live**: 23 / 10 / 3 dBm moved the client's
+    signal −31 / −43 / −49 dBm, with no reassociation and no lost pings.
+  - **A survey runs while serving**: 9 BSSes in 4 s, clients still associated,
+    at a cost of 3.2 s of lost pings.
+  - **The steering ladder behaves as on the Cudy**: an iPhone and a MacBook
+    both declined a plain request and honoured Disassociation Imminent.
+
+  The same interface combinations are advertised, and DFS is advertised but
+  untested. The full comparison is in the README's target 5 section.
 
   The Cudy shows what access-point silicon can do, but only as a whole router.
   This target separates the two: OpenWrt runs as a KVM guest on an ordinary
@@ -392,6 +402,15 @@ uplink and looked healthy on every figure boa shows.
 - **The Pi's published uplink figures predate the A-MPDU fix** and have not
   been re-measured.
 - **`target.sh cudy reset` has not been run on the device.**
+- **Five bugs found measuring target 5**, filed and open at the time of writing:
+  - an announced channel move is reverted by the restore loop within about 2 s
+    (#441);
+  - a scan on a single-band radio fails and takes the access point down (#442);
+  - steering answers are lost on a radio rebuilt with `wifi up` until boad
+    restarts (#443);
+  - OpenWrt's hostapd rejects `bss_load_test` every 15 s while the API reports
+    the BSS Load correction as applied (#444);
+  - a forced move to 40 MHz once left the access point down (#445).
 
 ## [0.5.0] — 2026-09-24
 
