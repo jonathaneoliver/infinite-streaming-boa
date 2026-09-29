@@ -82,6 +82,18 @@ func (e *Engine) ensureScanIfaces() {
 				s, phy, err, strings.TrimSpace(string(out)))
 			continue
 		}
+		// UP, OR IT SWEEPS NOTHING. `iw interface add` leaves the netdev
+		// administratively down, and a down interface cannot scan -- so this
+		// created the instrument and left it deaf. MEASURED on a Pi 5
+		// 2026-09-29, straight out of the wizard: the rack showed phy0-scan as
+		// the scanner, `up: false`, and the neighbourhood stayed empty with
+		// nothing reporting why.
+		//
+		// rebuildMissingScanIfaces, the timer path, has always done this; only
+		// the startup path did not. It stayed hidden because every other way of
+		// making a scanner -- SetRadioRole from the button or the API -- brings
+		// the link up itself. The wizard is the first that relies on this one.
+		_ = exec.Command("ip", "link", "set", s, "up").Run()
 		e.logEvent(EventRadio, s, "", "%s recreated on %s: listen-only, and a reboot does not keep one", s, phy)
 	}
 	e.warnOrphanScanIfaces()

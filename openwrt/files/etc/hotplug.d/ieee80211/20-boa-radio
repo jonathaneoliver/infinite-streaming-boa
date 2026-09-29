@@ -22,7 +22,27 @@
 # This hook stays out of the way until then.
 
 [ "$ACTION" = add ] || exit 0
+
+# THE KERNEL CALLS IT DEVICENAME, NOT PHYNAME, and this hook spent its whole
+# life exiting on the next line because of it. MEASURED on a Raspberry Pi 5,
+# 2026-09-29, by logging the entire environment of a real replug: an
+# ieee80211 add event carries exactly
+#
+#	ACTION=add  SEQNUM=1592  HOTPLUG_TYPE=ieee80211  SUBSYSTEM=ieee80211
+#	DEVPATH=/devices/.../4-1.3:1.0/ieee80211/phy3  DEVICENAME=phy3
+#	USER  HOME  LOGNAME  TERM
+#
+# and nothing else. PHYNAME is not in it and never was, so `[ -n "$PHYNAME" ]`
+# was false every time and this file has never executed a line past it. It
+# looked installed, it looked correct, and it did nothing -- the silent
+# failure this repository keeps rediscovering.
+#
+# DEVPATH is the fallback rather than the primary because DEVICENAME is what
+# the kernel sets for this subsystem; the basename of DEVPATH is the same
+# string, kept only so a future subsystem that omits DEVICENAME still works.
+PHYNAME="${DEVICENAME:-${DEVPATH##*/}}"
 [ -n "$PHYNAME" ] || exit 0
+[ -d "/sys/class/ieee80211/$PHYNAME" ] || exit 0
 
 . /lib/functions.sh
 . /lib/boa/radio.sh
@@ -43,7 +63,46 @@ done
 # THE SCANNER. Recorded against the MAC, not the phy name, so a renumbering
 # across a reboot cannot point it at different hardware -- which is exactly
 # what happened before boa_resolve_scan existed.
-scanner=$(boa_scanner_phy || true)
+#
+# THE RECORDED ROLE WINS OVER THE HEURISTIC, AND THE ORDER IS WHY.
+#
+# boa_scanner_phy answers from the hardware present AT THIS INSTANT, and at
+# boot this hook runs while the box is still finding its radios. MEASURED on a
+# Raspberry Pi 5, 2026-09-29:
+#
+#	[11.34] brcmfmac (onboard) registers   <- this hook fires here
+#	[11.66] mt7921u #1 firmware ready
+#	[11.86] mt7921u #2 firmware ready
+#
+# boa_scanner_phy will only nominate the onboard radio when something else can
+# serve, and at 11.34s nothing else exists yet -- so it declined, this hook
+# fell through to the serving path below, and turned the box's INSTRUMENT into
+# an access point. The dongles then arrived and copied their config "from
+# radio0", the scanner. The box came up with three access points and the
+# onboard serving on the channel it was supposed to be listening on.
+#
+# It only started happening when this hook began running at all (it had been
+# exiting on an unset $PHYNAME since it shipped), so the race was always here
+# and simply never reached.
+#
+# boa.main.scan_mac is the answer a person or the wizard already settled, and
+# it does not depend on what has finished probing. Consult it first; fall back
+# to the heuristic only when nothing has been recorded, which is a box that
+# has not been set up yet.
+scanner=""
+recorded_macs=$(uci -q get boa.main.scan_mac)
+my_mac=$(boa_phy_mac "$PHYNAME")
+if [ -n "$recorded_macs" ] && [ -n "$my_mac" ]; then
+	# Left EMPTY when this phy is not in the list, which falls through to the
+	# serving path below -- and deliberately does NOT consult the heuristic,
+	# because a recorded list is a decision and the heuristic must not promote
+	# a different radio behind its back.
+	case " $recorded_macs " in
+	*" $my_mac "*) scanner="$PHYNAME" ;;
+	esac
+else
+	scanner=$(boa_scanner_phy || true)
+fi
 if [ -n "$scanner" ] && [ "$scanner" = "$PHYNAME" ]; then
 	uci set "wireless.default_$radio.disabled=1"
 	uci commit wireless
@@ -51,7 +110,7 @@ if [ -n "$scanner" ] && [ "$scanner" = "$PHYNAME" ]; then
 	# others. See boa_scan_add and issue #351.
 	boa_scan_add "$PHYNAME"
 	say "$PHYNAME ($radio): scanner -- access point off, boa will listen on $PHYNAME-scan"
-	wifi reload >/dev/null 2>&1
+	boa_radio_reinstate "$radio"
 	/etc/init.d/boa restart >/dev/null 2>&1
 	exit 0
 fi
@@ -88,7 +147,7 @@ country=$(uci -q get "wireless.$src.country")
 uci commit wireless
 say "$PHYNAME ($radio): serving, copied from $src"
 
-wifi reload >/dev/null 2>&1
+boa_radio_reinstate "$radio"
 sleep 5
 # Channels last, and only once it is actually serving: plan-channels works from
 # the radios that have an access point up, not from what uci hopes for.
