@@ -331,6 +331,29 @@ func (e *Engine) SetRadioRole(iface string, scanner bool) (string, error) {
 				"(band %s, channel %s) -- check `logread` for start_ap failures",
 				iface, phy, band, ch)
 		}
+		// NOW GIVE IT A CHANNEL THAT DOES NOT CLASH.
+		//
+		// ensureServingChannel above only rescues a radio with no usable
+		// channel at all, and it does that from the bottom of the band because
+		// it cannot see the other radios. On a box already serving, that is a
+		// collision: MEASURED 2026-09-29, a radio promoted here came up on 36
+		// beside one on 40 at 80MHz -- the same 36-48 block, completely
+		// overlapping -- and the operator had to move it by hand.
+		//
+		// plan-channels is what knows the allocation, and it works from the
+		// radios that are SERVING, so it has to run after the access point is
+		// actually up. That is why it is here and not beside
+		// ensureServingChannel. It reloads Wi-Fi and associated clients
+		// reconnect, which is the right trade at the moment a radio is being
+		// brought into service: the alternative is leaving two radios on one
+		// channel until somebody notices.
+		if out, err := exec.Command("/usr/sbin/boa-setup", "plan-channels").CombinedOutput(); err != nil {
+			// Not fatal: the radio IS serving, which is what was asked. A
+			// clash is worth saying out loud rather than failing over.
+			e.logEvent(EventWarning, iface, "",
+				"%s is serving, but planning its channel failed, so it may share one "+
+					"with another radio: %v: %s", iface, err, strings.TrimSpace(string(out)))
+		}
 	}
 	if err := uciCommit("boa"); err != nil {
 		return "", err
