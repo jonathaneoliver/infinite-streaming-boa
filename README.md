@@ -1277,7 +1277,9 @@ the upstream router and the `192.168.1.1` rescue address.
 
 Choose it when the device should stay a normal OpenWrt box with LuCI, when you
 want boa's controls alongside OpenWrt's own, or when the hardware is a router
-rather than a Pi.
+rather than a Pi. OpenWrt can already drive its radios over the network, but it
+has nothing that conditions a link; see
+[what OpenWrt already does, and what boa adds](openwrt/README.md#what-openwrt-already-does-and-what-boa-adds).
 
 It asks more of you before it installs than the other two, because a package
 must never rewire a router's network: the device has to be a **transparent
