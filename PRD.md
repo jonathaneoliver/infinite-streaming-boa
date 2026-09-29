@@ -1637,7 +1637,8 @@ because an open door is not a configuration.
   person making it. Without the full build, steer fails and measure is refused.
 - **OpenWrt lacks two radio controls.** Its kernel has no rfkill, so there is no
   silent power cut, and the advertised BSS Load needs a testing build of
-  hostapd, so it is not offered. Packages are built for arm64 on 25.12 only.
+  hostapd, so it is not offered: the radio's panel says why in place of the
+  controls, and boa asks hostapd once rather than on every refresh. Packages are built for arm64 on 25.12 only.
   The channel switch is no longer among them: the built-in `mt798x` radios
   announce it and keep their clients, while a `mt7921u` adapter on the same box
   still restarts to move.
