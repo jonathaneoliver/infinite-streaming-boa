@@ -24,8 +24,8 @@ them.**
 0.5.0 put boa on OpenWrt, but getting from a flashed device to a working one was
 still a sequence of commands typed over SSH: swap the wpad build, install the
 drivers, set a root password nobody had set, convert, restart. 0.6.0 replaces
-everything after the install with **a four-question wizard**, in LuCI or at a
-shell. The install itself still needs a shell once: LuCI cannot add the feed's
+everything after the install with **a four-question wizard** in the browser.
+The install itself still needs a shell once: LuCI cannot add the feed's
 signing key, and will not until boa is in the official feed (#359). Scripts
 take each target back to out-of-box so the wizard can be run again from
 nothing, and it was run from nothing, repeatedly, on a Cudy TR3000, an x86-64
@@ -142,12 +142,13 @@ uplink and looked healthy on every figure boa shows.
   in a slot is the serving radio on such a host and the dongles are spares.
 
 
-- **A first-run setup wizard**, in two places: **Services → boa setup** in
-  LuCI, and **`boa-setup wizard`** for a device with no LuCI on it. Both ask
-  the same four questions — SSID, passphrase, country and root password — and
-  both are used over the wired LAN, which is not a choice: a device fresh from
-  a flash ships every `wifi-iface` with `option disabled '1'`, so there is no
-  access point to join, and applying takes the radios down and back up.
+- **A first-run setup wizard** in the browser: the device's own address shows
+  it until the box is set up, and it stays at **Services → boa setup** in LuCI
+  afterwards. It asks four questions — SSID, passphrase, country and root
+  password — and is used over the wired LAN, which is not a choice: a device
+  fresh from a flash ships every `wifi-iface` with `option disabled '1'`, so
+  there is no access point to join, and applying takes the radios down and back
+  up.
 
   The root password is the point of it. A factory-reset device has none at
   all — SSH accepts a blank password and LuCI shows its own "No password set!"
