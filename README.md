@@ -25,13 +25,15 @@ page: move one to another channel, take its access point down, deauthenticate or
 disassociate a device, or push it onto a different radio. Conditioning the link
 and disturbing the radio are separate axes, and a run can use either or both.
 
-It runs on **any of four targets, on equal terms**: a Raspberry Pi 5 flashed
+It runs on **any of five targets, on equal terms**: a Raspberry Pi 5 flashed
 from an image, a container on an ordinary x86_64 Linux host, packages on an
-OpenWrt device, or a Cudy TR3000 — a pocket router whose built-in radios are
-access-point parts rather than client chips, which is the one target where a
-channel move costs nothing. The same daemon binary and the same interface serve
-all four; on OpenWrt one flag, `-openwrt`, keeps OpenWrt's own configuration in
-step with what boa does — see [Four ways to run it](#four-ways-to-run-it).
+OpenWrt device, a Cudy TR3000 — a pocket router whose built-in radios are
+access-point parts rather than client chips — or OpenWrt in a virtual machine
+on an ordinary PC, with an access-point card passed through to it. On those
+last two a channel move is announced and drops nobody. The same daemon binary
+and the same interface serve all five; on OpenWrt one flag, `-openwrt`, keeps
+OpenWrt's own configuration in step with what boa does — see
+[Five ways to run it](#five-ways-to-run-it).
 
 > **If I were starting again today, I would just run boa on OpenWrt, on a
 > [Cudy TR3000](#4-a-cudy-tr3000-as-a-whole-box) or an equivalent OpenWrt
@@ -127,9 +129,9 @@ delay, jitter and loss lanes unused in this run.
 
 ## Quickstart
 
-**Four targets, none of them the reference.** Pick by the hardware you have and
+**Five targets, none of them the reference.** Pick by the hardware you have and
 by what the test needs the radios to do; each section below carries its own
-commands, because the four differ more in setup than in use.
+commands, because the five differ more in setup than in use.
 
 | Target | What it is | Choose it for |
 |---|---|---|
@@ -157,7 +159,7 @@ own section: [Reaching the box](#reaching-the-box).
 
 **Running it**
 
-- [Four ways to run it](#four-ways-to-run-it) — the Pi, the container, OpenWrt, and the one box with AP-class radios
+- [Five ways to run it](#five-ways-to-run-it) — the Pi, the container, OpenWrt, and the two with AP-class radios: the Cudy, and a card in a VM
 - [Requirements for the build and control host](#requirements-for-the-build-and-control-host) — the toolchain every target is built from
 - [Hardware](#hardware) — parts, RAM, and what the radios cannot do
 - [Build an image, for the Pi](#build-an-image-for-the-pi) · [Run it as a container](#run-it-as-a-container-on-a-linux-host) · [Run it on OpenWrt](openwrt/README.md)
@@ -1102,13 +1104,14 @@ on `:8474` lets a test set up and tear down its own faults, and its toxics —
 netem cannot produce. For proving a service survives a flaky dependency in CI,
 it is the right tool and this one is not.
 
-## Four ways to run it
+## Five ways to run it
 
 boa runs on a Raspberry Pi 5 flashed from an image, as a container on an
-ordinary x86_64 Linux host, as packages on an OpenWrt device, or on a Cudy
-TR3000 — which is an OpenWrt device too, and gets its own entry because its
-radios are not client parts. **None is the reference and none is a port.** The
-same `boad` binary and the same embedded interface serve all four. The container reuses even `radioplan`, copied out of
+ordinary x86_64 Linux host, as packages on an OpenWrt device, on a Cudy TR3000,
+or in an OpenWrt virtual machine with an access-point card passed through. The
+last two are OpenWrt devices too, and get their own entries because their radios
+are not client parts. **None is the reference and none is a port.** The
+same `boad` binary and the same embedded interface serve all five. The container reuses even `radioplan`, copied out of
 the Pi overlay unchanged, so a channel plan made on one cannot drift from a plan
 made on the other. The only code that runs on one target and not the others is
 behind `boad -openwrt`, which OpenWrt's init script passes and nothing infers:
@@ -1120,7 +1123,7 @@ itself, the hostapd configs, hotplug handling, and process supervision. The Pi
 takes them from the distribution. The container brings its own. OpenWrt
 already has all four.
 
-| | Raspberry Pi 5 | Linux container | OpenWrt (either) |
+| | Raspberry Pi 5 | Linux container | OpenWrt (targets 3, 4 and 5) |
 |---|---|---|---|
 | Install | Flash an image, once | `scripts/docker-deploy.sh <host>` | `scripts/openwrt-boa-build.sh` then `scripts/openwrt-boa-install.sh <device>`: two signed apk packages |
 | Update the daemon | `scripts/deploy.sh`, ~10 s | `scripts/docker-deploy.sh`, rebuild and restart | The same script, ~20 s, upgrading only boa's packages |
@@ -2349,7 +2352,8 @@ the radio, and it is why every 5 GHz neighbour here sits at the full 80 MHz
 rather than splitting the band.
 
 **"This box" below means the `mt7921u` adapter**, not the appliance: three of
-the four targets serve from one, and the fourth does not.
+the five targets serve from one, and the Cudy and the OpenWrt VM serve from
+access-point parts.
 
 **boa does not ask for it on the USB adapters**, and this is verifiable on the
 box rather than assumed:
@@ -4024,7 +4028,7 @@ Throughput responds to the sliders, so the controls feel live.
 ./scripts/dev.sh infinite-streaming-boa.local   # or any target's address
 ```
 
-Same hot reload, but the API calls proxy to a running box — **any of the four**,
+Same hot reload, but the API calls proxy to a running box — **any of the five**,
 since all of them serve the same API on the same port. Note this is read-write:
 moving a slider really does condition that device's traffic.
 
