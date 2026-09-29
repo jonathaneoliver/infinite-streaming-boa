@@ -2,6 +2,7 @@ package boa
 
 import (
 	"slices"
+	"strings"
 	"testing"
 )
 
@@ -56,5 +57,37 @@ func TestUCIChannelSets(t *testing.T) {
 	}
 	if _, err := uciChannelSets("radio2", 200, 20, "HE20"); err == nil {
 		t.Error("a channel in neither band must be refused, not written")
+	}
+}
+
+// NOHT is a complete htmode, not a prefix: gluing a width onto it makes
+// `NOHT20`, which netifd rejects -- and rejects silently, so the radio never
+// comes up and nothing says why. Measured on a Pi 5, 2026-09-29. #429.
+func TestUCIChannelSetsLeavesNOHTAlone(t *testing.T) {
+	for _, c := range []struct {
+		name, htmode string
+		channel      int
+		wantHtmode   string // "" means: no htmode set at all
+	}{
+		{"NOHT keeps no width", "NOHT", 36, ""},
+		{"HT takes one", "HT20", 36, "wireless.radio0.htmode=HT40"},
+		{"VHT takes one", "VHT80", 36, "wireless.radio0.htmode=VHT40"},
+		{"VHT falls back to HT at 2.4GHz", "VHT80", 6, "wireless.radio0.htmode=HT40"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			got, err := uciChannelSets("radio0", c.channel, 40, c.htmode)
+			if err != nil {
+				t.Fatalf("uciChannelSets: %v", err)
+			}
+			var ht string
+			for _, s := range got {
+				if strings.Contains(s, "htmode=") {
+					ht = s
+				}
+			}
+			if ht != c.wantHtmode {
+				t.Errorf("htmode = %q; want %q (all sets: %v)", ht, c.wantHtmode, got)
+			}
+		})
 	}
 }

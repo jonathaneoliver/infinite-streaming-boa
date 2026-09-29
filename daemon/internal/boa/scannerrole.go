@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 )
 
 /*
@@ -240,8 +241,32 @@ func (e *Engine) SetRadioRole(iface string, scanner bool) (string, error) {
 		if err := setScanPort(scan, true); err != nil {
 			return "", err
 		}
+		if err := setScanMAC(phyMAC(phy), true); err != nil {
+			return "", err
+		}
 	} else {
 		if err := uciSet("wireless." + sec + ".disabled=0"); err != nil {
+			return "", err
+		}
+		// A RADIO COMING BACK TO SERVING NEEDS A CHANNEL IT CAN USE.
+		//
+		// MEASURED on a Pi 5 2026-09-28. The onboard brcmfmac served happily on
+		// ch36, assigned by the wizard. Made a scanner, plan-channels then
+		// skipped it -- "serves no access point" -- and its channel fell back to
+		// `auto`. Brought back to serving, automatic selection chose channel 34,
+		// an 802.11j channel invalid under country=US, and the firmware refused
+		// it:
+		//
+		//	brcmf_cfg80211_start_ap: Set Channel failed: chspec=53282, -52
+		//
+		// The interface existed, uci said it should serve, and nothing beaconed.
+		// No error reached the operator. One `uci set ...channel=36` brought it
+		// up instantly. Issue #429.
+		//
+		// plan-channels cannot cover this: it works from the radios that are
+		// ALREADY serving, so a radio being brought INTO service is exactly the
+		// case it cannot see.
+		if err := ensureServingChannel(radio); err != nil {
 			return "", err
 		}
 		if err := uciCommit("wireless"); err != nil {
@@ -255,8 +280,79 @@ func (e *Engine) SetRadioRole(iface string, scanner bool) (string, error) {
 		if err := setScanPort(scan, false); err != nil {
 			return "", err
 		}
+		if err := setScanMAC(phyMAC(phy), false); err != nil {
+			return "", err
+		}
+		// COMMIT BEFORE THE SLOW PART, so there is never a window where uci
+		// holds staged-but-uncommitted changes. Waiting for an access point
+		// takes seconds, and this daemon can be killed during them -- the role
+		// change ends by spawning a detached restart, and a second request
+		// arriving while that is pending dies with it. Observed on the Pi,
+		// 2026-09-29: the wireless config was committed as serving while the
+		// boa deletions were still staged, so /etc/config/boa went on naming
+		// the radio a scanner and it reverted on the next read. Committing
+		// here means the worst case is a config that is merely WRONG, not one
+		// that disagrees with itself.
+		if err := uciCommit("boa"); err != nil {
+			return "", err
+		}
 		if out, err := exec.Command("wifi", "reload").CombinedOutput(); err != nil {
 			return "", fmt.Errorf("wifi reload: %v: %s", err, strings.TrimSpace(string(out)))
+		}
+		// SAY SO WHEN IT DOES NOT COME UP.
+		//
+		// `wifi reload` succeeds whether or not the access point starts, so a
+		// radio that the driver refuses looks identical to one that worked:
+		// the netdev is there, uci says it serves, and nothing beacons.
+		// MEASURED on a Pi 5 2026-09-28, where an illegal channel left exactly
+		// that state and the operator had no way to know. Issue #429.
+		if !apCameUpOn(phy) {
+			// PUT IT BACK, because a half-applied change is worse than a
+			// refused one. Reporting the failure and returning here left the
+			// wireless config committed as SERVING while the boa config's
+			// deletions were still staged, so /etc/config/boa went on naming
+			// this radio a scanner: the box had a radio that served nobody,
+			// listened to nobody, and came back as a scanner on the next read.
+			// Observed on the Pi, 2026-09-29, by an operator who pressed the
+			// button and watched the row never populate and then revert.
+			band, ch := uciGet("wireless."+radio+".band"), uciGet("wireless."+radio+".channel")
+			_ = uciSet("wireless." + sec + ".disabled=1")
+			_ = uciCommit("wireless")
+			_ = setScanPort(scan, true)
+			_ = setScanMAC(phyMAC(phy), true)
+			_ = uciCommit("boa")
+			_ = exec.Command("wifi", "reload").Run()
+			if !LinkExists(scan) {
+				_ = exec.Command("iw", "phy", phy, "interface", "add", scan, "type", "managed").Run()
+			}
+			_ = exec.Command("ip", "link", "set", scan, "up").Run()
+			return "", fmt.Errorf("%s was set to serve but no access point came up on %s, "+
+				"so it has been left listening: the driver may have refused its channel "+
+				"(band %s, channel %s) -- check `logread` for start_ap failures",
+				iface, phy, band, ch)
+		}
+		// NOW GIVE IT A CHANNEL THAT DOES NOT CLASH.
+		//
+		// ensureServingChannel above only rescues a radio with no usable
+		// channel at all, and it does that from the bottom of the band because
+		// it cannot see the other radios. On a box already serving, that is a
+		// collision: MEASURED 2026-09-29, a radio promoted here came up on 36
+		// beside one on 40 at 80MHz -- the same 36-48 block, completely
+		// overlapping -- and the operator had to move it by hand.
+		//
+		// plan-channels is what knows the allocation, and it works from the
+		// radios that are SERVING, so it has to run after the access point is
+		// actually up. That is why it is here and not beside
+		// ensureServingChannel. It reloads Wi-Fi and associated clients
+		// reconnect, which is the right trade at the moment a radio is being
+		// brought into service: the alternative is leaving two radios on one
+		// channel until somebody notices.
+		if out, err := exec.Command("/usr/sbin/boa-setup", "plan-channels").CombinedOutput(); err != nil {
+			// Not fatal: the radio IS serving, which is what was asked. A
+			// clash is worth saying out loud rather than failing over.
+			e.logEvent(EventWarning, iface, "",
+				"%s is serving, but planning its channel failed, so it may share one "+
+					"with another radio: %v: %s", iface, err, strings.TrimSpace(string(out)))
 		}
 	}
 	if err := uciCommit("boa"); err != nil {
@@ -318,6 +414,156 @@ func setScanPort(port string, want bool) error {
 		return uciDelete("boa.main.scan")
 	}
 	return uciSet("boa.main.scan=" + strings.Join(next, " "))
+}
+
+// apCameUpOn waits briefly for an access point to actually start on a phy.
+//
+// ASKED OF THE PHY, NOT AN INTERFACE NAME. The first version of this checked
+// the interface the REQUEST named, which on the way back from scanner is the
+// listen-only interface being deleted -- so it asked after something that was
+// supposed to be gone, and would have named the wrong thing even when it
+// fired. netifd also picks the AP's name itself, so the only thing this code
+// can be sure of is which radio it asked to serve.
+//
+// Carrier is the signal: an AP netdev exists as soon as netifd makes it, and
+// only gains carrier once hostapd is beaconing on it. Measured on the Pi, a
+// refused channel leaves the interface UP with NO-CARRIER indefinitely.
+//
+// The wait is generous because a radio that surveys before it settles takes a
+// few seconds, and being wrong in the impatient direction would report a
+// working radio as broken.
+func apCameUpOn(phy string) bool {
+	for i := 0; i < 20; i++ {
+		if phyHasCarrier(phy) {
+			return true
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+	return false
+}
+
+// phyHasCarrier reports whether any netdev on a phy is carrying -- which for
+// an AP means beaconing.
+func phyHasCarrier(phy string) bool {
+	ents, err := os.ReadDir(filepath.Join("/sys/class/ieee80211", phy, "device", "net"))
+	if err != nil {
+		return false
+	}
+	for _, ent := range ents {
+		b, err := os.ReadFile(filepath.Join("/sys/class/net", ent.Name(), "carrier"))
+		if err == nil && strings.TrimSpace(string(b)) == "1" {
+			return true
+		}
+	}
+	return false
+}
+
+// ensureServingChannel gives a radio an explicit channel when it has none it
+// can use, so an access point does not depend on automatic selection choosing
+// legally. It leaves a channel that is already set alone -- a deliberate one
+// is not ours to overwrite -- and only fills in `auto`, empty, or a channel
+// from the wrong band.
+//
+// The defaults are the bottom of each band rather than anything clever:
+// plan-channels redistributes once the radio is up and can be seen serving,
+// and its job is to avoid collisions, not to rescue an illegal channel.
+func ensureServingChannel(radio string) error {
+	want, need := servingChannelFor(
+		uciGet("wireless."+radio+".band"),
+		uciGet("wireless."+radio+".channel"))
+	if !need {
+		return nil
+	}
+	return uciSet("wireless." + radio + ".channel=" + strconv.Itoa(want))
+}
+
+// servingChannelFor is that decision as a value, so the rule can be tested
+// without a box to run uci on -- as scanPortsAfter is.
+//
+// Reports the channel to write and whether one is needed at all. A channel
+// already set and legal for the band is left alone; a deliberate choice is not
+// ours to overwrite.
+//
+// IT CHECKS THE BAND, NOT THE REGULATORY DOMAIN, and the difference is the bug
+// that prompted it: channel 34 is a perfectly real 5GHz channel (5170 MHz,
+// 802.11j) which this leaves alone, and which the Pi's firmware refused under
+// country=US. Encoding regulatory rules here would be guessing at a table the
+// kernel already holds. What this removes is the `auto` that let an illegal
+// channel be CHOSEN; what catches one anyway is apCameUp, which makes the
+// failure loud instead of silent.
+func servingChannelFor(band, channel string) (int, bool) {
+	var want int
+	switch band {
+	case "2g":
+		want = 6
+	case "5g":
+		want = 36
+	default:
+		// 6g, or a band this does not know. Leave it: guessing a channel for a
+		// band whose rules are not encoded here is how channel 34 happened.
+		return 0, false
+	}
+
+	ch := strings.TrimSpace(channel)
+	if ch != "" && ch != "auto" && ch != "0" {
+		if n, err := strconv.Atoi(ch); err == nil {
+			freq := freqForChannel(n)
+			if (band == "2g" && freq >= 2400 && freq < 2500) ||
+				(band == "5g" && freq >= 5000 && freq < 5900) {
+				return 0, false // already usable
+			}
+			// A channel from the wrong band, which a reload refuses. Seen on
+			// this Pi: band '5g' with channel '1'.
+		}
+	}
+	return want, true
+}
+
+/*
+ * AND THE SAME LIST AGAIN, AS HARDWARE.
+ *
+ * boa.main.scan holds interface NAMES, and phy indices renumber whenever USB
+ * radios come and go: MEASURED on a Pi 5 2026-09-28, one reboot moved the
+ * onboard brcmfmac from phy0 to phy1 and gave phy0 to a USB mt7921u, so a
+ * saved `phy0-scan` came back meaning the DONGLE. boa then built its
+ * listen-only interface on a radio that was supposed to serve, and no access
+ * point came up at all. Issue #387.
+ *
+ * So the same set is kept a second time as MACs, which are the hardware, and
+ * /etc/init.d/boa re-derives the names from them before boad is started -- see
+ * /lib/boa/radio.sh. A SET rather than a list parallel to boa.main.scan: two
+ * lists that have to stay aligned by index is a bug waiting for the first
+ * radio that fails to resolve.
+ *
+ * This was half-shipped at first: boa-setup and the hotplug hook wrote the MAC
+ * and this did not, so a scanner set from the wizard survived a renumber and
+ * one set from the UI button did not, with nothing to tell an operator which
+ * they had. Issue #428.
+ */
+
+// phyMAC is a phy's permanent address, lower case, or "" when it cannot be
+// read -- in which case the name-only behaviour is what is left, which is
+// what this box did before the MAC was recorded at all.
+func phyMAC(phy string) string {
+	b, err := os.ReadFile(filepath.Join("/sys/class/ieee80211", phy, "macaddress"))
+	if err != nil {
+		return ""
+	}
+	return strings.ToLower(strings.TrimSpace(string(b)))
+}
+
+// setScanMAC adds or removes one MAC in boa.main.scan_mac, the same edit
+// setScanPort makes to the names.
+func setScanMAC(mac string, want bool) error {
+	if mac == "" {
+		return nil
+	}
+	have := SplitPorts(uciGet("boa.main.scan_mac"))
+	next := scanPortsAfter(have, mac, want)
+	if len(next) == 0 {
+		return uciDelete("boa.main.scan_mac")
+	}
+	return uciSet("boa.main.scan_mac=" + strings.Join(next, " "))
 }
 
 // scanPortsAfter is that edit as a value, so the rule can be tested without a

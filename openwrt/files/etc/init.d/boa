@@ -48,6 +48,25 @@ start_service() {
 	config_get wlan   main wlan ''
 	config_get lan    main lan ''
 	config_get scan   main scan ''
+	# RESOLVE THE SCANNER AGAINST THE HARDWARE, NOT THE NAME IT HAD LAST TIME.
+	#
+	# boa.main.scan is a phy NAME, and phy names move: MEASURED on a Pi 5
+	# 2026-09-28, one reboot swapped the onboard brcmfmac and a USB mt7921u
+	# between phy0 and phy1, so a scan setting of 'phy0-scan' silently became
+	# an instruction to stop the DONGLE serving and listen on it instead. No
+	# access point came up at all. Issue #387.
+	#
+	# boa.main.scan_mac records the radio itself, so this re-points the name at
+	# it before boad is told anything. Costs one sysfs read per phy, and only
+	# rewrites uci when the answer actually changed.
+	if [ -r /lib/boa/radio.sh ] && [ -n "$(uci -q get boa.main.scan_mac)" ]; then
+		. /lib/boa/radio.sh
+		resolved=$(boa_resolve_scan) && [ -n "$resolved" ] && {
+			[ "$resolved" = "$scan" ] ||
+				logger -t boa "scan interface follows the hardware: $scan -> $resolved"
+			scan=$resolved
+		}
+	fi
 	config_get state  main state '/etc/infinite-streaming-boa/policies.json'
 	config_get_bool iperf main iperf 1
 	config_get tls_addr main tls_addr ':8443'

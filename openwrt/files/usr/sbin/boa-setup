@@ -1551,6 +1551,21 @@ cmd_apply() {
 	# to prevent. The same wait the count uses, for the same reason.
 	verify_serving >/dev/null || true
 
+	# THE SCANNER, BEFORE THE CHANNELS.
+	#
+	# A scanner serves nobody and sweeps, so the radios that do serve never get
+	# dragged off channel -- scannerrole.go measured the cost of the
+	# alternative, and so did this box: a client on the Pi's onboard radio
+	# while it swept both bands got 51 Mbit/s against 442 on a dongle that only
+	# served, 2026-09-28.
+	#
+	# Before plan-channels for a second reason: a radio that has stopped
+	# serving must not consume one of the two usable 5 GHz channels. With three
+	# radios and only 36 and 149 to give out, the planner warned it had none
+	# left and left one on `auto`, which landed it on 40 -- an 80 MHz block
+	# sitting on top of 36. Measured the same day.
+	set_scanner_radio
+
 	echo
 	say "apply: planning channels"
 	cmd_plan_channels
@@ -1925,6 +1940,48 @@ serves_ap_enabled() {
 		return 0
 	done
 	return 1
+}
+
+# Give the box a scanner, if it has a radio that should be one.
+#
+# The rule lives in /lib/boa/radio.sh so the hotplug hook applies the same one
+# to a radio plugged in later. It is deliberately narrow -- brcmfmac only, and
+# only when something else can serve -- because the tempting general rule,
+# "the radio that is not on USB scans", retires the BEST radio on two of this
+# repository's other targets. See boa_scanner_phy.
+#
+# RECORDED AGAINST THE MAC. boa.main.scan is a phy name and phy names move:
+# one reboot on a Pi 5 swapped the onboard radio and a dongle between phy0 and
+# phy1, and the saved name then meant the wrong hardware. #387.
+set_scanner_radio() {
+	local phy radio mac
+
+	[ -r /lib/boa/radio.sh ] || return 0
+	# shellcheck source=/dev/null
+	. /lib/boa/radio.sh
+
+	phy=$(boa_scanner_phy) || {
+		say "apply: no radio to spare for scanning; every radio serves"
+		return 0
+	}
+	radio=$(boa_radio_for_phy "$phy") || {
+		say "apply: $phy has no wifi-device in uci; leaving it alone"
+		return 0
+	}
+	mac=$(boa_phy_mac "$phy")
+
+	uci set "wireless.default_$radio.disabled=1"
+	uci commit wireless
+	# Additive, because a box can have several scanners and `uci set` would
+	# drop the others -- issue #351 found exactly that.
+	boa_scan_add "$phy"
+	printf '  %-5s %s (%s): listens, does not serve -- the radios that serve keep their channel\n' \
+		"OK" "$radio" "$phy"
+	say "apply: scanner is $phy ($radio, $mac)"
+	# The access point has to go before the listening interface can hold its
+	# own channel: both can exist on these phys, but they share ONE channel.
+	# scannerrole.go measured that.
+	wifi reload >/dev/null 2>&1
 }
 
 cmd_plan_channels() {

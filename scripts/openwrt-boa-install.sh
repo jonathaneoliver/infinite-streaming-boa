@@ -110,7 +110,17 @@ done
 # `apk upgrade` from the feed did nothing. Adding them again unversioned only
 # rewrites world -- it upgrades nothing -- so the feed can move them on.
 ssh "$TARGET" "apk add --repository /tmp/boa-repo/packages.adb boa=$V luci-app-boa=$V && apk add boa luci-app-boa >/dev/null"
-log "Installed. LuCI: Services -> infinite-streaming-boa"
+
+# RESTART, BECAUSE apk WILL NOT. A first install runs the package's
+# post-install, which starts the service; an UPGRADE replaces the files and
+# leaves the running daemon alone. So the binary on disk is the new one, the
+# version it prints is the new one, and the process answering requests is the
+# old one -- which cost an hour on 2026-09-29 debugging a fix that was
+# deployed and not running, with md5sum and --version both agreeing it was
+# there. Nothing about the box says otherwise; only the absence of a restart
+# line in the log does.
+ssh "$TARGET" '/etc/init.d/boa enabled && /etc/init.d/boa restart >/dev/null 2>&1' || true
+log "Installed and restarted. LuCI: Services -> infinite-streaming-boa"
 
 # HOLD THE WIZARD OPEN. Installing arms an unattended first run that brings the
 # box up by itself after about two minutes, with a generated SSID and no root

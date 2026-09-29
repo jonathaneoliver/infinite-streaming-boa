@@ -1,0 +1,99 @@
+# A radio appeared. Give it the role this box wants, rather than the one
+# OpenWrt's defaults give it.
+#
+# WHAT OPENWRT LEAVES BEHIND, measured on a Raspberry Pi 5 2026-09-28 when a
+# second mt7921u was plugged into a running box. Its own wifi-detect created
+# the uci section, and the section it created was unusable:
+#
+#	wireless.radio2.band='6g'          # mt7921u will not run an AP there
+#	wireless.default_radio2.ssid='OpenWrt'
+#	wireless.default_radio2.encryption='owe'
+#	wireless.default_radio2.disabled='1'
+#
+# So the radio sat on the bus doing nothing, with no netdev, and the only sign
+# was that it was missing from the interface list. Setting the band alone did
+# not help -- the wifi-iface was still disabled and still advertising a
+# different network. This hook finishes the job: it copies the settings of a
+# radio that IS serving, so a new dongle joins the network the box already
+# runs, and hands the channel decision to plan-channels.
+#
+# IT NEVER INVENTS A NETWORK. With nothing serving to copy from there is
+# nothing to join, and a box that is not set up yet belongs to the wizard.
+# This hook stays out of the way until then.
+
+[ "$ACTION" = add ] || exit 0
+[ -n "$PHYNAME" ] || exit 0
+
+. /lib/functions.sh
+. /lib/boa/radio.sh
+
+say() { logger -t boa-radio "$*"; }
+
+# OpenWrt's own wifi-detect has to create the uci section before there is
+# anything to configure. It runs from this same hotplug directory, so the
+# ordering between them is not guaranteed -- wait for the section rather than
+# assume it.
+radio=
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+	radio=$(boa_radio_for_phy "$PHYNAME") && break
+	sleep 1
+done
+[ -n "$radio" ] || { say "$PHYNAME: uci has no wifi-device for it after 10s; leaving it alone"; exit 0; }
+
+# THE SCANNER. Recorded against the MAC, not the phy name, so a renumbering
+# across a reboot cannot point it at different hardware -- which is exactly
+# what happened before boa_resolve_scan existed.
+scanner=$(boa_scanner_phy || true)
+if [ -n "$scanner" ] && [ "$scanner" = "$PHYNAME" ]; then
+	uci set "wireless.default_$radio.disabled=1"
+	uci commit wireless
+	# Additive: a box can have several scanners, and `uci set` would drop the
+	# others. See boa_scan_add and issue #351.
+	boa_scan_add "$PHYNAME"
+	say "$PHYNAME ($radio): scanner -- access point off, boa will listen on $PHYNAME-scan"
+	wifi reload >/dev/null 2>&1
+	/etc/init.d/boa restart >/dev/null 2>&1
+	exit 0
+fi
+
+# A SERVING RADIO. Copy from one that is already serving this box's network.
+src=
+for r in $(uci show wireless 2>/dev/null | sed -n 's/^wireless\.\(radio[0-9]*\)=wifi-device/\1/p'); do
+	[ "$r" = "$radio" ] && continue
+	[ "$(uci -q get "wireless.default_$r.disabled")" = 1 ] && continue
+	[ -n "$(uci -q get "wireless.default_$r.ssid")" ] || continue
+	src=$r
+	break
+done
+[ -n "$src" ] || { say "$PHYNAME ($radio): nothing is serving yet; leaving it for the wizard"; exit 0; }
+
+# 6 GHz IS THE TRAP. OpenWrt defaults a new mt7921u to 6g, where its driver
+# refuses to run an access point: the config looks right, wifi reload reports
+# nothing, and no netdev ever appears. boa-setup's apply already corrects this
+# for radios it knows about; a hotplugged one never went through it.
+case "$(uci -q get "wireless.$radio.band")" in
+6g) uci set "wireless.$radio.band=5g"; uci set "wireless.$radio.channel=auto"
+    say "$PHYNAME ($radio): moved off 6 GHz, where this driver will not serve" ;;
+esac
+
+uci set "wireless.default_$radio.ssid=$(uci -q get "wireless.default_$src.ssid")"
+uci set "wireless.default_$radio.encryption=$(uci -q get "wireless.default_$src.encryption")"
+key=$(uci -q get "wireless.default_$src.key")
+[ -n "$key" ] && uci set "wireless.default_$radio.key=$key"
+uci set "wireless.default_$radio.network=$(uci -q get "wireless.default_$src.network")"
+uci set "wireless.default_$radio.mode=ap"
+uci set "wireless.default_$radio.disabled=0"
+country=$(uci -q get "wireless.$src.country")
+[ -n "$country" ] && uci set "wireless.$radio.country=$country"
+uci commit wireless
+say "$PHYNAME ($radio): serving, copied from $src"
+
+wifi reload >/dev/null 2>&1
+sleep 5
+# Channels last, and only once it is actually serving: plan-channels works from
+# the radios that have an access point up, not from what uci hopes for.
+/usr/sbin/boa-setup plan-channels >/dev/null 2>&1 ||
+	say "$PHYNAME ($radio): plan-channels failed; it may share a channel"
+# boad reads its ports once at start (#366), so a radio added later is
+# invisible to it until this.
+/etc/init.d/boa restart >/dev/null 2>&1
