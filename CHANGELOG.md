@@ -13,6 +13,19 @@ deliberate and documented so they are not mistaken for defects — see
 
 ## [Unreleased]
 
+### Added
+
+- **A wired USB adapter joins the bridge when it is plugged in**, on OpenWrt.
+  A new hotplug hook runs `boa-setup bridge-port`, which adds the adapter to
+  `br-lan` in uci once; netifd then bridges it by itself on every later replug.
+  Before this, an RTL8156 on the Cudy got a driver, linked at 2500 Mbps and
+  still sat outside the bridge, so boa never listed it and could not shape a
+  client behind it. An adapter that is not always plugged in costs nothing: a
+  listed port that is absent leaves the bridge up. Only the wired adapters boa
+  knows are touched, and never a port uci has already given a role, such as a
+  Pi's USB WAN. `boa-setup check` now fails a known adapter that is outside
+  the bridge, and names the fix.
+
 ### Changed
 
 - **`boa-setup check` treats "no country" as a warning, not a failure**

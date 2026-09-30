@@ -16,6 +16,9 @@
 #   boa-setup install-drivers
 #                        install the kmod packages for USB adapters that have
 #                        no driver -- what `check` describes, done.
+#   boa-setup bridge-port <ifname>
+#                        add a wired USB adapter to br-lan for good, so it
+#                        rejoins on every replug. The net hotplug hook runs it.
 #
 # `check` changes nothing -- no uci set, no reload, no restart -- so it is safe
 # to run on a router carrying traffic. It exits 1 if anything failed.
@@ -437,6 +440,21 @@ check_bridge() {
 	fi
 	ports="$(ls /sys/class/net/br-lan/brif | tr '\n' ' ')"
 	note "br-lan ports: $ports"
+	# A wired adapter with a driver and no bridge: present, linked, and
+	# invisible to boa. Asked of the uci list, not the live bridge, because a
+	# port added by hand with `ip link` is gone after the next replug.
+	local sec name
+	sec="$(bridge_section)"
+	for p in /sys/class/net/*; do
+		p="${p##*/}"
+		name="$(known_usb_eth "$p")" || continue
+		has_other_role "$p" "$sec" && continue
+		case " $(uci -q get "network.$sec.ports") " in
+			*" $p "*) ok "$p ($name) is a br-lan port" ;;
+			*) fail "$p ($name) is not a br-lan port, so boa cannot see or shape its clients"
+			   fix "boa-setup bridge-port $p" ;;
+		esac
+	done
 
 	[ "$(uci -q get network.lan.proto)" = dhcp ] && ok "lan takes its address by DHCP from the upstream router" || {
 		fail "lan is '$(uci -q get network.lan.proto)', not dhcp: the device is routing, not bridging"
@@ -686,6 +704,109 @@ cmd_install_drivers() {
 	echo "Installed, and every adapter boa recognises now has a driver."
 	echo "Check with: boa-setup check"
 	return 0
+}
+
+# --- bridge-port -------------------------------------------------------------
+#
+# A wired USB adapter, plugged in, joins br-lan -- and keeps joining it on every
+# replug. Called by /etc/hotplug.d/net/20-boa-port, and by hand.
+#
+# A DRIVER IS NOT ENOUGH. Measured on the Cudy TR3000, OpenWrt 25.12.5,
+# 2026-09-30, with an RTL8156: install-drivers gave it a driver and a netdev,
+# linked at 2500, and it sat outside br-lan -- so boa never listed it, and a
+# client behind it could be neither seen nor shaped. A replug changed nothing.
+#
+# THE UCI LIST IS THE WHOLE FIX, and it is only needed once. Measured on the
+# same box, replugging by writing 0 then 1 to the USB device's `authorized`:
+#
+#	eth2 in network.@device[].ports, replugged: netifd bridged it by itself
+#	eth2 in the list, unplugged, network reloaded: br-lan and lan stayed up
+#	two network reloads under a 0.2 s ping from a LAN client: 0 of 250 lost
+#
+# So a port that is listed and absent costs nothing, which is what an adapter
+# that is not always plugged in needs, and netifd handles every plug after the
+# first. This only has to put it in the list.
+#
+# KNOWN WIRED ADAPTERS ONLY, from the same table install-drivers uses. A phone
+# plugged in to tether and a USB LTE modem are also USB network devices, and
+# bridging either would hand the LAN to a WAN. Anything else is left alone and
+# said so.
+
+# The USB id of the device behind a network interface; fails if it is not USB.
+# The interface hangs off 2-1:1.0, and the id lives one level up on 2-1.
+usb_id_of() {
+	local d
+	d="$(readlink -f "/sys/class/net/$1/device" 2>/dev/null)" || return 1
+	d="${d%/*}"
+	[ -f "$d/idVendor" ] || return 1
+	echo "$(cat "$d/idVendor"):$(cat "$d/idProduct")"
+}
+
+# The uci section of the br-lan device. @device[0] on a stock image, but that
+# is an accident of order, not a promise.
+bridge_section() {
+	uci -q show network | sed -n "s/^network\.\([^.]*\)\.name='br-lan'$/\1/p" | head -1
+}
+
+# A known wired USB adapter's name for $1, or fails.
+known_usb_eth() {
+	local id info
+	id="$(usb_id_of "$1")" || return 1
+	info="$(known_usb "$id")"
+	case "$info" in
+		eth\ *) echo "${info#*|}" ;;
+		*)      return 1 ;;
+	esac
+}
+
+# Whether uci gives $1 a job outside the br-lan section $2.
+#
+# A PORT UCI HAS ALREADY GIVEN A JOB IS NOT OURS. On a Pi the WAN IS a USB
+# ethernet adapter -- openwrt/README.md cables the router to one and sets
+# network.wan.device to it -- until convert folds it into the bridge. Bridging
+# it would put the uplink inside the LAN it routes for, at boot, on every Pi.
+# So any other mention -- an interface's device, another bridge's ports --
+# means someone decided.
+has_other_role() {
+	# -F: the section is `@device[0]`, and as a regex its brackets are a class.
+	uci -q show network | grep -vF "network.$2." |
+		grep -qE "\.(device|ifname|ports)=(.* )?'?$1'?( |$)"
+}
+
+cmd_bridge_port() {
+	local ifname="${1:-}" dry="" name sec
+	[ "${2:-}" = --dry-run ] && dry=1
+	[ -n "$ifname" ] || { echo "usage: boa-setup bridge-port <ifname> [--dry-run]" >&2; return 2; }
+	[ -e "/sys/class/net/$ifname" ] || { echo "$ifname: no such interface" >&2; return 1; }
+	if is_wifi "$ifname"; then
+		echo "$ifname: a radio, which joins br-lan through its wireless config; left alone"
+		return 0
+	fi
+	name="$(known_usb_eth "$ifname")" || {
+		echo "$ifname: not a wired USB adapter boa knows; left alone"
+		return 0
+	}
+	sec="$(bridge_section)"
+	[ -n "$sec" ] || { echo "$ifname ($name): there is no br-lan in /etc/config/network to join" >&2; return 1; }
+	case " $(uci -q get "network.$sec.ports") " in
+		*" $ifname "*) echo "$ifname ($name): already a br-lan port"; return 0 ;;
+	esac
+	if has_other_role "$ifname" "$sec"; then
+		echo "$ifname ($name): already has a role in /etc/config/network; left alone"
+		return 0
+	fi
+	if [ -n "$dry" ]; then
+		echo "$ifname ($name): would add to br-lan (uci add_list network.$sec.ports=$ifname)"
+		echo "--dry-run: nothing changed."
+		return 0
+	fi
+	uci add_list "network.$sec.ports=$ifname" && uci commit network ||
+		{ echo "$ifname ($name): could not add it to network.$sec.ports" >&2; return 1; }
+	# The list is committed either way; a reload that fails here -- netifd not
+	# up yet, at boot -- is picked up when netifd starts and reads it.
+	ubus call network reload ||
+		echo "$ifname ($name): added, but the network reload failed; it joins when netifd next reads its config" >&2
+	echo "$ifname ($name): added to br-lan; it rejoins by itself on every replug"
 }
 
 # --- install-wpad ------------------------------------------------------------
@@ -2560,6 +2681,7 @@ case "${1:-}" in
 	convert) cmd_convert "${2:-}" ;;
 	plan-channels) cmd_plan_channels "${2:-}" ;;
 	install-drivers) shift; cmd_install_drivers "$@" ;;
+	bridge-port)     shift; cmd_bridge_port "$@" ;;
 	install-wpad)    shift; cmd_install_wpad "$@" ;;
 	install-mdns)    shift; cmd_install_mdns "$@" ;;
 	apply)           shift; cmd_apply "$@" ;;

@@ -286,7 +286,49 @@ adapter that is still without a driver, and exits 1. A reboot fixes it, and so
 does reloading the module.
 
 This is the command for the x86 image, which ships no USB Wi-Fi or USB
-ethernet drivers (see the top of this file).
+ethernet drivers (see the top of this file). The Cudy's image has none either:
+an RTL8156 in its USB 3 port needs `kmod-usb-net-rtl8152`, and apk brings
+`r8152-firmware` with it.
+
+### `boa-setup bridge-port <ifname>`
+
+```sh
+boa-setup bridge-port eth2 --dry-run
+boa-setup bridge-port eth2
+```
+
+**You should not need to run this.** A hotplug hook,
+`/etc/hotplug.d/net/20-boa-port`, runs it whenever a network interface appears,
+so a wired USB adapter joins `br-lan` when it is plugged in. That includes the
+moment `install-drivers` gives one a driver. The command exists for a box where
+the hook could not act, and `boa-setup check` names it when a known adapter is
+outside the bridge.
+
+A driver alone is not enough. On the Cudy, an RTL8156 with its driver linked
+at 2500 Mbps and still sat outside `br-lan`, so boa never listed it and could
+not see or shape a client behind it. Replugging it changed nothing.
+
+**It adds the port to `br-lan` in uci, once.** After that, netifd bridges the
+adapter by itself on every replug. This was measured on the Cudy TR3000
+(OpenWrt 25.12.5) on 2026-09-30, replugging through the USB device's
+`authorized` file:
+
+| With the port in `br-lan`'s list | Result |
+|---|---|
+| The adapter is replugged | netifd bridges it with no hook and no reload |
+| The adapter is absent and the network is reloaded | `br-lan` and `lan` stay up |
+| Two network reloads under a 0.2 s ping from a LAN client | 0 of 250 lost |
+
+**An adapter that is not always plugged in costs nothing.** A listed port that
+is absent is ignored, and unplugging it needs nothing from boa.
+
+It touches **only wired USB adapters boa knows**, the RTL8156, RTL8153 and
+RTL8152 from the `install-drivers` table. A phone plugged in to tether and a
+USB LTE modem are USB network devices too, and bridging either would hand the
+LAN to a WAN. **It also leaves alone a port uci has already given a role.** On
+a Pi, a USB adapter is the WAN until `convert`
+([below](#on-a-raspberry-pi-give-it-a-wan-first)), and bridging it would put
+the uplink inside the LAN it routes for.
 
 ### `boa-setup install-mdns`
 

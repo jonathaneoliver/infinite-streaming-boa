@@ -1,0 +1,39 @@
+# A network interface appeared. If it is a wired USB adapter boa knows, put it
+# in br-lan -- once, in uci, after which netifd bridges it on every replug by
+# itself. boa-setup bridge-port holds the rules and the measurements; this only
+# decides whether the event is worth handing to it.
+#
+# WHAT A NET EVENT CARRIES, logged from a real replug of an RTL8156 on the Cudy
+# TR3000, OpenWrt 25.12.5, 2026-09-30 -- checked rather than assumed, because
+# the ieee80211 hook beside this one spent its whole life reading a variable
+# its events never set:
+#
+#	ACTION=add  SUBSYSTEM=net  INTERFACE=eth2  DEVICENAME=eth2  IFINDEX=10
+#	DEVPATH=/devices/platform/soc/11200000.usb/usb2/2-1/2-1:1.0/net/eth2
+#
+# AN ADAPTER THAT IS NOT ALWAYS THERE costs nothing: a listed port that is
+# absent leaves br-lan and lan up through a network reload, and unplugging it
+# needs nothing from here. Only `add` is handled.
+
+[ "$ACTION" = add ] || exit 0
+[ -n "$INTERFACE" ] || exit 0
+
+# Cheap filters first: this runs for every interface the box creates, the
+# bridge and every access point included, and almost none of them are USB.
+case "$DEVPATH" in
+	*/usb*) ;;
+	*) exit 0 ;;
+esac
+# A USB radio's netdev is on the USB bus too; the ieee80211 hook owns those.
+[ -e "/sys/class/net/$INTERFACE/phy80211" ] && exit 0
+
+# Two adapters plugged at once would race on the same uci list.
+lock /var/lock/boa-port
+out=$(/usr/sbin/boa-setup bridge-port "$INTERFACE" 2>&1)
+rc=$?
+lock -u /var/lock/boa-port
+
+# Logged every time, because it only reaches here for a USB network device,
+# which is rare -- and a hook that does nothing quietly is how the one beside
+# this went unnoticed.
+logger -t boa-port "$out (rc=$rc)"
