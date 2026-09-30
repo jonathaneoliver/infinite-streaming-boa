@@ -1,6 +1,7 @@
 package boa
 
 import (
+	"errors"
 	"fmt"
 	"os/exec"
 	"strconv"
@@ -258,6 +259,23 @@ func radioServes(iface string, freqMHz int) (serves, known bool, bands []string)
 		bands = append(bands, "5GHz")
 	}
 	return ok[freqMHz], true, bands
+}
+
+// errChannelNotOnRadio marks a move refused because the radio does not have the
+// channel. It is an argument this radio will never accept, not hostapd
+// declining one it might have, so the API answers it 400 rather than 502.
+var errChannelNotOnRadio = errors.New("not a channel this radio has")
+
+// bandList is a radio's bands for a sentence: "2.4GHz only", "2.4GHz and 5GHz".
+func bandList(bands []string) string {
+	switch len(bands) {
+	case 0:
+		return "no channel at all"
+	case 1:
+		return bands[0] + " only"
+	default:
+		return strings.Join(bands, " and ")
+	}
 }
 
 // scanPlanFor is scanPlan for one interface's phy.

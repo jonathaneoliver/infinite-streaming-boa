@@ -1448,23 +1448,6 @@ func (e *Engine) moveChannelLocked(iface string, channel, widthMHz int, mode str
 	return done, nil
 }
 
-// errChannelNotOnRadio marks a move refused because the radio does not have the
-// channel. It is an argument this radio will never accept, not hostapd
-// declining one it might have, so the API answers it 400 rather than 502.
-var errChannelNotOnRadio = errors.New("not a channel this radio has")
-
-// bandList is a radio's bands for a sentence: "2.4GHz only", "2.4GHz and 5GHz".
-func bandList(bands []string) string {
-	switch len(bands) {
-	case 0:
-		return "no channel at all"
-	case 1:
-		return bands[0] + " only"
-	default:
-		return strings.Join(bands, " and ")
-	}
-}
-
 // learnCSARefusal decides whether a failed announcement condemns the DRIVER, or
 // says only that this particular move was not announceable.
 //
