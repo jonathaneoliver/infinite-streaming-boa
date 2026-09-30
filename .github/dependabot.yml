@@ -1,0 +1,41 @@
+version: 2
+
+# Weekly update PRs, landed through the same squash-merge flow as everything
+# else -- checks.yml runs on each one, so a bump that breaks the build or the
+# typecheck says so on its own PR.
+#
+# Two ecosystems, because only two have anything to bump:
+#
+#   - gomod is absent on purpose: daemon/go.mod requires nothing, so there is no
+#     dependency to update and no go.sum.
+#   - docker is absent on purpose: both Dockerfiles use debian:trixie-slim, a
+#     tag that already tracks the release. Dependabot bumps tags, and would
+#     only ever propose moving to the next Debian codename -- a decision, not
+#     an update.
+
+updates:
+  # Actions used by .github/workflows/*.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    commit-message:
+      prefix: "chore(ci)"
+    groups:
+      # One PR for the week's action bumps rather than one per action.
+      actions:
+        patterns: ["*"]
+
+  # The Vue interface.
+  - package-ecosystem: "npm"
+    directory: "/ui"
+    schedule:
+      interval: "weekly"
+    commit-message:
+      prefix: "chore(deps)"
+      include: "scope"
+    groups:
+      # Minor and patch bumps together; a major gets a PR of its own, because
+      # that is the one that can change the build (vue-tsc, vite).
+      ui-minor:
+        update-types: ["minor", "patch"]

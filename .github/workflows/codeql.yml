@@ -1,0 +1,65 @@
+# Static security analysis, results in the repository's Security tab.
+#
+# Worth it here more than in most repositories: the daemon runs as root on the
+# box and turns HTTP requests into tc, iw, uci and hostapd commands, which is
+# exactly the request-to-command path CodeQL's injection queries trace.
+#
+# Go is built explicitly rather than by autobuild, because the module lives in
+# daemon/ and not at the root. JavaScript/TypeScript needs no build.
+name: CodeQL
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    # Weekly, so queries added to CodeQL since the last push still get run.
+    - cron: "37 6 * * 1"
+
+permissions:
+  contents: read
+  security-events: write
+  actions: read
+
+concurrency:
+  group: codeql-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  analyze:
+    name: Analyze (${{ matrix.language }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - language: go
+            build-mode: manual
+          - language: javascript-typescript
+            build-mode: none
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        if: matrix.language == 'go'
+        with:
+          go-version-file: daemon/go.mod
+          cache: false
+
+      - uses: github/codeql-action/init@v4
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: ${{ matrix.build-mode }}
+          # Broader than the default set, without the maintainability rules
+          # that security-and-quality adds.
+          queries: security-extended
+
+      - name: Build the daemon
+        if: matrix.build-mode == 'manual'
+        working-directory: daemon
+        run: go build ./...
+
+      - uses: github/codeql-action/analyze@v4
+        with:
+          category: "/language:${{ matrix.language }}"
