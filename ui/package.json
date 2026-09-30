@@ -12,12 +12,12 @@
   "dependencies": {
     "d3-sankey": "^0.12.3",
     "d3-shape": "^3.2.0",
-    "vue": "^3.5.13"
+    "vue": "^3.5.43"
   },
   "devDependencies": {
     "@types/d3-sankey": "^0.12.5",
     "@types/d3-shape": "^3.2.0",
-    "@types/node": "^26.4.0",
+    "@types/node": "^26.6.3",
     "@vitejs/plugin-vue": "^5.2.1",
     "typescript": "^5.7.2",
     "vite": "^6.0.3",
