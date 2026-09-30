@@ -793,6 +793,13 @@ Sample is one throughput observation, in the units the UI displays.
 > kernel believed, so a shaping failure appears as a flat line at the old
 > value rather than being papered over by the value we asked for.
 
+**`cap_up`** `float64` _(omitted when empty)_
+> CapUp is the uplink cap the kernel was enforcing at this instant, 0 for
+> unlimited: Cap's twin, for the same reasons, read back from tc the same
+> way (UpCounters.CapMbps). Without it the uplink chart had only today's
+> value to draw, a flat rule through a pattern that stepped the uplink cap
+> while the downlink beside it drew every step.
+
 **`phy_down`** `float64` _(omitted when empty)_
 > PhyDown and PhyUp are the negotiated PHY rates at this instant, Mbit/s:
 > the rate the radio was sending to this client and receiving from it.

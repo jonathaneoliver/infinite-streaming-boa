@@ -53,6 +53,13 @@ type Sample struct {
 	// value rather than being papered over by the value we asked for.
 	Cap float64 `json:"cap"`
 
+	// CapUp is the uplink cap the kernel was enforcing at this instant, 0 for
+	// unlimited: Cap's twin, for the same reasons, read back from tc the same
+	// way (UpCounters.CapMbps). Without it the uplink chart had only today's
+	// value to draw, a flat rule through a pattern that stepped the uplink cap
+	// while the downlink beside it drew every step.
+	CapUp float64 `json:"cap_up,omitempty"`
+
 	// PhyDown and PhyUp are the negotiated PHY rates at this instant, Mbit/s:
 	// the rate the radio was sending to this client and receiving from it.
 	//
@@ -271,7 +278,7 @@ func (h *History) Window(dur time.Duration, maxPoints int) (series map[string][]
 		// invite the reader to explain a player's behaviour against it. The
 		// first sample's value is taken instead, which matches the bucket's
 		// timestamp: buckets are stamped at their start.
-		var capFirst float64
+		var capFirst, capUpFirst float64
 		var ifaceFirst string
 		var chanFirst int
 		var sumPD, sumPU float64
@@ -286,6 +293,8 @@ func (h *History) Window(dur time.Duration, maxPoints int) (series map[string][]
 				Down: sumD / float64(n),
 				Up:   sumU / float64(n),
 				Cap:  capFirst,
+				// First-of-bucket, as the downlink cap is: a step, not a mean.
+				CapUp: capUpFirst,
 				// MEANED, unlike the cap. A cap is a value someone set and held,
 				// so averaging across a change invents one that was never in
 				// force; a PHY rate is a measurement that genuinely moves within
@@ -319,7 +328,7 @@ func (h *History) Window(dur time.Duration, maxPoints int) (series map[string][]
 				slot = b
 			}
 			if n == 0 {
-				capFirst = sm.Cap
+				capFirst, capUpFirst = sm.Cap, sm.CapUp
 				ifaceFirst, chanFirst = sm.Iface, sm.Channel
 			}
 			sumD += sm.Down

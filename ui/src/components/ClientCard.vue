@@ -1031,7 +1031,7 @@ function fmtBytes(n: number): string {
         <span class="cell spark">
           <TrafficChart
             v-bind="chartProps"
-            :t="series?.t ?? []" :data="series?.up ?? []" :phys="series?.phyUp ?? []"
+            :t="series?.t ?? []" :data="series?.up ?? []" :caps="series?.capUp ?? []" :phys="series?.phyUp ?? []"
             color="var(--up)" label="Uplink"
             :cap="client.policy.up.rate_mbps" :height="24" compact
           />
@@ -1333,7 +1333,7 @@ function fmtBytes(n: number): string {
         </h3>
         <TrafficChart
           v-bind="chartProps"
-          :t="series?.t ?? []" :data="series?.up ?? []" :phys="series?.phyUp ?? []"
+          :t="series?.t ?? []" :data="series?.up ?? []" :caps="series?.capUp ?? []" :phys="series?.phyUp ?? []"
           color="var(--up)" label="Uplink"
           :cap="playing ? (patRun?.up.rate_mbps ?? 0) : client.policy.up.rate_mbps"
           :height="expandedH"

@@ -153,3 +153,38 @@ func TestWindowKeepsUnlimitedAsZero(t *testing.T) {
 		}
 	}
 }
+
+// The uplink cap gets the same treatment as the downlink's: carried through
+// decimation as a step, never a mean, and independently of it. Before CapUp was
+// recorded the uplink chart had only today's value, a flat rule through a
+// pattern that stepped the uplink cap.
+func TestWindowCarriesTheUplinkCapAsItsOwnStep(t *testing.T) {
+	h := NewHistory()
+	now := time.Now().UnixMilli()
+	// Downlink fixed at 10; uplink steps 4 -> 0.5 halfway.
+	for i := 119; i >= 0; i-- {
+		up := 4.0
+		if i < 60 {
+			up = 0.5
+		}
+		h.Add("aa", Sample{T: now - int64(i)*1000, Up: 1, Cap: 10, CapUp: up})
+	}
+	series, bucket := h.Window(2*time.Minute, 8)
+	if bucket <= 1000 {
+		t.Fatalf("bucket %dms: the window was not decimated, so nothing is proven", bucket)
+	}
+	var saw4, saw05 bool
+	for _, s := range series["aa"] {
+		if s.CapUp != 4 && s.CapUp != 0.5 {
+			t.Fatalf("bucket at %d reports uplink cap %g, which was never set", s.T, s.CapUp)
+		}
+		if s.Cap != 10 {
+			t.Fatalf("the downlink cap moved with the uplink one: %g", s.Cap)
+		}
+		saw4 = saw4 || s.CapUp == 4
+		saw05 = saw05 || s.CapUp == 0.5
+	}
+	if !saw4 || !saw05 {
+		t.Fatalf("lost an uplink cap level: 4=%v 0.5=%v", saw4, saw05)
+	}
+}

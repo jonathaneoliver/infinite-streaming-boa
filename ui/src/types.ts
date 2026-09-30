@@ -1480,6 +1480,13 @@ export interface Series {
    */
   cap: number[];
   /**
+   * The uplink cap in force at each sample, 0 for unlimited: `cap`'s twin, for
+   * the same reason. Without it the uplink chart could only draw today's value
+   * as a flat rule, while the downlink beside it drew every step a pattern
+   * made.
+   */
+  capUp: number[];
+  /**
    * The negotiated PHY rate at each sample, per direction, 0 when there is
    * none (a wired client, or a wireless one that has gone).
    *
