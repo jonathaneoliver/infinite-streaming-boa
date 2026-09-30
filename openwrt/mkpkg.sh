@@ -126,7 +126,7 @@ rm -f "$OUT"/*.apk "$OUT"/packages.adb
 # boa
 R="$(mktemp -d)"
 install -d "$R/usr/libexec/boa" "$R/usr/sbin" "$R/etc/init.d" "$R/etc/config" "$R/lib/upgrade/keep.d" \
-	"$R/lib/boa" "$R/etc/hotplug.d/ieee80211"
+	"$R/lib/boa" "$R/etc/hotplug.d/ieee80211" "$R/etc/hotplug.d/net"
 install -m 0755 /in/boad "$R/usr/libexec/boa/boad"
 install -m 0755 "$F/usr/sbin/boa-setup" "$R/usr/sbin/boa-setup"
 # Sourced by the init script and the hotplug hook, so it has to land before
@@ -134,6 +134,7 @@ install -m 0755 "$F/usr/sbin/boa-setup" "$R/usr/sbin/boa-setup"
 # identity. See the file.
 install -m 0644 "$F/lib/boa/radio.sh" "$R/lib/boa/radio.sh"
 install -m 0755 "$F/etc/hotplug.d/ieee80211/20-boa-radio" "$R/etc/hotplug.d/ieee80211/20-boa-radio"
+install -m 0755 "$F/etc/hotplug.d/net/20-boa-port" "$R/etc/hotplug.d/net/20-boa-port"
 install -m 0755 "$F/etc/init.d/boa" "$R/etc/init.d/boa"
 install -m 0755 "$F/etc/init.d/boa-firstrun" "$R/etc/init.d/boa-firstrun"
 install -m 0644 "$F/etc/config/boa" "$R/etc/config/boa"
