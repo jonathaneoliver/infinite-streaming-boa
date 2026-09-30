@@ -382,22 +382,55 @@ func (s *Shaper) writeClass(dev string, minor int, exists bool) error {
 		"quantum", "60000")
 }
 
-// netemLimit sizes the netem queue from the bandwidth-delay product.
+// netemQueueMs is how much the rate queue holds, in time at the cap rate, on
+// top of whatever the configured delay keeps in flight. About what a real
+// router's buffer holds: enough for TCP to keep the link full, and a bound on
+// the latency and the cap-change lag the queue itself adds.
+const netemQueueMs = 200
+
+// netemMinPackets is the smallest queue, so TCP has room at very low rates:
+// 200 ms at 0.1 Mbps is under two packets.
+const netemMinPackets = 10
+
+// netemLimit sizes the netem queue from the bandwidth-delay product, plus a
+// fixed TIME of queue at the cap rate.
 //
-// This is the most damaging default in the stack. netem queues 1000 packets
-// unless told otherwise; a 50 Mbps link with 500 ms of delay holds roughly 2100
-// packets in flight, so the default would silently discard half the traffic
-// while the UI truthfully reported "0% loss configured", and the tester would
-// spend an afternoon blaming the player.
+// The delay term is why this exists. netem queues 1000 packets unless told
+// otherwise; a 50 Mbps link with 500 ms of delay holds roughly 2100 packets in
+// flight, so the default would silently discard half the traffic while the UI
+// truthfully reported "0% loss configured", and the tester would spend an
+// afternoon blaming the player.
+//
+// THE QUEUE IS SIZED IN TIME, NOT PACKETS (#470). This used to floor the limit
+// at 1000 packets whatever the rate, which with no delay configured was every
+// cap's whole queue: 0.24 s at 50 Mbps, but 12 s at 1 Mbps and 48 s at
+// 0.25 Mbps. Measured on target 5, 2026-09-30, a bulk sender filled it, and
+// that latency, which a real link of that speed does not have, broke things
+// three ways:
+//   - uplink caps under ~50 Mbps delivered 2-43 % short;
+//   - iperf3's own control messages waited behind the queue until the
+//     connection reset;
+//   - a RAISED cap took ~25 s to bite at 0.1 -> 0.25 Mbps, because netem
+//     spaces each queued packet at the rate in force when it was queued
+//     (#43).
+//
+// A queue of netemQueueMs at the cap bounds all three by that same 200 ms.
 func netemLimit(sh Shape) int {
 	rate := sh.RateMbps
 	if rate <= 0 {
-		rate = 1000 // unlimited: size for a gigabit link's worth of in-flight data
+		// Unlimited: netem only delays, and there is no rate queue to size.
+		// Keep room for a gigabit link's worth of in-flight data, as before.
+		bdp := 1000 * 1e6 * (sh.DelayMs + sh.JitterMs) / 1000.0 / (8.0 * mtuBytes)
+		return clampLimit(int(math.Ceil(bdp*3)), 1000)
 	}
 	bdpPackets := rate * 1e6 * (sh.DelayMs + sh.JitterMs) / 1000.0 / (8.0 * mtuBytes)
-	limit := int(math.Ceil(bdpPackets * 3))
-	if limit < 1000 {
-		limit = 1000
+	queuePackets := rate * 1e6 * netemQueueMs / 1000.0 / (8.0 * mtuBytes)
+	return clampLimit(int(math.Ceil(bdpPackets*3+queuePackets)), netemMinPackets)
+}
+
+func clampLimit(limit, floor int) int {
+	if limit < floor {
+		limit = floor
 	}
 	if limit > 200000 {
 		limit = 200000 // past here the memory cost outweighs the clipping
