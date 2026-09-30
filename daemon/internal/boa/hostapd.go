@@ -28,7 +28,28 @@ import (
 // hostapd names one socket per AP interface inside it, e.g. /var/run/hostapd/wlan-usb.
 const hostapdCtrlDir = "/var/run/hostapd"
 
-func hostapdSocket(iface string) string { return filepath.Join(hostapdCtrlDir, iface) }
+// ifaceNameRE is what a network interface name on this box may look like: the
+// kernel's own 15-character limit, over the characters the names here actually
+// use (wlan-usb2, phy0-ap0, br-lan, eth0.10). Stricter than the kernel, which
+// would also take '@' or non-ASCII, and deliberately so -- see hostapdSocket.
+var ifaceNameRE = regexp.MustCompile(`^[A-Za-z0-9_.-]{1,15}$`)
+
+// hostapdSocket is the path of iface's control socket, or an error when iface
+// could not be an interface name.
+//
+// The name arrives from requests -- a path segment, a ?to= parameter, a saved
+// pattern's radio -- and is joined onto a directory the daemon then stats and
+// DIALS, as root. "../../run/x" would reach a socket outside hostapd's. Most
+// callers pass radioReady first, whose `ip link show` rejects such a name only
+// because the kernel forbids '/' in one; demo mode skips that, and a new caller
+// need not know to. So the check sits here, where the path is made (CodeQL
+// go/path-injection, alert #1).
+func hostapdSocket(iface string) (string, error) {
+	if !ifaceNameRE.MatchString(iface) || iface == "." || iface == ".." {
+		return "", fmt.Errorf("not an interface name: %q", iface)
+	}
+	return filepath.Join(hostapdCtrlDir, iface), nil
+}
 
 var macRE = regexp.MustCompile(`^[0-9a-f]{2}(:[0-9a-f]{2}){5}$`)
 
@@ -53,10 +74,11 @@ var (
 )
 
 func hostapdAvailable(iface string) bool {
-	if iface == "" {
+	sock, err := hostapdSocket(iface)
+	if err != nil {
 		return false
 	}
-	fi, err := os.Stat(hostapdSocket(iface))
+	fi, err := os.Stat(sock)
 	return err == nil && fi.Mode()&os.ModeSocket != 0
 }
 
@@ -78,7 +100,10 @@ func linkCommand(verb, mac string, reason int) string {
 // datagram socket -- and returns its reply. The client binds its own temporary
 // socket to receive the answer, exactly as hostapd_cli does.
 func hostapdCmd(iface, cmd string) (string, error) {
-	sock := hostapdSocket(iface)
+	sock, err := hostapdSocket(iface)
+	if err != nil {
+		return "", err
+	}
 	// An ABSTRACT local socket (leading "@"), not a /tmp path. The daemon runs
 	// with systemd PrivateTmp, so a socket it creates under /tmp is invisible to
 	// hostapd -- and hostapd's reply, sent to that path, is silently dropped,
