@@ -1396,6 +1396,35 @@ func (e *Engine) moveChannelLocked(iface string, channel, widthMHz int, mode str
 	// operator sees a control they pressed appear not to have worked.
 	e.freshenBridge()
 
+	// THE ACCESS POINT, BEFORE THE CHANNEL. hostapd reports the channel it is
+	// CONFIGURED for whether or not the BSS came up, so a matching channel
+	// number was being read as success on a dead access point. MEASURED on
+	// target 5, 2026-09-29: a restart to 149/40 left phy1-ap0 with no BSS --
+	// its ubus object gone, clients fallen back to the other band -- and the
+	// next restart move on that radio still answered success (#445).
+	//
+	// enableAP has already waited and, if it had to, rebuilt; the short wait
+	// here is for a rebuild it has only just started.
+	if wasEnabled && !waitAPEnabled(iface, 5*time.Second) {
+		enabled, known := apState(iface)
+		switch restartVerdict(wasEnabled, enabled, known) {
+		case restartDown:
+			e.logEvent(EventWarning, iface, "",
+				"%s was moved to channel %d but its access point did not come back: "+
+					"it is serving nobody", iface, channel)
+			return ChannelMove{Channel: channel, WidthMHz: widthMHz, Method: MethodRestart,
+					OutageSec: outage, Stations: len(before), Dropped: len(before)},
+				fmt.Errorf("%s was moved to channel %d at %dMHz but its access point did not "+
+					"come back up; it is serving nobody (check logread for hostapd)", iface, channel, widthMHz)
+		case restartUnconfirmed:
+			// Not answering is not the same as down -- see apState -- so this is
+			// said, and the move is not failed on the strength of a timeout.
+			e.logEvent(EventWarning, iface, "",
+				"%s was moved to channel %d, and hostapd has not answered since, so "+
+					"whether its access point is back is not known", iface, channel)
+		}
+	}
+
 	now := 0
 	if st, err := hostapdCmd(iface, "STATUS"); err == nil {
 		now = atoiSafe(parseHostapdKV(st)["channel"])
@@ -1433,6 +1462,30 @@ func (e *Engine) moveChannelLocked(iface string, channel, widthMHz int, mode str
 	}
 	e.syncRadioState(iface)
 	return done, nil
+}
+
+// restartOutcome is what a restart-mode move can conclude about the access
+// point it took down and brought back.
+type restartOutcome int
+
+const (
+	restartUp          restartOutcome = iota // serving again, or was never serving
+	restartDown                              // hostapd ANSWERS that it is not enabled
+	restartUnconfirmed                       // hostapd did not answer, so unknown
+)
+
+// restartVerdict decides what a move that DISABLEd an access point may report.
+// Only an answered "not enabled" fails the move: a control socket that has
+// gone quiet is a radio re-initialising as often as a broken one (apState).
+func restartVerdict(wasEnabled, enabled, known bool) restartOutcome {
+	switch {
+	case !wasEnabled, enabled:
+		return restartUp
+	case known:
+		return restartDown
+	default:
+		return restartUnconfirmed
+	}
 }
 
 // learnCSARefusal decides whether a failed announcement condemns the DRIVER, or
