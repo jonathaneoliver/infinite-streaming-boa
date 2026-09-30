@@ -38,6 +38,11 @@ func TestAPinOnOneClientLeavesAnotherClientsAlone(t *testing.T) {
 		cfg:          Config{WlanPorts: []string{"wlan-usb", "wlan0"}},
 		stationRadio: map[string]string{a: "wlan-usb", b: "wlan-usb"},
 	}
+	// EvictClient leaves a timer goroutine that lifts its pin after 5s, through
+	// the package-level hostapdSend -- by then another test's fake. Ending every
+	// operation here consumes its once, so the timer finds nothing to do.
+	// Registered after the seam restore, so it runs before it (#233).
+	t.Cleanup(func() { e.clearPins("test over") })
 
 	// Two independent operations, one per client.
 	opA := &pinOp{to: "wlan0", deny: []string{"wlan-usb"}}

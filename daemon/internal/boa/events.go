@@ -122,6 +122,20 @@ func (l *eventLog) latest() uint64 {
 	return l.seq
 }
 
+// reset empties the log and restarts the sequence at 1, as a daemon restart
+// does, under the log's own lock.
+//
+// Replacing the struct wholesale would do the same to the data but also swap
+// the mutex out from under any reader holding or waiting on it -- a live stream
+// handler, say -- which is a race even when nothing else is written (#233).
+func (l *eventLog) reset() {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.seq = 0
+	l.ring = nil
+	l.labels = nil
+}
+
 func (l *eventLog) label(mac string) string {
 	l.mu.Lock()
 	defer l.mu.Unlock()

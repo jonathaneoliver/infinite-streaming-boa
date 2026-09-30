@@ -136,8 +136,8 @@ func TestEventStreamReportsARestart(t *testing.T) {
 	body := bufio.NewReader(resp.Body)
 	readLines(t, body, 2, 5*time.Second) // open marker + the 5th event
 
-	// The ring is replaced, exactly as a restart does.
-	e.events = eventLog{}
+	// The ring starts again from 1, exactly as a restart does.
+	e.events.reset()
 	e.logEvent(EventJoin, "wlan0", "aa:bb:cc:dd:ee:ff", "after")
 
 	got := readLines(t, body, 2, 5*time.Second)
