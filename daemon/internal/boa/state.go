@@ -226,8 +226,8 @@ const retriesUnsupportedAfter = 100_000
 // The UI resyncs slider positions on ControlRevision alone, so a telemetry
 // update arriving mid-drag cannot yank a control out from under the cursor.
 type Engine struct {
-	mu    sync.RWMutex
-	cfg   Config
+	mu  sync.RWMutex
+	cfg Config
 	// ports is the effective port list, rediscovered rather than taken from
 	// argv once. See ports.go and issue #366.
 	ports portCache
