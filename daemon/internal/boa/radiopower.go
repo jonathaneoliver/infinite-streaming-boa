@@ -1324,6 +1324,18 @@ func (e *Engine) moveChannelLocked(iface string, channel, widthMHz int, mode str
 		e.noteMoveChannel(iface, demo)
 		return demo, nil
 	}
+	// A CHANNEL THE RADIO HAS, asked of the radio before anything touches it.
+	// apChannels is every channel boa offers on any radio, and a single-band
+	// phy -- either half of a dual-band AP card -- has only its own band's.
+	// MEASURED on target 5, 2026-09-29: forcing the MT7915E's 2.4 GHz phy0
+	// onto channel 36 was accepted, took the access point down, and it never
+	// came back; the request ran about 3.5 minutes through the enable wait and
+	// a rebuild before it could say so. Refused here, it costs nothing.
+	if serves, known, bands := radioServes(iface, ch.FreqMHz); known && !serves {
+		return ChannelMove{}, fmt.Errorf(
+			"%s cannot serve on channel %d (%d MHz): its radio can serve %s, and nothing else "+
+				"is permitted to it here", iface, channel, ch.FreqMHz, bandList(bands))
+	}
 
 	wasEnabled, wasChannel := false, 0
 	if st, err := hostapdCmd(iface, "STATUS"); err == nil {
@@ -1433,6 +1445,18 @@ func (e *Engine) moveChannelLocked(iface string, channel, widthMHz int, mode str
 	}
 	e.syncRadioState(iface)
 	return done, nil
+}
+
+// bandList is a radio's bands for a sentence: "2.4GHz only", "2.4GHz and 5GHz".
+func bandList(bands []string) string {
+	switch len(bands) {
+	case 0:
+		return "no channel at all"
+	case 1:
+		return bands[0] + " only"
+	default:
+		return strings.Join(bands, " and ")
+	}
 }
 
 // learnCSARefusal decides whether a failed announcement condemns the DRIVER, or
