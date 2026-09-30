@@ -13,7 +13,39 @@ deliberate and documented so they are not mistaken for defects — see
 
 ## [Unreleased]
 
-Nothing yet.
+### Changed
+
+- **`boa-setup check` treats "no country" as a warning, not a failure**
+  (#400). No country means the world domain: no DFS, no channels 12 and 13,
+  and 20 dBm, but it works, as measured, and the setup wizard offers it on
+  purpose. `check` used to fail every box set up that way. Only a literal
+  `'00'` fails now, because that is what hostapd refuses to parse.
+- **The README says where to start**: boa on OpenWrt, on a Cudy TR3000 or an
+  equivalent router, as the simplest of the five targets, and why the others
+  still matter (#451). It counts five targets throughout, where it said four
+  and left out the OpenWrt VM (#452). `openwrt/README.md` gains what OpenWrt
+  already does over the network, and what boa adds: OpenWrt drives its radios
+  through ubus, but has no network API for conditioning a link (#451).
+
+### Fixed
+
+- **A channel move to a band the radio does not have is refused**, instead of
+  taking the access point down (#454). Forcing the MT7915E's 2.4 GHz half onto
+  channel 36 was accepted, the access point never came back, and the request
+  took about 3.5 minutes to say so; clients with shorter timeouts got an empty
+  answer. It is now refused before anything touches the radio, with HTTP 400
+  and the bands the radio can serve.
+- **A forced channel move no longer reports success on a dead access point**
+  (#453, #445). hostapd reports the channel it is configured for whether or not
+  the access point came up, and the move read that as success. It now checks
+  that the access point is enabled, and says the radio is serving nobody if it
+  is not.
+- **`boa-setup check` named every idle radio boa's scan radio** when no scan
+  radio was set (#400), and missed the real one when two were listed. It also
+  skipped the `'00'` and 6 GHz checks on a radio not yet serving, so a
+  freshly plugged adapter that could never start passed with "0 failed". The
+  scan radio is no longer warned about having no country, because it runs
+  under the serving radios' domain.
 
 ## [0.6.0] — 2026-09-29
 
