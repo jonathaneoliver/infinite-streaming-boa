@@ -518,6 +518,10 @@ func (e *Engine) buildBridgeState() BridgeInfo {
 	// same answer.
 	effCfg := e.effectiveConfig()
 
+	// Watched radios whose access point has been down, unchosen, past the
+	// grace -- for bridgeNotes. See noteAPDown.
+	apDownFor := map[string]time.Duration{}
+
 	for _, name := range netInterfaces() {
 		if name == "lo" {
 			continue // not a bridge port, and nothing to draw
@@ -586,6 +590,17 @@ func (e *Engine) buildBridgeState() BridgeInfo {
 						ap.LinkDown = true
 					}
 					e.noteAPLinkDown(name, ap.LinkDown)
+					if in.Serving {
+						// Off on purpose reads the same from here as broken: a
+						// radio with no BSS. The power state and the AP-off
+						// marker are what tell them apart.
+						deliberate := (in.PowerKnown && !in.Powered) ||
+							apOffMarker(name) != ""
+						if d := e.noteAPDown(name, !ap.Enabled, deliberate,
+							time.Now()); d > 0 {
+							apDownFor[name] = d
+						}
+					}
 					in.AP = ap
 					in.Role = RoleAP
 				}
@@ -648,7 +663,7 @@ func (e *Engine) buildBridgeState() BridgeInfo {
 	// reported "has taken no reading yet" for ever -- measured on the container
 	// host 2026-09-11, with the successful scans sitting in the activity log at
 	// the same moment.
-	bi.Notes = bridgeNotes(bi, effCfg)
+	bi.Notes = bridgeNotes(bi, effCfg, apDownFor)
 	// What each radio has been told to CLAIM about its congestion, beside the
 	// floor of what it is really doing. Both, always: a control that can lie is
 	// only safe while the truth is on screen next to it.
@@ -680,7 +695,10 @@ func (e *Engine) buildBridgeState() BridgeInfo {
 // bridgeNotes states the things that are true and would otherwise be found out
 // the hard way. A radio the daemon does not watch is the important one: its
 // clients associate, get addresses, pass traffic, and appear nowhere.
-func bridgeNotes(bi BridgeInfo, cfg Config) []Notice {
+//
+// apDownFor names the watched radios whose access point has been down, for no
+// chosen reason, past apDownGrace; see noteAPDown. nil when there are none.
+func bridgeNotes(bi BridgeInfo, cfg Config, apDownFor map[string]time.Duration) []Notice {
 	var out []Notice
 	// A named scanner that is not on the box at all. Worth saying BEFORE the
 	// loop below, because that loop walks the interfaces that exist and this
@@ -703,6 +721,21 @@ func bridgeNotes(bi BridgeInfo, cfg Config) []Notice {
 		}
 	}
 	for _, in := range bi.Ifaces {
+		// A WATCHED radio that has stopped serving. The loop below skips every
+		// watched radio, so until this a failed ENABLE produced no note at all
+		// -- while systemd read "active" and the radio still looked available
+		// (#164).
+		if d := apDownFor[in.Name]; in.Wireless && in.Serving && d > 0 {
+			why := "hostapd reports it disabled"
+			if in.AP != nil && in.AP.LinkDown {
+				why = "hostapd reports it enabled but the interface is down"
+			}
+			out = append(out, Notice{"error", fmt.Sprintf(
+				"%s has not been serving for %s: %s, and nothing here turned it "+
+					"off. Its clients cannot associate, and a device that fell back "+
+					"to another network is not being measured through this box.",
+				in.Name, d.Round(time.Second), why)})
+		}
 		if !in.Wireless || in.Serving {
 			continue
 		}
@@ -1019,6 +1052,54 @@ func (e *Engine) noteAPLinkDown(iface string, down bool) {
 	}
 	e.logEvent(EventAction, iface, "",
 		"%s: interface back up and the access point is on air again", iface)
+}
+
+// apDownGrace is how long a watched radio's access point may be down, unchosen,
+// before the box says so.
+//
+// Every deliberate outage is shorter. A scan takes the BSS down for a few
+// seconds; a restart-mode channel move leaves the mt7921u's control socket mute
+// for 10-25s. The failure this exists for -- hostapd failing to ENABLE and
+// retrying behind a systemd unit that reads "active" -- was minutes (#164).
+const apDownGrace = 60 * time.Second
+
+// noteAPDown times a watched radio whose access point is not serving, and
+// returns how long it has been down once that exceeds apDownGrace -- zero
+// before then, when it is serving, and when the outage is deliberate.
+//
+// This is the gap #164 found: hostapd stays running when an ENABLE fails, so
+// systemd reads "active", the process never exits, and nothing restarts it.
+// Every health signal said normal while three clients had fallen off a dead
+// radio -- and a client that fails over to another network keeps reporting
+// plausible throughput, so the numbers were wrong rather than absent.
+//
+// deliberate covers a radio switched off and an access point the operator or a
+// timed outage took down; those clear the clock rather than pausing it, so an
+// outage that outlives its intent is timed from when the intent ended.
+//
+// It LOGS NOTHING. noteAPServing already puts both edges in the activity log
+// the moment they happen; what was missing is a note that stays on screen for
+// as long as the radio stays down, which is what the return value feeds. The
+// note clears itself on recovery, because it is recomputed every rebuild.
+func (e *Engine) noteAPDown(iface string, down, deliberate bool, now time.Time) time.Duration {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if !down || deliberate {
+		delete(e.apDownSince, iface)
+		return 0
+	}
+	if e.apDownSince == nil {
+		e.apDownSince = map[string]time.Time{}
+	}
+	since, ok := e.apDownSince[iface]
+	if !ok {
+		since = now
+		e.apDownSince[iface] = since
+	}
+	if d := now.Sub(since); d >= apDownGrace {
+		return d
+	}
+	return 0
 }
 
 // apStatus asks hostapd what the AP is doing. Returns nil when the socket is

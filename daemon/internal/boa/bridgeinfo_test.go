@@ -50,7 +50,7 @@ func TestAnUnwatchedRadioServingAnAPIsAnError(t *testing.T) {
 		{Name: "wlan1", Wireless: true, Serving: false, Up: true,
 			AP: &APStatus{Enabled: true}},
 	}}
-	notes := bridgeNotes(bi, testCfg)
+	notes := bridgeNotes(bi, testCfg, nil)
 	if len(notes) != 1 {
 		t.Fatalf("want exactly one note, got %d: %+v", len(notes), notes)
 	}
@@ -69,7 +69,7 @@ func TestAnIdleRadioIsMerelyNoted(t *testing.T) {
 	bi := BridgeInfo{Ifaces: []IfaceInfo{
 		{Name: "wlan0", Wireless: true, Serving: false, Up: true},
 	}}
-	notes := bridgeNotes(bi, testCfg)
+	notes := bridgeNotes(bi, testCfg, nil)
 	if len(notes) != 1 || notes[0].Level != "info" {
 		t.Fatalf("want one info note, got %+v", notes)
 	}
@@ -81,7 +81,7 @@ func TestADownRadioAndTheServingRadioProduceNoNotes(t *testing.T) {
 		{Name: "wlan0", Wireless: true, Serving: false, Up: false}, // rfkilled
 		{Name: "eth0", Wireless: false},
 	}}
-	if notes := bridgeNotes(bi, testCfg); len(notes) != 0 {
+	if notes := bridgeNotes(bi, testCfg, nil); len(notes) != 0 {
 		t.Errorf("want no notes, got %+v", notes)
 	}
 }
@@ -152,7 +152,7 @@ func TestNoUnwatchedNoticeWhenBothRadiosAreServed(t *testing.T) {
 		{Name: "wlan-usb", Wireless: true, Serving: true, Up: true, AP: &APStatus{Enabled: true}},
 		{Name: "wlan0", Wireless: true, Serving: true, Up: true, AP: &APStatus{Enabled: true}},
 	}}
-	if notes := bridgeNotes(bi, dualCfg); len(notes) != 0 {
+	if notes := bridgeNotes(bi, dualCfg, nil); len(notes) != 0 {
 		t.Errorf("two watched radios is the normal dual-band case, got %+v", notes)
 	}
 }
@@ -164,7 +164,7 @@ func TestUnwatchedNoticeNamesEveryWatchedRadio(t *testing.T) {
 	bi := BridgeInfo{Ifaces: []IfaceInfo{
 		{Name: "wlan1", Wireless: true, Serving: false, Up: true, AP: &APStatus{Enabled: true}},
 	}}
-	notes := bridgeNotes(bi, dualCfg)
+	notes := bridgeNotes(bi, dualCfg, nil)
 	if len(notes) != 1 {
 		t.Fatalf("want one note, got %+v", notes)
 	}

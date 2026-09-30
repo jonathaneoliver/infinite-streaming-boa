@@ -644,7 +644,7 @@ func demoBridgeState(cfg Config) BridgeInfo {
 			UtilPct: 36, UtilKnown: true, LoudestDBm: -18,
 		},
 	}
-	bi.Notes = bridgeNotes(bi, cfg)
+	bi.Notes = bridgeNotes(bi, cfg, nil)
 	return bi
 }
 
