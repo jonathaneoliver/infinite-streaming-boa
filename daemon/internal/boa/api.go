@@ -3,6 +3,7 @@ package boa
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io/fs"
 	"net/http"
@@ -399,8 +400,11 @@ func (a *API) postMoveChannel(w http.ResponseWriter, r *http.Request) {
 		// on the 400 side: 165 at 80MHz is refused here every time, never
 		// attempted, so reporting it as an upstream failure would point at the
 		// wrong thing.
+		// A channel the RADIO does not have is the same side: refused before
+		// anything is attempted, and every time it is asked.
 		known, ok := apChannels[ch]
-		if !ok || width != 20 && width != 40 && width != 80 || width > known.maxWidth() {
+		if !ok || width != 20 && width != 40 && width != 80 || width > known.maxWidth() ||
+			errors.Is(err, errChannelNotOnRadio) {
 			writeErr(w, http.StatusBadRequest, err.Error())
 			return
 		}

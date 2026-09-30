@@ -1,6 +1,7 @@
 package boa
 
 import (
+	"errors"
 	"fmt"
 	"os/exec"
 	"strconv"
@@ -181,6 +182,18 @@ func scanPlan(enabled map[int]bool) (freqs []string, chans []int) {
 // channel lines at all, so an unreadable phy is told apart from one with
 // nothing enabled.
 func phyEnabledMHz(info string) map[int]bool {
+	return phyChannelsMHz(info, false)
+}
+
+// phyServableMHz is phyEnabledMHz for an ACCESS POINT, which also excludes
+// "no IR": a channel that may not be transmitted on until someone else is heard
+// is one an access point cannot start on. A scan only listens, so it may use
+// those; this is the stricter set, the same exclusions phyBands applies.
+func phyServableMHz(info string) map[int]bool {
+	return phyChannelsMHz(info, true)
+}
+
+func phyChannelsMHz(info string, serving bool) map[int]bool {
 	var out map[int]bool
 	for _, line := range strings.Split(info, "\n") {
 		if !strings.Contains(line, " MHz [") {
@@ -189,7 +202,7 @@ func phyEnabledMHz(info string) map[int]bool {
 		if out == nil {
 			out = map[int]bool{}
 		}
-		if strings.Contains(line, "disabled") {
+		if strings.Contains(line, "disabled") || serving && strings.Contains(line, "no IR") {
 			continue
 		}
 		var mhz float64
@@ -210,6 +223,59 @@ var phyInfoFor = func(iface string) (string, error) {
 	}
 	out, err := exec.Command("iw", "phy", phy, "info").Output()
 	return string(out), err
+}
+
+// radioServes reports whether an interface's radio can run an access point on
+// freqMHz, and whether that could be determined at all. known is false when the
+// phy could not be read, and a caller must not refuse on that: the move would
+// have been attempted before this check existed, so an unreadable phy keeps
+// that behaviour rather than guessing.
+//
+// bands is what the radio CAN serve, for saying so. On a single-band phy --
+// either half of an MT7915E or of the Cudy's MT7981 -- the other band is not a
+// setting it lacks but hardware it does not have.
+func radioServes(iface string, freqMHz int) (serves, known bool, bands []string) {
+	info, err := phyInfoFor(iface)
+	if err != nil {
+		return false, false, nil
+	}
+	ok := phyServableMHz(info)
+	if ok == nil {
+		return false, false, nil
+	}
+	var has24, has5 bool
+	for mhz := range ok {
+		switch {
+		case mhz >= 2400 && mhz < 2500:
+			has24 = true
+		case mhz >= 5000 && mhz < 5900:
+			has5 = true
+		}
+	}
+	if has24 {
+		bands = append(bands, "2.4GHz")
+	}
+	if has5 {
+		bands = append(bands, "5GHz")
+	}
+	return ok[freqMHz], true, bands
+}
+
+// errChannelNotOnRadio marks a move refused because the radio does not have the
+// channel. It is an argument this radio will never accept, not hostapd
+// declining one it might have, so the API answers it 400 rather than 502.
+var errChannelNotOnRadio = errors.New("not a channel this radio has")
+
+// bandList is a radio's bands for a sentence: "2.4GHz only", "2.4GHz and 5GHz".
+func bandList(bands []string) string {
+	switch len(bands) {
+	case 0:
+		return "no channel at all"
+	case 1:
+		return bands[0] + " only"
+	default:
+		return strings.Join(bands, " and ")
+	}
 }
 
 // scanPlanFor is scanPlan for one interface's phy.
