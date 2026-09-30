@@ -921,9 +921,10 @@ comparison as a reading of what they document.
 
 **Where the others are better.** A rack emulator is calibrated, repeatable and
 certified; boa is explicitly none of those (see [Non-Goals](PRD.md#3-non-goals)).
-Caps here are verified from 0.25 to 50 Mbps; above that a cap exceeds what the
-radio itself can carry, so a high cap was measured only for the ~1.5 % overhead
-of putting netem in the path (below), not as a calibrated rate. Loss is
+Downlink caps are verified from 0.1 Mbps to 1.5 Gbps over Ethernet and to
+800 Mbps over an access-point radio, landing at the framing ratio every time;
+uplink the same from 100 Mbps up, but not reliably below about 50 Mbps with a
+bulk sender (#470). See [what a cap delivers](#what-a-cap-delivers). Loss is
 deliberately not reproducible run to run. Over Wi-Fi the
 conditioning is additive on top of a shared, variable radio baseline rather than
 absolute — a wired emulator gives you a number you can put in a report, and boa
@@ -3744,13 +3745,47 @@ inflating its bandwidth estimate. netem instead computes each packet's
 serialisation time from its length, which is what a real slow link does. HTB is
 kept only as a classifier and per-client byte counter.
 
-Measured on real forwarded traffic, a downlink cap lands within 6 % of target
-across the whole verified range, 0.25 to 50 Mbps. That shortfall is not error:
-the kernel's own class counters read the configured rate exactly, and the 4–6 %
-a client sees missing is the Ethernet, IP and TCP framing the cap counts and a
-payload byte-count does not — the same overhead a real link of that speed would
-impose. **Uplink is untested at any rate.** A configured 200 ms one-way delay
-measured 200.6 ms RTT.
+### What a cap delivers
+
+> Target 5 (the OpenWrt VM on the Ubuntu box, MT7915E), 2026-09-30. A MacBook on
+> the 2.5 GbE client port and on the 5 GHz radio at 149/80, `iperf3` through the
+> box to the Ubuntu host, three runs per cap. Streaming-rate caps were read from
+> the netem qdisc's own byte counter on the box, not from `iperf3` (see below).
+
+**A cap delivers its rate, less the framing, from 0.1 Mbps to 1.5 Gbps.** The
+kernel counts whole frames and a client counts payload, so a full-size TCP
+packet carries 1448 bytes of payload in a 1514-byte frame: goodput is
+1448/1514 = 95.6 % of the cap, and that is what a real link of that speed
+delivers too. It is correct, not error — a cap that read a clean 50.0 Mbps at
+the application would mean the emulation was wrong.
+
+| | Wired, 2.5 GbE | Wi-Fi, MT7915E 149/80 |
+|---|---|---|
+| Uncapped ceiling, down / up | 1946 / 2308–2352 Mbps | 861–868 / 792–851 Mbps |
+| Downlink goodput, 25 Mbps to the top | −4.3 to −4.5 % up to **1.5 Gbps** | −4.3 to −4.5 % up to **800 Mbps** |
+| Downlink at the shaper, 0.1–27.5 Mbps | within ±0.5 % in 131 of 144 readings, every rung of the infinite-stream ladder within ±0.4 % | within ±0.25 % at every ladder rung |
+| Uplink goodput, 100 Mbps to the top | −4.3 to −4.5 % | −4.3 to −4.4 % |
+| **Uplink below about 50 Mbps** | **short by 2–24 %, varying run to run; 1 Mbps fails** | **short by up to 43 % at 5–25 Mbps, varying run to run** |
+
+Below 25 Mbps downlink goodput is a little lower, 0.943–0.952 of the cap from
+0.25 to 4 Mbps (see the [PRD](PRD.md#8-success-criteria)), because a
+connection's fixed round trips weigh more when few bytes move; the shaper itself
+reads the cap exactly there.
+
+**Uplink at low caps is the exception, and it is the queue, not the rate.**
+netem's queue is at least 1000 packets whatever the cap — about 48 s at
+0.25 Mbps — and a bulk sender fills it: one 25 Mbps uplink run dropped 1612
+packets at that queue and logged 6842 retransmits. Downlink, sent by the Ubuntu
+host's Linux TCP, dropped none at the same cap; why the two senders differ is
+not yet measured. The same depth delays a *raised* cap until the old backlog
+drains, about 25 s at 0.1 → 0.25 Mbps (#43). Both are #470. A player's segment fetches do not fill the queue the way a bulk transfer
+does, so how much a player feels this is unmeasured.
+
+Measuring streaming-rate caps with `iperf3` does not work, for the same reason:
+its own end-of-test message waits behind the queue and the connection breaks.
+Those rates were read from the qdisc's `Sent` counter over 20 s instead.
+
+A configured 200 ms one-way delay measured 200.6 ms RTT.
 
 **A cap above the link's own ceiling costs about 1.5 %.** Set well past what the
 medium can carry — 700 Mbps and 1 Gbps over a Wi-Fi link that tops out near
@@ -3761,8 +3796,9 @@ capped-vs-uncapped comparison is useless and even gets the sign wrong;
 interleaving capped and uncapped 15 s runs, the paired mean was −1.5 % (505.8
 against 513.7 Mbps downlink). Measured 2026-09-01 on a Pi 5 with the mt7921u
 USB-3 radio, one client, over IPv6. netem adds no meaningful ceiling of its own
-at these rates; whether it holds nearer a gigabit on the wired path, where the
-baseline is steady, is untested.
+at these rates, and on the wired path it holds well past a gigabit: a 1.5 Gbps
+cap on target 5's 2.5 GbE port delivered 1434.6 Mbps, the framing ratio, in all
+three runs (2026-09-30).
 
 Policies are keyed by **MAC**, not IP, so they survive a DHCP renewal, a reboot,
 and a client roaming between the wireless and wired ports.

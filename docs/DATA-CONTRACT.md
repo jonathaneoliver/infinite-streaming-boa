@@ -314,6 +314,46 @@ after IP, TCP and timestamp headers, and sits inside a 1514-byte Ethernet frame:
 a 50 Mbps cap measured a clean 50.0 Mbps at the application, the emulation would
 be wrong.
 
+### Re-measured over the full range, 2026-09-30
+
+Target 5: the OpenWrt VM on the Ubuntu box, boa v0.6.0's code. The client was a
+MacBook on the 2.5 GbE client port (wired) and on the MT7915E at 5 GHz 149/80
+(Wi-Fi), with `iperf3` through the box to the Ubuntu host. Each cap was set
+symmetrically with `boactl shape`; runs were 10 s with the first 2 s discarded.
+Three runs per cap.
+
+| Cap | Wired down | Wired up | Wi-Fi down | Wi-Fi up |
+|---|---|---|---|---|
+| uncapped | 1946 Mbps | 2308–2352 Mbps | 861–868 Mbps | 792–851 Mbps |
+| 25 Mbps | −4.3/−4.4 % | −18.0/−18.7/−24.2 % | −4.3/−4.4 % | −4.4/−20.0/−22.0 % |
+| 50 Mbps | −4.4 % | −2.0 to −18.6 % | −4.4 % | −4.2/−4.3/−4.4 % |
+| 100–500 Mbps | −4.3/−4.4 % | −4.3/−4.4 % | −4.3/−4.4 % | −4.3/−4.4 % |
+| 800 Mbps | — | — | −4.5 % | −4.4 % |
+| 1000–1500 Mbps | −4.3/−4.4 % | −4.4/−4.5 % | — | — |
+
+The framing ratio, 1448/1514 = 0.9564, is the prediction. 1500 Mbps delivered
+1434.6, 0.9564.
+
+**Streaming-rate caps were read at the shaper, not from `iperf3`.** At these
+rates the netem queue (at least 1000 packets, #470) is tens of seconds deep, and
+`iperf3`'s own end-of-test message waits behind it, so the run fails. Instead a
+transfer kept the queue full while the netem qdisc's `Sent` counter was read
+twice, 20 s apart, on the box's clock. Those are whole frames, so an exact shaper
+reads 0 %. At 0.1, 0.25, 0.4, 0.7, 0.9, 1.1, 1.5, 1.9, 2.4, 3, 5 and 15 Mbps,
+and at every rung of the infinite-stream ladder (0.251 to 27.478 Mbps), 131 of
+144 readings were within ±0.5 %. Every ladder rung was within ±0.4 % wired and
+±0.25 % over Wi-Fi.
+
+**Two things these numbers are not.**
+- **0.25 Mbps read −7.5 to −9.6 % in the sweep, and +0.13 % alone.** In the
+  sweep it followed a 0.1 Mbps cap, and a raised cap only takes effect once the
+  backlog queued at the old rate drains: about 25 s at 0.1 → 0.25 Mbps (#43).
+  That is a property of the queue, not of the rate.
+- **Uplink below about 50 Mbps is not a calibrated figure.** A bulk sender fills
+  the queue, and the overflow and TCP's recovery cost 2–43 %. The downlink
+  sender, the Ubuntu host's Linux TCP, did not overflow it. Whether a player's
+  segmented traffic does is unmeasured (#470).
+
 ## Honest limitations — surface these in the UI
 
 - **WiFi is not a wired lab.** Airtime is shared: one client's traffic changes
