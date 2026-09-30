@@ -1333,8 +1333,9 @@ func (e *Engine) moveChannelLocked(iface string, channel, widthMHz int, mode str
 	// a rebuild before it could say so. Refused here, it costs nothing.
 	if serves, known, bands := radioServes(iface, ch.FreqMHz); known && !serves {
 		return ChannelMove{}, fmt.Errorf(
-			"%s cannot serve on channel %d (%d MHz): its radio can serve %s, and nothing else "+
-				"is permitted to it here", iface, channel, ch.FreqMHz, bandList(bands))
+			"%w: %s cannot serve on channel %d (%d MHz); its radio can serve %s, and nothing "+
+				"else is permitted to it here", errChannelNotOnRadio, iface, channel, ch.FreqMHz,
+			bandList(bands))
 	}
 
 	wasEnabled, wasChannel := false, 0
@@ -1446,6 +1447,11 @@ func (e *Engine) moveChannelLocked(iface string, channel, widthMHz int, mode str
 	e.syncRadioState(iface)
 	return done, nil
 }
+
+// errChannelNotOnRadio marks a move refused because the radio does not have the
+// channel. It is an argument this radio will never accept, not hostapd
+// declining one it might have, so the API answers it 400 rather than 502.
+var errChannelNotOnRadio = errors.New("not a channel this radio has")
 
 // bandList is a radio's bands for a sentence: "2.4GHz only", "2.4GHz and 5GHz".
 func bandList(bands []string) string {
