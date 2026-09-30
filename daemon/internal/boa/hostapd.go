@@ -104,14 +104,17 @@ func hostapdCmd(iface, cmd string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	// An ABSTRACT local socket (leading "@"), not a /tmp path. The daemon runs
-	// with systemd PrivateTmp, so a socket it creates under /tmp is invisible to
+	// On Linux, an ABSTRACT local socket, not a /tmp path. The daemon runs with
+	// systemd PrivateTmp, so a socket it creates under /tmp is invisible to
 	// hostapd -- and hostapd's reply, sent to that path, is silently dropped,
 	// which shows up only as a read timeout (and only on hardware; a host build
 	// has no PrivateTmp). Abstract sockets live in the NETWORK namespace, which
 	// the daemon and hostapd share, so the reply arrives regardless of the
-	// private /tmp. Nothing on disk, so nothing to clean up.
-	local := fmt.Sprintf("@boa-hostapd-%d-%d", os.Getpid(), time.Now().UnixNano())
+	// private /tmp. macOS has no abstract namespace and gets a real file that
+	// release removes; see hostapdLocalAddr (#361).
+	local, release := hostapdLocalAddr(
+		fmt.Sprintf("boa-hostapd-%d-%d", os.Getpid(), time.Now().UnixNano()))
+	defer release() // after conn.Close, which is deferred below
 	conn, err := net.DialUnix("unixgram",
 		&net.UnixAddr{Name: local, Net: "unixgram"},
 		&net.UnixAddr{Name: sock, Net: "unixgram"})
