@@ -72,7 +72,7 @@ func TestAScannerProducesNoIdleRadioNote(t *testing.T) {
 	// "wlan0 is up but not serving the access point" is true of a scanner and
 	// reads as a fault. This is the note that made the box report its
 	// instrument as its problem.
-	if notes := bridgeNotes(scanningBox(true, time.Second), scanCfg); len(notes) != 0 {
+	if notes := bridgeNotes(scanningBox(true, time.Second), scanCfg, nil); len(notes) != 0 {
 		t.Errorf("a scanning radio is not worth a note: %+v", notes)
 	}
 }
@@ -85,7 +85,7 @@ func TestAScannerThatIsDownButScanningIsNotAFault(t *testing.T) {
 	// So a warning keyed on the interface being down would stand permanently
 	// over the one radio doing its job, which is exactly the confusion this
 	// role exists to end. Judged on the reading, never on the link.
-	if notes := bridgeNotes(scanningBox(false, time.Second), scanCfg); len(notes) != 0 {
+	if notes := bridgeNotes(scanningBox(false, time.Second), scanCfg, nil); len(notes) != 0 {
 		t.Errorf("down and scanning is working, not broken: %+v", notes)
 	}
 }
@@ -93,7 +93,7 @@ func TestAScannerThatIsDownButScanningIsNotAFault(t *testing.T) {
 func TestAStaleScannerIsWorthSaying(t *testing.T) {
 	// The thing that IS a fault: the figures have stopped moving, whatever the
 	// reason. Every channel colour on the box is quietly going stale.
-	notes := bridgeNotes(scanningBox(true, scanStaleAfter+time.Minute), scanCfg)
+	notes := bridgeNotes(scanningBox(true, scanStaleAfter+time.Minute), scanCfg, nil)
 	if len(notes) != 1 || notes[0].Level != "warn" {
 		t.Fatalf("want one warn note, got %+v", notes)
 	}
@@ -112,7 +112,7 @@ func TestAScannerWithNoReadingYetSaysSo(t *testing.T) {
 	bi := BridgeInfo{Ifaces: []IfaceInfo{
 		{Name: "wlan0", Role: RoleScanner, Wireless: true, Serving: false, Up: true},
 	}}
-	notes := bridgeNotes(bi, scanCfg)
+	notes := bridgeNotes(bi, scanCfg, nil)
 	if len(notes) != 1 || notes[0].Level != "info" {
 		t.Fatalf("want one info note, got %+v", notes)
 	}
@@ -129,7 +129,7 @@ func TestAConfiguredScannerThatIsNotThereIsAnError(t *testing.T) {
 	bi := BridgeInfo{Ifaces: []IfaceInfo{
 		{Name: "wlan-usb", Wireless: true, Serving: true, Up: true, AP: &APStatus{Enabled: true}},
 	}}
-	notes := bridgeNotes(bi, scanCfg)
+	notes := bridgeNotes(bi, scanCfg, nil)
 	if len(notes) != 1 || notes[0].Level != "error" {
 		t.Fatalf("want one error note, got %+v", notes)
 	}

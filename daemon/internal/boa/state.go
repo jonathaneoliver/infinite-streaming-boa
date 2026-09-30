@@ -389,6 +389,10 @@ type Engine struct {
 	// every rebuild of the bridge view. See noteAPLinkDown.
 	apLinkDown map[string]bool
 
+	// apDownSince is when each watched radio's access point was first seen not
+	// serving, for a reason nobody chose. See noteAPDown (#164).
+	apDownSince map[string]time.Time
+
 	// recovering guards ONE access-point recovery per radio at a time.
 	//
 	// Every power-on starts a background watch, and that watch can run for

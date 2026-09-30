@@ -831,6 +831,17 @@ damages packets, never link state.
   deliberately switched **off** is not reported as a fault: not serving is the
   correct state for a radio that is off, and the power control has already said
   what it did.
+- **A radio that stays down is a standing error, not just a log line.** hostapd
+  stays running when it fails to enable an interface, so its systemd unit reads
+  healthy and nothing restarts it — every health signal once read normal for
+  minutes while three clients had fallen off a dead radio. A log entry scrolls
+  away, so a watched radio whose access point has not been serving for more than
+  a minute, for a reason nothing here chose, carries an error note for as long as
+  it stays down, saying whether hostapd reports it disabled or reports it
+  enabled over a downed interface. The minute is the point: a scan or a channel
+  move takes a BSS down for seconds on purpose, and must not raise an alarm. A
+  radio switched off, or an access point taken down by the operator or a timed
+  outage, carries no note.
 - **An access point that does not survive a power cut is rebuilt, unasked.** A
   radio can come back from an outage with its driver reset underneath hostapd,
   which leaves hostapd asserting a BSS that is not on the air: every status
