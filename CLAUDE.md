@@ -68,6 +68,10 @@ cd daemon && go vet ./... && go test ./internal/boa/ -count=1
 cd ui && npm run typecheck
 ```
 
+`.github/workflows/checks.yml` runs the same on every PR, plus `gofmt -l` and
+`go test -race` -- so run those locally too, the race run especially when
+touching anything concurrent.
+
 Two of those tests guard contracts rather than behaviour, and both fail loudly
 rather than drifting:
 
