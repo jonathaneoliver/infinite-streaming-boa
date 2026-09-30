@@ -46,8 +46,36 @@ func TestValidMAC(t *testing.T) {
 }
 
 func TestHostapdSocket(t *testing.T) {
-	if got, want := hostapdSocket("wlan-usb"), "/var/run/hostapd/wlan-usb"; got != want {
-		t.Errorf("hostapdSocket = %q, want %q", got, want)
+	// Every naming scheme across the targets: the Pi's udev names, OpenWrt's
+	// phyN-apN, a bridge, a VLAN.
+	for iface, want := range map[string]string{
+		"wlan-usb":  "/var/run/hostapd/wlan-usb",
+		"wlan-usb2": "/var/run/hostapd/wlan-usb2",
+		"phy0-ap0":  "/var/run/hostapd/phy0-ap0",
+		"br-lan":    "/var/run/hostapd/br-lan",
+		"eth0.10":   "/var/run/hostapd/eth0.10",
+	} {
+		got, err := hostapdSocket(iface)
+		if err != nil || got != want {
+			t.Errorf("hostapdSocket(%q) = %q, %v; want %q", iface, got, err, want)
+		}
+	}
+}
+
+// The name comes from requests and the path is dialled as root, so anything
+// that is not an interface name must be refused before it becomes a path --
+// not left to whether the caller happened to run `ip link show` first (CodeQL
+// go/path-injection, alert #1).
+func TestHostapdSocketRefusesWhatCannotBeAnInterface(t *testing.T) {
+	for _, iface := range []string{
+		"", ".", "..",
+		"../../run/systemd/notify", "../wlan0", "a/b", "/etc/passwd",
+		"wlan0 x", "wlan0\n", "wlan0:1",
+		"sixteen-chars-xx", // one over the kernel's 15
+	} {
+		if got, err := hostapdSocket(iface); err == nil {
+			t.Errorf("hostapdSocket(%q) = %q, want a refusal", iface, got)
+		}
 	}
 }
 

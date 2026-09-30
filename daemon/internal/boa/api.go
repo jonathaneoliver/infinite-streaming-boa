@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io/fs"
 	"net/http"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -1839,6 +1840,22 @@ type sweepRequest struct {
 	Params  *SweepParams `json:"params"`
 }
 
+// serviceNameRE is what a service name may be: 1-64 characters, none of them a
+// control or format character. Deliberately loose on everything else --
+// "Disney+", "Apple TV" and "BBC iPlayer" are all names an operator types.
+var serviceNameRE = regexp.MustCompile(`^[^\p{C}]{1,64}$`)
+
+// validService refuses a service name that would not survive being logged or
+// shown. The name is written to the journal when a sweep starts and becomes the
+// ladder's key, so a newline in it forges a journal line and leaves a ladder no
+// one can name (CodeQL go/log-injection, alert #2).
+func validService(s string) error {
+	if !serviceNameRE.MatchString(s) {
+		return fmt.Errorf(`service must be 1-64 characters with no control characters, e.g. "netflix"`)
+	}
+	return nil
+}
+
 func validSweepParams(p SweepParams) error {
 	switch {
 	case p.StartMbps <= 0 || p.StartMbps > 100:
@@ -1885,6 +1902,10 @@ func (a *API) startSweep(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest,
 			"service is required: name what the device is streaming, e.g. \"netflix\". "+
 				"A ladder belongs to a service, not to a device")
+		return
+	}
+	if err := validService(service); err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	p := DefaultSweepParams()
@@ -2488,6 +2509,10 @@ func (a *API) putLadder(w http.ResponseWriter, r *http.Request) {
 	service := strings.TrimSpace(r.PathValue("service"))
 	if service == "" {
 		writeErr(w, http.StatusBadRequest, "service is required")
+		return
+	}
+	if err := validService(service); err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	if len(in.Rungs) == 0 {

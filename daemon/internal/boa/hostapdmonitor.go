@@ -257,10 +257,14 @@ func hostapdAttach(iface string) (*net.UnixConn, error) {
 	// A stable name means a restart re-attaches as the SAME monitor rather
 	// than accumulating a new one, so the worst case is one stale registration
 	// per radio instead of one per deploy.
+	sock, err := hostapdSocket(iface)
+	if err != nil {
+		return nil, err
+	}
 	local := fmt.Sprintf("@boa-hostapd-mon-%s", iface)
 	conn, err := net.DialUnix("unixgram",
 		&net.UnixAddr{Name: local, Net: "unixgram"},
-		&net.UnixAddr{Name: hostapdSocket(iface), Net: "unixgram"})
+		&net.UnixAddr{Name: sock, Net: "unixgram"})
 	if err != nil {
 		return nil, err
 	}
@@ -298,7 +302,11 @@ var monitorQuietCheck = 5 * time.Second
 // hostapdSocketID is the identity of a radio's control socket -- its inode --
 // and false when there is none. The seam a test replaces.
 var hostapdSocketID = func(iface string) (uint64, bool) {
-	fi, err := os.Stat(hostapdSocket(iface))
+	sock, err := hostapdSocket(iface)
+	if err != nil {
+		return 0, false
+	}
+	fi, err := os.Stat(sock)
 	if err != nil {
 		return 0, false
 	}
