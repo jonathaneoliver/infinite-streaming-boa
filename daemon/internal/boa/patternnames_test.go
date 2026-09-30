@@ -24,12 +24,10 @@ func TestEveryLegacyKindStillLoads(t *testing.T) {
 				want, got)
 		}
 	}
-	// The names actually in use today, spelled out rather than derived, so a
-	// constant renamed by accident fails here.
-	for _, k := range []string{
-		LinkDeauth, LinkDisassoc, LinkDeadzone,
-		RadioOff, RadioAPDown, RadioGather, RadioEvict, RadioDeauth, RadioScan,
-	} {
+	// Every name in use today. From the declared lists, which
+	// TestKindListsNameEveryConstant holds complete: the hand-written list that
+	// stood here had fallen four kinds behind (#235).
+	for _, k := range append(append([]string{}, linkKinds...), radioKinds...) {
 		if got := normaliseKind(k); got != k {
 			t.Errorf("current kind %q was rewritten to %q", k, got)
 		}

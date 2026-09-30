@@ -108,6 +108,17 @@ const (
 	LinkEvict = "evict" // push this client off the radio it is on
 )
 
+// linkKinds is every link event kind above, and radioKinds and deadzoneScopes
+// below are the same for their constants.
+//
+// Declared once so the validator's "want ..." messages read from them, and so
+// pattern_kinds_test.go can check two things a passing suite otherwise hid:
+// that every constant is in its list, and that the validator accepts every
+// kind in the list. A kind added to the UI and the player but missed in
+// validPattern is refused at save time as "unknown", which reads as the
+// operator's mistake (#235).
+var linkKinds = []string{LinkDeauth, LinkDisassoc, LinkDeadzone, LinkPin, LinkEvict}
+
 // Deadzone scope: which radios a deadzone holds a client off.
 //
 // The distinction only exists because this box can serve two radios from one
@@ -126,6 +137,10 @@ const (
 	// half-applied when a radio cannot be reached; see LinkDeadzone.
 	ScopeAll = "all"
 )
+
+// deadzoneScopes: see linkKinds. An empty scope is also accepted, and means
+// ScopeCurrent.
+var deadzoneScopes = []string{ScopeCurrent, ScopeAll}
 
 // LinkEvent is one entry on a pattern's link lane. A pulse (drop/nudge) fires
 // once as the playhead crosses AtSec; a deadzone re-fires for DurSec, holding
@@ -238,6 +253,12 @@ const (
 	// something else is happening to it.
 	RadioScan = "scan"
 )
+
+// radioKinds: see linkKinds.
+var radioKinds = []string{
+	RadioGather, RadioEvict, RadioDeauth, RadioOff,
+	RadioAPDown, RadioAPDownTell, RadioTxPower, RadioScan,
+}
 
 // minRadioOffSec is the shortest radio outage a pattern may author.
 //
@@ -469,6 +490,18 @@ const maxKeys = 256
 const maxPatternSec = 3600
 
 // validPattern rejects what the runtime cannot honestly play.
+// orList renders ks as "a, b or c", each formatted with verb.
+func orList(verb string, ks []string) string {
+	out := make([]string, len(ks))
+	for i, k := range ks {
+		out[i] = fmt.Sprintf(verb, k)
+	}
+	if len(out) < 2 {
+		return strings.Join(out, "")
+	}
+	return strings.Join(out[:len(out)-1], ", ") + " or " + out[len(out)-1]
+}
+
 func validPattern(p Pattern) error {
 	if len(p.Keys) < 2 {
 		return fmt.Errorf("a pattern needs at least two keyframes; one keyframe is just a policy")
@@ -521,8 +554,8 @@ func validPattern(p Pattern) error {
 			switch ev.Scope {
 			case "", ScopeCurrent, ScopeAll:
 			default:
-				return fmt.Errorf("link event %d: deadzone scope must be %q or %q (got %q)",
-					i, ScopeCurrent, ScopeAll, ev.Scope)
+				return fmt.Errorf("link event %d: deadzone scope must be %s (got %q)",
+					i, orList("%q", deadzoneScopes), ev.Scope)
 			}
 		case LinkEvict:
 			// Nowhere to name: an evict says where the client may NOT be, and
@@ -547,7 +580,7 @@ func validPattern(p Pattern) error {
 				return fmt.Errorf("link event %d: pin duration must be 0 (the default) to 300s", i)
 			}
 		default:
-			return fmt.Errorf("link event %d: unknown kind %q (want deauth, disassoc, deadzone, pin or evict)", i, ev.Kind)
+			return fmt.Errorf("link event %d: unknown kind %q (want %s)", i, ev.Kind, orList("%s", linkKinds))
 		}
 		if ev.Scope != "" && ev.Kind != LinkDeadzone {
 			return fmt.Errorf("link event %d: scope is deadzone only, not %s", i, ev.Kind)
@@ -621,10 +654,8 @@ func validPattern(p Pattern) error {
 				return fmt.Errorf("radio event %d: block must be at most %ds", i, maxPatternSec)
 			}
 		default:
-			return fmt.Errorf(
-				"radio event %d: unknown kind %q (want %s, %s, %s, %s, %s, %s or %s)",
-				i, ev.Kind, RadioGather, RadioEvict, RadioDeauth, RadioOff,
-				RadioAPDown, RadioAPDownTell, RadioScan)
+			return fmt.Errorf("radio event %d: unknown kind %q (want %s)",
+				i, ev.Kind, orList("%s", radioKinds))
 		}
 		if ev.AtSec < 0 || ev.AtSec > maxPatternSec {
 			return fmt.Errorf("radio event %d: at %gs is out of range", i, ev.AtSec)
