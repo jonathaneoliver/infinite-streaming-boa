@@ -415,7 +415,25 @@ const netemMinPackets = 10
 //     (#43).
 //
 // A queue of netemQueueMs at the cap bounds all three by that same 200 ms.
-func netemLimit(sh Shape) int {
+//
+// DOWNLINK ONLY. The uplink keeps the old sizing, a 1000-packet floor, and it is
+// a measurement, not an oversight. On the same target, with a 5 Mbps uplink cap
+// and the MacBook sending, set directly with tc and repeated in both orders:
+//
+//	limit   84 (200 ms)   -24 to -57 %   thousands of retransmits
+//	limit  420 (~1 s)     -10 to -17 %   no retransmits
+//	limit 1000 (~2.4 s)    -0.3 to -0.8 %
+//	limit 2000             -0.4 to -0.8 %
+//
+// So a bulk uplink sender needs the deep queue to fill a low cap, while the
+// downlink -- sent by the other end's stack, and where a player's segmented
+// fetches live -- is exact with a short one and loses the latency. Why the
+// Mac needs it is not established (the 420 row lost nothing and still fell
+// short); see #470.
+func netemLimit(sh Shape, up bool) int {
+	if up {
+		return netemLimitUp(sh)
+	}
 	rate := sh.RateMbps
 	if rate <= 0 {
 		// Unlimited: netem only delays, and there is no rate queue to size.
@@ -426,6 +444,17 @@ func netemLimit(sh Shape) int {
 	bdpPackets := rate * 1e6 * (sh.DelayMs + sh.JitterMs) / 1000.0 / (8.0 * mtuBytes)
 	queuePackets := rate * 1e6 * netemQueueMs / 1000.0 / (8.0 * mtuBytes)
 	return clampLimit(int(math.Ceil(bdpPackets*3+queuePackets)), netemMinPackets)
+}
+
+// netemLimitUp is the uplink's sizing: 3x the bandwidth-delay product, never
+// below 1000 packets, exactly as every direction was sized before #470.
+func netemLimitUp(sh Shape) int {
+	rate := sh.RateMbps
+	if rate <= 0 {
+		rate = 1000 // unlimited: size for a gigabit link's worth of in-flight data
+	}
+	bdp := rate * 1e6 * (sh.DelayMs + sh.JitterMs) / 1000.0 / (8.0 * mtuBytes)
+	return clampLimit(int(math.Ceil(bdp*3)), 1000)
 }
 
 func clampLimit(limit, floor int) int {
@@ -445,7 +474,7 @@ func clampLimit(limit, floor int) int {
 // milliseconds and percent; tc's command line takes those same literals; tc's
 // JSON readback reports bytes/sec, seconds and fractions. One conversion site
 // is what stops a factor-of-1000 error surfacing in a graph six months later.
-func (s *Shaper) writeNetem(dev string, minor int, sh Shape, exists bool) (bool, error) {
+func (s *Shaper) writeNetem(dev string, minor int, sh Shape, exists, up bool) (bool, error) {
 	// Class ids and handles are HEXADECIMAL to tc, both on input and in its
 	// JSON output. Formatting them as decimal creates a class whose real id is
 	// the hex reading of those digits (1:16 becomes 0x16, decimal 22), so every
@@ -465,7 +494,7 @@ func (s *Shaper) writeNetem(dev string, minor int, sh Shape, exists bool) (bool,
 		verb = "change"
 	}
 	args := []string{"qdisc", verb, "dev", dev, "parent", parent,
-		"handle", handle, "netem", "limit", fmt.Sprint(netemLimit(sh))}
+		"handle", handle, "netem", "limit", fmt.Sprint(netemLimit(sh, up))}
 
 	if sh.RateMbps > 0 {
 		// Expressed in bits so the kernel does its own rounding rather than
@@ -796,7 +825,7 @@ func (s *Shaper) Apply(want []Desired) []error {
 				errs = append(errs, err)
 			} else {
 				var err error
-				if next.haveDown, err = s.writeNetem(downPort, minor, w.Down, hadDown); err != nil {
+				if next.haveDown, err = s.writeNetem(downPort, minor, w.Down, hadDown, false); err != nil {
 					errs = append(errs, err)
 				}
 				if moved || !existed || prev.ip != w.IP || prev.v6 != v6key ||
@@ -814,7 +843,7 @@ func (s *Shaper) Apply(want []Desired) []error {
 			errs = append(errs, err)
 		} else {
 			var err error
-			if next.haveUp, err = s.writeNetem(s.wan, minor, w.Up, prev.haveUp); err != nil {
+			if next.haveUp, err = s.writeNetem(s.wan, minor, w.Up, prev.haveUp, true); err != nil {
 				errs = append(errs, err)
 			}
 			if !existed || prev.ip != w.IP || prev.v6 != v6key || prev.match != w.Match {
