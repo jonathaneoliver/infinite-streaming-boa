@@ -1520,6 +1520,7 @@ func (e *Engine) tick() {
 			Down:    c.DownCounters.ThroughputMbps,
 			Up:      c.UpCounters.ThroughputMbps,
 			Cap:     c.DownCounters.CapMbps,
+			CapUp:   c.UpCounters.CapMbps,
 			PhyDown: phyDown,
 			PhyUp:   phyUp,
 			Air:     air,

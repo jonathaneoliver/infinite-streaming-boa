@@ -353,6 +353,7 @@ func (e *Engine) demoTick() {
 			Down:    clients[i].DownCounters.ThroughputMbps,
 			Up:      clients[i].UpCounters.ThroughputMbps,
 			Cap:     clients[i].DownCounters.CapMbps,
+			CapUp:   clients[i].UpCounters.CapMbps,
 			Air:     air,
 			Iface:   sIface,
 			Channel: sChan,

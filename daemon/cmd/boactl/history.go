@@ -110,6 +110,9 @@ func cmdHistory(c *client, args []string) error {
 	if err := w.Write([]string{
 		"mac", "t_ms", "t_iso", "bucket_ms",
 		"down_mbps", "up_mbps", "cap_mbps", "phy_down_mbps", "phy_up_mbps",
+		// Appended, not inserted beside cap_mbps, so a script that reads the
+		// earlier columns by position keeps working. cap_mbps is the downlink's.
+		"cap_up_mbps",
 	}); err != nil {
 		return err
 	}
@@ -126,6 +129,7 @@ func cmdHistory(c *client, args []string) error {
 				time.UnixMilli(s.T).UTC().Format(isoMillis),
 				strconv.FormatInt(doc.BucketMs, 10),
 				num(s.Down), num(s.Up), num(s.Cap), num(s.PhyDown), num(s.PhyUp),
+				num(s.CapUp),
 			}); err != nil {
 				return err
 			}

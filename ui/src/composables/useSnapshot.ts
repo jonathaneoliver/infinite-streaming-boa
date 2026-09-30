@@ -60,7 +60,7 @@ export function useSnapshot() {
     const next = { ...series.value };
     for (const c of clients) {
       const s = next[c.mac] ??
-        { t: [], down: [], up: [], cap: [], phyDown: [], phyUp: [], air: [], iface: [], chan: [] };
+        { t: [], down: [], up: [], cap: [], capUp: [], phyDown: [], phyUp: [], air: [], iface: [], chan: [] };
       next[c.mac] = {
         t: [...s.t, now].slice(-HISTORY),
         down: [...s.down, c.down_counters.throughput_mbps].slice(-HISTORY),
@@ -68,6 +68,7 @@ export function useSnapshot() {
         // The ENFORCED cap, not the configured one: a shaping failure should
         // draw as the old value rather than as what was asked for.
         cap: [...s.cap, c.down_counters.cap_mbps].slice(-HISTORY),
+        capUp: [...s.capUp, c.up_counters.cap_mbps].slice(-HISTORY),
         // The link's ceiling beside what crossed it. Zero for a wired client,
         // which the chart draws as a gap rather than as a floor.
         phyDown: [...s.phyDown, c.station?.tx_phy_mbps ?? 0].slice(-HISTORY),
@@ -105,7 +106,7 @@ export function useSnapshot() {
     const next = { ...portSeries.value };
     for (const p of ports) {
       const s = next[p.iface] ??
-        { t: [], down: [], up: [], cap: [], phyDown: [], phyUp: [], air: [], iface: [], chan: [] };
+        { t: [], down: [], up: [], cap: [], capUp: [], phyDown: [], phyUp: [], air: [], iface: [], chan: [] };
       next[p.iface] = {
         ...s,
         t: [...s.t, now].slice(-HISTORY),
@@ -155,7 +156,7 @@ export function useSnapshot() {
         (body.clients ?? {}) as Record<
           string,
           {
-            t: number; down: number; up: number; cap?: number;
+            t: number; down: number; up: number; cap?: number; cap_up?: number;
             phy_down?: number; phy_up?: number; air?: number;
             iface?: string; channel?: number;
           }[]
@@ -168,6 +169,8 @@ export function useSnapshot() {
           // Absent on history written before caps were recorded; 0 reads as
           // unlimited, which draws no line rather than a wrong one.
           cap: samples.map((x) => x.cap ?? 0),
+          // Absent on history written before the uplink cap was recorded.
+          capUp: samples.map((x) => x.cap_up ?? 0),
           // Absent on history written before PHY was recorded; 0 draws no line.
           phyDown: samples.map((x) => x.phy_down ?? 0),
           phyUp: samples.map((x) => x.phy_up ?? 0),
@@ -208,6 +211,7 @@ export function useSnapshot() {
                 down: [...seed.down, ...live.down.slice(from)],
                 up: [...seed.up, ...live.up.slice(from)],
                 cap: [...seed.cap, ...live.cap.slice(from)],
+                capUp: [...seed.capUp, ...live.capUp.slice(from)],
                 air: [...seed.air, ...live.air.slice(from)],
                 phyDown: [...seed.phyDown, ...live.phyDown.slice(from)],
                 phyUp: [...seed.phyUp, ...live.phyUp.slice(from)],
