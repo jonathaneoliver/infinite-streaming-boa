@@ -261,22 +261,29 @@ func hostapdAttach(iface string) (*net.UnixConn, error) {
 	if err != nil {
 		return nil, err
 	}
-	local := fmt.Sprintf("@boa-hostapd-mon-%s", iface)
+	//
+	// Abstract on Linux; a real file elsewhere, released on every failure path.
+	// On success it is kept for the connection's life -- the name is stable, so
+	// the next attach replaces it rather than adding another (#361).
+	local, release := hostapdLocalAddr(fmt.Sprintf("boa-hostapd-mon-%s", iface))
 	conn, err := net.DialUnix("unixgram",
 		&net.UnixAddr{Name: local, Net: "unixgram"},
 		&net.UnixAddr{Name: sock, Net: "unixgram"})
 	if err != nil {
+		release()
 		return nil, err
 	}
 	_ = conn.SetDeadline(time.Now().Add(2 * time.Second))
 	if _, err := conn.Write([]byte("ATTACH")); err != nil {
 		conn.Close()
+		release()
 		return nil, err
 	}
 	buf := make([]byte, 256)
 	n, err := conn.Read(buf)
 	if err != nil || !strings.HasPrefix(string(buf[:n]), "OK") {
 		conn.Close()
+		release()
 		return nil, fmt.Errorf("%s refused ATTACH: %q", iface, strings.TrimSpace(string(buf[:n])))
 	}
 	return conn, nil
