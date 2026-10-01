@@ -28,6 +28,8 @@ const UI_KEYS = [
   'boa.tab',
   // Dark or light. See useTheme.
   'boa.theme',
+  // The traffic panel's "by adapter" / "by client". See BridgeView.
+  'boa.grouping',
 ] as const;
 
 export interface ConfigDoc {

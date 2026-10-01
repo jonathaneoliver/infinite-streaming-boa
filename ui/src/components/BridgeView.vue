@@ -129,7 +129,25 @@ const GROUPINGS = [
       + 'is absent, so this total is lower than the adapter total.',
   },
 ];
+/*
+ * Remembered per browser, like the theme and the folds. It used to reset to
+ * "by adapter" on every load, so anyone who reads this panel by client picked
+ * it again after each reload -- and every scripted capture had to click it.
+ *
+ * Only the two values this code knows are taken back; anything else, a hand
+ * edit or a key from a later build, falls back to the default. Wrapped for the
+ * same reasons as FLOWS_KEY below.
+ */
+const GROUPING_KEY = 'boa.grouping';
 const grouping = ref<'adapter' | 'client'>('adapter');
+try {
+  if (localStorage.getItem(GROUPING_KEY) === 'client') grouping.value = 'client';
+} catch { /* no stored preference is the same as the default */ }
+watchEffect(() => {
+  try {
+    localStorage.setItem(GROUPING_KEY, grouping.value);
+  } catch { /* a preference that cannot be saved is still worth honouring now */ }
+});
 
 /*
  * THE WAN IS NOT A BAND, AND THIS IS NOT TIDINESS.
