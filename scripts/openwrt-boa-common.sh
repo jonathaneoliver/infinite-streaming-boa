@@ -92,11 +92,23 @@ boa_try_wan() {
 # run from a terminal is only ever run by somebody standing at one, and its
 # whole point is to leave the wizard waiting for them -- for longer than two
 # minutes, and without a box whose SSH is open to the LAN if they take a break.
+#
+# BUT ONLY THE FRONT DOOR OF A BOX NOBODY HAS SET UP. The same script upgrades a
+# box in use, and putting the setup page back on / there makes it look reset.
+# MEASURED on the Cudy 2026-10-01 (#508): set up at 13:55, upgraded at 16:27,
+# and from then on http://<box>/ said "Set up this box". The first-run record
+# is what `boa-setup landing status` reads to say "done", so it decides here
+# too. Stopping the countdown stays unconditional: on a set-up box it is off
+# already. Echoes `held` or `set-up`.
 boa_hold_wizard() {
 	box '/etc/init.d/boa-firstrun stop >/dev/null 2>&1
 	     /etc/init.d/boa-firstrun disable >/dev/null 2>&1
-	     /usr/sbin/boa-setup landing on >/dev/null 2>&1
-	     :' >/dev/null 2>&1 || return 1
+	     if [ -f /etc/infinite-streaming-boa/firstrun ]; then
+	       echo set-up
+	     else
+	       /usr/sbin/boa-setup landing on >/dev/null 2>&1
+	       echo held
+	     fi' 2>/dev/null
 }
 
 # Find a WAN and configure it. Echoes the interface it settled on.
