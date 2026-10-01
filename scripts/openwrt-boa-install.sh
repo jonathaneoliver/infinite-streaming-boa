@@ -128,8 +128,12 @@ log "Installed and restarted. LuCI: Services -> infinite-streaming-boa"
 # minutes after a reset. That countdown is for a box nobody is standing at.
 # Somebody ran this script, so somebody is. --unattended leaves it armed.
 if [ "$HOLD_WIZARD" = 1 ]; then
-  if boa_hold_wizard; then
-    log "the unattended countdown is off; the wizard waits for you"
+  if held=$(boa_hold_wizard); then
+    if [ "$held" = set-up ]; then
+      log "already set up: http://<box>/ stays on LuCI"
+    else
+      log "the unattended countdown is off; the wizard waits for you"
+    fi
   else
     log "WARNING: could not stop the unattended countdown. This box will set"
     log "         itself up in about two minutes, with a generated SSID and"
