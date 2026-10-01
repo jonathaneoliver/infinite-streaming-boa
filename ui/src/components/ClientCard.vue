@@ -1433,7 +1433,7 @@ function fmtBytes(n: number): string {
       A deadzone this long can make the device give up on this Wi-Fi and switch
       to another network (iOS around 3s). It then leaves boa entirely — not just
       shown offline, but gone: no traffic and nothing to condition until it
-      rejoins the Pi's Wi-Fi on its own.
+      rejoins this box's Wi-Fi on its own.
     </p>
 
     <!-- The timeline sits directly under the controls that author it. The

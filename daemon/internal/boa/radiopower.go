@@ -1297,7 +1297,7 @@ func (e *Engine) moveChannelLocked(iface string, channel, widthMHz int, mode str
 	if !ok {
 		return ChannelMove{}, fmt.Errorf(
 			"channel %d is not offered: %s "+
-				"(DFS is excluded -- the Pi cannot serve an AP on one)",
+				"(DFS channels are excluded: boa does not serve an AP on one)",
 			channel, offeredChannels)
 	}
 	// Checked HERE rather than left to setChannelCommands, which is a pure

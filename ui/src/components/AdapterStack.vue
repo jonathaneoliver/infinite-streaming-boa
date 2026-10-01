@@ -619,8 +619,7 @@ const legend = computed(() => charts.value[0].bands);
            this is a claim about what can be asked of the hardware. -->
       <p v-if="cannotMeasure" class="none">
         This radio's driver does not report per-client airtime, so there is
-        nothing to stack — not an idle radio, no measurement. The onboard
-        brcmfmac chip omits the counters entirely; the USB adapters carry them.
+        nothing to stack — not an idle radio, no measurement.
       </p>
       <!-- Box-wide says "no record" rather than "no traffic". A stack with
            nothing in it here means no SAMPLES have arrived yet, where an empty
