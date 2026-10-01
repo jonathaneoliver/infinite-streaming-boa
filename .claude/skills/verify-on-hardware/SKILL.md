@@ -36,8 +36,8 @@ well as in a terminal.
 
 ```sh
 cd daemon && go build -o ~/.local/bin/boactl ./cmd/boactl   # once
-boactl probe          # over HTTP alone
-boactl probe -ssh     # plus the filter and hostapd read-backs below
+boactl probe          # over HTTP alone, hostapd state included
+boactl probe -ssh     # plus the tc filter read-back below
 ```
 
 Prefer it over assembling these commands by hand. Not because typing is slow,
