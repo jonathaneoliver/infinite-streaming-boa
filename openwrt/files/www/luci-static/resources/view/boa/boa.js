@@ -14,6 +14,25 @@ function portOf(addr, fallback) {
 	return p || fallback;
 }
 
+// LET THE FRAME HAVE THE WINDOW. LuCI's default theme puts every page in
+// `#maincontent.container` at max-width 1180px, which suits its forms and
+// starves boa: measured on a Cudy at 1920px, the frame got 1180 of 1905 (#510).
+// Every ancestor that caps the width is uncapped, rather than naming
+// #maincontent, because other themes name their container differently. It
+// touches this page only: LuCI loads each page afresh, so nothing carries over.
+// An ancestor left with no side padding gets some, so boa does not run into the
+// window's edge.
+function uncapWidth(node) {
+	for (var e = node.parentElement; e && e !== document.body; e = e.parentElement) {
+		var cs = window.getComputedStyle(e);
+		if (cs.maxWidth === 'none')
+			continue;
+		e.style.maxWidth = 'none';
+		if (parseFloat(cs.paddingLeft) < 16) e.style.paddingLeft = '16px';
+		if (parseFloat(cs.paddingRight) < 16) e.style.paddingRight = '16px';
+	}
+}
+
 return view.extend({
 	load: function() {
 		return uci.load('boa').catch(function() {});
@@ -72,6 +91,16 @@ return view.extend({
 			]),
 			frame
 		]);
+
+		// render's node is placed in the page some time after this returns --
+		// later than the next animation frame, measured -- so wait until it is
+		// in the document before walking its ancestors. Give up after ~5 s.
+		(function whenPlaced(tries) {
+			if (container.isConnected)
+				uncapWidth(container);
+			else if (tries > 0)
+				window.setTimeout(function() { whenPlaced(tries - 1); }, 50);
+		})(100);
 
 		// A no-cors probe: the response is opaque and unreadable, which is
 		// enough -- it resolves when something answered and rejects when
