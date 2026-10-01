@@ -115,6 +115,50 @@ the labels below are this box's own LuCI 25.12 rather than a guess.
 | 5 | Install boa | **System → Software** → *Install package* `luci-app-boa` |
 | 6 | **Everything else** | Open the box's own address, `http://192.168.1.1/`. It now shows **the setup page**, not LuCI. Four answers — network name, passphrase, country, root password — and Apply |
 
+#### What step 6 looks like on this box
+
+> Cudy TR3000, OpenWrt 25.12.5, boa `main` at #484, 2026-10-01. Captured after
+> `firstboot`, with boa installed and nothing else done. The landing and
+> Settings screens are from that first run. The Done panel is from a second
+> Apply with the same answers, because the first one leaves for boa on its own
+> after 15 seconds. It reads the same.
+
+![The landing page on the freshly reset Cudy: This device has not been set up
+yet, running with factory settings, no root password and its radios switched
+off, with a button reading Open the setup page](../docs/images/cudy-wizard-1-landing.png)
+
+**There is no login on the way in.** A box with no root password is open to
+anyone who can reach it, which is what the card says and what the last answer
+fixes.
+
+![The Settings step: Drivers already ticked, network name cudy1263, a masked
+passphrase twice, country US, a masked root password twice, and Make this a
+transparent bridge ticked](../docs/images/cudy-wizard-2-settings.png)
+
+**Drivers is ticked before you start, unlike on target 5.** Both of this box's
+radios are built into the MT7981, so there is nothing to install and no reboot.
+The x86 guest in [`README.md`](README.md#set-a-device-up-from-a-browser-the-first-run-wizard) has to install its
+radio's driver and restart first. The name is suggested from the board and the
+LAN MAC (`cudy-3f16` here); this one was changed to the existing network's name
+so the devices already on it rejoined by themselves.
+
+**Applying took seconds.** On the first run the log showed `wpad-basic-mbedtls`
+swapped for the full `wpad-mbedtls` (which upgrades `hostapd-common` with it),
+`umdns` installed so the box answers to `openwrt-cudy1263.local`, both access
+points configured, channels planned, and the conversion to a bridge. The whole
+run, plus the 15-second countdown on Done, was over within 20 seconds of
+pressing Apply.
+
+![The Done step: cudy1263 is serving on 2 access points, the root password is
+set, the device is now a transparent bridge whose address came from the
+upstream router, and it is now at openwrt-cudy1263.local, with buttons Go to
+boa, Go to OpenWrt and Change these settings](../docs/images/cudy-wizard-3-done.png)
+
+**It ends by naming where the box went.** As a bridge it takes its address from
+your router (`192.168.0.23` here), and `192.168.1.1` stays on the bridge as a
+rescue address. Unless you press **Stay here**, the page opens boa on its own
+after 15 seconds.
+
 **What the setup page does for you, and what this page used to list.** Steps 4 to 10 of
 the table as it used to read were, until the setup page existed, six things to do by
 hand: bridge the ports, stop serving DHCP, delete `wan`, add a rescue address,
