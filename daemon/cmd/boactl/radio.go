@@ -23,7 +23,9 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"net/url"
 	"os"
+	"strconv"
 	"strings"
 
 	"github.com/jonathaneoliver/infinite-streaming-boa/daemon/internal/boa"
@@ -43,9 +45,22 @@ func radioUsage() {
   ap on|off [-deauth]     hostapd closes the BSS, transmitter still on, so the
                           departure IS announced. -deauth sends the frame
   deauth-all              drop every station; the radio keeps serving
+  link-all deauth|disassoc
+                          the same, choosing the 802.11 frame: disassoc is the
+                          weaker of the two
+  steer [-to IFACE] [-mode M]
+                          ASK every client to move to another radio (802.11v).
+                          -to defaults to the box's other radio. -mode is what
+                          the request says: suggest (default), imminent,
+                          terminate, or insist -- the only one that drops a
+                          client, disassociating any still here after 5s
   gather [-pin S]         move every other radio's clients ONTO this one and
                           pin them by denying the alternatives
   evict [-pin S]          the mirror: empty this radio and deny it
+  txpower <dBm|auto>      set transmit power live; nobody is dropped. Refused
+                          on drivers known to ignore it
+  role scanner|ap         make the radio listen-only, or give it back to
+                          serving. Going listen-only drops its clients
 
 boactl bridge lists the radios and what each is serving.
 `)
@@ -63,7 +78,10 @@ func cmdRadio(c *client, args []string) error {
 
 	fs := flag.NewFlagSet("radio "+verb, flag.ExitOnError)
 	apply := fs.Bool("apply", false, "scan: move to the quietest channel found")
-	to := fs.Int("to", 0, "channel: the channel to move to")
+	// A string because it names two kinds of thing: a channel number for
+	// channel, a radio for steer. Parsed per verb below.
+	to := fs.String("to", "", "channel: the channel to move to; steer: the radio to steer to")
+	mode := fs.String("mode", "", "steer: suggest (default), imminent, terminate or insist")
 	width := fs.Int("width", 0, "channel: width in MHz (20, 40, 80); default 20")
 	restart := fs.Bool("restart", false,
 		"channel: force the down-and-up move even where the radio could announce it")
@@ -71,12 +89,12 @@ func cmdRadio(c *client, args []string) error {
 	deauth := fs.Bool("deauth", false, "ap: send a deauthentication so clients are told")
 	pin := fs.Float64("pin", 0, "gather/evict: seconds to hold the deny lists")
 
-	// on|off is a positional for power and ap, because "power off" reads as the
-	// thing it does and "power -on=false" does not.
-	var onOff string
+	// The verb's value is a positional, because "power off", "txpower 15" and
+	// "role scanner" read as the thing they do and "power -on=false" does not.
+	var arg string
 	rest := args[2:]
-	if len(rest) > 0 && (rest[0] == "on" || rest[0] == "off") {
-		onOff, rest = rest[0], rest[1:]
+	if len(rest) > 0 && !strings.HasPrefix(rest[0], "-") {
+		arg, rest = rest[0], rest[1:]
 	}
 	if err := fs.Parse(rest); err != nil {
 		return err
@@ -90,21 +108,40 @@ func cmdRadio(c *client, args []string) error {
 	case "scan":
 		return radioScan(c, iface, *apply, serving)
 	case "channel":
-		if *to == 0 {
-			return errors.New("radio channel needs -to, e.g. boactl radio wlan-usb channel -to 149")
+		ch, err := strconv.Atoi(*to)
+		if err != nil || ch <= 0 {
+			return errors.New("radio channel needs -to N, e.g. boactl radio wlan-usb channel -to 149")
 		}
-		return radioChannel(c, iface, *to, *width, serving, *restart)
+		return radioChannel(c, iface, ch, *width, serving, *restart)
 	case "power":
-		return radioPower(c, iface, onOff, *dur, serving)
+		return radioPower(c, iface, onOffArg(arg), *dur, serving)
 	case "ap":
-		return radioAP(c, iface, onOff, *deauth, serving)
+		return radioAP(c, iface, onOffArg(arg), *deauth, serving)
 	case "deauth-all":
 		return radioDeauthAll(c, iface, serving)
+	case "link-all":
+		return radioLinkAll(c, iface, arg, serving)
+	case "steer":
+		return radioSteer(c, iface, *to, *mode, serving)
 	case "gather", "evict":
 		return radioGatherEvict(c, iface, verb, *pin, serving)
+	case "txpower":
+		return radioTxPower(c, iface, arg)
+	case "role":
+		return radioRole(c, iface, arg, serving)
 	default:
-		return fmt.Errorf("unknown radio verb %q (try: scan, channel, power, ap, deauth-all, gather, evict)", verb)
+		return fmt.Errorf("unknown radio verb %q (try: scan, channel, power, ap, deauth-all, "+
+			"link-all, steer, gather, evict, txpower, role)", verb)
 	}
+}
+
+// onOffArg keeps power and ap to the two values they take, so "power of" is
+// refused as a missing argument rather than read as "on".
+func onOffArg(arg string) string {
+	if arg == "on" || arg == "off" {
+		return arg
+	}
+	return ""
 }
 
 // radioStations counts the clients the box currently sees on one radio. Best
@@ -303,5 +340,104 @@ func radioGatherEvict(c *client, iface, verb string, pin float64, serving int) e
 	// the deny list expires, and saying when is the difference between a
 	// measurement and a mystery ten minutes later.
 	fmt.Fprintln(os.Stderr, "the deny lists lift on their own; until they do, the clients cannot go back")
+	return nil
+}
+
+// radioLinkAll is deauth-all with the frame chosen. Disassociation is the
+// weaker of the two and some clients treat it differently -- which is the
+// point of being able to send either.
+func radioLinkAll(c *client, iface, kind string, serving int) error {
+	if kind == "" {
+		return errors.New("radio link-all needs deauth or disassoc, e.g. boactl radio wlan-usb link-all disassoc")
+	}
+	warnServing(iface, serving, "all of them are dropped, and may come straight back")
+	// The kind goes through unchecked: the daemon names the values it accepts,
+	// and a second list here would be one more thing to keep in step.
+	var res struct {
+		Kind     string `json:"kind"`
+		Stations int    `json:"stations"`
+	}
+	if err := c.postJSON("/api/bridge/radios/"+iface+"/link-all?kind="+url.QueryEscape(kind), nil, &res); err != nil {
+		return err
+	}
+	fmt.Printf("%s  link-all %s  %d station(s)\n", iface, res.Kind, res.Stations)
+	fmt.Fprintln(os.Stderr, "the radio is still serving; watch them return with: boactl events -follow")
+	return nil
+}
+
+// radioSteer asks every client on a radio to move. A REQUEST in three of its
+// four modes, exactly as link steer is for one client: a refusal is a result.
+// Only insist disconnects anybody, and then the client picks where it lands,
+// so `to` is what was asked for rather than where anyone went.
+func radioSteer(c *client, iface, to, mode string, serving int) error {
+	if mode == "insist" {
+		warnServing(iface, serving, "any still here after 5s are disassociated and choose their own AP")
+	}
+	q := url.Values{}
+	if to != "" {
+		q.Set("to", to)
+	}
+	if mode != "" {
+		q.Set("mode", mode)
+	}
+	path := "/api/bridge/radios/" + iface + "/steer"
+	if len(q) > 0 {
+		path += "?" + q.Encode()
+	}
+	var res struct {
+		To    string `json:"to"`
+		Asked int    `json:"asked"`
+		Mode  string `json:"mode"`
+	}
+	if err := c.postJSON(path, nil, &res); err != nil {
+		return err
+	}
+	fmt.Printf("%s  steer → %s  mode=%s  asked=%d\n", iface, res.To, res.Mode, res.Asked)
+	fmt.Fprintln(os.Stderr, "each client answers on its own schedule and may decline; a refusal is a\n"+
+		"result, not a failure. Watch for it with: boactl events -follow")
+	return nil
+}
+
+// radioTxPower sets transmit power on the phy. Nobody is dropped, and a driver
+// known to ignore the setting is refused by the daemon rather than reported as
+// done -- the mt7921u case, where it would otherwise read as working.
+func radioTxPower(c *client, iface, dbm string) error {
+	if dbm == "" {
+		return errors.New("radio txpower needs dBm or auto, e.g. boactl radio wlan-usb txpower 10")
+	}
+	var res struct {
+		Auto bool     `json:"auto"`
+		DBm  *float64 `json:"dbm"`
+	}
+	if err := c.postJSON("/api/bridge/radios/"+iface+"/txpower?dbm="+url.QueryEscape(dbm), nil, &res); err != nil {
+		return err
+	}
+	if res.Auto || res.DBm == nil {
+		fmt.Printf("%s  txpower auto (the driver decides)\n", iface)
+		return nil
+	}
+	fmt.Printf("%s  txpower %g dBm\n", iface, *res.DBm)
+	return nil
+}
+
+// radioRole turns a radio into a listen-only scanner or back into an access
+// point. A scanner serves nobody, so making one drops its clients; either way
+// the daemon restarts to pick up the new port, which takes about a second.
+func radioRole(c *client, iface, as string, serving int) error {
+	if as != "scanner" && as != "ap" {
+		return errors.New("radio role needs scanner or ap, e.g. boactl radio wlan-usb role scanner")
+	}
+	if as == "scanner" {
+		warnServing(iface, serving, "its access point stops and they are dropped")
+	}
+	var res struct {
+		Role string `json:"role"`
+		Now  string `json:"now"`
+	}
+	if err := c.postJSON("/api/bridge/radios/"+iface+"/role?as="+as, nil, &res); err != nil {
+		return err
+	}
+	fmt.Printf("%s  role %s  (now %s)\n", iface, res.Role, res.Now)
+	fmt.Fprintln(os.Stderr, "the daemon restarts to pick up the new port; boactl bridge shows it in a second or two")
 	return nil
 }
