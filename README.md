@@ -469,8 +469,8 @@ the unattended equivalent.
 - **`boa-setup check`** on the box — walks every prerequisite read-only and
   prints OK, WARN or FAIL with the fix. The unit here: 0 failed.
 
-![boa inside LuCI: the Services -> infinite-streaming-boa page framing boa's
-interface](docs/images/openwrt-luci.png)
+![boa inside LuCI on the Cudy: the Services -> infinite-streaming-boa page
+framing boa's interface, both in the light theme](docs/images/cudy-luci.png)
 
 Every step, as run on that unit, at a shell as well as in LuCI — and how to put
 the box back to out-of-box from a workstation — is in
