@@ -216,6 +216,8 @@ func (e *Engine) demoBackfill() {
 // has set, so dragging a slider visibly changes the graph -- without that the
 // controls feel dead and the interface cannot really be judged.
 func (e *Engine) demoTick() {
+	e.tickMu.Lock()
+	defer e.tickMu.Unlock()
 	now := time.Now()
 	t := float64(now.UnixMilli()) / 1000.0
 	policies := e.st.All()
