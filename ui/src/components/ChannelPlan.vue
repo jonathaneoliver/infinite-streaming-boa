@@ -544,8 +544,8 @@ function cellNote(radio: IfaceInfo, row: PlanRow, cell: PlanCell): string {
   font-size: 11px;
 }
 .plan-cost .badge { padding: 0 5px; border-radius: 3px; }
-.plan-cost .seamless { background: var(--ok-bg, #14351f); color: var(--ok, #6ee7a0); }
-.plan-cost .disruptive { background: var(--warn-bg, #3a2a12); color: var(--warn, #f0b840); }
+.plan-cost .seamless { background: var(--ok-bg); color: var(--ok, #6ee7a0); }
+.plan-cost .disruptive { background: var(--warn-bg); color: var(--warn, #f0b840); }
 .plan-cost .force { display: flex; align-items: center; gap: 4px; color: var(--dim); }
 .plan-cost .force input { margin: 0; }
 .plan-cost .why { color: var(--dim); }
@@ -579,7 +579,7 @@ function cellNote(radio: IfaceInfo, row: PlanRow, cell: PlanCell): string {
   line-height: 11px;
   /* A hairline under the label, so the eye reads it as a bracket over the
      channels beneath rather than as a caption floating above the whole plan. */
-  border-bottom: 1px solid var(--rule, rgba(255, 255, 255, 0.12));
+  border-bottom: 1px solid var(--rule);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;

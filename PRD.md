@@ -753,6 +753,11 @@ damages packets, never link state.
   and which radio is serving with its negotiated bus speed. A USB adapter that
   quietly enumerated at High-Speed is invisible from every other angle, so it
   must not become invisible.
+- The header also switches the page between a **dark** theme, the default, and
+  a **light** one based on OpenWrt's LuCI palette, so boa opened beside LuCI
+  reads as part of the same appliance. The choice is per browser, survives a
+  reload, and travels in an exported configuration with the other view
+  preferences. Direction keeps its hue in both: downlink blue, uplink orange.
 
 - State arrives as **complete snapshots** over server-sent events, with polling
   as an equivalent fallback. A dropped frame cannot cause drift.

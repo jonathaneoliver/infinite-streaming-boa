@@ -266,7 +266,7 @@ function onManual(e: Event) {
   background: var(--panel);
   border: 1px solid var(--line);
   border-radius: var(--r);
-  box-shadow: 0 6px 16px -8px rgb(0 0 0 / 0.55);
+  box-shadow: 0 6px 16px -8px var(--shadow);
 }
 
 /* A SHORT VIEWPORT GETS IT BACK IN THE FLOW. The bar wraps to two or three

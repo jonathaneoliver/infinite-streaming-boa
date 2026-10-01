@@ -1620,8 +1620,8 @@ function fmtBytes(n: number): string {
 /* 5GHz and 2.4GHz told apart at a glance. Not the direction pair's blue and
    orange -- those mean downlink and uplink everywhere else in this interface,
    and reusing them here would make band look like direction. */
-.badge.band5 { color: #7dd3fc; border-color: color-mix(in srgb, #7dd3fc 40%, var(--line)); }
-.badge.band24 { color: #c4b5fd; border-color: color-mix(in srgb, #c4b5fd 40%, var(--line)); }
+.badge.band5 { color: var(--band5); border-color: color-mix(in srgb, var(--band5) 40%, var(--line)); }
+.badge.band24 { color: var(--band24); border-color: color-mix(in srgb, var(--band24) 40%, var(--line)); }
 .dist-row {
   display: flex;
   align-items: center;

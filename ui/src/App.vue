@@ -4,6 +4,7 @@ import { useSnapshot } from '@/composables/useSnapshot';
 import { useDevice } from '@/composables/useDevice';
 import { ntopngUrl, glancesUrl } from '@/types';
 import { exportConfig, importConfig } from '@/composables/useConfig';
+import { theme, toggleTheme } from '@/composables/useTheme';
 import ClientsView from '@/components/ClientsView.vue';
 import BridgeView from '@/components/BridgeView.vue';
 import ChartToolbar from '@/components/ChartToolbar.vue';
@@ -272,6 +273,14 @@ the file are replaced, devices not mentioned are left alone.">
           class="hidden-file" @change="onLoadConfig"
         />
       </label>
+      <!-- Dark or light, labelled with the theme a press switches TO. -->
+      <button
+        class="pill link"
+        :title="theme === 'dark'
+          ? 'Switch to the light theme, after OpenWrt\'s LuCI'
+          : 'Switch to the dark theme'"
+        @click="toggleTheme()"
+      >{{ theme === 'dark' ? '☀ light' : '☾ dark' }}</button>
       <!-- THE LINK AND ITS SWITCH, together, because they are about the same
            thing and were previously in two places -- a row on the bridge
            screen for the switches and these pills for the links.

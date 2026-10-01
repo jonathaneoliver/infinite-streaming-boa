@@ -36,6 +36,65 @@
     "Helvetica Neue", Arial, sans-serif;
 
   --r: 8px;
+
+  /* Colours that were literals in single components, lifted here so the light
+     theme can restate them. Dark values are unchanged from the literals. */
+  --band5: #7dd3fc;
+  --band24: #c4b5fd;
+  /* Violet sits clear of --down blue and --up orange, which mean DIRECTION
+     everywhere else in boa and must not be borrowed for a radio. */
+  --violet: #a78bfa;
+  --violet-lit: #c084fc;
+  --ok-bg: #14351f;
+  --warn-bg: #3a2a12;
+  --rule: rgba(255, 255, 255, 0.12);
+  --led-hover: rgb(255 255 255 / 8%);
+  --live-glow: rgb(74 222 128 / 0.15);
+  --shadow: rgb(0 0 0 / 0.55);
+
+  color-scheme: dark;
+}
+
+/*
+ * LIGHT, after OpenWrt's default LuCI theme (bootstrap), so boa opened beside
+ * LuCI reads as part of the same appliance: white sections on a near-white
+ * page, #ddd rules, #404040 text, and LuCI's own primary blue #0069d6 -- which
+ * conveniently is also a downlink blue, so direction keeps its hue across the
+ * switch. Success, warning and danger follow LuCI's alert colours, darkened
+ * where LuCI's own were too pale to carry text on white.
+ *
+ * Only tokens change. Anything that reads a token follows the switch with no
+ * code of its own; the chart palettes, which are JavaScript, read useTheme.
+ */
+:root[data-theme='light'] {
+  --bg: #f9f9f9;
+  --panel: #ffffff;
+  --panel-2: #f5f5f5;
+  --line: #dddddd;
+  --line-soft: #eeeeee;
+
+  --ink: #404040;
+  --ink-dim: #666666;
+  --ink-faint: #888888;
+
+  --down: #0069d6;
+  --up: #c4510f;
+  --ok: #3a8f3a;
+  --warn: #b86e00;
+  --bad: #c43c35;
+
+  --band5: #0b7fae;
+  --band24: #7650d0;
+  --violet: #7c5ce6;
+  --violet-lit: #9b3fd6;
+  --ok-bg: #dff0d8;
+  --warn-bg: #fcf8e3;
+  --rule: rgba(0, 0, 0, 0.1);
+  --led-hover: rgb(0 0 0 / 8%);
+  --live-glow: rgb(58 143 58 / 0.18);
+  --shadow: rgb(0 0 0 / 0.18);
+
+  color-scheme: light;
 }
 
 * { box-sizing: border-box; }
@@ -100,7 +159,7 @@ header.top .sub { color: var(--ink-faint); font-size: 13px; }
   color: var(--ink-dim);
 }
 .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--ink-faint); }
-.dot.live { background: var(--ok); box-shadow: 0 0 0 3px rgb(74 222 128 / 0.15); }
+.dot.live { background: var(--ok); box-shadow: 0 0 0 3px var(--live-glow); }
 .dot.stale { background: var(--warn); }
 .dot.off { background: var(--bad); }
 
@@ -394,7 +453,7 @@ select, input[type='text'], input[type='number'] {
      area is padded out without moving anything around it. */
   box-shadow: 0 0 0 4px transparent;
 }
-.led:hover { box-shadow: 0 0 0 4px rgb(255 255 255 / 8%); }
+.led:hover { box-shadow: 0 0 0 4px var(--led-hover); }
 .led.on { background: var(--ok); }
 .led:disabled { cursor: default; opacity: 0.5; }
 

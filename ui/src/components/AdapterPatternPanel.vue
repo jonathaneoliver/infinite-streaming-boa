@@ -1225,11 +1225,9 @@ watch(
 </template>
 
 <style scoped>
-/* Violet sits clear of --down blue and --up orange, which mean DIRECTION
-   everywhere else in boa and must not be borrowed for a radio. */
 /* No box of its own: the rack wrapper around this IS the fold, so a second
-   border here would draw a card inside a card. */
-.adapter { --violet: #a78bfa; --violet-lit: #c084fc; }
+   border here would draw a card inside a card. Its violet (--violet,
+   --violet-lit) is a theme token in style.css. */
 
 /* The rack's collapsed row, not a panel header: same padding, same gap, same
    weight, so this line sits among the adapters rather than beside them. The
