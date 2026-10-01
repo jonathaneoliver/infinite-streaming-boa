@@ -19,6 +19,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"net/url"
 	"os"
 	"strings"
 )
@@ -31,7 +32,10 @@ func cmdLink(c *client, args []string) error {
   disassoc [-reason N]   as deauth, but the weaker of the two 802.11 frames
   deadzone [-dur S]      hold it off the AP for S seconds (default 10, 1-300),
                          a sustained outage long enough to stall a stream
-  steer                  ASK it to move to the box's other radio
+  steer [-mode M]        ASK it to move to the box's other radio. -mode is what
+                         the request says: suggest (default), imminent,
+                         terminate, or insist -- which disassociates it after
+                         5s if it has not left, and lets it pick where to land
   measure                ASK it to report what it hears from the other radios
                          (802.11k beacon request)
 
@@ -52,6 +56,7 @@ Link control needs hostapd to be serving the radio the client is on.
 	fs := flag.NewFlagSet("link "+action, flag.ExitOnError)
 	reason := fs.Int("reason", 0, "802.11 reason code, 1-65535 (deauth and disassoc)")
 	dur := fs.Float64("dur", 0, "seconds to hold the client off, 1-300 (deadzone)")
+	mode := fs.String("mode", "", "steer: suggest (default), imminent, terminate or insist")
 	if err := fs.Parse(args[2:]); err != nil {
 		return err
 	}
@@ -88,6 +93,11 @@ Link control needs hostapd to be serving the radio the client is on.
 			return fmt.Errorf("%s has nowhere to be steered to -- it is on the only radio serving, "+
 				"or the box has one radio", cl.MAC)
 		}
+		// Passed through unchecked: the daemon names the four it accepts, and a
+		// second list here would be one more thing to keep in step.
+		if *mode != "" {
+			query = append(query, "mode="+url.QueryEscape(*mode))
+		}
 	case "measure":
 		path += "measure"
 	default:
@@ -105,7 +115,7 @@ Link control needs hostapd to be serving the radio the client is on.
 		return err
 	}
 	fmt.Printf("%s  %s", cl.MAC, action)
-	for _, k := range []string{"from", "to", "dur_sec", "requested", "reason", "delivered"} {
+	for _, k := range []string{"from", "to", "mode", "dur_sec", "requested", "reason", "delivered"} {
 		if v, ok := res[k]; ok {
 			fmt.Printf("  %s=%v", k, v)
 		}

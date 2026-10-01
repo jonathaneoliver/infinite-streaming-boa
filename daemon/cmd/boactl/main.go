@@ -344,9 +344,11 @@ Change -- these act on a live network:
   sweep <mac|label> -service S measure a rendition ladder (owns the cap)
   pattern play|stop|list       play a timeline, per device or box-wide
   radio <iface> <verb>         scan, channel, power, ap, deauth-all,
-                               gather, evict -- all AP-wide
+                               link-all, steer, gather, evict, txpower,
+                               role -- all AP-wide
   link <mac|label> <action>    deauth, disassoc, deadzone, steer or measure
-  config apply <file>          replace every policy on the box
+  config apply <file>          merge a configuration in; nothing the
+                               file omits is touched
   config get [-o file]         export them first
 
 Check:
@@ -529,7 +531,8 @@ func cmdSurvey(c *client, iface string) error {
 func cmdConfig(c *client, args []string) error {
 	if helpWanted(args) {
 		fmt.Fprint(os.Stderr, "boactl config get [-o file]   export the box's configuration\n"+
-			"boactl config apply <file>    send one back, replacing every policy\n")
+			"boactl config apply <file>    send one back. MERGES: what the file carries\n"+
+			"                              is written, and nothing it omits is touched\n")
 		return nil
 	}
 	if len(args) == 0 {
@@ -560,22 +563,41 @@ func cmdConfig(c *client, args []string) error {
 		fmt.Fprintf(os.Stderr, "wrote %s (%d bytes)\n", *out, len(pretty)+1)
 		return describeExport(raw)
 	case "apply":
+		// A MERGE, though this said "replacing every policy" from the day it
+		// was written: the endpoint has merged by default since before boactl
+		// existed, so a device left out of the file was quietly kept by a
+		// command that promised to clear it.
+		//
+		// Deliberately no way to ask for replace. An export has carried no
+		// device policies since version 2, and replace deletes every device the
+		// document omits -- so `config get` followed by a replace would wipe
+		// every device's conditioning on the box while looking like a restore.
 		if len(args) < 2 {
 			return errors.New("config apply needs a file")
 		}
-		body, err := os.ReadFile(args[1])
+		file := args[1]
+		body, err := os.ReadFile(file)
 		if err != nil {
 			return err
 		}
 		// Rejected early rather than posted and refused, so a typo names its
 		// own line instead of coming back as a 400.
 		if !json.Valid(body) {
-			return fmt.Errorf("%s is not valid JSON", args[1])
+			return fmt.Errorf("%s is not valid JSON", file)
 		}
-		if err := c.post("/api/config", body); err != nil {
+		var res struct {
+			Mode     string   `json:"mode"`
+			Wrote    []string `json:"wrote"`
+			Removed  []string `json:"removed"`
+			Patterns int      `json:"patterns"`
+			Ladder   bool     `json:"ladder"`
+		}
+		if err := c.postJSON("/api/config", body, &res); err != nil {
 			return err
 		}
-		fmt.Fprintf(os.Stderr, "applied %s\n", args[1])
+		fmt.Printf("applied %s  (%s)  %d device(s) written, %d removed, %d pattern(s)%s\n",
+			file, res.Mode, len(res.Wrote), len(res.Removed), res.Patterns,
+			map[bool]string{true: ", ladder"}[res.Ladder])
 		return nil
 	default:
 		return fmt.Errorf("unknown config command %q", args[0])

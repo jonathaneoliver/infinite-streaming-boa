@@ -4201,10 +4201,11 @@ boactl sweep "Apple TV" -service netflix  # measure its rendition ladder
 boactl pattern play "Apple TV" -name ramp_down   # and: pattern stop, pattern list
 boactl radio wlan-usb-46c7 scan           # free on the onboard radio
 boactl radio wlan-usb-46c7 channel -to 149  # announced where the radio can; -restart forces the outage
-boactl link "Apple TV" deauth             # and: disassoc, deadzone, steer, measure
+boactl radio wlan0 steer -mode imminent   # ask everyone to move; also link-all, txpower, role
+boactl link "Apple TV" deauth             # and: disassoc, deadzone, steer [-mode], measure
 boactl events -follow > run.ndjson        # what HAPPENED, as it happens
 boactl history -window 10m -o run.csv     # what the link was DOING, per second
-boactl config get -o boa-config.json      # and: boactl config apply <file>
+boactl config get -o boa-config.json      # and: boactl config apply <file>, which merges
 boactl probe                     # assert the box is really doing its job
 ```
 
