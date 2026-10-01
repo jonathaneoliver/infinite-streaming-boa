@@ -404,23 +404,47 @@ apk update && apk add luci-app-boa
 Open `http://192.168.1.1/` from a **wired** port. It now shows boa's setup page
 instead of LuCI.
 
-![The Settings step: network name, passphrase, country, root password, and a
-ticked checkbox for Make this a transparent bridge](docs/images/wizard-4-settings.png)
+![The landing page on a freshly reset Cudy: This device has not been set up
+yet, running with factory settings, no root password and its radios switched
+off, with a button reading Open the setup page](docs/images/cudy-wizard-1-landing.png)
 
-Network name, passphrase, country, root password — then Apply. It installs the
-full `wpad` (the default one cannot steer or measure) and mDNS, turns 802.11k/v
-on, enables the radios, plans a channel for each, sets the root password, and
-converts the box into a **transparent bridge**: both ports and every radio on
-one bridge, the upstream router the only DHCP server, and `192.168.1.1` kept as
-a rescue address. It ends by naming the box's new address, because bridging
-changes it — typically `openwrt-<ssid>.local`.
+There is no login on the way in: a box with no root password is open to anyone
+who can reach it, which is what the card says and what the last answer fixes.
+
+![The Settings step: Drivers already ticked, network name cudy1263, a masked
+passphrase twice, country US, a masked root password twice, and Make this a
+transparent bridge ticked](docs/images/cudy-wizard-2-settings.png)
+
+Network name, passphrase, country, root password — then Apply. **Drivers is
+already ticked**, because both radios are built into the MT7981, so there is
+nothing to install and no reboot. The name is suggested from the board and the
+LAN MAC; use your existing network's name if you want devices already on it to
+rejoin by themselves.
+
+Applying installs the full `wpad` (the default one cannot steer or measure) and
+mDNS, turns 802.11k/v on, enables both radios, plans a channel for each, sets
+the root password, and converts the box into a **transparent bridge**: both
+ports and every radio on one bridge, the upstream router the only DHCP server,
+and `192.168.1.1` kept as a rescue address. On the Cudy the whole run took
+seconds — over within 20 s of pressing Apply, countdown included.
+
+![The Done step: cudy1263 is serving on 2 access points, the root password is
+set, the device is now a transparent bridge whose address came from the
+upstream router, and it is now at openwrt-cudy1263.local, with buttons Go to
+boa, Go to OpenWrt and Change these settings](docs/images/cudy-wizard-3-done.png)
+
+**It ends by naming where the box went**, because bridging changes its address:
+it is now `openwrt-<ssid>.local`, with an address from your router. Unless you
+press **Stay here**, the page opens boa by itself after 15 seconds.
 
 The bridge is not optional: boa shapes each client's uplink by that client's
 own address, and behind NAT every client would leave wearing the router's.
 
-The screenshots were captured on the OpenWrt VM target; the page is the same.
+Captured on a Cudy TR3000 from a factory reset, 2026-10-01.
+[`openwrt/CUDY-TR3000.md`](openwrt/CUDY-TR3000.md#what-step-6-looks-like-on-this-box)
+has the run in more detail, and
 [`openwrt/README.md`](openwrt/README.md#set-a-device-up-from-a-browser-the-first-run-wizard)
-walks it screen by screen, and has the unattended equivalent.
+the unattended equivalent.
 
 ### 5. Use it
 
