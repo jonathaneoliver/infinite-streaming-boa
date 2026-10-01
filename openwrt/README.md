@@ -270,20 +270,31 @@ running them again is safe; `plan-channels` is not quite, see below.
 ### `boa-setup install-drivers`
 
 ```sh
-boa-setup install-drivers --dry-run
-boa-setup install-drivers
+boa-setup install-drivers --all --dry-run
+boa-setup install-drivers --all
 ```
 
 Installs the kmod packages for adapters that have no driver, on both the USB
 and the PCI bus. It installs only for adapters boa recognises. An unknown
 adapter is listed under "No package known for" to be reported, not guessed at.
 
-**A radio may need a reboot after this.** apk can install a module before its
-firmware, and the kernel loads the module as soon as it lands, fails to find
-the firmware, and never retries. Measured on the x86-64 guest with an
-MT7915E. `install-drivers` checks afterwards rather than assuming, names any
-adapter that is still without a driver, and exits 1. A reboot fixes it, and so
-does reloading the module.
+**`--all` installs every driver boa knows for the device's buses, plugged in
+or not**, so an adapter added later works the moment it is plugged in. The
+setup page does this. USB is every box: the MT7921AU and MT7612U radios and
+the RTL8152/8153/8156 Ethernet adapters. PCI is added only where there is a
+PCI bus. Without `--all` it installs only for adapters present now. Measured
+on the Cudy TR3000, 2026-10-01: the USB set is 14 packages and about 1.4 MiB,
+against 35 MiB free. Afterwards an MT7921AU became a third radio with no
+restart, boa's radio hook put it on the box's network on channel 36, and a
+replug brought it back serving in 5 s.
+
+**No reboot.** apk can install a module before its firmware, and the kernel
+loads the module as soon as it lands, fails to find the firmware, and never
+retries. Measured on the x86-64 guest with an MT7915E. `install-drivers`
+checks afterwards rather than assuming, and **re-probes** any adapter still
+without a driver: a software replug for USB, a remove and rescan for PCI. Only
+if that fails too does it name the adapter and exit 1, and then a reboot is
+the fallback.
 
 This is the command for the x86 image, which ships no USB Wi-Fi or USB
 ethernet drivers (see the top of this file). The Cudy's image has none either:

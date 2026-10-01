@@ -54,6 +54,9 @@
 				],
 				"/usr/sbin/boa-setup install-drivers --background": [
 					"exec"
+				],
+				"/usr/sbin/boa-setup install-drivers --background --all": [
+					"exec"
 				]
 			}
 		}

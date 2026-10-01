@@ -28,6 +28,17 @@ deliberate and documented so they are not mistaken for defects — see
 
 ### Added
 
+- **USB adapters are plug-and-play on OpenWrt** (#503). The setup page now
+  installs every driver boa knows for the device's buses, whether or not
+  anything is plugged in: the MT7921AU and MT7612U radios and the
+  RTL8152/8153/8156 Ethernet adapters everywhere, the PCI ones where there is a
+  PCI bus. Before this, an adapter plugged in after setup did nothing until
+  someone ran a command, because only adapters present during setup got a
+  driver. On a Cudy the USB set costs about 1.4 MiB. `boa-setup install-drivers
+  --all` does the same on a device that is already set up. When a driver loads
+  before its firmware, it now re-probes the adapter in software instead of
+  asking for a reboot.
+
 - **A wired USB adapter joins the bridge when it is plugged in**, on OpenWrt.
   A new hotplug hook runs `boa-setup bridge-port`, which adds the adapter to
   `br-lan` in uci once; netifd then bridges it by itself on every later replug.

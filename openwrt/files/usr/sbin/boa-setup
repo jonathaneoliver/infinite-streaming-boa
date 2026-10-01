@@ -14,9 +14,11 @@
 #                        replace the stock wpad-basic with the full build, so
 #                        steer and measure work. Refuses while APs are up.
 #                        Adds hostapd_cli (hostapd-utils) for diagnosis.
-#   boa-setup install-drivers
-#                        install the kmod packages for USB adapters that have
-#                        no driver -- what `check` describes, done.
+#   boa-setup install-drivers [--all] [--dry-run]
+#                        install the kmod packages for adapters that have no
+#                        driver -- what `check` describes, done. --all installs
+#                        every driver boa knows for this device's buses, so an
+#                        adapter plugged in later just works; the wizard does.
 #   boa-setup bridge-port <ifname>
 #                        add a wired USB adapter to br-lan for good, so it
 #                        rejoins on every replug. The net hotplug hook runs it.
@@ -91,6 +93,9 @@ known_usb() {
 		0bda:8152) echo "eth kmod-usb-net-rtl8152|Realtek RTL8152 (100 Mb)" ;;
 	esac
 }
+# Every id known_usb answers for, so install-drivers --all can install the lot
+# without anything being plugged in. Keep in step with the table above.
+KNOWN_USB_IDS="0e8d:7961 0e8d:7612 0bda:8156 0bda:8153 0bda:8152"
 
 # The same table for PCI, keyed the same way. The firmware is a separate
 # package here as it is for the USB parts, and installing the kmod without it
@@ -105,6 +110,25 @@ known_pci() {
 		168c:003e) echo "wifi kmod-ath10k-ct ath10k-firmware-qca6174-ct|Qualcomm QCA6174 (Wi-Fi 5)" ;;
 		10ec:8125) echo "eth kmod-r8169|Realtek RTL8125 (2.5 GbE)" ;;
 	esac
+}
+# Every id known_pci answers for. Keep in step with the table above.
+KNOWN_PCI_IDS="14c3:7915 14c3:7906 14c3:7925 168c:003e 10ec:8125"
+
+# Every package in the tables for a bus this box has, whether or not anything
+# is plugged into it. PCI only where there is a PCI bus at all: the Cudy has
+# none exposed, and a PCIe radio's firmware is megabytes it could never use.
+all_known_pkgs() {
+	local id info
+	if [ -n "$(ls /sys/bus/usb/devices 2>/dev/null)" ]; then
+		for id in $KNOWN_USB_IDS; do
+			info="$(known_usb "$id")"; info="${info#* }"; echo "${info%%|*}"
+		done
+	fi
+	if [ -n "$(ls /sys/bus/pci/devices 2>/dev/null)" ]; then
+		for id in $KNOWN_PCI_IDS; do
+			info="$(known_pci "$id")"; info="${info#* }"; echo "${info%%|*}"
+		done
+	fi
 }
 
 # One report for one adapter, whichever bus it came off.
@@ -623,6 +647,26 @@ note_if_still_bare() {
 	[ -n "$drv" ] && return 0
 	STILL_BARE="$STILL_BARE  ${info#*|} at $where
 "
+	BARE_AT="$BARE_AT ${where% *}:${where#* }"
+}
+
+# Probe an adapter again, as a replug would, so a driver whose firmware landed
+# after it loaded gets a second chance. A reboot does the same thing to every
+# device on the box; this does it to the one that needs it. $1 is "usb:2-1" or
+# "pci:0000:00:09.0", as note_if_still_bare records them.
+reprobe() {
+	local bus="${1%%:*}" addr="${1#*:}"
+	case "$bus" in
+		usb)
+			[ -w "/sys/bus/usb/devices/$addr/authorized" ] || return 1
+			echo 0 > "/sys/bus/usb/devices/$addr/authorized" &&
+				sleep 1 && echo 1 > "/sys/bus/usb/devices/$addr/authorized" ;;
+		pci)
+			[ -w "/sys/bus/pci/devices/$addr/remove" ] || return 1
+			echo 1 > "/sys/bus/pci/devices/$addr/remove" &&
+				sleep 1 && echo 1 > /sys/bus/pci/rescan ;;
+		*) return 1 ;;
+	esac
 }
 
 cmd_install_drivers() {
@@ -636,18 +680,35 @@ cmd_install_drivers() {
 		: > "$APPLY_LOG"
 		chmod 600 "$APPLY_LOG"
 		say "install-drivers: starting (detached), log $APPLY_LOG"
-		setsid sh -c '{ "$1" install-drivers; rc=$?; printf "'"$APPLY_DONE"' rc=%s\n" "$rc"; \
-		               "$1" keep-log; logger -t boa-setup "install-drivers: finished rc=$rc"; } >> "$2" 2>&1' \
-			sh "$0" "$APPLY_LOG" </dev/null >/dev/null 2>&1 &
+		shift
+		setsid sh -c 'b="$1" l="$2"; shift 2; { "$b" install-drivers "$@"; rc=$?; printf "'"$APPLY_DONE"' rc=%s\n" "$rc"; \
+		               "$b" keep-log; logger -t boa-setup "install-drivers: finished rc=$rc"; } >> "$l" 2>&1' \
+			sh "$0" "$APPLY_LOG" "$@" </dev/null >/dev/null 2>&1 &
 		echo "$APPLY_LOG"
 		return 0
 	fi
 
-	local dry=""
-	[ "${1:-}" = "--dry-run" ] && dry=1
+	local dry="" all="" a p have=""
+	for a in "$@"; do
+		case "$a" in
+			--dry-run) dry=1 ;;
+			--all) all=1 ;;
+		esac
+	done
 	WANT_PKGS=""; MISSING_IDS=""
 
 	walk_adapters want_driver_for
+
+	# --all: every driver in the tables for this box's buses, plugged in or not,
+	# so an adapter added later works the moment it is plugged in (#503).
+	if [ -n "$all" ]; then
+		WANT_PKGS="$WANT_PKGS $(all_known_pkgs | tr '\n' ' ')"
+	fi
+	# Only what is not there already, so a box that has them all says so.
+	for p in $(printf '%s\n' $WANT_PKGS | sort -u); do
+		installed "$p" || have="$have $p"
+	done
+	WANT_PKGS="$have"
 
 	if [ -n "$MISSING_IDS" ]; then
 		printf '\nNo package known for:\n%s' "$MISSING_IDS"
@@ -655,7 +716,11 @@ cmd_install_drivers() {
 	fi
 
 	if [ -z "$WANT_PKGS" ]; then
-		echo "Nothing to install: every adapter boa recognises already has a driver."
+		if [ -n "$all" ]; then
+			echo "Nothing to install: every driver boa knows for this device is installed."
+		else
+			echo "Nothing to install: every adapter boa recognises already has a driver."
+		fi
 		return 0
 	fi
 
@@ -686,8 +751,21 @@ cmd_install_drivers() {
 	# retries. Measured on the x86-64 guest, 2026-09-25: install-drivers
 	# reported success over a radio that stayed invisible.
 	sleep 2
-	STILL_BARE=""
+	STILL_BARE=""; BARE_AT=""
 	walk_adapters note_if_still_bare
+	# RE-PROBE BEFORE ASKING FOR A REBOOT. A module that loaded before its
+	# firmware was unpacked failed its probe and the kernel does not retry -- but
+	# a replug is a retry, and one can be done in software. A reboot only did the
+	# same thing to every device on the box.
+	if [ -n "$BARE_AT" ]; then
+		for a in $BARE_AT; do
+			echo "Re-probing $a: its driver loaded before its firmware."
+			reprobe "$a" || echo "  could not re-probe $a"
+		done
+		sleep 4
+		STILL_BARE=""; BARE_AT=""
+		walk_adapters note_if_still_bare
+	fi
 	echo
 	if [ -n "$STILL_BARE" ]; then
 		# Recorded so the setup page can pick up here after the restart,
@@ -1180,7 +1258,7 @@ ask() {
 # the address is the upstream router's business and nobody's guess.
 wizard_prerequisites() {
 	echo "Checking what this device needs first."
-	cmd_install_drivers "$@" 2>&1 | sed 's/^/  /'
+	cmd_install_drivers --all "$@" 2>&1 | sed 's/^/  /'
 	cmd_install_wpad "$@" 2>&1 | sed 's/^/  /'
 	cmd_install_mdns "$@" 2>&1 | sed 's/^/  /'
 	echo
@@ -2726,7 +2804,7 @@ case "${1:-}" in
 	firstrun) cmd_firstrun "${2:-}" ;;
 	*)
 		echo "usage: boa-setup check | wizard [--dry-run] | convert [--dry-run]" >&2
-		echo "                | plan-channels [--dry-run] | install-drivers [--dry-run]" >&2
+		echo "                | plan-channels [--dry-run] | install-drivers [--all] [--dry-run]" >&2
 		echo "                | install-wpad [--dry-run] [--force]" >&2
 		echo "                | install-mdns [--dry-run]" >&2
 		echo "  check          read-only: what this device still needs before boa can run on it" >&2
@@ -2746,8 +2824,9 @@ case "${1:-}" in
 		echo "                 others: 36 and 149 for the first two 5 GHz radios, 6/1/11 for" >&2
 		echo "                 2.4 GHz. Reloads Wi-Fi, so associated clients reconnect." >&2
 		echo "  install-drivers" >&2
-		echo "                 install the kmod packages for USB adapters that have no" >&2
-		echo "                 driver. Drivers only; the wpad swap stays in your hands." >&2
+		echo "                 install the kmod packages for adapters that have no driver." >&2
+		echo "                 --all: every driver boa knows for this device's buses, so an" >&2
+		echo "                 adapter plugged in later works at once. Drivers only." >&2
 		echo "  stage          get | clear -- what setup still has to do, across a reboot." >&2
 		echo "                 Today the only one is reboot-for-drivers, set when a driver" >&2
 		echo "                 installed but its radio needs a restart to appear. It clears" >&2
