@@ -33,7 +33,7 @@ infinite-streaming-boa`.
 `remove` stops the service -- which removes every qdisc boad installed -- and
 keeps the config and `/var/lib/infinite-streaming-boa`. `purge` deletes both.
 
-For a box that does everything, flash the [Pi image](../README.md#1-a-raspberry-pi-5-from-an-image).
+For a box that does everything, flash the [Pi image](../README-FULL.md#1-a-raspberry-pi-5-from-an-image).
 
 ## Building
 

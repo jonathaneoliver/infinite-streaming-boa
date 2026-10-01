@@ -160,7 +160,8 @@ index file, will abort the script — both have caused real breakage here.
 | `docs/LICENSING.md` | What may be redistributed, and what may not |
 | `docs/BACKLOG.md` | Accepted limitations, documented so they are not rediscovered |
 | GitHub issues | Candidate work. NOT `docs/BACKLOG.md` -- see below |
-| `README.md` | What the box is and how to build one |
+| `README.md` | The GitHub front page: boa on a Cudy TR3000, the recommended target |
+| `README-FULL.md` | Every target, every measurement, hardware notes, development |
 
 **Candidate work lives in GitHub issues.** `docs/BACKLOG.md` used to hold it and
 says, at the top of itself, why it no longer does: the reasoning drifted out of

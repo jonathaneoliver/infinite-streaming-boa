@@ -30,7 +30,7 @@ configure)
 		echo "  boa conditions traffic on a transparent bridge between the router and the" >&2
 		echo "  devices under test. Build it, set the ports in $DEFAULTS, then:" >&2
 		echo "    sudo systemctl start infinite-streaming-boa" >&2
-		echo "  https://github.com/jonathaneoliver/infinite-streaming-boa#three-ways-to-run-it" >&2
+		echo "  https://github.com/jonathaneoliver/infinite-streaming-boa/blob/main/README-FULL.md#five-ways-to-run-it" >&2
 	fi
 	;;
 esac

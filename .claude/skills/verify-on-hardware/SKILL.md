@@ -25,7 +25,7 @@ real traffic mix are all absent. State what was measured, and where.
 - Before claiming shaping, delay, jitter, loss or a filter works
 - A number in the UI looks wrong, or suspiciously round, or zero
 - Any change touching `tc`, netem, HTB, filters, the bridge, or the radio
-- Before writing a measurement into `README.md`, `PRD.md` or
+- Before writing a measurement into `README.md`, `README-FULL.md`, `PRD.md` or
   `docs/DATA-CONTRACT.md`
 
 ## Start here: `boactl probe`
@@ -215,7 +215,7 @@ Say what was measured, on what, and when. Distinguish:
 - what a **client** sees (throughput, RTT)
 - what was **not** tested
 
-If a claim is going into `README.md`, `PRD.md` or `docs/DATA-CONTRACT.md`, post
+If a claim is going into `README.md`, `README-FULL.md`, `PRD.md` or `docs/DATA-CONTRACT.md`, post
 the data contract first — sources, exact fields, what they MEAN, edge cases,
 and confidence per claim. The units alone (bytes vs bits, seconds vs
 milliseconds, fractions vs percent) would otherwise produce three
