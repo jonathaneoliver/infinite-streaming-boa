@@ -1746,11 +1746,16 @@ because an open door is not a configuration.
   in any of them. An earlier single run of 0.767 did not reproduce and is taken
   as a transient rather than a property of the rate.
 
-  **Uplink meets this from 100 Mbps up, and not below about 50 Mbps.** Measured
-  on target 5, 2026-09-30: −4.3 to −4.5% from 100 Mbps to 1.5 Gbps on both
-  paths, but short by 2–43% at 5–50 Mbps, varying run to run, with a bulk
-  sender. The cause is the 1000-packet queue floor overflowing, not the rate
-  (#470).
+  **Uplink meets this too, at every cap measured.** On the Cudy TR3000 on
+  2026-09-30, after #484, the shaper read every uplink cap from 0.1 to 500 Mbps
+  within ±0.7%, wired and over Wi-Fi. Goodput was −3.5 to −5.5% from 0.6 Mbps
+  up, and −6 to −20% at 0.1–0.4 Mbps, where TCP's own overhead is a large share
+  of a few packets a second. On target 5 it was −4.3 to −4.5% from 100 Mbps to
+  1.5 Gbps. Before #484, uplink below about 50 Mbps fell 2–43% short (#470).
+- A cap below 30 Mbps adds the latency of a real link of that speed, not
+  seconds: 143–178 ms of queue under load from 0.6 to 25 Mbps, in both
+  directions, on the Cudy. From 30 Mbps it runs higher, up to 875 ms uplink at
+  40 Mbps, because GRO stays on there to keep the box's forwarding speed.
 - A configured one-way delay appears as that delay in round-trip time —
   measured 200.6 ms for a 200 ms setting.
 - A device under test cannot tell the box is present: no extra hop, no address

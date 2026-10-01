@@ -516,6 +516,60 @@ three clients were gathered onto that one 20 MHz channel to take the reading.
 `tx failed` equalled `tx retries` at 3788. It is a worst case, not a fair
 2.4 GHz figure.
 
+## Cap accuracy, measured
+
+> boa `main` at #484, 2026-09-30. A MacBook on an RTL8156 2.5 GbE adapter in
+> the Cudy's USB 3 port, and on the 5 GHz radio at channel 149. `iperf3` ran
+> through the box to an Ubuntu machine beyond the uplink, one run per cap, each
+> direction in turn. The full per-cap table is in
+> [`docs/DATA-CONTRACT.md`](../docs/DATA-CONTRACT.md#re-measured-after-484-the-cudy-01500-mbps-2026-09-30).
+
+**Every cap from 0.1 to 500 Mbps lands where it should, in both directions,
+wired and over Wi-Fi.** The shaper's own counter, which counts whole frames,
+read within ±0.4 % of the cap almost everywhere. The exceptions were Wi-Fi at
+500 Mbps (−1.5 % down) and one Wi-Fi uplink reading of −0.7 %. Goodput sits
+about 4.4 % lower, which is the Ethernet, IP and TCP framing a real link of that
+speed costs too.
+
+| Cap (Mbps) | Shaper | Goodput | RTT under load |
+|---|---|---|---|
+| 0.1–0.4 | exact, ±0.3 % | −4.7 % down; −6 to −20 % up | 860 ms falling to 230 ms |
+| 0.6–25 | exact, ±0.1 % | −3.5 to −5.5 % | 143–178 ms |
+| 40–100 | exact | −4.3 to −5.5 % | 207–393 ms down, 350–875 ms up |
+| 150–500 | exact, ≤0.4 % (Wi-Fi 500: −1.5 %) | −4.3 to −5.3 % | 14–233 ms |
+
+**Below 30 Mbps, boa turns GRO off on the port the capped traffic arrives on**,
+and that is what makes the low rows smooth. GRO merges back-to-back frames into
+packets of up to 64 KB. Before #484 the shaper released those whole: a 1 Mbps
+uplink went out in 45 KB lumps, with 7–10 s of latency, and failed outright
+below about 2.5 Mbps. With GRO off it is even, with 164 ms of latency. Each
+switch is logged (`logread | grep GRO`), and GRO comes back on when the cap is
+cleared. It applies to the access point interfaces too: the Wi-Fi uplink went
+from 465 to 162 ms.
+
+**GRO stays on from 30 Mbps, because this box needs it.** Without it the Cudy's
+two Cortex-A53 cores carried 574 Mbps of uplink, against 925 with it, and a
+500 Mbps cap fell 8.7 % short. The cost of keeping it on is the 40–100 Mbps
+row: latency above the 200 ms the queue is sized for, because the queue holds
+merged packets.
+
+**Above 500 Mbps the box, not the cap, sets the limit.** Uncapped through the
+USB adapter it carried 896–928 Mbps down and 935–936 Mbps up, which is the 1 GbE
+uplink port's ceiling. On an earlier build, a 900 Mbps downlink cap delivered
+836 Mbps with its queue empty, so the traffic never reached the cap. Not
+re-measured on #484.
+
+**Two things this rests on:**
+- **The USB adapter needs its driver and a bridge port.** The Cudy's image has
+  no RTL8156 driver. `boa-setup install-drivers` installs it
+  (`kmod-usb-net-rtl8152`, which brings the firmware with it), and boa's hotplug
+  hook adds the adapter to `br-lan` the first time it is plugged in (#478).
+  Without both, the adapter links at 2.5 GbE and boa never sees a client behind
+  it.
+- **The built-in LAN port measured the same.** Below 500 Mbps, `eth1` gave the
+  same downlink figures as the USB adapter. Its uplink was erratic before #484,
+  and it has not been re-run since.
+
 ## Channel moves nobody notices
 
 On the Pi, changing channel means taking the access point down and bringing it

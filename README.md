@@ -921,10 +921,10 @@ comparison as a reading of what they document.
 
 **Where the others are better.** A rack emulator is calibrated, repeatable and
 certified; boa is explicitly none of those (see [Non-Goals](PRD.md#3-non-goals)).
-Downlink caps are verified from 0.1 Mbps to 1.5 Gbps over Ethernet and to
-800 Mbps over an access-point radio, landing at the framing ratio every time;
-uplink the same from 100 Mbps up, but not reliably below about 50 Mbps with a
-bulk sender (#470). See [what a cap delivers](#what-a-cap-delivers). Loss is
+Caps are verified in both directions from 0.1 Mbps up: to 1.5 Gbps over
+Ethernet and 800 Mbps over an access-point radio on target 5, and to 500 Mbps
+on the Cudy. Every reading lands at the framing ratio. See [what a cap
+delivers](#what-a-cap-delivers). Loss is
 deliberately not reproducible run to run. Over Wi-Fi the
 conditioning is additive on top of a shared, variable radio baseline rather than
 absolute — a wired emulator gives you a number you can put in a report, and boa
@@ -3747,43 +3747,67 @@ kept only as a classifier and per-client byte counter.
 
 ### What a cap delivers
 
-> Target 5 (the OpenWrt VM on the Ubuntu box, MT7915E), 2026-09-30. A MacBook on
-> the 2.5 GbE client port and on the 5 GHz radio at 149/80, `iperf3` through the
-> box to the Ubuntu host, three runs per cap. Streaming-rate caps were read from
-> the netem qdisc's own byte counter on the box, not from `iperf3` (see below).
-
-**A cap delivers its rate, less the framing, from 0.1 Mbps to 1.5 Gbps.** The
-kernel counts whole frames and a client counts payload, so a full-size TCP
-packet carries 1448 bytes of payload in a 1514-byte frame: goodput is
-1448/1514 = 95.6 % of the cap, and that is what a real link of that speed
-delivers too. It is correct, not error — a cap that read a clean 50.0 Mbps at
+**A cap delivers its rate, less the framing, from 0.1 Mbps to 1.5 Gbps, in both
+directions.** The kernel counts whole frames and a client counts payload, so a
+full-size TCP packet carries 1448 bytes of payload in a 1514-byte frame: goodput
+is 1448/1514 = 95.6 % of the cap, and that is what a real link of that speed
+delivers too. It is correct, not error. A cap that read a clean 50.0 Mbps at
 the application would mean the emulation was wrong.
+
+#### Low and middle rates: the Cudy, after #484
+
+> Cudy TR3000, OpenWrt 25.12.5, boa `main` at #484, 2026-09-30. A MacBook on an
+> RTL8156 2.5 GbE adapter in the Cudy's USB 3 port, and on the 5 GHz radio
+> (channel 149). `iperf3` ran through the box to the Ubuntu host, one run per
+> cap, both directions in turn. **Shaper** is the netem qdisc's own byte
+> counter on the box (whole frames, so exact reads 0 %). **Goodput** is
+> `iperf3`. **RTT** is a ping through the box while that direction fills the
+> cap.
+
+| Cap (Mbps) | Shaper, all four directions | Goodput | RTT under load |
+|---|---|---|---|
+| 0.1–0.4 | exact, ±0.3 % | −4.7 % down; −6 to −20 % up | 860 ms falling to 230 ms, both directions |
+| 0.6–25 | exact, ±0.1 % (one Wi-Fi up reading −0.7 %) | −3.5 to −5.5 % | 143–178 ms (Wi-Fi up 54–79 ms from 10 Mbps) |
+| 40–100 | exact | −4.3 to −5.5 % | 207–393 ms down, 350–875 ms up |
+| 150–500 | exact, ≤0.4 % (Wi-Fi down at 500: −1.5 %) | −4.3 to −5.3 % | 14–233 ms |
+
+**Below 30 Mbps the latency is the 200 ms the queue is sized for**, in both
+directions, because boa turns GRO off where that traffic arrives (see the
+[things that will mislead you](#things-that-will-mislead-you-if-nobody-says-them) and `docs/DATA-CONTRACT.md`). From 30 Mbps GRO
+stays on, so the box keeps its forwarding speed. The queue then holds merged
+packets of up to 64 KB, and latency runs above design, up to 875 ms uplink at
+40 Mbps. #480 would make that depth a setting.
+
+**Below 0.6 Mbps** latency rises because the queue's floor is 10 packets, and
+one packet takes 120 ms at 0.1 Mbps. **Uplink goodput at 0.1–0.4 Mbps is 6–20 %
+below the cap** while the shaper is exact. At those rates TCP's
+acknowledgements and retransmissions are a large share of a few packets a
+second, as on a real link of that speed.
+
+Before #484, uplink below about 50 Mbps was short by 2–43 % and failed outright
+at 1 Mbps, with 7–12 s of latency. That was a 1000-packet queue floor filled with
+GRO-merged packets, not the rate (#470, #475, #476).
+
+#### High rates: target 5
+
+> Target 5 (the OpenWrt VM on the Ubuntu box, MT7915E), 2026-09-30, before
+> #484. A MacBook on the 2.5 GbE client port and on the 5 GHz radio at 149/80,
+> `iperf3` through the box to the Ubuntu host, three runs per cap.
 
 | | Wired, 2.5 GbE | Wi-Fi, MT7915E 149/80 |
 |---|---|---|
 | Uncapped ceiling, down / up | 1946 / 2308–2352 Mbps | 861–868 / 792–851 Mbps |
 | Downlink goodput, 25 Mbps to the top | −4.3 to −4.5 % up to **1.5 Gbps** | −4.3 to −4.5 % up to **800 Mbps** |
-| Downlink at the shaper, 0.1–27.5 Mbps | within ±0.5 % in 131 of 144 readings, every rung of the infinite-stream ladder within ±0.4 % | within ±0.25 % at every ladder rung |
+| Downlink at the shaper, 0.1–27.5 Mbps | within ±0.5 % in 131 of 144 readings; every rung of the infinite-stream ladder within ±0.4 % | within ±0.25 % at every ladder rung |
 | Uplink goodput, 100 Mbps to the top | −4.3 to −4.5 % | −4.3 to −4.4 % |
-| **Uplink below about 50 Mbps** | **short by 2–24 %, varying run to run; 1 Mbps fails** | **short by up to 43 % at 5–25 Mbps, varying run to run** |
 
-Below 25 Mbps downlink goodput is a little lower, 0.943–0.952 of the cap from
-0.25 to 4 Mbps (see the [PRD](PRD.md#8-success-criteria)), because a
-connection's fixed round trips weigh more when few bytes move; the shaper itself
-reads the cap exactly there.
+These rates hold the framing ratio, and nothing in #484 changes them: above
+30 Mbps GRO stays on, and above about 60 Mbps the time-sized queue is already
+deeper than the old floor.
 
-**Uplink at low caps is the exception, and it is the queue, not the rate.**
-netem's queue is at least 1000 packets whatever the cap — about 48 s at
-0.25 Mbps — and a bulk sender fills it: one 25 Mbps uplink run dropped 1612
-packets at that queue and logged 6842 retransmits. Downlink, sent by the Ubuntu
-host's Linux TCP, dropped none at the same cap; why the two senders differ is
-not yet measured. The same depth delays a *raised* cap until the old backlog
-drains, about 25 s at 0.1 → 0.25 Mbps (#43). Both are #470. A player's segment fetches do not fill the queue the way a bulk transfer
-does, so how much a player feels this is unmeasured.
-
-Measuring streaming-rate caps with `iperf3` does not work, for the same reason:
-its own end-of-test message waits behind the queue and the connection breaks.
-Those rates were read from the qdisc's `Sent` counter over 20 s instead.
+**The Cudy itself tops out lower.** Uncapped, its 1 GbE uplink carried 896–936
+Mbps. Without GRO, its two cores carry about 575 Mbps of uplink, which is why
+GRO goes off only below 30 Mbps.
 
 A configured 200 ms one-way delay measured 200.6 ms RTT.
 
