@@ -180,9 +180,21 @@ own section: [Reaching the box](#reaching-the-box).
 ## What it does
 
 For **anyone building a mobile app or a Wi-Fi connected device** who needs to
-know how the client's relationship with the access point affects it, not only
-how much bandwidth it gets. Those are different questions, and until this box
-could drive its own radios only the second one was testable — see
+know how network conditions affect it, as well as how the client's relationship
+with the access point does, not only how much bandwidth it gets.
+
+boa conditions both, per client and independently:
+
+- **The network:** what happens to the packets. A rate cap, latency, jitter,
+  loss (uniform or bursty), reordering and corruption, set per direction, held
+  fixed or walked through a timed pattern.
+- **The Wi-Fi link:** what happens to the connection. Deauthentication, a timed
+  dead zone, steering between radios, channel moves, and transmit power and
+  distance. A phone's path monitor and a player's throughput estimator react to
+  these in ways no amount of packet loss triggers.
+
+Those are different questions, and until this box could drive its own radios
+only the network one was testable — see
 [Who this is for](#who-this-is-for-and-why-the-wi-fi-control-matters) for the
 bench practice that follows from it.
 
