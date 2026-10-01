@@ -12,16 +12,16 @@
  * comparable at a glance. Per-device ranges would make each card readable on
  * its own and the page as a whole meaningless.
  */
-import { RANGES, SORT_MODES, SUSTAINED_CHOICES, type SortMode, type YMode }
+import { RANGES, SUSTAINED_CHOICES, type YMode }
   from '@/types';
-import { chartPrefs, sortMode } from '@/composables/useChartPrefs';
+import { chartPrefs } from '@/composables/useChartPrefs';
 import type { ChartPrefs } from '@/types';
 
 /*
  * ONE PROP AND NO EVENTS, where there were thirteen and eleven.
  *
- * Every one of them proxied state that is already module-level: chartPrefs,
- * and now sortMode beside it. The bar read a copy through props and wrote back
+ * Every one of them proxied state that is already module-level: chartPrefs.
+ * The bar read a copy through props and wrote back
  * through events that the host turned straight into a store write -- twenty-two
  * bindings whose only job was to carry a value to the component that owns the
  * store anyway.
@@ -121,18 +121,6 @@ function onManual(e: Event) {
 
 <template>
   <div class="toolbar">
-    <span class="lbl">order</span>
-    <!-- First in the bar because it acts on the PAGE, where everything after it
-         configures the charts drawn on it. -->
-    <div class="seg" role="group" aria-label="Device order">
-      <button
-        v-for="m in SORT_MODES" :key="m.v"
-        class="seg-btn" :class="{ on: sortMode === m.v }"
-        :title="m.title"
-        @click="(sortMode = m.v)"
-      >{{ m.label }}</button>
-    </div>
-
     <span class="lbl">range</span>
     <div class="seg" role="group" aria-label="Chart time range">
       <button

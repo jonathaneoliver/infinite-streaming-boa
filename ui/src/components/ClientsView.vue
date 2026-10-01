@@ -4,7 +4,7 @@ import type {
   Capabilities, Client, Pattern, RssiModel, Series, Shape, Snapshot,
 } from '@/types';
 import { SUSTAINED_SEC, sortClients } from '@/types';
-import { chartPrefs, sortMode } from '@/composables/useChartPrefs';
+import { chartPrefs } from '@/composables/useChartPrefs';
 import { chartNow, holdClock } from '@/composables/useChartClock';
 import type { useDevice } from '@/composables/useDevice';
 import ClientCard from '@/components/ClientCard.vue';
@@ -76,7 +76,7 @@ watch(showOffline, (v) => {
 });
 
 const allClients = computed(() =>
-  sortClients(props.snap?.clients ?? [], sortMode.value, props.snap?.time ?? Date.now()),
+  sortClients(props.snap?.clients ?? [], props.snap?.time ?? Date.now()),
 );
 const clients = computed(() =>
   showOffline.value ? allClients.value : allClients.value.filter((c) => c.present),

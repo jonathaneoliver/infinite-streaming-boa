@@ -1558,34 +1558,6 @@ export const DEVELOPER =
   new URLSearchParams(window.location.search).get('developer') === '1';
 
 /**
- * How the device list is ordered.
- *
- * 'busy' puts whatever is happening at the top; 'name' is the plain
- * alphabetical list; 'traffic' is by current throughput.
- */
-export type SortMode = 'busy' | 'name' | 'traffic';
-
-export const SORT_MODES: { v: SortMode; label: string; title: string }[] = [
-  {
-    v: 'busy',
-    label: 'busy first',
-    title:
-      'Sweeping, then playing a pattern, then conditioned, then moving traffic. ' +
-      'Devices doing none of those are ordered by when they last moved any, so ' +
-      'the one that was streaming a minute ago sits above the one silent since ' +
-      'Tuesday.',
-  },
-  { v: 'name', label: 'name', title: 'Alphabetical, present devices first.' },
-  {
-    v: 'traffic',
-    label: 'traffic',
-    title:
-      'Busiest downlink first. This one DOES reorder as traffic changes — ' +
-      'useful for finding the active device, awkward for clicking one.',
-  },
-];
-
-/**
  * How recently a device must have moved traffic to count as active.
  *
  * Longer than a segment interval on purpose. A player is bursty by nature --
@@ -1630,24 +1602,17 @@ export function isCleanPolicy(p: Policy): boolean {
   return clean(p.down) && clean(p.up);
 }
 
-/** Order a device list for display. Never mutates the input. */
-export function sortClients(list: Client[], mode: SortMode, now: number): Client[] {
+/**
+ * Order a device list for display: busy first. Never mutates the input.
+ *
+ * The only order. There used to be a toolbar switch offering 'name' and
+ * 'traffic' as well; it went unused, and 'traffic' reordered rows under the
+ * cursor every second, which is the failure this ordering exists to avoid.
+ */
+export function sortClients(list: Client[], now: number): Client[] {
   const byName = (a: Client, b: Client) =>
     a.label.localeCompare(b.label) || a.mac.localeCompare(b.mac);
-  const out = [...list];
-  if (mode === 'name') {
-    return out.sort(
-      (a, b) => Number(b.present) - Number(a.present) || byName(a, b),
-    );
-  }
-  if (mode === 'traffic') {
-    return out.sort(
-      (a, b) =>
-        b.down_counters.throughput_mbps - a.down_counters.throughput_mbps ||
-        byName(a, b),
-    );
-  }
-  return out.sort((a, b) => {
+  return [...list].sort((a, b) => {
     const ra = busyRank(a, now);
     const rb = busyRank(b, now);
     if (ra !== rb) return ra - rb;
