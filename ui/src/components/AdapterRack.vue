@@ -318,9 +318,6 @@ const surveyAge = (name: string) => {
   return `${Math.round(sec / 3600)}h ago`;
 };
 
-/** How many names fit before the row starts wrapping. Past this they are
- *  summarised, with the full list in the tooltip. */
-const NAMES_SHOWN = 3;
 
 function on(r: IfaceInfo) {
   return props.onAdapter[r.name] ?? [];
@@ -1111,20 +1108,25 @@ function usbTitle(i: IfaceInfo): string {
              than counted: "2 clients" answers a question nobody asked, and
              "Jonathans-iPhone, Watch" answers the one that is. -->
         <span v-if="on(r).length" class="who" :title="on(r).map((c) => c.label).join(', ')">
-          <!-- The count LEADS the names, because the names abbreviate.
-               Three fit; past that the rest become a "+2" that is easy to read
-               past, and the track can ellipsise a name at any width. The total
-               is the number the buttons to the right act on, so it must not be
-               something the reader has to reconstruct from a truncated list. -->
+          <!-- The count LEADS the names: it is the number the buttons to the
+               right act on, so it must not be something the reader has to
+               reconstruct from the list.
+
+               EVERY NAME, WRAPPING. This showed three and summarised the rest
+               as "+N", capped each name at 15ch and never wrapped, inside a
+               cell that hides overflow. MEASURED 2026-10-01 on the Cudy with
+               four clients on phy1-ap0: below ~2200px the cell clipped the
+               whole list away, so a 1920px screen showed no names at all, and
+               at any width one client was a "+1" and "Jonathans-Mac-mini" was
+               cut. The names are the blast radius of every button on the row,
+               so a hidden one is a client a deauth drops without warning.
+               Wrapping costs the row some height when a radio is busy. -->
           <span class="who-n">{{ on(r).length }}</span>
           <button
-            v-for="c in on(r).slice(0, NAMES_SHOWN)" :key="c.mac"
+            v-for="c in on(r)" :key="c.mac"
             class="who-name" :title="`Show ${c.label} below`"
             @click="showClient(c.mac)"
           >{{ c.label }}</button>
-          <span v-if="on(r).length > NAMES_SHOWN" class="who-more">
-            +{{ on(r).length - NAMES_SHOWN }}
-          </span>
         </span>
         <!-- EMPTY, not "no clients", for a radio that cannot have any. The
              cell stays for the grid -- removing it slides every later cell one
@@ -2270,10 +2272,10 @@ Clients ARE told it has gone, unlike a power cut.`
    card -- the mirror of the token's arrow going the other way. */
 .who {
   display: flex;
+  flex-wrap: wrap;
   align-items: baseline;
-  gap: 6px;
+  gap: 2px 8px;
   min-width: 0;
-  overflow: hidden;
 }
 .who-name {
   background: none;
@@ -2283,13 +2285,10 @@ Clients ARE told it has gone, unlike a power cut.`
   font-size: 12px;
   color: var(--ink-dim);
   cursor: pointer;
-  max-width: 15ch;
-  overflow: hidden;
-  text-overflow: ellipsis;
   white-space: nowrap;
 }
 .who-name:hover { color: var(--ink); text-decoration: underline; }
-.who-more, .who-none { font-size: 12px; color: var(--ink-faint); }
+.who-none { font-size: 12px; color: var(--ink-faint); }
 /* The count, in the same weight the airtime figure uses: it is a number the
    buttons act on, not a caption on the names beside it. Fixed-width digits and
    flex: none so it never shrinks when the names do. */
