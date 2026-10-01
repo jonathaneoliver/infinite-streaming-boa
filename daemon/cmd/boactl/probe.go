@@ -85,7 +85,7 @@ func (rep *report) summary() string {
 
 func cmdProbe(c *client, args []string) error {
 	fs := flag.NewFlagSet("probe", flag.ExitOnError)
-	useSSH := fs.Bool("ssh", false, "also read the kernel back over SSH (filters, hostapd state)")
+	useSSH := fs.Bool("ssh", false, "also read the kernel back over SSH (tc filters)")
 	sshUser := fs.String("ssh-user", "boa", "user for the SSH read-back")
 	settle := fs.Duration("settle", 5*time.Second, "gap between the two counter samples")
 	if err := fs.Parse(args); err != nil {
@@ -158,8 +158,10 @@ func cmdProbe(c *client, args []string) error {
 	var bridge boa.BridgeInfo
 	if err := c.get("/api/bridge", &bridge); err != nil {
 		rep.add(warn, "usb attachment", "could not read /api/bridge: "+err.Error())
+		rep.add(fail, "hostapd state", "could not read /api/bridge: "+err.Error())
 	} else {
 		checkUSBAttachment(rep, bridge)
+		checkAPs(rep, bridge)
 	}
 
 	// 7. Every routable address of a conditioned client needs its own filter.
@@ -600,24 +602,48 @@ func checkKernelOverSSH(rep *report, host string, s boa.Snapshot) {
 		rep.add(pass, "filter per address", fmt.Sprintf(
 			"every address of %d conditioned client(s) has a filter", conditioned))
 	}
+}
 
-	// hostapd's own view. The templated units are the real ones; the bare
-	// service is a permanently-inactive legacy leftover, and hostapd_cli needs
-	// -p or it reports "Failed to connect" as though nothing were running.
-	for _, iface := range ifaces {
-		out, err := ssh(host, "sudo hostapd_cli -p /var/run/hostapd -i "+iface+" status")
-		if err != nil {
-			rep.add(fail, "hostapd state", fmt.Sprintf("%s: %v", iface, err))
+// checkAPs asserts that every radio the daemon serves has a BSS that is up.
+//
+// Read from /api/bridge rather than with hostapd_cli over SSH, which is how it
+// used to be done and which worked on one target in four: the daemon already
+// asks hostapd over its control socket, so the tool is not installed on an
+// OpenWrt box unless someone adds hostapd-utils, and the read went through sudo,
+// which OpenWrt does not have at all. It is also the STRICTER reading. The
+// daemon reconciles hostapd's state=ENABLED against the kernel's link state,
+// because hostapd once went on answering ENABLED for twenty minutes after its
+// interface had been taken away (see APStatus.Enabled); hostapd_cli status
+// passed that radio.
+func checkAPs(rep *report, b boa.BridgeInfo) {
+	checked := 0
+	for _, in := range b.Ifaces {
+		if !in.Wireless || !in.Serving {
 			continue
 		}
-		state := fieldFrom(out, "state=")
-		if state == "ENABLED" {
-			rep.add(pass, "hostapd state", fmt.Sprintf("%s: state=ENABLED", iface))
-		} else {
+		checked++
+		switch {
+		case in.PowerKnown && !in.Powered:
 			rep.add(fail, "hostapd state", fmt.Sprintf(
-				"%s: state=%s -- the unit can read active while the BSS serves nobody",
-				iface, orDash(state)))
+				"%s: the radio is powered off, so there is no BSS", in.Name))
+		case in.AP == nil:
+			rep.add(fail, "hostapd state", fmt.Sprintf(
+				"%s: hostapd did not answer for it -- no BSS can be confirmed", in.Name))
+		case in.AP.LinkDown:
+			rep.add(fail, "hostapd state", fmt.Sprintf(
+				"%s: hostapd says ENABLED but the kernel has the interface down -- nothing is on air",
+				in.Name))
+		case !in.AP.Enabled:
+			rep.add(fail, "hostapd state", fmt.Sprintf(
+				"%s: the BSS is not ENABLED -- the service can read active while it serves nobody",
+				in.Name))
+		default:
+			rep.add(pass, "hostapd state", fmt.Sprintf(
+				"%s: ENABLED on channel %d, %d station(s)", in.Name, in.AP.Channel, in.AP.Stations))
 		}
+	}
+	if checked == 0 {
+		rep.add(warn, "hostapd state", "the box reports no radio it serves; no BSS was checked")
 	}
 }
 
@@ -650,15 +676,6 @@ func filterMatches(out, addr string) bool {
 		}
 	}
 	return true
-}
-
-func fieldFrom(out, prefix string) string {
-	for _, line := range strings.Split(out, "\n") {
-		if strings.HasPrefix(line, prefix) {
-			return strings.TrimSpace(strings.TrimPrefix(line, prefix))
-		}
-	}
-	return ""
 }
 
 func mapValues(m map[string]string) []string {

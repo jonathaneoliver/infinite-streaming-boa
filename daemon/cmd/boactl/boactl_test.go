@@ -219,3 +219,43 @@ func TestScanResultDecodesTheDaemonsRealTags(t *testing.T) {
 		t.Error("note is what says whether the scan cost an outage; it must survive decoding")
 	}
 }
+
+func TestCheckAPsFailsEveryWayABSSCanBeAbsent(t *testing.T) {
+	// One radio per way of not serving, plus one that is. Each failure is a
+	// different fault with a different fix, so each must FAIL rather than any
+	// of them passing on hostapd's word alone -- link_down is exactly the case
+	// hostapd_cli status used to pass.
+	up := &boa.APStatus{Enabled: true, Channel: 36, Stations: 2}
+	for _, tc := range []struct {
+		name string
+		in   boa.IfaceInfo
+		want result
+	}{
+		{"enabled", boa.IfaceInfo{Name: "w", Wireless: true, Serving: true, AP: up}, pass},
+		{"hostapd silent", boa.IfaceInfo{Name: "w", Wireless: true, Serving: true}, fail},
+		{"link down", boa.IfaceInfo{Name: "w", Wireless: true, Serving: true,
+			AP: &boa.APStatus{LinkDown: true}}, fail},
+		{"disabled", boa.IfaceInfo{Name: "w", Wireless: true, Serving: true,
+			AP: &boa.APStatus{}}, fail},
+		{"powered off", boa.IfaceInfo{Name: "w", Wireless: true, Serving: true,
+			PowerKnown: true, AP: up}, fail},
+	} {
+		rep := &report{}
+		checkAPs(rep, boa.BridgeInfo{Ifaces: []boa.IfaceInfo{tc.in}})
+		if len(rep.results) != 1 || rep.results[0] != tc.want {
+			t.Errorf("%s: got %v, want [%v]", tc.name, rep.results, tc.want)
+		}
+	}
+
+	// A radio the daemon does not serve -- a scanner, or one left to another
+	// service -- is not this check's business, and nothing at all to check is
+	// a WARN, never a PASS that examined nothing.
+	rep := &report{}
+	checkAPs(rep, boa.BridgeInfo{Ifaces: []boa.IfaceInfo{
+		{Name: "scan", Wireless: true, Serving: false},
+		{Name: "eth0"},
+	}})
+	if len(rep.results) != 1 || rep.results[0] != warn {
+		t.Errorf("nothing served: got %v, want [WARN]", rep.results)
+	}
+}

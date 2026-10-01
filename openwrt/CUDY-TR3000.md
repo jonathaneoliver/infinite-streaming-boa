@@ -363,7 +363,7 @@ registers a LuCI entry:
 - **LuCI → Services → infinite-streaming-boa** — the settings page from
   `luci-app-boa`. If the menu entry does not appear after install, LuCI has
   cached its index: `rm /tmp/luci-indexcache.*` and restart `rpcd`.
-- `boactl devices`, `boactl probe -ssh` from a clone, for the same facts without
+- `boactl devices`, `boactl probe` from a clone, for the same facts without
   a browser.
 
 > **Caveat on step 6:** this box was installed from a local SDK build, not from
