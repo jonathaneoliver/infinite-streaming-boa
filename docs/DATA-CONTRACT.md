@@ -314,6 +314,97 @@ after IP, TCP and timestamp headers, and sits inside a 1514-byte Ethernet frame:
 a 50 Mbps cap measured a clean 50.0 Mbps at the application, the emulation would
 be wrong.
 
+### Re-measured over the full range, 2026-09-30
+
+Target 5: the OpenWrt VM on the Ubuntu box, boa v0.6.0's code. The client was a
+MacBook on the 2.5 GbE client port (wired) and on the MT7915E at 5 GHz 149/80
+(Wi-Fi), with `iperf3` through the box to the Ubuntu host. Each cap was set
+symmetrically with `boactl shape`; runs were 10 s with the first 2 s discarded.
+Three runs per cap.
+
+| Cap | Wired down | Wired up | Wi-Fi down | Wi-Fi up |
+|---|---|---|---|---|
+| uncapped | 1946 Mbps | 2308–2352 Mbps | 861–868 Mbps | 792–851 Mbps |
+| 25 Mbps | −4.3/−4.4 % | −18.0/−18.7/−24.2 % | −4.3/−4.4 % | −4.4/−20.0/−22.0 % |
+| 50 Mbps | −4.4 % | −2.0 to −18.6 % | −4.4 % | −4.2/−4.3/−4.4 % |
+| 100–500 Mbps | −4.3/−4.4 % | −4.3/−4.4 % | −4.3/−4.4 % | −4.3/−4.4 % |
+| 800 Mbps | — | — | −4.5 % | −4.4 % |
+| 1000–1500 Mbps | −4.3/−4.4 % | −4.4/−4.5 % | — | — |
+
+The framing ratio, 1448/1514 = 0.9564, is the prediction. 1500 Mbps delivered
+1434.6, 0.9564.
+
+**Streaming-rate caps were read at the shaper, not from `iperf3`.** At these
+rates the netem queue was then at least 1000 packets (#470) and tens of seconds deep, and
+`iperf3`'s own end-of-test message waits behind it, so the run fails. Instead a
+transfer kept the queue full while the netem qdisc's `Sent` counter was read
+twice, 20 s apart, on the box's clock. Those are whole frames, so an exact shaper
+reads 0 %. At 0.1, 0.25, 0.4, 0.7, 0.9, 1.1, 1.5, 1.9, 2.4, 3, 5 and 15 Mbps,
+and at every rung of the infinite-stream ladder (0.251 to 27.478 Mbps), 131 of
+144 readings were within ±0.5 %. Every ladder rung was within ±0.4 % wired and
+±0.25 % over Wi-Fi.
+
+**Two things these numbers are not.**
+- **0.25 Mbps read −7.5 to −9.6 % in the sweep, and +0.13 % alone.** In the
+  sweep it followed a 0.1 Mbps cap, and a raised cap only takes effect once the
+  backlog queued at the old rate drains: about 25 s at 0.1 → 0.25 Mbps (#43).
+  That is a property of the queue, not of the rate.
+- **Uplink below about 50 Mbps was not calibrated then.** A bulk sender filled
+  the queue, and the overflow and TCP's recovery cost 2–43 %. The cause turned
+  out to be GRO as well as the queue's depth, and both are fixed in #484. See
+  the next section.
+
+### Re-measured after #484: the Cudy, 0.1–500 Mbps, 2026-09-30
+
+Cudy TR3000, OpenWrt 25.12.5, boa `main` at #484. A MacBook on an RTL8156
+2.5 GbE adapter in the USB 3 port (`eth2`), and on the 5 GHz radio (`phy1-ap0`,
+channel 149). `iperf3` ran through the box to the Ubuntu host. Each cap was set
+symmetrically with `boactl shape` and confirmed in the kernel before the row
+ran. Each direction ran in turn, for 15 s, or 22 s below 5 Mbps, with the first
+3 s discarded. The shaper was read from the netem qdisc's `Sent` counter over
+10 s (14 s below 5 Mbps). RTT is a ping through the box over the same window.
+One run per cap. The wired 0.1 Mbps row is from an earlier run of the same
+shaping code, because the later run started before boad was up.
+
+| Cap (Mbps) | Wired down: shaper / goodput / RTT | Wired up | Wi-Fi down | Wi-Fi up |
+|---|---|---|---|---|
+| 0.1 | +0.1 % / -4.7 % / 859 ms | +0.3 % / -19.6 % / 879 ms | -0.1 % / -4.7 % / 855 ms | -0.2 % / -17.6 % / 860 ms |
+| 0.15 | -0.1 % / -4.7 % / 598 ms | +0.1 % / -9.6 % / 614 ms | +0.3 % / -4.7 % / 611 ms | +0.3 % / -8.1 % / 580 ms |
+| 0.25 | -0.2 % / -4.7 % / 373 ms | -0.1 % / -6.3 % / 362 ms | +0.2 % / -4.7 % / 378 ms | -0.1 % / -6.4 % / 353 ms |
+| 0.4 | 0.0 % / -4.7 % / 234 ms | +0.1 % / -5.8 % / 240 ms | -0.1 % / -4.7 % / 232 ms | 0.0 % / -9.5 % / 227 ms |
+| 0.6 | 0.0 % / -4.7 % / 156 ms | 0.0 % / -5.3 % / 152 ms | 0.0 % / -4.7 % / 157 ms | +0.1 % / -5.3 % / 153 ms |
+| 1 | 0.0 % / -4.7 % / 161 ms | 0.0 % / -5.5 % / 165 ms | 0.0 % / -4.7 % / 160 ms | 0.0 % / -5.4 % / 168 ms |
+| 1.5 | 0.0 % / -4.7 % / 167 ms | 0.0 % / -5.4 % / 166 ms | 0.0 % / -4.7 % / 164 ms | 0.0 % / -5.5 % / 167 ms |
+| 2.5 | 0.0 % / -4.7 % / 172 ms | 0.0 % / -3.5 % / 165 ms | -0.1 % / -4.7 % / 171 ms | 0.0 % / -3.5 % / 152 ms |
+| 4 | 0.0 % / -3.5 % / 170 ms | 0.0 % / -4.4 % / 175 ms | 0.0 % / -3.5 % / 171 ms | 0.0 % / -4.0 % / 169 ms |
+| 6 | 0.0 % / -4.4 % / 170 ms | 0.0 % / -4.5 % / 173 ms | +0.1 % / -4.4 % / 178 ms | 0.0 % / -4.5 % / 143 ms |
+| 10 | -0.1 % / -4.2 % / 174 ms | 0.0 % / -4.7 % / 174 ms | -0.1 % / -4.2 % / 177 ms | -0.7 % / -4.3 % / 70 ms |
+| 15 | -0.1 % / -4.5 % / 173 ms | 0.0 % / -4.6 % / 176 ms | 0.0 % / -4.5 % / 174 ms | 0.0 % / -4.8 % / 79 ms |
+| 25 | -0.1 % / -4.4 % / 171 ms | 0.0 % / -4.3 % / 175 ms | 0.0 % / -4.4 % / 173 ms | +0.1 % / -5.1 % / 54 ms |
+| 40 | 0.0 % / -4.4 % / 349 ms | 0.0 % / -4.4 % / 875 ms | 0.0 % / -4.4 % / 207 ms | +0.1 % / +0.2 % / 621 ms |
+| 60 | 0.0 % / -4.3 % / 393 ms | 0.0 % / -4.5 % / 583 ms | 0.0 % / -4.4 % / 266 ms | 0.0 % / -4.3 % / 435 ms |
+| 100 | 0.0 % / -4.3 % / 282 ms | -0.1 % / -4.4 % / 350 ms | -0.1 % / -5.5 % / 267 ms | +0.1 % / -4.3 % / 354 ms |
+| 150 | 0.0 % / -4.3 % / 79 ms | 0.0 % / -4.4 % / 233 ms | -0.1 % / -4.5 % / 164 ms | 0.0 % / -4.4 % / 233 ms |
+| 250 | -0.1 % / -4.4 % / 108 ms | 0.0 % / -4.4 % / 140 ms | 0.0 % / -4.9 % / 105 ms | 0.0 % / -4.4 % / 139 ms |
+| 400 | -0.1 % / -4.4 % / 59 ms | -0.1 % / -4.4 % / 87 ms | -0.4 % / -4.6 % / 61 ms | -0.4 % / -4.6 % / 87 ms |
+| 500 | 0.0 % / -4.4 % / 14 ms | +0.1 % / -4.4 % / 70 ms | -1.5 % / -5.3 % / 41 ms | -0.7 % / -4.8 % / 67 ms |
+
+How to read it:
+- **Shaper**: whole frames, so an exact cap reads 0 %. Every cell is within
+  ±0.4 %, except Wi-Fi at 500 Mbps (−1.5 % down, −0.7 % up) and one Wi-Fi
+  uplink reading at 10 Mbps (−0.7 %).
+- **Goodput**: −4.4 % is the framing ratio. Uplink at 0.1–0.4 Mbps reads
+  −6 to −20 %, with the shaper exact: TCP's acknowledgements and retransmissions
+  are a large share of a few packets a second. Wi-Fi uplink at 40 Mbps read
+  +0.2 %, which the shaper's 0.1 % does not support. It is one reading, and
+  unexplained.
+- **RTT**: below 30 Mbps GRO is off where the capped traffic arrives, so the
+  queue holds real frames and sits near its 200 ms size. Below 0.6 Mbps the
+  10-packet floor dominates. From 40 to 100 Mbps GRO stays on, so the queue
+  holds merged packets, and the uplink keeps the 1000-packet floor that a
+  merging port needs. Wi-Fi uplink from 10 to 25 Mbps sat at 54–79 ms, below
+  the queue's size. It did not fill, which this run does not explain.
+
 ## Honest limitations — surface these in the UI
 
 - **WiFi is not a wired lab.** Airtime is shared: one client's traffic changes

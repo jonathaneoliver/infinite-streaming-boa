@@ -1724,7 +1724,12 @@ because an open door is not a configuration.
 ## 8) Success Criteria
 
 - A configured cap is delivered within the framing overhead of a real link of
-  that speed. Measured −4.5% at caps from 1.5 to 50 Mbps. Separately measured at
+  that speed: 1448 bytes of payload per 1514-byte frame, so goodput is 95.6% of
+  the cap. Measured on target 5 on 2026-09-30, three runs per cap, downlink at
+  −4.3 to −4.5% from 25 Mbps to **1.5 Gbps** over 2.5 GbE and to **800 Mbps**
+  over the MT7915E, and read at the shaper's own counter within ±0.5% from
+  0.1 to 27.5 Mbps, including every rung of the infinite-stream ladder.
+  Originally measured −4.5% at 1.5 to 50 Mbps. Separately measured at
   **0.25, 0.5, 1, 2 and 4 Mbps** downlink over Wi-Fi, from both the kernel's own
   counters and an independent client: the counters read the configured rate
   exactly, and the client sees 0.94–0.95 of it, which is the Ethernet, IP and
@@ -1741,7 +1746,16 @@ because an open door is not a configuration.
   in any of them. An earlier single run of 0.767 did not reproduce and is taken
   as a transient rather than a property of the rate.
 
-  **Uplink is untested at any rate.**
+  **Uplink meets this too, at every cap measured.** On the Cudy TR3000 on
+  2026-09-30, after #484, the shaper read every uplink cap from 0.1 to 500 Mbps
+  within ±0.7%, wired and over Wi-Fi. Goodput was −3.5 to −5.5% from 0.6 Mbps
+  up, and −6 to −20% at 0.1–0.4 Mbps, where TCP's own overhead is a large share
+  of a few packets a second. On target 5 it was −4.3 to −4.5% from 100 Mbps to
+  1.5 Gbps. Before #484, uplink below about 50 Mbps fell 2–43% short (#470).
+- A cap below 30 Mbps adds the latency of a real link of that speed, not
+  seconds: 143–178 ms of queue under load from 0.6 to 25 Mbps, in both
+  directions, on the Cudy. From 30 Mbps it runs higher, up to 875 ms uplink at
+  40 Mbps, because GRO stays on there to keep the box's forwarding speed.
 - A configured one-way delay appears as that delay in round-trip time —
   measured 200.6 ms for a 200 ms setting.
 - A device under test cannot tell the box is present: no extra hop, no address
