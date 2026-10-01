@@ -26,6 +26,8 @@ const UI_KEYS = [
   // Which of the two tabs was showing. A view preference like the rest, so it
   // travels with them rather than being the one setting a restored setup forgets.
   'boa.tab',
+  // Dark or light. See useTheme.
+  'boa.theme',
 ] as const;
 
 export interface ConfigDoc {

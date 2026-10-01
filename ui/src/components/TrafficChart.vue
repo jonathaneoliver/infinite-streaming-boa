@@ -894,7 +894,7 @@ const gid = `g${Math.random().toString(36).slice(2, 8)}`;
   border-radius: 5px;
   pointer-events: none;
   white-space: nowrap;
-  box-shadow: 0 4px 12px rgb(0 0 0 / 0.4);
+  box-shadow: 0 4px 12px var(--shadow);
 }
 .tip-val { font-size: 12px; font-weight: 600; color: var(--ink); }
 .tip-key { font-size: 10px; color: var(--ink-dim); display: flex; align-items: center; gap: 5px; }

@@ -1,5 +1,6 @@
 import { computed, ref } from 'vue';
 import type { IfaceInfo } from '@/types';
+import { theme } from '@/composables/useTheme';
 
 /*
  * The adapters, shared by everything that names one.
@@ -72,6 +73,16 @@ const ADAPTER_COLOURS = [
   '#f472b6', // pink
   '#fbbf24', // amber
   '#38bdf8', // sky
+];
+
+/** The same five, slot for slot, darkened to hold up on the light theme's
+ *  white. See useTheme. */
+const ADAPTER_COLOURS_LIGHT = [
+  '#7c5ce6', // violet
+  '#0f9488', // teal
+  '#d0378a', // pink
+  '#b7791f', // amber
+  '#0284c7', // sky
 ];
 
 /** Interfaces the rack shows. The bridge and the WAN port are the fabric, not
@@ -162,13 +173,14 @@ const adapterColours = computed<Record<string, string>>(() => {
     .sort();
   const taken = new Set<number>();
   const out: Record<string, string> = {};
+  const palette = theme.value === 'light' ? ADAPTER_COLOURS_LIGHT : ADAPTER_COLOURS;
 
   // The fixed names first, so a runtime adapter can never take a colour that
   // belongs to one of them on every box.
   for (const name of ADAPTER_COLOUR_FIXED) {
     const idx = ADAPTER_COLOUR_FIXED.indexOf(name);
     taken.add(idx);
-    out[name] = ADAPTER_COLOURS[idx % ADAPTER_COLOURS.length];
+    out[name] = palette[idx % palette.length];
   }
 
   for (const name of names) {
@@ -183,7 +195,7 @@ const adapterColours = computed<Record<string, string>>(() => {
       }
     }
     taken.add(idx);
-    out[name] = ADAPTER_COLOURS[idx];
+    out[name] = palette[idx];
   }
   return out;
 });
@@ -198,7 +210,8 @@ const adapterColours = computed<Record<string, string>>(() => {
  * screenshot and every log line already read.
  */
 export function adapterColour(name: string): string {
-  return adapterColours.value[name] ?? ADAPTER_COLOURS[0];
+  return adapterColours.value[name]
+    ?? (theme.value === 'light' ? ADAPTER_COLOURS_LIGHT : ADAPTER_COLOURS)[0];
 }
 
 /** What the token prints beside the name: the channel, where there is one. */

@@ -13,6 +13,8 @@
  * the only thing carrying the meaning: every band is named.
  */
 
+import { theme } from '@/composables/useTheme';
+
 /**
  * The device palette: SEPARATED BY HUE, and it used to be separated by nothing.
  *
@@ -48,6 +50,20 @@ const CLIENT_COLOURS = [
   '#24c9d8', // cyan
   '#ff7ad9', // pink
   '#d7d34a', // olive
+];
+
+/* The same eight, slot for slot, darkened for the light theme: the pastels
+   above sit near 1.5:1 on white, which is a line nobody can follow. Slot for
+   slot so a device keeps its hue across the switch. */
+const CLIENT_COLOURS_LIGHT = [
+  '#1f6fd6', // blue
+  '#d06a00', // orange
+  '#2f9e44', // green
+  '#d63939', // red
+  '#8250df', // violet
+  '#0e8fa3', // cyan
+  '#c2389b', // pink
+  '#8a8a1a', // olive
 ];
 
 const KEY = 'boa.clients.colour';
@@ -104,5 +120,7 @@ export function clientColour(mac: string): string {
     assigned[mac] = next;
     save();
   }
-  return CLIENT_COLOURS[assigned[mac] % CLIENT_COLOURS.length];
+  // Reading theme here makes every caller's computed follow the switch.
+  const palette = theme.value === 'light' ? CLIENT_COLOURS_LIGHT : CLIENT_COLOURS;
+  return palette[assigned[mac] % palette.length];
 }
