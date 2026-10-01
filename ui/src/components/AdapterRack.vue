@@ -957,7 +957,7 @@ function usbRemedy(i: IfaceInfo): string {
   }
   if (fastest <= (i.radio?.link_mbps ?? 0)) {
     return `No port on this box runs faster than ${fastest} Mb/s, so that is the `
-      + 'ceiling here \u2014 only a Pi with USB 3 ports gets past it.';
+      + 'ceiling here \u2014 only a box with faster USB ports gets past it.';
   }
   return `This box has ${ports} port(s) at ${fastest} Mb/s. Check it is in one of `
     + 'those rather than a slower socket or a hub; if it already is, reseat it '
