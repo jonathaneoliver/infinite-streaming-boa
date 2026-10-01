@@ -672,8 +672,16 @@ damages packets, never link state.
   scoped to those ports, not to the box as a whole: everything else the box
   sends is conditioned like any other traffic, which is what lets the box
   measure the downlink it is enforcing.
-- The netem queue is sized from rate x delay. netem's 1000-packet default would
-  silently discard traffic on high-delay profiles while reporting zero loss.
+- The netem queue is sized from rate x delay, plus 200 ms of queue at the cap.
+  netem's 1000-packet default would silently discard traffic on high-delay
+  profiles while reporting zero loss, and at a low cap it is seconds of delay
+  that a real link of that speed does not have.
+- While a cap below 30 Mbps runs through a port, boa turns off GRO on the port
+  where that traffic arrives: the client's port for an uplink cap, the WAN port
+  for a downlink cap. Merged packets would otherwise be released in lumps and
+  make the queue many times longer than sized. GRO comes back on when no such
+  cap remains, because merging is what lets a small box forward at high rates.
+  A port that keeps merging keeps the uplink's deep queue.
 - Every discovered client gets a counting class even when unconditioned, so
   throughput is visible without setting a policy first.
 - Stopping the daemon removes all conditioning.
