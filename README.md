@@ -23,9 +23,17 @@ package. The name is apt: a boa constricts and releases, and the box does the
 same to a link, tightening the cap and easing it off over time.
 [`PRD.md`](PRD.md) is the product behaviour source of truth.
 
-![The 0.2.0 interface: three adapters with their own timeline, an iPhone being
-walked away from the router by the walkabout pattern, and the activity log
-recording two clients refusing a steer](docs/images/interface-0.2.0.png)
+![boa on a Cudy TR3000: the valley pattern steps an iPhone's downlink cap from
+10.25 Mbps down to 0.54 Mbps while the iPhone's own screen, inset, shows its
+player dropping from 2160p to 360p without stalling](docs/images/cudy-demo-teaser.gif)
+
+The valley pattern at 16×, from the demo below: the dashed line is the cap boa
+enforces, the solid line the iPhone's real throughput, and the inset the
+iPhone's own screen, playing from infinite-streaming. The full 2:47 demo,
+every action a click in the web UI, also tries `warn`, `term` and `evict` on
+the radio the iPhone is using:
+
+<!-- DEMO VIDEO: the user-attachments link to boa-cudy-demo-1280.mp4 goes on the next line, alone -->
 
 ```
                  [ your existing router ]
@@ -212,26 +220,32 @@ boa conditions two things, per client and independently:
 
 **What it looks like**
 
-![The boa interface: an iPhone streaming while the valley pattern walks the
-downlink cap down through a measured rendition ladder](docs/images/interface.png)
+![An iPhone's client card on the Cudy: the valley pattern has stepped its
+downlink cap from 10.25 to 1.82 Mbps, and the throughput follows each
+step](docs/images/cudy-client.png)
 
-One client streaming, five minutes of history. The blue trace is real downlink
-throughput; the dashed `cap` line is what boa is enforcing. The `valley`
-pattern is stepping the cap down rung by rung, and the player is following it
-down — which is the thing worth watching. The lane editor underneath is the
-pattern itself: keyframes on a rate lane.
+One client streaming, five minutes of history, averaged over 10 s. The blue
+trace is real downlink throughput; the dashed `cap` line is what boa is
+enforcing. The `valley` pattern has stepped the cap down rung by rung, from
+10.25 to 1.82 Mbps so far, and the player has followed it down — which is the
+thing worth watching. The row underneath is the pattern playing, 149 s into
+420.
 
 ![The traffic panel: stacked download and upload for the whole box above a pair
-of Sankey diagrams showing which device sent to which](docs/images/traffic-routing.png)
+of Sankey diagrams showing which device sent to which](docs/images/cudy-traffic-routing.png)
 
 The whole box at once: every port's throughput from the kernel's counters, and
-beneath it who sent to whom. The fat ribbon is a MacBook on Wi-Fi sending
-152 Mbit/s to a Mac Mini on a wired port — traffic that never left the room,
-which interface counters alone cannot show.
+beneath it who sent to whom. The two fat ribbons are a MacBook on the wired
+USB port and a Mac mini on Wi-Fi sending each other about 101 Mbit/s each way
+— traffic that never left the room, which interface counters alone cannot
+show.
 
-> These screenshots, and the one at the top, were captured on the Raspberry Pi
-> target, so the port names differ. The same interface, from the same binary,
-> serves the Cudy.
+![The whole page on the Cudy: the activity log, the traffic panel by client,
+the adapter rack listing every client on each radio, and the client
+list](docs/images/cudy-interface.png)
+
+The whole page: the activity log at the top, the traffic panel, the adapter
+rack with each radio's controls and every client on it, and the clients.
 
 ## Why the Cudy
 
@@ -455,8 +469,8 @@ the unattended equivalent.
 - **`boa-setup check`** on the box — walks every prerequisite read-only and
   prints OK, WARN or FAIL with the fix. The unit here: 0 failed.
 
-![boa inside LuCI: the Services -> infinite-streaming-boa page framing boa's
-interface](docs/images/openwrt-luci.png)
+![boa inside LuCI on the Cudy: the Services -> infinite-streaming-boa page
+framing boa's interface, both in the light theme](docs/images/cudy-luci.png)
 
 Every step, as run on that unit, at a shell as well as in LuCI — and how to put
 the box back to out-of-box from a workstation — is in
