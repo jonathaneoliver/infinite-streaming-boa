@@ -397,9 +397,17 @@ function fireLink(kind: 'deauth' | 'disassoc') {
 // deadzone is a sustained outage, so it carries a duration (default 10s) --
 // long enough to drain a player's buffer, unlike a single drop.
 const deadzoneSec = ref(10);
+// A deadzone started from the button, held for its length. activeLinkKinds
+// only covers one a PATTERN is firing; a press is otherwise just the brief
+// flash, and the warning below has to stay up for the whole blackout.
+const deadzoneFiring = ref(false);
+let deadzoneTimer: ReturnType<typeof setTimeout> | undefined;
 function fireDeadzone() {
   emit('linkDeadzone', deadzoneSec.value);
   flashLink('deadzone');
+  deadzoneFiring.value = true;
+  clearTimeout(deadzoneTimer);
+  deadzoneTimer = setTimeout(() => { deadzoneFiring.value = false; }, (deadzoneSec.value + 2) * 1000);
 }
 
 /*
@@ -455,6 +463,22 @@ function reportAge(atMs: number): string {
 // as traffic and cannot be conditioned until it rejoins THIS AP on its own.
 const ROAM_AWAY_SEC = 3;
 const deadzoneRisky = computed(() => deadzoneSec.value >= ROAM_AWAY_SEC);
+const DEADZONE_ROAM_WARNING =
+  'A deadzone this long can make the device give up on this Wi-Fi and switch to '
+  + 'another network (iOS around 3s). It then leaves boa entirely — not just shown '
+  + 'offline, but gone: no traffic and nothing to condition until it rejoins this '
+  + "box's Wi-Fi on its own.";
+
+// WHEN IT IS RELEVANT, NOT ALWAYS (#492). The preset defaults to 10s, which is
+// already past ROAM_AWAY_SEC, so gating on the number alone put this on every
+// Wi-Fi card permanently -- a caution about a button nobody had pressed, read as
+// a statement about the device. It now shows while the duration is being chosen,
+// and while a deadzone is actually running, which is when the device may leave.
+// The button's own tooltip carries it whenever the preset is risky.
+const deadzoneEditing = ref(false);
+const deadzoneWarn = computed(() =>
+  deadzoneRisky.value
+  && (deadzoneEditing.value || deadzoneFiring.value || activeLinkKinds.value.has('deadzone')));
 
 /**
  * The downlink cap actually in force, which is NOT always the stored policy.
@@ -1396,11 +1420,13 @@ function fmtBytes(n: number): string {
       >{{ linkFlash === 'measure' ? 'sent' : 'measure' }}</button>
       <button
         class="ghost" :class="{ flash: linkFlash === 'deadzone', active: activeLinkKinds.has('deadzone') }" @click="fireDeadzone"
-        title="Hold the link down for the duration -- long enough to drain a player's buffer and force a rebuffer, unlike a single drop"
+        :title="`Hold the link down for the duration -- long enough to drain a player's buffer and force a rebuffer, unlike a single drop`
+          + (deadzoneRisky ? `. ${DEADZONE_ROAM_WARNING}` : '')"
       >{{ linkFlash === 'deadzone' ? 'sent' : `deadzone ${deadzoneSec}s` }}</button>
       <input
         type="number" min="1" max="300" step="1" v-model.number="deadzoneSec"
         class="dz-dur" title="deadzone length in seconds" aria-label="deadzone seconds"
+        @focus="deadzoneEditing = true" @blur="deadzoneEditing = false"
       />
       <span class="link-hint meta">watch <b>assoc</b> above reset when it lands</span>
     </div>
@@ -1429,11 +1455,8 @@ function fmtBytes(n: number): string {
     </div>
     <!-- A long blackout does not rebuffer, it evicts: the device leaves this AP
          and boa can no longer see or shape it until it comes back. -->
-    <p v-if="linkControl && client.present && client.medium === 'wifi' && deadzoneRisky" class="meta dz-warn">
-      A deadzone this long can make the device give up on this Wi-Fi and switch
-      to another network (iOS around 3s). It then leaves boa entirely — not just
-      shown offline, but gone: no traffic and nothing to condition until it
-      rejoins this box's Wi-Fi on its own.
+    <p v-if="linkControl && client.present && client.medium === 'wifi' && deadzoneWarn" class="meta dz-warn">
+      {{ DEADZONE_ROAM_WARNING }}
     </p>
 
     <!-- The timeline sits directly under the controls that author it. The
