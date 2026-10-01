@@ -13,6 +13,7 @@
 #   boa-setup install-wpad
 #                        replace the stock wpad-basic with the full build, so
 #                        steer and measure work. Refuses while APs are up.
+#                        Adds hostapd_cli (hostapd-utils) for diagnosis.
 #   boa-setup install-drivers
 #                        install the kmod packages for USB adapters that have
 #                        no driver -- what `check` describes, done.
@@ -929,6 +930,7 @@ cmd_install_wpad() {
 
 	if [ -n "$full" ]; then
 		echo "Nothing to do: $full is installed, and has the 802.11k/v commands."
+		install_hostapd_utils
 		return 0
 	fi
 
@@ -945,6 +947,7 @@ cmd_install_wpad() {
 	echo "apk add wpad-mbedtls"
 	echo "/etc/init.d/wpad enable && /etc/init.d/wpad start"
 	if [ -n "$dry" ]; then
+		install_hostapd_utils
 		echo "--dry-run: nothing installed."
 		return 0
 	fi
@@ -972,7 +975,36 @@ cmd_install_wpad() {
 	echo "Installed and started. Configured access points come back with it;"
 	echo "if one did not, bring it up with: wifi up <radio>"
 	echo "Check with: boa-setup check"
+	install_hostapd_utils
 	return 0
+}
+
+# hostapd_cli, for the operator rather than for boa.
+#
+# The daemon never runs it -- it talks to hostapd's control socket directly --
+# so this is not a dependency and boa works without it. It is here because
+# every hand diagnosis of an access point starts with `hostapd_cli status`, the
+# Pi image and the container have it from Debian's hostapd package, and on
+# OpenWrt it is a separate package that the full wpad does not pull in. The
+# setup guide has always installed it; this command did not, so a box set up
+# the documented way and one set up by this script differed in exactly the tool
+# needed when something goes wrong.
+#
+# Its OWN apk add, after wpad is running, never folded into `apk add
+# wpad-mbedtls`. A failure on that line leaves the box with no wpad at all, and
+# a convenience must not be able to cause that. For the same reason a failure
+# here warns and carries on: nothing about serving depends on it. Safe while
+# access points are up -- it installs a client, and hostapd is not touched.
+install_hostapd_utils() {
+	if apk info 2>/dev/null | grep -qx hostapd-utils; then
+		return 0
+	fi
+	echo "apk add hostapd-utils"
+	[ -n "${dry:-}" ] && return 0
+	if ! apk add hostapd-utils >/dev/null 2>&1; then
+		echo "hostapd-utils did not install, so hostapd_cli is not available for" >&2
+		echo "diagnosis. boa does not need it; to retry: apk add hostapd-utils" >&2
+	fi
 }
 
 # --- install-mdns ------------------------------------------------------------
