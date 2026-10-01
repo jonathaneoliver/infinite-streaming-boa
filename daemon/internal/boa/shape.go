@@ -75,6 +75,12 @@ type Shaper struct {
 	// conditioned: the interface, SSH and ntopng. Everything else the box
 	// sends is deliberately left subject to policy. See writeExemptions.
 	mgmtPorts []int
+
+	// gro holds the ports boa turned GRO off on, to be turned back on when no
+	// low cap needs them; groWarned, the ports already reported as refusing.
+	// See gro.go.
+	gro       map[string]groHold
+	groWarned map[string]bool
 }
 
 // rule is the exact state installed for one class. Keeping it lets the
@@ -90,6 +96,9 @@ type rule struct {
 	down, up Shape
 	haveDown bool
 	haveUp   bool
+	// upPaced records that the client's port was not merging when the uplink
+	// queue was sized, so a change in either direction resizes it.
+	upPaced bool
 }
 
 const (
@@ -360,6 +369,9 @@ func (s *Shaper) Teardown() {
 		tcQuiet("qdisc", "del", "dev", dev, "root")
 	}
 	s.ports = map[string]bool{}
+	for dev := range s.gro {
+		s.restoreGRO(dev)
+	}
 	s.ready = false
 }
 
@@ -416,8 +428,16 @@ const netemMinPackets = 10
 //
 // A queue of netemQueueMs at the cap bounds all three by that same 200 ms.
 //
-// DOWNLINK ONLY. The uplink keeps the old sizing, a 1000-packet floor, and it is
-// a measurement, not an oversight. On the same target, with a 5 Mbps uplink cap
+// THE UPLINK TOO, BUT ONLY FROM A PORT THAT IS NOT MERGING (`paced`). The
+// numbers below are why the uplink first kept the old sizing; GRO is what they
+// were measuring. The client's port merged the Mac's bursts into packets of up
+// to 45 KB, so "84 packets" was up to 3.8 MB of queue, released in lumps --
+// see gro.go. With GRO off on that port the time-sized queue is exact (-5.2 %
+// at 5 Mbps, 170 ms). A port that still merges -- every cap from
+// groOffBelowMbps up, or a driver that refuses -- keeps the deep queue, which
+// is what these rows show it needs.
+//
+// The rows, kept because they are what a merging port does. On the same target, with a 5 Mbps uplink cap
 // and the MacBook sending, set directly with tc and repeated in both orders:
 //
 //	limit   84 (200 ms)   -24 to -57 %   thousands of retransmits
@@ -427,11 +447,9 @@ const netemMinPackets = 10
 //
 // So a bulk uplink sender needs the deep queue to fill a low cap, while the
 // downlink -- sent by the other end's stack, and where a player's segmented
-// fetches live -- is exact with a short one and loses the latency. Why the
-// Mac needs it is not established (the 420 row lost nothing and still fell
-// short); see #470.
-func netemLimit(sh Shape, up bool) int {
-	if up {
+// fetches live -- is exact with a short one and loses the latency. See #470.
+func netemLimit(sh Shape, up, paced bool) int {
+	if up && !paced {
 		return netemLimitUp(sh)
 	}
 	rate := sh.RateMbps
@@ -446,8 +464,9 @@ func netemLimit(sh Shape, up bool) int {
 	return clampLimit(int(math.Ceil(bdpPackets*3+queuePackets)), netemMinPackets)
 }
 
-// netemLimitUp is the uplink's sizing: 3x the bandwidth-delay product, never
-// below 1000 packets, exactly as every direction was sized before #470.
+// netemLimitUp is the sizing for an uplink whose port still merges: 3x the
+// bandwidth-delay product, never below 1000 packets, exactly as every direction
+// was sized before #470.
 func netemLimitUp(sh Shape) int {
 	rate := sh.RateMbps
 	if rate <= 0 {
@@ -474,7 +493,7 @@ func clampLimit(limit, floor int) int {
 // milliseconds and percent; tc's command line takes those same literals; tc's
 // JSON readback reports bytes/sec, seconds and fractions. One conversion site
 // is what stops a factor-of-1000 error surfacing in a graph six months later.
-func (s *Shaper) writeNetem(dev string, minor int, sh Shape, exists, up bool) (bool, error) {
+func (s *Shaper) writeNetem(dev string, minor int, sh Shape, exists, up, paced bool) (bool, error) {
 	// Class ids and handles are HEXADECIMAL to tc, both on input and in its
 	// JSON output. Formatting them as decimal creates a class whose real id is
 	// the hex reading of those digits (1:16 becomes 0x16, decimal 22), so every
@@ -494,7 +513,7 @@ func (s *Shaper) writeNetem(dev string, minor int, sh Shape, exists, up bool) (b
 		verb = "change"
 	}
 	args := []string{"qdisc", verb, "dev", dev, "parent", parent,
-		"handle", handle, "netem", "limit", fmt.Sprint(netemLimit(sh, up))}
+		"handle", handle, "netem", "limit", fmt.Sprint(netemLimit(sh, up, paced))}
 
 	if sh.RateMbps > 0 {
 		// Expressed in bits so the kernel does its own rounding rather than
@@ -775,6 +794,9 @@ func (s *Shaper) Apply(want []Desired) []error {
 	var errs []error
 	seen := map[string]bool{}
 
+	// Before any queue is sized, because the uplink's size depends on it.
+	paced := s.syncGRO(groPorts(want, s.wan))
+
 	// Sorted for deterministic minor assignment, which keeps class ids stable
 	// across restarts and keeps `tc` output readable when debugging.
 	sort.Slice(want, func(i, j int) bool { return want[i].Key < want[j].Key })
@@ -809,14 +831,16 @@ func (s *Shaper) Apply(want []Desired) []error {
 		}
 
 		v6key := strings.Join(w.IPv6, ",")
+		upPaced := downPort != "" && paced[downPort]
 		unchanged := existed && !moved && prev.ip == w.IP && prev.v6 == v6key &&
-			prev.match == w.Match && prev.down == w.Down && prev.up == w.Up
+			prev.match == w.Match && prev.down == w.Down && prev.up == w.Up &&
+			prev.upPaced == upPaced
 		if unchanged {
 			continue
 		}
 
 		next := rule{minor: minor, ip: w.IP, v6: v6key, downPort: downPort,
-			match: w.Match, down: w.Down, up: w.Up}
+			match: w.Match, down: w.Down, up: w.Up, upPaced: upPaced}
 
 		// --- downlink, on the client's own port -------------------------
 		if downPort != "" {
@@ -825,7 +849,7 @@ func (s *Shaper) Apply(want []Desired) []error {
 				errs = append(errs, err)
 			} else {
 				var err error
-				if next.haveDown, err = s.writeNetem(downPort, minor, w.Down, hadDown, false); err != nil {
+				if next.haveDown, err = s.writeNetem(downPort, minor, w.Down, hadDown, false, false); err != nil {
 					errs = append(errs, err)
 				}
 				if moved || !existed || prev.ip != w.IP || prev.v6 != v6key ||
@@ -843,7 +867,7 @@ func (s *Shaper) Apply(want []Desired) []error {
 			errs = append(errs, err)
 		} else {
 			var err error
-			if next.haveUp, err = s.writeNetem(s.wan, minor, w.Up, prev.haveUp, true); err != nil {
+			if next.haveUp, err = s.writeNetem(s.wan, minor, w.Up, prev.haveUp, true, upPaced); err != nil {
 				errs = append(errs, err)
 			}
 			if !existed || prev.ip != w.IP || prev.v6 != v6key || prev.match != w.Match {

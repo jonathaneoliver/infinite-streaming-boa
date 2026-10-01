@@ -13,7 +13,7 @@ func queueSeconds(limit int, rateMbps float64) float64 {
 // cap, or the packet floor where 200 ms is less than that.
 func TestTheQueueIsSizedInTimeNotPackets(t *testing.T) {
 	for _, rate := range []float64{0.25, 1, 5, 25, 50, 100, 1000} {
-		limit := netemLimit(Shape{RateMbps: rate}, false)
+		limit := netemLimit(Shape{RateMbps: rate}, false, false)
 		secs := queueSeconds(limit, rate)
 		floorSecs := queueSeconds(netemMinPackets, rate)
 		max := float64(netemQueueMs)/1000 + 0.02 // a packet's rounding
@@ -30,7 +30,7 @@ func TestTheQueueIsSizedInTimeNotPackets(t *testing.T) {
 	}
 	// The case that motivated it, stated as a number: 0.25 Mbps was 1000
 	// packets, 48 s.
-	if l := netemLimit(Shape{RateMbps: 0.25}, false); queueSeconds(l, 0.25) > 1 {
+	if l := netemLimit(Shape{RateMbps: 0.25}, false, false); queueSeconds(l, 0.25) > 1 {
 		t.Errorf("0.25 Mbps still queues %.1f s", queueSeconds(l, 0.25))
 	}
 }
@@ -42,13 +42,13 @@ func TestADelayedLinkStillHoldsItsBandwidthDelayProduct(t *testing.T) {
 	sh := Shape{RateMbps: 50, DelayMs: 500}
 	inFlight := 50e6 * 0.5 / (8 * mtuBytes) // ~2083
 	for _, up := range []bool{false, true} {
-		if l := netemLimit(sh, up); float64(l) < 3*inFlight {
+		if l := netemLimit(sh, up, false); float64(l) < 3*inFlight {
 			t.Errorf("50 Mbps + 500 ms (up=%v): limit %d, want at least 3x the %.0f packets in flight",
 				up, l, inFlight)
 		}
 	}
 	// Jitter counts as delay: the queue holds the worst case.
-	if netemLimit(Shape{RateMbps: 50, DelayMs: 500, JitterMs: 100}, false) <= netemLimit(sh, false) {
+	if netemLimit(Shape{RateMbps: 50, DelayMs: 500, JitterMs: 100}, false, false) <= netemLimit(sh, false, false) {
 		t.Error("adding jitter did not grow the queue")
 	}
 }
@@ -56,26 +56,41 @@ func TestADelayedLinkStillHoldsItsBandwidthDelayProduct(t *testing.T) {
 // With no rate there is no rate queue: netem only delays, and the old floor
 // and the in-flight sizing stand.
 func TestAnUnlimitedRateKeepsTheOldSizing(t *testing.T) {
-	if l := netemLimit(Shape{DelayMs: 0}, false); l != 1000 {
+	if l := netemLimit(Shape{DelayMs: 0}, false, false); l != 1000 {
 		t.Errorf("no rate, no delay: %d, want 1000", l)
 	}
-	if l := netemLimit(Shape{DelayMs: 500}, false); float64(l) < 3*1000e6*0.5/(8*mtuBytes) {
+	if l := netemLimit(Shape{DelayMs: 500}, false, false); float64(l) < 3*1000e6*0.5/(8*mtuBytes) {
 		t.Errorf("no rate, 500 ms: %d is below a gigabit's in-flight data x3", l)
 	}
-	if l := netemLimit(Shape{RateMbps: 10000, DelayMs: 10000}, false); l != 200000 {
+	if l := netemLimit(Shape{RateMbps: 10000, DelayMs: 10000}, false, false); l != 200000 {
 		t.Errorf("the memory ceiling did not hold: %d", l)
 	}
 }
 
-// The uplink keeps the old floor: a bulk uplink sender (the MacBook, 5 Mbps)
-// fell 24-57 % short at a 200 ms queue and was exact at 1000 packets.
-func TestTheUplinkKeepsItsDeepQueue(t *testing.T) {
+// An uplink from a port that still merges keeps the old floor: a bulk uplink
+// sender (the MacBook, 5 Mbps) fell 24-57 % short at a 200 ms queue and was
+// exact at 1000 packets, because each "packet" was a GRO lump of up to 45 KB.
+func TestAMergingUplinkKeepsItsDeepQueue(t *testing.T) {
 	for _, rate := range []float64{0.25, 1, 5, 25, 50} {
-		if l := netemLimit(Shape{RateMbps: rate}, true); l < 1000 {
+		if l := netemLimit(Shape{RateMbps: rate}, true, false); l < 1000 {
 			t.Errorf("uplink %g Mbps: limit %d, want at least the 1000-packet floor", rate, l)
 		}
-		if netemLimit(Shape{RateMbps: rate}, true) <= netemLimit(Shape{RateMbps: rate}, false) && rate < 50 {
+		if netemLimit(Shape{RateMbps: rate}, true, false) <= netemLimit(Shape{RateMbps: rate}, false, false) && rate < 50 {
 			t.Errorf("uplink %g Mbps is no deeper than downlink", rate)
+		}
+	}
+}
+
+// From a port with GRO off the uplink is sized exactly as the downlink: real
+// frames, so 200 ms of them is 200 ms. Measured -5.4 % and 166 ms at 1 Mbps.
+func TestAPacedUplinkIsSizedLikeTheDownlink(t *testing.T) {
+	for _, rate := range []float64{0.1, 1, 5, 25} {
+		up, down := netemLimit(Shape{RateMbps: rate}, true, true), netemLimit(Shape{RateMbps: rate}, false, false)
+		if up != down {
+			t.Errorf("%g Mbps: paced uplink limit %d, downlink %d", rate, up, down)
+		}
+		if queueSeconds(up, rate) > 0.5 && rate >= 1 {
+			t.Errorf("%g Mbps: paced uplink queue is %.2f s", rate, queueSeconds(up, rate))
 		}
 	}
 }
@@ -87,7 +102,7 @@ func TestTheUplinkKeepsItsDeepQueue(t *testing.T) {
 func TestHighRatesKeepAtLeastTheOldQueue(t *testing.T) {
 	for _, rate := range []float64{100, 500, 1000, 1500, 2500} {
 		for _, up := range []bool{false, true} {
-			if l := netemLimit(Shape{RateMbps: rate}, up); l < 1000 {
+			if l := netemLimit(Shape{RateMbps: rate}, up, up); l < 1000 {
 				t.Errorf("%g Mbps (up=%v): limit %d is below the old 1000 packets", rate, up, l)
 			}
 		}
