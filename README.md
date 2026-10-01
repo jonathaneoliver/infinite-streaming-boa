@@ -6,8 +6,9 @@
 [![Platform: OpenWrt](https://img.shields.io/badge/platform-OpenWrt%2025.12-00b5e2)](openwrt/README.md)
 [![Sponsor](https://img.shields.io/badge/support%20this%20project-ea4aaa?logo=githubsponsors&logoColor=white)](https://github.com/sponsors/jonathaneoliver)
 
-**A pocket travel router that sits invisibly in your network and makes it
-misbehave on purpose — per device, live, from a web page.**
+**The simplest hardware setup for the boa bench appliance: one Cudy TR3000
+router running OpenWrt.** For every other way to run it — a Raspberry Pi, a
+Linux container, an OpenWrt VM — see the [full README](README-FULL.md).
 
 boa conditions each client's connection independently — rate, latency, jitter
 and loss, per device and per direction — and **drives the radios those clients
