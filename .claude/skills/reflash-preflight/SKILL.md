@@ -122,7 +122,7 @@ passwordless sudo rule.
 
 Then write `dist/*.img` to the card with **Raspberry Pi Imager** or
 **balenaEtcher**. There is no flashing helper in this repo, deliberately — see
-the README. Both imagers verify the write and refuse the system disk.
+`README-FULL.md`. Both imagers verify the write and refuse the system disk.
 
 After it boots:
 

@@ -1988,7 +1988,7 @@ independent runs to **0.7%**. That is what the series rests on.
 
 Everything above was measured on a Pi that was browning out — the supply was
 negotiating 900 mA instead of 5 A and adapters were dropping off the bus
-mid-transfer. See [Power](../README.md#power). The counters were re-checked
+mid-transfer. See [Power](../README-FULL.md#power-on-the-pi). The counters were re-checked
 afterwards on the repaired box, one client, 70 s per channel:
 
 | | ch 149 | ch 40 |
