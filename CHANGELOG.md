@@ -19,11 +19,11 @@ deliberate and documented so they are not mistaken for defects — see
 adapter plugged into an OpenWrt box just works, and the Cudy TR3000 becomes
 the front page.**
 
-The demo video in the README was recorded on a Cudy TR3000 running this
-release, light theme, every action a click in the web UI. An iPhone streams from infinite-streaming
-while the valley pattern steps its downlink cap from 10.25 Mbps down to
-0.54 Mbps. The player drops from 2160p to 360p and does not stall. Then three
-steering commands are tried on the radio it is using:
+The demo video in the README was recorded on a Cudy TR3000 running this release,
+light theme, every action a click in the web UI. An iPhone streams from
+infinite-streaming while the valley pattern steps its downlink cap from 10.25
+Mbps down to 0.54 Mbps. The player drops from 2160p to 360p and does not stall.
+Then three steering commands are tried on the radio it is using:
 
 - **warn** and **term** were both refused by the Macs and left unanswered by
   the iPhone, and nobody moved.
