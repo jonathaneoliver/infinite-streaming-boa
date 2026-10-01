@@ -75,6 +75,12 @@ type Shaper struct {
 	// conditioned: the interface, SSH and ntopng. Everything else the box
 	// sends is deliberately left subject to policy. See writeExemptions.
 	mgmtPorts []int
+
+	// gro holds the ports boa turned GRO off on, to be turned back on when no
+	// low cap needs them; groWarned, the ports already reported as refusing.
+	// See gro.go.
+	gro       map[string]groHold
+	groWarned map[string]bool
 }
 
 // rule is the exact state installed for one class. Keeping it lets the
@@ -90,6 +96,9 @@ type rule struct {
 	down, up Shape
 	haveDown bool
 	haveUp   bool
+	// upPaced records that the client's port was not merging when the uplink
+	// queue was sized, so a change in either direction resizes it.
+	upPaced bool
 }
 
 const (
@@ -360,6 +369,9 @@ func (s *Shaper) Teardown() {
 		tcQuiet("qdisc", "del", "dev", dev, "root")
 	}
 	s.ports = map[string]bool{}
+	for dev := range s.gro {
+		s.restoreGRO(dev)
+	}
 	s.ready = false
 }
 
@@ -382,22 +394,91 @@ func (s *Shaper) writeClass(dev string, minor int, exists bool) error {
 		"quantum", "60000")
 }
 
-// netemLimit sizes the netem queue from the bandwidth-delay product.
+// netemQueueMs is how much the rate queue holds, in time at the cap rate, on
+// top of whatever the configured delay keeps in flight. About what a real
+// router's buffer holds: enough for TCP to keep the link full, and a bound on
+// the latency and the cap-change lag the queue itself adds.
+const netemQueueMs = 200
+
+// netemMinPackets is the smallest queue, so TCP has room at very low rates:
+// 200 ms at 0.1 Mbps is under two packets.
+const netemMinPackets = 10
+
+// netemLimit sizes the netem queue from the bandwidth-delay product, plus a
+// fixed TIME of queue at the cap rate.
 //
-// This is the most damaging default in the stack. netem queues 1000 packets
-// unless told otherwise; a 50 Mbps link with 500 ms of delay holds roughly 2100
-// packets in flight, so the default would silently discard half the traffic
-// while the UI truthfully reported "0% loss configured", and the tester would
-// spend an afternoon blaming the player.
-func netemLimit(sh Shape) int {
+// The delay term is why this exists. netem queues 1000 packets unless told
+// otherwise; a 50 Mbps link with 500 ms of delay holds roughly 2100 packets in
+// flight, so the default would silently discard half the traffic while the UI
+// truthfully reported "0% loss configured", and the tester would spend an
+// afternoon blaming the player.
+//
+// THE QUEUE IS SIZED IN TIME, NOT PACKETS (#470). This used to floor the limit
+// at 1000 packets whatever the rate, which with no delay configured was every
+// cap's whole queue: 0.24 s at 50 Mbps, but 12 s at 1 Mbps and 48 s at
+// 0.25 Mbps. Measured on target 5, 2026-09-30, a bulk sender filled it, and
+// that latency, which a real link of that speed does not have, broke things
+// three ways:
+//   - uplink caps under ~50 Mbps delivered 2-43 % short;
+//   - iperf3's own control messages waited behind the queue until the
+//     connection reset;
+//   - a RAISED cap took ~25 s to bite at 0.1 -> 0.25 Mbps, because netem
+//     spaces each queued packet at the rate in force when it was queued
+//     (#43).
+//
+// A queue of netemQueueMs at the cap bounds all three by that same 200 ms.
+//
+// THE UPLINK TOO, BUT ONLY FROM A PORT THAT IS NOT MERGING (`paced`). The
+// numbers below are why the uplink first kept the old sizing; GRO is what they
+// were measuring. The client's port merged the Mac's bursts into packets of up
+// to 45 KB, so "84 packets" was up to 3.8 MB of queue, released in lumps --
+// see gro.go. With GRO off on that port the time-sized queue is exact (-5.2 %
+// at 5 Mbps, 170 ms). A port that still merges -- every cap from
+// groOffBelowMbps up, or a driver that refuses -- keeps the deep queue, which
+// is what these rows show it needs.
+//
+// The rows, kept because they are what a merging port does. On the same target, with a 5 Mbps uplink cap
+// and the MacBook sending, set directly with tc and repeated in both orders:
+//
+//	limit   84 (200 ms)   -24 to -57 %   thousands of retransmits
+//	limit  420 (~1 s)     -10 to -17 %   no retransmits
+//	limit 1000 (~2.4 s)    -0.3 to -0.8 %
+//	limit 2000             -0.4 to -0.8 %
+//
+// So a bulk uplink sender needs the deep queue to fill a low cap, while the
+// downlink -- sent by the other end's stack, and where a player's segmented
+// fetches live -- is exact with a short one and loses the latency. See #470.
+func netemLimit(sh Shape, up, paced bool) int {
+	if up && !paced {
+		return netemLimitUp(sh)
+	}
+	rate := sh.RateMbps
+	if rate <= 0 {
+		// Unlimited: netem only delays, and there is no rate queue to size.
+		// Keep room for a gigabit link's worth of in-flight data, as before.
+		bdp := 1000 * 1e6 * (sh.DelayMs + sh.JitterMs) / 1000.0 / (8.0 * mtuBytes)
+		return clampLimit(int(math.Ceil(bdp*3)), 1000)
+	}
+	bdpPackets := rate * 1e6 * (sh.DelayMs + sh.JitterMs) / 1000.0 / (8.0 * mtuBytes)
+	queuePackets := rate * 1e6 * netemQueueMs / 1000.0 / (8.0 * mtuBytes)
+	return clampLimit(int(math.Ceil(bdpPackets*3+queuePackets)), netemMinPackets)
+}
+
+// netemLimitUp is the sizing for an uplink whose port still merges: 3x the
+// bandwidth-delay product, never below 1000 packets, exactly as every direction
+// was sized before #470.
+func netemLimitUp(sh Shape) int {
 	rate := sh.RateMbps
 	if rate <= 0 {
 		rate = 1000 // unlimited: size for a gigabit link's worth of in-flight data
 	}
-	bdpPackets := rate * 1e6 * (sh.DelayMs + sh.JitterMs) / 1000.0 / (8.0 * mtuBytes)
-	limit := int(math.Ceil(bdpPackets * 3))
-	if limit < 1000 {
-		limit = 1000
+	bdp := rate * 1e6 * (sh.DelayMs + sh.JitterMs) / 1000.0 / (8.0 * mtuBytes)
+	return clampLimit(int(math.Ceil(bdp*3)), 1000)
+}
+
+func clampLimit(limit, floor int) int {
+	if limit < floor {
+		limit = floor
 	}
 	if limit > 200000 {
 		limit = 200000 // past here the memory cost outweighs the clipping
@@ -412,7 +493,7 @@ func netemLimit(sh Shape) int {
 // milliseconds and percent; tc's command line takes those same literals; tc's
 // JSON readback reports bytes/sec, seconds and fractions. One conversion site
 // is what stops a factor-of-1000 error surfacing in a graph six months later.
-func (s *Shaper) writeNetem(dev string, minor int, sh Shape, exists bool) (bool, error) {
+func (s *Shaper) writeNetem(dev string, minor int, sh Shape, exists, up, paced bool) (bool, error) {
 	// Class ids and handles are HEXADECIMAL to tc, both on input and in its
 	// JSON output. Formatting them as decimal creates a class whose real id is
 	// the hex reading of those digits (1:16 becomes 0x16, decimal 22), so every
@@ -432,7 +513,7 @@ func (s *Shaper) writeNetem(dev string, minor int, sh Shape, exists bool) (bool,
 		verb = "change"
 	}
 	args := []string{"qdisc", verb, "dev", dev, "parent", parent,
-		"handle", handle, "netem", "limit", fmt.Sprint(netemLimit(sh))}
+		"handle", handle, "netem", "limit", fmt.Sprint(netemLimit(sh, up, paced))}
 
 	if sh.RateMbps > 0 {
 		// Expressed in bits so the kernel does its own rounding rather than
@@ -713,6 +794,9 @@ func (s *Shaper) Apply(want []Desired) []error {
 	var errs []error
 	seen := map[string]bool{}
 
+	// Before any queue is sized, because the uplink's size depends on it.
+	paced := s.syncGRO(groPorts(want, s.wan))
+
 	// Sorted for deterministic minor assignment, which keeps class ids stable
 	// across restarts and keeps `tc` output readable when debugging.
 	sort.Slice(want, func(i, j int) bool { return want[i].Key < want[j].Key })
@@ -747,14 +831,16 @@ func (s *Shaper) Apply(want []Desired) []error {
 		}
 
 		v6key := strings.Join(w.IPv6, ",")
+		upPaced := downPort != "" && paced[downPort]
 		unchanged := existed && !moved && prev.ip == w.IP && prev.v6 == v6key &&
-			prev.match == w.Match && prev.down == w.Down && prev.up == w.Up
+			prev.match == w.Match && prev.down == w.Down && prev.up == w.Up &&
+			prev.upPaced == upPaced
 		if unchanged {
 			continue
 		}
 
 		next := rule{minor: minor, ip: w.IP, v6: v6key, downPort: downPort,
-			match: w.Match, down: w.Down, up: w.Up}
+			match: w.Match, down: w.Down, up: w.Up, upPaced: upPaced}
 
 		// --- downlink, on the client's own port -------------------------
 		if downPort != "" {
@@ -763,7 +849,7 @@ func (s *Shaper) Apply(want []Desired) []error {
 				errs = append(errs, err)
 			} else {
 				var err error
-				if next.haveDown, err = s.writeNetem(downPort, minor, w.Down, hadDown); err != nil {
+				if next.haveDown, err = s.writeNetem(downPort, minor, w.Down, hadDown, false, false); err != nil {
 					errs = append(errs, err)
 				}
 				if moved || !existed || prev.ip != w.IP || prev.v6 != v6key ||
@@ -781,7 +867,7 @@ func (s *Shaper) Apply(want []Desired) []error {
 			errs = append(errs, err)
 		} else {
 			var err error
-			if next.haveUp, err = s.writeNetem(s.wan, minor, w.Up, prev.haveUp); err != nil {
+			if next.haveUp, err = s.writeNetem(s.wan, minor, w.Up, prev.haveUp, true, upPaced); err != nil {
 				errs = append(errs, err)
 			}
 			if !existed || prev.ip != w.IP || prev.v6 != v6key || prev.match != w.Match {

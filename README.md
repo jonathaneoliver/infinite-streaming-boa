@@ -3942,9 +3942,17 @@ chart is blank on the onboard one — see
   on its own row, which is the only place it shows — see [The cable decides
   whether you get 2.5 GbE at
   all](#the-cable-decides-whether-you-get-25-gbe-at-all).
-- **The queue is sized from rate × delay.** netem's default 1000-packet queue
-  would silently drop half the traffic on a "50 Mbps, 500 ms, 0 % loss" profile.
-  boa computes the queue depth instead, so configured loss is the only loss.
+- **The queue is sized from rate × delay, plus 200 ms at the cap.** netem's
+  default 1000-packet queue would silently drop half the traffic on a "50 Mbps,
+  500 ms, 0 % loss" profile, and at 1 Mbps it would add 12 s of delay. boa
+  computes the queue depth instead, so configured loss is the only loss and a
+  low cap adds latency like a real link of that speed.
+- **Below 30 Mbps, boa turns GRO off where the capped traffic arrives.** GRO
+  merges arriving frames into packets of up to 64 KB, which the shaper releases
+  in one lump. A 1 Mbps uplink went out in 45 KB lumps with 9 s of latency;
+  with GRO off it was even, and the latency was 164 ms. GRO comes back on above
+  the threshold, because the Cudy forwards 925 Mbps with it and 574 without.
+  See `docs/DATA-CONTRACT.md`.
 - **A phone's MAC is not stable.** Policy is keyed by MAC, but iOS and macOS
   present a randomised, per-SSID address that changes when the network is
   rejoined or the setting is toggled — and on iOS 18, on its own schedule. When

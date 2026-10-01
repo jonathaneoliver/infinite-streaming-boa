@@ -186,6 +186,26 @@ asked, and the round trip is what would catch a kernel clamping something.
   application. boa must size `limit` from the configured rate and delay
   (`rate_bps x delay_s / (8 x 1500)`, with headroom) rather than accept the
   default.
+- **`limit` is also a latency trap, in the other direction.** A 1000-packet
+  floor is 0.24 s of queue at 50 Mbps but 12 s at 1 Mbps and 48 s at 0.25. A
+  bulk sender fills it, and a real link of that speed has no such delay. So
+  boa sizes the queue in **time**: three bandwidth-delay products plus 200 ms
+  at the cap (#470). The floor is 10 packets.
+- **A "packet" is whatever GRO built, up to 64 KB.** GRO merges back-to-back
+  frames as they arrive, and netem treats the merged packet as one. It charges
+  the right time for its length, but releases it in one lump and counts it as
+  one packet against `limit`, so a time-sized queue of lumps is many times
+  longer than intended. `tc -s` hides this: its packet counter counts a merged
+  packet's original segments. Measured on the Cudy TR3000 on 2026-09-30, a
+  MacBook uploading at 1 Mbps went out in 45 KB lumps, with an evenness (cv)
+  of 0.49 and 9 s of latency. With GRO off on its port: 1448-byte frames,
+  cv 0.02, 164 ms. So **boa turns GRO off on the port where capped traffic
+  arrives** while a cap **below 30 Mbps** uses it, and back on when none does.
+  That is the client's own port for an uplink cap, and the WAN port for a
+  downlink cap. Above 30 Mbps a port keeps merging, because without it the
+  Cudy's CPU carried 574 Mbps of uplink against 925. An uplink from a port
+  that still merges keeps a 1000-packet floor, which a merging port needs
+  (#475, #476).
 
 ---
 

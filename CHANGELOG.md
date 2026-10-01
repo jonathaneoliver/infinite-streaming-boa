@@ -13,6 +13,19 @@ deliberate and documented so they are not mistaken for defects — see
 
 ## [Unreleased]
 
+### Fixed
+
+- **A low cap no longer adds seconds of latency** (#470, #475, #476). netem's
+  queue had a 1000-packet floor, which was 12 s at 1 Mbps. Uploads below about
+  2.5 Mbps failed outright, and a raised cap took about 25 s to take effect. The
+  queue is now sized in time, at 200 ms at the cap. For the uplink, that needed
+  a second fix: GRO had merged arriving frames into packets of up to 64 KB,
+  which the shaper released in lumps and counted as one packet each. boa now
+  turns GRO off on the port where capped traffic arrives, while a cap below
+  30 Mbps uses it. Measured on the Cudy, a 1 Mbps uplink is even again (cv 0.02,
+  down from 0.49), with 164 ms of latency instead of 7-10 s and full goodput.
+  Above 30 Mbps GRO stays on, so the box keeps its forwarding speed.
+
 ### Added
 
 - **A wired USB adapter joins the bridge when it is plugged in**, on OpenWrt.
