@@ -737,6 +737,11 @@ damages packets, never link state.
   which is serving, which has clients, or what just changed. An interface whose
   position encodes its current state cannot be pointed at across time, and a
   device roaming between radios must never reorder anything.
+- **Devices are listed busy first, and that is the only order.** Sweeping, then
+  playing a pattern, then conditioned, then moving traffic; idle devices by how
+  recently they last moved any. Every tier changes only when an operator acts or
+  a device starts or stops for more than thirty seconds, so a row holds still
+  long enough to be clicked.
 - **One token stands for an adapter everywhere it is named**: a colour swatch, the
   interface name, and its channel. The colour is fixed per interface and is
   drawn from a palette deliberately disjoint from the direction and status
