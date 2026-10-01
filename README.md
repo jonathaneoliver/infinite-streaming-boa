@@ -33,7 +33,7 @@ iPhone's own screen, playing from infinite-streaming. The full 2:47 demo,
 every action a click in the web UI, also tries `warn`, `term` and `evict` on
 the radio the iPhone is using:
 
-<!-- DEMO VIDEO: the user-attachments link to boa-cudy-demo-1280.mp4 goes on the next line, alone -->
+https://github.com/user-attachments/assets/4e292ee4-963a-4147-9c10-a5d68b63f0a3
 
 ```
                  [ your existing router ]
