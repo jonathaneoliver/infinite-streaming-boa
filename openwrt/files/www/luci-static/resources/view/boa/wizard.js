@@ -764,7 +764,7 @@ return view.extend({
 			var el = document.getElementById('boa-log');
 			if (el) el.textContent = _('Looking for adapters...');
 
-			fireAndForget('/usr/sbin/boa-setup', [ 'install-drivers', '--background' ]);
+			fireAndForget('/usr/sbin/boa-setup', [ 'install-drivers', '--background', '--all' ]);
 
 			followLog(null, function(rc) {
 				trace('install: finished rc =', rc);
