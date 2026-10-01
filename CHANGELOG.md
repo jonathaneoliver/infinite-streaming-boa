@@ -13,76 +13,164 @@ deliberate and documented so they are not mistaken for defects — see
 
 ## [Unreleased]
 
-### Fixed
+## [0.7.0] — 2026-10-01
 
-- **A low cap no longer adds seconds of latency** (#470, #475, #476). netem's
-  queue had a 1000-packet floor, which was 12 s at 1 Mbps. Uploads below about
-  2.5 Mbps failed outright, and a raised cap took about 25 s to take effect. The
-  queue is now sized in time, at 200 ms at the cap. For the uplink, that needed
-  a second fix: GRO had merged arriving frames into packets of up to 64 KB,
-  which the shaper released in lumps and counted as one packet each. boa now
-  turns GRO off on the port where capped traffic arrives, while a cap below
-  30 Mbps uses it. Measured on the Cudy, a 1 Mbps uplink is even again (cv 0.02,
-  down from 0.49), with 164 ms of latency instead of 7-10 s and full goodput.
-  Above 30 Mbps GRO stays on, so the box keeps its forwarding speed.
+**A low cap now behaves like a slow link instead of a stalled one, a USB
+adapter plugged into an OpenWrt box just works, and the Cudy TR3000 becomes
+the front page.**
+
+The demo video in the README was recorded on a Cudy TR3000 running this
+release, light theme, every action a click in the web UI. An iPhone streams from infinite-streaming
+while the valley pattern steps its downlink cap from 10.25 Mbps down to
+0.54 Mbps. The player drops from 2160p to 360p and does not stall. Then three
+steering commands are tried on the radio it is using:
+
+- **warn** and **term** were both refused by the Macs and left unanswered by
+  the iPhone, and nobody moved.
+- **evict** moved all three clients. The iPhone's video played straight
+  through the move.
+
+That demo depends on the first theme of this release. **At low caps the shaper
+used to queue for seconds**: netem's 1000-packet floor was 12 s of queue at
+1 Mbps, and GRO handed it 64 KB lumps that it released in bursts. A 1 Mbps
+uplink now measures 164 ms of latency, where it was 7–10 s, and it is even
+(cv 0.02, from 0.49). Cap accuracy is now measured from 0.1 Mbps to 1.5 Gbps
+in both directions.
+
+The second theme is that **an OpenWrt box takes hardware as it arrives**.
+Setup installs every driver boa knows, and a wired USB adapter joins the
+bridge when it is plugged in, so a radio or a 2.5 GbE port added after setup
+works without a command.
+
+And **the README now starts where most people should**: boa on a Cudy TR3000.
+The five-target document is `README-FULL.md`.
+
+41 merged changes.
 
 ### Added
 
-- **USB adapters are plug-and-play on OpenWrt** (#503). The setup page now
+- **USB adapters are plug-and-play on OpenWrt** (#503, #504). The setup page
   installs every driver boa knows for the device's buses, whether or not
   anything is plugged in: the MT7921AU and MT7612U radios and the
-  RTL8152/8153/8156 Ethernet adapters everywhere, the PCI ones where there is a
-  PCI bus. Before this, an adapter plugged in after setup did nothing until
-  someone ran a command, because only adapters present during setup got a
-  driver. On a Cudy the USB set costs about 1.4 MiB. `boa-setup install-drivers
-  --all` does the same on a device that is already set up. When a driver loads
-  before its firmware, it now re-probes the adapter in software instead of
-  asking for a reboot.
-
-- **A wired USB adapter joins the bridge when it is plugged in**, on OpenWrt.
-  A new hotplug hook runs `boa-setup bridge-port`, which adds the adapter to
-  `br-lan` in uci once; netifd then bridges it by itself on every later replug.
-  Before this, an RTL8156 on the Cudy got a driver, linked at 2500 Mbps and
-  still sat outside the bridge, so boa never listed it and could not shape a
-  client behind it. An adapter that is not always plugged in costs nothing: a
-  listed port that is absent leaves the bridge up. Only the wired adapters boa
-  knows are touched, and never a port uci has already given a role, such as a
-  Pi's USB WAN. `boa-setup check` now fails a known adapter that is outside
-  the bridge, and names the fix.
+  RTL8152/8153/8156 Ethernet adapters everywhere, and the PCI ones where there
+  is a PCI bus. Before this, an adapter plugged in after setup did nothing
+  until someone ran a command. On a Cudy the USB set costs about 1.4 MiB.
+  `boa-setup install-drivers --all` does the same on a box that is already set
+  up. When a driver loads before its firmware, the adapter is re-probed in
+  software instead of asking for a reboot.
+- **A wired USB adapter joins the bridge when it is plugged in** (#477, #478).
+  A hotplug hook adds it to `br-lan` once, and netifd bridges it by itself on
+  every later replug. Before this, an RTL8156 on the Cudy got a driver, linked
+  at 2500 Mbps and still sat outside the bridge, so boa never listed it and
+  could not shape a client behind it. An adapter that is not always plugged in
+  costs nothing. Only wired adapters boa knows are touched, never a port uci
+  has already given a role. `boa-setup check` fails a known adapter that is
+  outside the bridge, and names the fix.
+- **A light theme** (#491). The **☀ light / ☾ dark** pill in the header
+  switches it. Light follows OpenWrt's default LuCI palette, so boa opened
+  beside LuCI looks like the same product. Dark is unchanged and still the
+  default. The choice is remembered per browser and travels in an exported
+  configuration.
+- **A watched radio that stays down raises a standing error** (#164, #469).
+  hostapd keeps running when an access point fails to start, so its service
+  read healthy and the one trace was an activity-log line that scrolled away.
+  The radio is now flagged for as long as it is down.
+- **CI checks every pull request** (#458, #459): `gofmt`, `go vet`, the tests,
+  `go test -race` and the UI typecheck, plus CodeQL and Dependabot. The suite
+  runs clean under `-race` for the first time (#233, #456).
 
 ### Changed
 
+- **The README is about the Cudy TR3000** (#487). It is the target the old
+  README recommended starting with, and it is now the front page, with every
+  Cudy measurement. The five-target document, unchanged, is `README-FULL.md`.
+  The README also now says what boa conditions: the network and the Wi-Fi link
+  (#485). It opens with the simplest hardware setup and shows the setup page
+  as it looks on the Cudy (#486, #507). Every screenshot in it is now the
+  Cudy in the light theme, and it opens with a GIF of the demo above (#513).
+- **Cap accuracy is documented from 0.1 Mbps to 1.5 Gbps, both directions**
+  (#471), replacing "verified from 0.25 to 50 Mbps" and "uplink is untested".
+  The shaper is exact to within ±0.4 % from 0.1 to 500 Mbps on the Cudy, and
+  goodput sits about 4.4 % under the cap, which is the framing ratio
+  (1448/1514) rather than an error.
+- **The traffic panel remembers by client / by adapter** (#505, #506), as it
+  already remembered the theme and the folds.
+- **The ORDER switch is gone** (#494, #495). The client list is always busiest
+  first, which was already the default.
 - **`boa-setup check` treats "no country" as a warning, not a failure**
   (#400). No country means the world domain: no DFS, no channels 12 and 13,
-  and 20 dBm, but it works, as measured, and the setup wizard offers it on
-  purpose. `check` used to fail every box set up that way. Only a literal
-  `'00'` fails now, because that is what hostapd refuses to parse.
-- **The README says where to start**: boa on OpenWrt, on a Cudy TR3000 or an
-  equivalent router, as the simplest of the five targets, and why the others
-  still matter (#451). It counts five targets throughout, where it said four
-  and left out the OpenWrt VM (#452). `openwrt/README.md` gains what OpenWrt
-  already does over the network, and what boa adds: OpenWrt drives its radios
-  through ubus, but has no network API for conditioning a link (#451).
+  and 20 dBm. It works, and the setup wizard offers it on purpose. Only a
+  literal `'00'` fails now, because hostapd refuses to parse it.
+- **`boactl` catches up with the UI** (#496, #497): steer modes,
+  radio-wide steer and disassociate, transmit power and role. `config apply`
+  now says that it merges. `boactl probe` reads hostapd state over HTTP and no
+  longer needs `-ssh` (#499, #500).
+- **`boa-setup install-wpad` also installs `hostapd-utils`** (#501, #502),
+  as the Cudy guide always did by hand.
 
 ### Fixed
 
-- **A channel move to a band the radio does not have is refused**, instead of
-  taking the access point down (#454). Forcing the MT7915E's 2.4 GHz half onto
-  channel 36 was accepted, the access point never came back, and the request
-  took about 3.5 minutes to say so; clients with shorter timeouts got an empty
-  answer. It is now refused before anything touches the radio, with HTTP 400
-  and the bands the radio can serve.
+- **A low cap no longer adds seconds of latency** (#470, #475, #476, #484).
+  netem's queue had a 1000-packet floor, which was 12 s at 1 Mbps. Uploads
+  below about 2.5 Mbps failed outright, and a raised cap took about 25 s to
+  take effect. The queue is now sized in time, at 200 ms at the cap. The uplink
+  needed a second fix: GRO had merged arriving frames into packets of up to
+  64 KB, which the shaper released in lumps and counted as one packet each.
+  `tc -s` hid it, because it counts segments. Below a 30 Mbps cap, boa now
+  turns GRO off on the port where capped traffic arrives. Measured on the
+  Cudy, a 1 Mbps uplink is even again (cv 0.02, from 0.49), with 164 ms of
+  latency instead of 7–10 s and full goodput. Above 30 Mbps GRO stays on, so
+  the box keeps its forwarding speed.
+- **A policy write could crash boad** (#482, #483). A write runs a tick at
+  once, on the request's goroutine, and nothing stopped it overlapping the
+  1 Hz tick. On the Cudy, a cap sweep crashed boad three times in about an
+  hour with `concurrent map writes`, until procd stopped restarting it. That
+  left the box unshaped and its API unreachable. Ticks are now serialised,
+  and a 40-row sweep of about 120 writes ran without a crash.
+- **The uplink chart draws its cap history** (#473, #474). It showed only
+  today's cap as one flat line through a run whose uplink cap had stepped.
+- **The rack names every client on a radio** (#489). On a 1920 px screen a
+  radio row showed no client names at all, and wider screens showed three
+  plus "+N". Those names are who a `deauth` or `evict` on that row acts on.
+  The list now wraps.
+- **The long-deadzone warning appeared on every Wi-Fi client card** (#492,
+  #493), before anyone set a deadzone. It now shows while a long one is being
+  set or is running.
+- **On-screen text no longer names the hardware** (#488). The deadzone warning
+  told a Cudy user the device would be gone "until it rejoins the Pi's Wi-Fi".
+- **A channel move to a band the radio does not have is refused** (#454),
+  instead of taking the access point down for about 3.5 minutes.
 - **A forced channel move no longer reports success on a dead access point**
-  (#453, #445). hostapd reports the channel it is configured for whether or not
-  the access point came up, and the move read that as success. It now checks
-  that the access point is enabled, and says the radio is serving nobody if it
-  is not.
-- **`boa-setup check` named every idle radio boa's scan radio** when no scan
-  radio was set (#400), and missed the real one when two were listed. It also
-  skipped the `'00'` and 6 GHz checks on a radio not yet serving, so a
-  freshly plugged adapter that could never start passed with "0 failed". The
-  scan radio is no longer warned about having no country, because it runs
-  under the serving radios' domain.
+  (#445, #453).
+- **`boa-setup check` named every idle radio as boa's scan radio** when none
+  was set (#400). It also skipped the `'00'` and 6 GHz checks on a radio not
+  yet serving.
+- **Request input is validated where it is used** (#466), for the two paths
+  CodeQL flagged. Neither was exploitable on a box.
+- **Tests on macOS no longer leave hostapd sockets in the source tree**
+  (#361, #468).
+- **Upgrading a box that is already set up no longer puts the setup page back
+  on its address** (#508, #509). `openwrt-boa-install.sh` and
+  `openwrt-boa-feed.sh` turned the landing page on after every install, so a
+  box in use answered `http://<box>/` with "Set up this box", as if it had been
+  reset. Seen on the Cudy after an upgrade. They now do that only on a box with
+  no first-run record.
+- **boa's page in LuCI uses the window's width** (#510, #512). LuCI's default
+  theme caps every page at 1180 px, so boa's frame got 1180 px in a 1920 px
+  window. It now gets 1863. Other LuCI pages keep their width.
+
+### Known limitations
+
+- **term reads the same as warn.** On the Cudy on 2026-10-01, both Macs
+  refused both and the iPhone answered neither, and the activity log words the
+  two requests identically.
+- **Caps of 40–100 Mbps carry 200–900 ms of latency under load**, the most of
+  any range measured (#471). The cause is not yet established. A queue-depth
+  knob and a burst knob are proposed in #480 and #481.
+- **In the adapter rack, client names can overlap the radio buttons at about
+  1180 px wide** (#511). At 1920 px they do not.
+- **evict and gather can race the deauth that follows** (#498): the deauth
+  can catch a client on the radio it has just moved to.
 
 ## [0.6.0] — 2026-09-29
 
@@ -1555,7 +1643,8 @@ device under test and no cooperation from either end.
 - **A rotating (private) MAC strands a device's policy and its measured ladder.**
   Pin the address on any device you control before a long measurement.
 
-[Unreleased]: https://github.com/jonathaneoliver/infinite-streaming-boa/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/jonathaneoliver/infinite-streaming-boa/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/jonathaneoliver/infinite-streaming-boa/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/jonathaneoliver/infinite-streaming-boa/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/jonathaneoliver/infinite-streaming-boa/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/jonathaneoliver/infinite-streaming-boa/compare/v0.3.0...v0.4.0
