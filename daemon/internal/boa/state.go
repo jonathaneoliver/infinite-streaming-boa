@@ -292,6 +292,13 @@ type Engine struct {
 	rev, ctrlRev uint64
 	snap         Snapshot
 
+	// tickMu lets one tick run at a time. Everything below described as
+	// "tick-owned" -- prev above all -- is unlocked on the strength of that, and
+	// there are two callers: Start's ticker and BumpControl, which ticks on the
+	// HTTP request's goroutine so a policy write applies at once. Unserialised,
+	// they raced on prev and crashed boad (see TestTicksDoNotOverlap).
+	tickMu sync.Mutex
+
 	// prev is keyed "dev/minor" and holds the last byte count seen there.
 	prev map[string]counterSample
 
@@ -1082,6 +1089,8 @@ func (e *Engine) ntopngUp() bool {
 const wlanPresenceGrace = time.Minute
 
 func (e *Engine) tick() {
+	e.tickMu.Lock()
+	defer e.tickMu.Unlock()
 	now := time.Now()
 
 	// One dump per radio, merged, remembering which radio each station is on.
