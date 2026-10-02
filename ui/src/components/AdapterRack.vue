@@ -2126,7 +2126,15 @@ Clients ARE told it has gone, unlike a power cut.`
     minmax(0, 168px)     /* adapter token: name and channel */
     minmax(0, 144px)     /* width and mode, or the wired link speed */
     minmax(0, 408px)     /* PHY, signals, our airtime, the neighbours' */
-    minmax(0, 1fr)       /* the devices on it, and the slack */
+    /* A FLOOR, not 0. The buttons' auto track sizes to all of them on one line
+       before an fr track gets anything, so at minmax(0, 1fr) this column was
+       0px wide at every window up to 1600 and 29px at 1920 (#511), and the
+       names -- nowrap, so they cannot shrink -- spilled out of it onto the
+       buttons below about 1400px. A floor makes the buttons wrap instead.
+       10rem holds the longest name this box has shown ("Jonathans-Mac-mini");
+       longer ones wrap onto their own line. max-content was tried and kept
+       the names on one line at the cost of a fifth row of buttons at 1180. */
+    minmax(10rem, 1fr)   /* the devices on it, and the slack */
     auto;                /* badges and actions, pinned right */
   align-items: center;
   gap: 12px;
@@ -2252,7 +2260,9 @@ Clients ARE told it has gone, unlike a power cut.`
 /* The contention triple. Keys are faint and small so the numbers lead: the
    labels are read once and the figures are read every time. Tabular numerals so
    the column does not jitter as values change. */
-.air { display: inline-flex; align-items: baseline; gap: 3px; white-space: nowrap; }
+/* Clipped to its own track: it is nowrap, and with no overflow rule a narrow
+   window ran its last figure into the client names beside it (#511). */
+.air { display: inline-flex; align-items: baseline; gap: 3px; white-space: nowrap; min-width: 0; overflow: hidden; }
 .air .k { color: var(--ink-faint); font-size: 9px; }
 .air .v {
   font-family: var(--mono);
