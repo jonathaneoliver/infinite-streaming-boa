@@ -33,6 +33,28 @@ function uncapWidth(node) {
 	}
 }
 
+// ONE SCROLL BAR, THE FRAME'S. boa is far taller than any window, so it
+// scrolls inside the frame; if LuCI's page ALSO overflows, there are two bars,
+// one inside the other, and the wheel scrolls whichever the pointer is over
+// (#519). So the frame is sized to exactly the window space left below LuCI's
+// header and above its footer, and the page itself never scrolls.
+//
+// Not the other way round -- growing the frame to boa's full height so only
+// the browser scrolls -- because inside a frame the frame IS the window: boa's
+// sticky chart toolbar and rack header would scroll away with the page.
+//
+// Measured rather than computed from LuCI's chrome: the page's own overflow
+// is taken off the frame, so it holds for any theme's header and footer.
+// A floor of 400px keeps a very short window usable, at the cost of the page
+// scrolling a little there.
+function fitHeight(frame) {
+	var top = frame.getBoundingClientRect().top + window.scrollY;
+	frame.style.height = Math.max(400, window.innerHeight - top) + 'px';
+	var over = document.documentElement.scrollHeight - window.innerHeight;
+	if (over > 0)
+		frame.style.height = Math.max(400, frame.getBoundingClientRect().height - over) + 'px';
+}
+
 return view.extend({
 	load: function() {
 		return uci.load('boa').catch(function() {});
@@ -76,7 +98,7 @@ return view.extend({
 
 		var frame = E('iframe', {
 			'src': url,
-			'style': 'width:100%; height:calc(100vh - 220px); min-height:600px; border:0'
+			'style': 'width:100%; height:600px; border:0; display:block'
 		});
 
 		var container = E('div', { 'class': 'cbi-map' }, [
@@ -96,8 +118,11 @@ return view.extend({
 		// later than the next animation frame, measured -- so wait until it is
 		// in the document before walking its ancestors. Give up after ~5 s.
 		(function whenPlaced(tries) {
-			if (container.isConnected)
+			if (container.isConnected) {
 				uncapWidth(container);
+				fitHeight(frame);
+				window.addEventListener('resize', function() { fitHeight(frame); });
+			}
 			else if (tries > 0)
 				window.setTimeout(function() { whenPlaced(tries - 1); }, 50);
 		})(100);
