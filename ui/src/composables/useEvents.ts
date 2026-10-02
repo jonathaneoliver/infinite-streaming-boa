@@ -69,8 +69,16 @@ export function useEvents(pollMs = 3000) {
       events.value = [];
       unseen.value = 0;
     }
-    if (body.events.length) {
-      since = body.events[body.events.length - 1].seq;
+    // ONLY WHAT IS NOT ALREADY HELD (#520). Several paths deliver events this
+    // page has: every stream connect replays the whole ring (sendEvents(0), so
+    // a reconnecting page paints history at once), and at load the poll and the
+    // stream both deliver it. Appending each batch whole showed every event
+    // twice on a fresh page and ten times on one left open through Wi-Fi drops.
+    // seq only grows within a run, and a restart was handled just above, so
+    // anything at or below `since` is a copy.
+    const fresh = body.events.filter((ev) => ev.seq > since);
+    if (fresh.length) {
+      since = Math.max(since, ...fresh.map((ev) => ev.seq));
       // CHRONOLOGICAL, oldest first, newest at the end.
       //
       // This was reversed, on the argument that "the interesting event is the
@@ -101,10 +109,10 @@ export function useEvents(pollMs = 3000) {
       // than at the bottom. That is correct: it happened earlier, and the log
       // claims to be chronological.
       events.value = events.value
-        .concat(body.events)
+        .concat(fresh)
         .sort((x, y) => x.at - y.at || x.seq - y.seq)
         .slice(-KEEP);
-      unseen.value += body.events.length;
+      unseen.value += fresh.length;
     }
     err.value = '';
   }
