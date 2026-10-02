@@ -142,6 +142,17 @@ key=$(uci -q get "wireless.default_$src.key")
 uci set "wireless.default_$radio.network=$(uci -q get "wireless.default_$src.network")"
 uci set "wireless.default_$radio.mode=ap"
 uci set "wireless.default_$radio.disabled=0"
+# 802.11k AND v TOO, OR STEER AND MEASURE DO NOTHING HERE. The wizard turns both
+# on for every access point it configures, and this copy used to leave them
+# out, so a hotplugged radio was the one access point without them. MEASURED on
+# the Cudy 2026-10-01 (#516): a USB mt7921u added after setup served with no
+# bss_transition in its hostapd config, logged no BTM response in 108 steering
+# trials, and every request to move toward it was refused. Copied rather than
+# set to 1, so a box where someone turned them off stays that way.
+for opt in ieee80211k bss_transition; do
+	v=$(uci -q get "wireless.default_$src.$opt")
+	[ -n "$v" ] && uci set "wireless.default_$radio.$opt=$v"
+done
 country=$(uci -q get "wireless.$src.country")
 [ -n "$country" ] && uci set "wireless.$radio.country=$country"
 uci commit wireless
