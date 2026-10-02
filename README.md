@@ -29,9 +29,9 @@ player dropping from 2160p to 360p without stalling](docs/images/cudy-demo-tease
 
 The valley pattern at 16×, from the demo below: the dashed line is the cap boa
 enforces, the solid line the iPhone's real throughput, and the inset the
-iPhone's own screen, playing from infinite-streaming. The full 2:47 demo,
-every action a click in the web UI and narrated (turn the sound on), also tries `warn`, `term` and `evict` on
-the radio the iPhone is using:
+iPhone's own screen, playing from infinite-streaming. The full 2:47 demo, every
+action a click in the web UI and narrated (turn the sound on), also tries
+`warn`, `term` and `evict` on the radio the iPhone is using:
 
 https://github.com/user-attachments/assets/1a4c5d6f-a886-4edd-95c0-68f7552a30d1
 
