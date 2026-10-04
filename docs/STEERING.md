@@ -19,7 +19,10 @@
   Requests between the two strong radios were mostly accepted, in both
   directions. **Band comes first, then signal**: these Apple clients prefer
   5 GHz while it is usable, however much stronger 2.4 GHz is (section 6), and
-  between two 5 GHz radios they prefer the stronger one (sections 1 and 5).
+  when they choose between two 5 GHz radios themselves they pick the stronger
+  one (section 7). Signal does not make them accept a *request*, though: the
+  Macs refused every request to the USB radio, whether it was 5–10 dB weaker
+  or 21–23 dB stronger.
 - **The iPhone never stays on 2.4 GHz.** In all 6 of its accepted moves it was
   back on 5 GHz within about 9 s. The Macs mostly stay.
 - **A disconnect is not a redirect.** `deauth`, `disassoc`, and the disconnect
@@ -234,16 +237,59 @@ push them onto 2.4 GHz; a bar holds them there only while it is on. Further
 away, where 5 GHz is genuinely weak, power can move them, as the hand test
 shows.
 
+## 7. A stronger 5 GHz radio: chosen, but not on request
+
+> **Scope:** 2026-10-04. `phy1-ap0` (onboard, 5 GHz ch 149) turned down to
+> 0 dBm; `phy3-ap0` (the USB mt7921u, 5 GHz ch 40) left as it was; `phy0-ap0`'s
+> access point off. Radio-wide `warn`, `term` and `force` from `phy1-ap0` to
+> `phy3-ap0`, all three clients at once. 4 valid trials of 9 planned: the run
+> was stopped once the clients moved to `phy3-ap0` faster than they could be
+> held on `phy1-ap0` between trials.
+
+What the Macs heard, from their own scans:
+
+| | `phy1-ap0`, ch 149, 0 dBm | `phy3-ap0`, ch 40 |
+| --- | --- | --- |
+| MacBook Pro | −56 dBm | −35 dBm |
+| Mac mini | −54 dBm | −31 dBm |
+
+`phy3-ap0` was **21–23 dB stronger**; in sections 1 and 5 it had been 5–10 dB
+weaker.
+
+| | Answer to the request | Where it went when free to choose |
+| --- | --- | --- |
+| Mac mini | **refused all 4**, status 1 | `phy3-ap0`, after `force` disconnected it, and stayed |
+| MacBook Pro | **refused all 4**, status 1 | `phy3-ap0`, after `force` disconnected it, and stayed |
+| iPhone | **never answered**; moved once, at 5 s, without replying | `phy3-ap0`, every time it rejoined |
+
+So signal decides the clients' **own** choice within a band. Every time a
+client chose a radio itself (after a disconnect, rejoining, or drifting
+between trials), it chose the one 21–23 dB stronger, and went back there
+faster than a deny could be lifted and re-placed. When `phy3-ap0` was weaker,
+the same disconnects sent them back to `phy1-ap0`.
+
+Signal does **not** decide whether the Macs accept a request to this radio.
+They refused every 802.11v request to `phy3-ap0`, with status 1, at both
+strengths, while they accepted requests between `phy0-ap0` and `phy1-ap0`.
+What makes `phy3-ap0` different is not known: it is on channel 40 (UNII-1), it
+is the USB mt7921u rather than the onboard mt798x, and the request boa builds
+for it names a different operating class. Any of these could be it.
+
+**For steering:** to move these clients onto a stronger 5 GHz radio, a request
+is unnecessary and refused; a disconnect is enough, because they choose the
+stronger radio on the way back. `force` does both, which is why it worked
+here.
+
 ## What is not known
 
 - **Whether the AP's chipset matters.** The mt7921u's own 802.11v trials
   from 2026-10-01 are void, because it was not advertising BSS Transition
   then (#516, fixed by #517). They were not repeated, and section 1 used it
   only as a target.
-- **Whether a stronger 5 GHz target is accepted.** Turning `phy1-ap0` down
-  until `phy2-ap0` is the stronger 5 GHz radio, then repeating the requests,
-  would confirm that signal decides within a band. The onboard radios honour
-  transmit power live, so it is a ten-minute test.
+- **Why the Macs refuse every request to the USB radio.** Section 7 rules
+  out its signal. Moving it to channel 149's neighbour block, or steering
+  between two onboard radios on the same band, would separate the channel,
+  the chipset and the request's operating class.
 - **How weak 5 GHz must be before a client prefers 2.4 GHz.** The switch
   happens (section 6, tested by hand with the iPhone in another room), but the
   signal levels at which it does were not recorded. A client-side scan at each
