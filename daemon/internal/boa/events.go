@@ -230,9 +230,9 @@ func (e *Engine) noteProfile(iface, name string, dropped int) {
 		iface, name, dropped)
 }
 
-func (e *Engine) noteSteer(mac, from, to string) {
-	e.logEvent(EventAction, from, mac, "%s asked to move %s → %s (802.11v; it may refuse)",
-		e.labelFor(mac), from, to)
+func (e *Engine) noteSteer(mac, from, to string, mode steerMode) {
+	e.logEvent(EventAction, from, mac, "%s asked to move %s → %s — %s (802.11v; it may refuse)",
+		e.labelFor(mac), from, to, mode.logged())
 }
 
 // describeRadio names a radio the way the interface does -- by band, because

@@ -534,6 +534,22 @@ func (m steerMode) String() string {
 	return "suggest"
 }
 
+// logged names the mode as the activity log shows it: the rack's button, and
+// what the request tells the client. The four are different questions, so a
+// refusal of one is not a refusal of another, and a log that wrote all four the
+// same way could not be read back by button (#525).
+func (m steerMode) logged() string {
+	switch m {
+	case steerInsist:
+		return fmt.Sprintf("force: disconnected after %ds if it stays", evictDisassocSec)
+	case steerImminent:
+		return "warn: told it is about to be dropped"
+	case steerTerminate:
+		return "term: told this access point is shutting down"
+	}
+	return "steer: a plain request"
+}
+
 // bssTermMin is the termination duration a steerTerminate request announces.
 // One minute: the smallest nonzero value the field carries. The AP is not
 // actually terminated, so the number is only what the client is told.
@@ -744,7 +760,7 @@ func (e *Engine) SteerClient(mac, fromIface, toIface string, mode steerMode) err
 		return fmt.Errorf("cannot steer %s to the radio it is already on", m)
 	}
 	if e.cfg.Demo {
-		e.noteSteer(m, fromIface, toIface)
+		e.noteSteer(m, fromIface, toIface, mode)
 		return nil
 	}
 
@@ -777,7 +793,7 @@ func (e *Engine) SteerClient(mac, fromIface, toIface string, mode steerMode) err
 	// asynchronous and comes back through the monitor connection, not as a
 	// reply to this command -- see hostapdmonitor.go.
 	e.notePendingSteer(m, fromIface, e.describeRadio(toIface), mode == steerInsist)
-	e.noteSteer(m, fromIface, toIface)
+	e.noteSteer(m, fromIface, toIface, mode)
 	return nil
 }
 
