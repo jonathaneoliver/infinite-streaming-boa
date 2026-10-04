@@ -445,6 +445,12 @@ func (e *Engine) handleHostapdEvent(iface, msg string) {
 		to = "another radio"
 	}
 	label := e.labelFor(mac)
+	e.mu.Lock()
+	if e.steerAccepted == nil {
+		e.steerAccepted = map[string]bool{}
+	}
+	e.steerAccepted[mac] = status == 0
+	e.mu.Unlock()
 	if status == 0 {
 		e.logEvent(EventAction, iface, mac,
 			"%s accepted the request to move to %s%s",

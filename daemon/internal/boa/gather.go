@@ -637,9 +637,9 @@ func (e *Engine) EvictFrom(iface string, durSec float64) (int, error) {
 //
 // The same as the countdown the request announces (steerInsist carries
 // Disassociation Imminent with a evictDisassocSec timer), so what a client is
-// told is what happens. A client that accepts leaves within 0.2-0.4 s (the
-// Cudy, 2026-10-02), so this only binds one that refused or never answered,
-// and the wait ends early once every client asked has gone or answered.
+// told is what happens. The wait ends early once every client asked has either
+// gone or refused. An accept does NOT end it: a client that accepted is still
+// waited for until it has actually left, which took the Macs up to 4 s.
 const pinAskGrace = evictDisassocSec * time.Second
 
 // runPin applies one operation: ask, deny, then disconnect only where denied.
@@ -799,6 +799,9 @@ func (e *Engine) askBeforeDeny(op *pinOp, macs []string, origin map[string]strin
 		// all three clients refused every plain suggest a gather sent, and
 		// accepted 7 of 9 force requests. hostapd's own timer acts only on
 		// the radio being left, so it cannot reach the destination.
+		e.mu.Lock()
+		delete(e.steerAccepted, mac) // only this request's answer counts
+		e.mu.Unlock()
 		if err := e.SteerClient(mac, from, hint, steerInsist); err != nil {
 			log.Printf("pin steer %s %s->%s: %v", mac, from, hint, err)
 			continue
@@ -810,9 +813,14 @@ func (e *Engine) askBeforeDeny(op *pinOp, macs []string, origin map[string]strin
 	}
 	deadline := time.Now().Add(pinAskGrace)
 	for time.Now().Before(deadline) {
+		// Still on the radio it was asked to leave, and either not yet
+		// answered or ACCEPTED: an accept arrives before the roam does, by up
+		// to four seconds measured (two Macs, the Cudy, 2026-10-02). Barring
+		// the old radio on the accept disconnected them mid-roam, and both
+		// left the network. Only a refusal, or having gone, ends the wait.
 		waiting := false
 		for mac, from := range asked {
-			if _, still := StationDump(from)[mac]; still && e.steerPending(mac) {
+			if _, still := StationDump(from)[mac]; still && (e.steerPending(mac) || e.steerWasAccepted(mac)) {
 				waiting = true
 				break
 			}
@@ -873,6 +881,14 @@ func (e *Engine) pinHeld(op *pinOp, mac string) bool {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 	return e.pins[mac] == op
+}
+
+// steerWasAccepted reports whether mac accepted its most recent transition
+// request.
+func (e *Engine) steerWasAccepted(mac string) bool {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return e.steerAccepted[mac]
 }
 
 // steerPending reports whether a transition request to mac is still awaiting
