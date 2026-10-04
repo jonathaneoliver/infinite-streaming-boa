@@ -14,22 +14,26 @@
 ## The short version
 
 - **Clients go where they prefer, and a request only works when they already
-  half agree.** No client accepted a request to move to another 5 GHz radio:
-  0 of 27. About half of the requests to 2.4 GHz were accepted: 14 of 27.
+  half agree.** Requests to the weakest radio, `phy2-ap0`/`phy3-ap0` on 5 GHz
+  ch 36, were refused every time: 0 of 27 in the run and about 15 by hand.
+  Requests between the two strong radios were mostly accepted, **in both
+  directions**: 5 to 2.4 GHz and 2.4 to 5 GHz. So signal, not band, looks like
+  what decides it. Section 5 has the evidence.
 - **The iPhone never stays on 2.4 GHz.** In all 6 of its accepted moves it was
   back on 5 GHz within about 9 s. The Macs mostly stay.
 - **A disconnect is not a redirect.** `deauth`, `disassoc`, and the disconnect
   `force` adds after a refusal all left clients reconnecting to the radio they
   prefer, usually the one they were thrown off.
 - **Only a deny moves a client reliably**: `ban`, `gather`, `evict`. Even then
-  a slow client can outlast the 10 s hold, and one left the network twice (#523).
+  a slow client can outlast the 10 s hold, and one left the network twice
+  (#523).
 
 | Command | What it sends | Reliable move? |
 | --- | --- | --- |
-| `steer`, `warn`, `term` | an 802.11v BSS Transition request, which the client may decline | **No.** Toward 2.4 GHz sometimes, toward 5 GHz never |
-| `force` | the same request, then a disassociation if the client stays | **No.** The client reconnects where it likes, nearly always the same radio |
+| `steer`, `warn`, `term` | an 802.11v BSS Transition request, which the client may decline | **No.** Often toward a stronger radio, never toward a weaker one |
+| `force` | the same request, then a disassociation if the client stays | **No.** The client reconnects where it likes, usually the same radio, unless the only other radio up is the target |
 | `deauth`, `disassoc` | an immediate disconnect | **No.** Back on the same radio within 0.2–21 s |
-| `ban`, `gather`, `evict` | a deny list on the radios the client may not use | **Yes**, mostly within 8 s; see the caveats below |
+| `ban`, `gather`, `evict` | a deny list on the radios the client may not use | **Yes**, mostly within 8 s; see the caveats |
 
 ## How it was measured
 
@@ -46,7 +50,7 @@ ch 1 at −29, ch 149 at −37 and ch 36 at −47 dBm (2026-10-02). `phy3-ap0` i
 the weakest of the three by about 5–10 dB. `iw` reports the mt7921u's transmit
 power as 3 dBm. That figure is wrong, so it is not used here.
 
-## 1. A request to another 5 GHz radio is never accepted
+## 1. A request to the weaker 5 GHz radio is never accepted
 
 > **Scope:** source `phy1-ap0` (5 GHz ch 149), target `phy3-ap0` (5 GHz ch 36),
 > `phy0-ap0` switched off. Radio-wide requests, all three clients at once,
@@ -130,14 +134,58 @@ failed to land within it when gathered by hand on 2026-10-02: once it rejoined
 client that has not landed when the hold lifts is free to go back. That is
 #523, and the API already accepts a longer `?pin=`.
 
+## 5. Hand tests after a reboot: the target radio decides
+
+> **Scope:** tested by hand from the rack's buttons, 2026-10-02 19:26–19:38,
+> after the Cudy rebooted. The USB radio came back as **`phy2-ap0`** (it was
+> `phy3-ap0`: phy numbers follow probe order), with 802.11k/v on all three.
+> The "radios up" column is reconstructed from the activity log, which
+> records every access point taken down or brought up.
+
+The log does not record which button was pressed: `steer`, `warn`, `term` and
+`force` all log the same "asked to move" line. A `force` is shown only where it
+can be inferred, from a refusing client being disconnected exactly 5 s later.
+
+| Time | Radios up | Request | Result |
+| --- | --- | --- | --- |
+| 19:26:56–19:27:12 | phy0, phy1, phy2 | phy1 → **phy2** ×3 | all refused, or no answer from the iPhone; nobody moved |
+| 19:29:06 | phy0, phy1 | phy1 → **phy0** | both Macs **accepted**; iPhone no answer |
+| 19:31:21–41 | phy0, phy2 | iPhone: phy2 → phy0 ×3 | refused (7), refused (1), then **accepted**; back on phy2 by itself 12 s later |
+| 19:31:59–32:24 | phy0, phy2 | phy0 → **phy2** ×4, then `force` | Macs refused every time; after the disconnect, with only phy2 left, the MacBook landed on phy2 |
+| 19:32:33–46 | phy0, phy2 | phy2 → phy0 | all three **accepted** (the MacBook on its second try) |
+| 19:32:54 | phy0, phy2 | phy0 → **phy2**, `force` | Macs refused; after the disconnect all three ended on phy2 |
+| 19:33:46 | phy0, phy1 | iPhone: phy0 → **phy1** | **accepted** |
+| 19:33:56 | phy0, phy1 | phy1 → **phy0** | all three **accepted** |
+| 19:34:10 | phy0, phy1 | phy0 → **phy1** | all three **accepted** |
+| 19:34:27–50 | phy1, phy2 | phy1 → **phy2**, `force` | Macs refused; after the disconnect the iPhone and Mac mini landed on phy2, the MacBook back on phy1 |
+| 19:37:05–26 | phy1, phy2 | MacBook: phy1 → **phy2**, `force` | refused twice; disconnected; back on phy1 |
+| 19:37:40 | phy0, phy1 | phy1 → **phy0**, `force` | Macs **accepted**; iPhone refused (7), disconnected at +5 s, rejoined phy1 7.5 s later |
+
+What this adds to sections 1 and 2:
+
+- **Every request to `phy2-ap0` was refused**, from either radio, by both
+  Macs, and the iPhone never accepted one. It is the weakest of the three by
+  5–10 dB.
+- **Requests between `phy0-ap0` and `phy1-ap0`, the two strong radios, were
+  mostly accepted, in both directions.** 2.4 → 5 GHz at 19:34:10 was accepted
+  by all three. So the 5 → 5 GHz refusals in section 1 are better explained by
+  the target being weaker than by its band. That is a likely explanation, not
+  a proven one; making `phy2-ap0` the strongest radio would test it.
+- **Where `force` puts a client depends on which radios are up.** With only
+  the source and one other radio serving, a disconnected client often lands on
+  the other, because it is the only choice. With a strong alternative up it
+  goes back to the strong one.
+
 ## What is not known
 
 - **Whether the AP's chipset matters.** The mt7921u's own 802.11v trials
   from 2026-10-01 are void, because it was not advertising BSS Transition
   then (#516, fixed by #517). They were not repeated, and section 1 used it
   only as a target.
-- **Whether a client accepts a move to a *stronger* 5 GHz radio.** The only
-  other 5 GHz radio here was the weaker one.
+- **Whether signal alone explains the refusals.** Turning `phy1-ap0` down
+  until `phy2-ap0` is the stronger 5 GHz radio, then repeating the requests,
+  would show it. The onboard radios honour transmit power live, so it is a
+  ten-minute test.
 - **What drives the streaks in section 2.** A channel scan alongside each
   trial would show whether a busy channel 1 explains the refusals.
 - **How general any of this is.** Three Apple devices, one room, two days,
@@ -151,5 +199,6 @@ client that has not landed when the hold lifts is free to go back. That is
 - #516 / #517: a hotplugged radio did not advertise 802.11k/v.
 - #523: the 10 s gather/evict hold is too short for some clients, and the rack
   has no way to set a longer one.
-- The activity log words `warn` and `term` identically, so the log does not
-  say which was sent.
+- The activity log words `steer`, `warn`, `term` and `force` identically, so
+  a session tested by hand cannot be read back by button. Naming the mode in
+  the "asked to move" line would fix it.
