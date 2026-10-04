@@ -273,6 +273,10 @@ type Engine struct {
 	// request that is never answered is itself the result, which is why these
 	// are aged out loudly rather than dropped. See hostapdmonitor.go.
 	pendingSteers map[string]pendingSteer
+	// steerAccepted is the clients whose most recent transition request they
+	// accepted, so a pin waiting on them keeps waiting until they have actually
+	// gone: an accept arrives seconds before the roam can (#498).
+	steerAccepted map[string]bool
 
 	// btmCandidates is where a transition refusal's candidate list waits for
 	// the BSS-TM-RESP event that reports the refusal, so one line can say both

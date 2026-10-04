@@ -3,6 +3,8 @@ package boa
 import (
 	"fmt"
 	"log"
+	"slices"
+	"strings"
 	"sync"
 	"time"
 )
@@ -630,12 +632,38 @@ func (e *Engine) EvictFrom(iface string, durSec float64) (int, error) {
 			"each one goes is its own choice — that is what an evict is")
 }
 
-// runPin applies one operation: deny, announce, move, and arm the fallback.
+// pinAskGrace is how long a pin waits, after asking, for clients to leave on
+// their own before the deny takes them off.
 //
-// ACLs FIRST, for every client, before anything is moved. The other order races:
-// a client dropped before the bans land can re-associate to the radio it was
-// just removed from, and the operation silently does nothing. LinkDeadzone
-// applies them in the same order for the same reason.
+// The same as the countdown the request announces (steerInsist carries
+// Disassociation Imminent with a evictDisassocSec timer), so what a client is
+// told is what happens. The wait ends early once every client asked has either
+// gone or refused. An accept does NOT end it: a client that accepted is still
+// waited for until it has actually left, which took the Macs up to 4 s.
+const pinAskGrace = evictDisassocSec * time.Second
+
+// runPin applies one operation: ask, deny, then disconnect only where denied.
+//
+// ASK FIRST, WHILE THE CLIENT IS STILL ASSOCIATED (#498). This used to deny
+// first, and hostapd's DENY_ACL disconnects an associated station at once, so
+// the 802.11v request that followed went to a client already gone: hostapd
+// answered FAIL, and the request -- the only part that tells a client WHERE to
+// go -- was never delivered. A client asked first can move without losing its
+// association at all.
+//
+// THE ACLs STILL PRECEDE ANY DISCONNECT. The order that races is a client
+// dropped before the bans land, which can re-associate to the radio it was just
+// removed from. Asking drops nobody, so it can go first; every disconnect still
+// comes after the bans. LinkDeadzone applies them in the same order for the
+// same reason.
+//
+// THE KICK NAMES ITS RADIO. The final deauth used LinkDeauth, which deauths a
+// client wherever it is NOW. A client quick enough to rejoin within a second of
+// the deny is by then on its destination, and was deauthed from the radio it
+// had just been sent to. MEASURED on the Cudy 2026-10-01: an iPhone was knocked
+// off its destination four times in 14 s and then left the network for 78 s.
+// The kick now goes only to radios this operation denies, and only where the
+// client is still associated.
 func (e *Engine) runPin(
 	op *pinOp, macs []string, iface, hint string, durSec float64, format string,
 ) (int, error) {
@@ -658,36 +686,74 @@ func (e *Engine) runPin(
 	}
 	e.notePins(op)
 
-	var firstErr error
-	var pinned []string
+	hold := time.Duration(durSec * float64(time.Second))
+	// Where each client is BEFORE anything changes. Its current radio is
+	// denied last, after it has been asked to leave.
+	origin := map[string]string{}
 	for _, mac := range macs {
-		ok := true
-		for i, w := range op.deny {
-			if err := e.denyACLAdd(w, mac, time.Duration(durSec*float64(time.Second))); err != nil {
-				// Unwind this client. A ban covering some of the radios is worse
-				// than none: the client is barred from part of the box and free
-				// to sit on the rest, which is neither the old behaviour nor the
-				// new one.
-				for _, done := range op.deny[:i] {
-					if e2 := e.denyACLOn(done, "DEL", mac); e2 != nil {
-						log.Printf("pin unwind %s on %s: %v", mac, done, e2)
-					}
-				}
-				if firstErr == nil {
-					firstErr = fmt.Errorf("could not deny %s on %s: %w", mac, w, err)
-				}
-				ok = false
-				break
+		origin[mac] = e.radioFor(mac)
+	}
+
+	var firstErr error
+	fail := func(mac string, err error) {
+		if firstErr == nil {
+			firstErr = err
+		}
+		// Never pinned, so it must not hold the operation open waiting for
+		// an arrival nothing asked for.
+		e.mu.Lock()
+		delete(op.pending, mac)
+		delete(e.pins, mac)
+		e.mu.Unlock()
+	}
+
+	// 1. BAR EVERY OTHER RADIO IT MUST NOT USE, before asking. A client told to
+	// move, or one that leaves on its own, must find the destination its only
+	// choice. These are radios it is not on, so this disconnects nobody.
+	var held []string
+	for _, mac := range macs {
+		var others []string
+		for _, w := range op.deny {
+			if w != origin[mac] {
+				others = append(others, w)
 			}
 		}
-		if !ok {
-			// Never pinned, so it must not hold the operation open waiting for
-			// an arrival nothing asked for.
-			e.mu.Lock()
-			delete(op.pending, mac)
-			delete(e.pins, mac)
-			e.mu.Unlock()
+		if err := e.denyAll(mac, others, hold); err != nil {
+			fail(mac, err)
 			continue
+		}
+		held = append(held, mac)
+	}
+
+	// 2. ASK, while each client is still associated.
+	e.askBeforeDeny(op, held, origin, hint)
+
+	// 3. BAR THE RADIO IT IS ON. One that refused, or never answered, is
+	// disconnected by this; one that already left is unaffected.
+	var pinned []string
+	for _, mac := range held {
+		if !slices.Contains(op.deny, origin[mac]) || !e.pinHeld(op, mac) {
+			// Its radio is not one to leave, or every client has landed and the
+			// operation is already lifted: release what step 1 placed rather
+			// than leave entries nothing will remove.
+			if !e.pinHeld(op, mac) {
+				e.releaseDeny(mac, op.deny)
+			}
+			pinned = append(pinned, mac)
+			continue
+		}
+		if err := e.denyAll(mac, []string{origin[mac]}, hold); err != nil {
+			// A ban covering some of the radios is worse than none: the client
+			// is barred from part of the box and free to sit on the rest.
+			e.releaseDeny(mac, op.deny)
+			fail(mac, err)
+			continue
+		}
+		// Landed while its last ban was going in. If that arrival was the last
+		// one, the operation has already been lifted, and these entries are
+		// past the point anything would remove them.
+		if !e.pinHeld(op, mac) {
+			e.releaseDeny(mac, op.deny)
 		}
 		pinned = append(pinned, mac)
 	}
@@ -698,24 +764,11 @@ func (e *Engine) runPin(
 		}
 		return 0, fmt.Errorf("no client could be pinned")
 	}
-	// Ask politely first. A client that honours the transition moves without
-	// ever losing its association, which is cleaner than being dropped -- and
-	// the ACLs mean the outcome is settled either way.
-	//
-	// Best effort: BTM is not deliverable from every radio here (no client has
-	// ever answered one sent from the brcmfmac onboard radio), so a failure to
-	// send is expected rather than exceptional, and the deauth is what actually
-	// guarantees the move.
+	// The deny has already disconnected any client still on a denied radio;
+	// this covers a driver that does not. Only the denied radios, never the one
+	// the client is on now, which may be its destination.
 	for _, mac := range pinned {
-		from := e.radioFor(mac)
-		if from != "" && from != hint {
-			if err := e.SteerClient(mac, from, hint, steerSuggest); err != nil {
-				log.Printf("pin steer %s %s->%s: %v", mac, from, hint, err)
-			}
-		}
-		if err := e.LinkDeauth(mac, 0); err != nil {
-			log.Printf("pin deauth %s: %v", mac, err)
-		}
+		e.kickFromDenied(op, mac)
 	}
 
 	go func() {
@@ -726,6 +779,125 @@ func (e *Engine) runPin(
 	moved := len(pinned)
 	e.logEvent(EventAction, iface, "", format, moved, iface, joinRadios(op.deny), durSec)
 	return moved, firstErr
+}
+
+// askBeforeDeny sends each client on a radio it must leave a force request
+// toward hint, then waits up to pinAskGrace for them to go or answer.
+//
+// Best effort: BTM is not deliverable from every radio (no client has ever
+// answered one sent from the brcmfmac onboard radio), so a failure to send is
+// logged and the deny does the job instead.
+func (e *Engine) askBeforeDeny(op *pinOp, macs []string, origin map[string]string, hint string) {
+	asked := map[string]string{}
+	for _, mac := range macs {
+		from := origin[mac]
+		if from == "" || from == hint || !slices.Contains(op.deny, from) {
+			continue
+		}
+		// FORCE, not suggest: the client IS about to be dropped, so the request
+		// says so, with the countdown. On the Cudy, 2026-10-02, toward 2.4 GHz,
+		// all three clients refused every plain suggest a gather sent, and
+		// accepted 7 of 9 force requests. hostapd's own timer acts only on
+		// the radio being left, so it cannot reach the destination.
+		e.mu.Lock()
+		delete(e.steerAccepted, mac) // only this request's answer counts
+		e.mu.Unlock()
+		if err := e.SteerClient(mac, from, hint, steerInsist); err != nil {
+			log.Printf("pin steer %s %s->%s: %v", mac, from, hint, err)
+			continue
+		}
+		asked[mac] = from
+	}
+	if len(asked) == 0 || e.cfg.Demo {
+		return
+	}
+	deadline := time.Now().Add(pinAskGrace)
+	for time.Now().Before(deadline) {
+		// Still on the radio it was asked to leave, and either not yet
+		// answered or ACCEPTED: an accept arrives before the roam does, by up
+		// to four seconds measured (two Macs, the Cudy, 2026-10-02). Barring
+		// the old radio on the accept disconnected them mid-roam, and both
+		// left the network. Only a refusal, or having gone, ends the wait.
+		waiting := false
+		for mac, from := range asked {
+			if _, still := StationDump(from)[mac]; still && (e.steerPending(mac) || e.steerWasAccepted(mac)) {
+				waiting = true
+				break
+			}
+		}
+		if !waiting {
+			return
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+}
+
+// denyAll denies mac on every radio in radios, or on none: a failure part-way
+// removes the entries this call placed.
+func (e *Engine) denyAll(mac string, radios []string, hold time.Duration) error {
+	for i, w := range radios {
+		if err := e.denyACLAdd(w, mac, hold); err != nil {
+			for _, done := range radios[:i] {
+				if e2 := e.denyACLOn(done, "DEL", mac); e2 != nil {
+					log.Printf("pin unwind %s on %s: %v", mac, done, e2)
+				}
+			}
+			return fmt.Errorf("could not deny %s on %s: %w", mac, w, err)
+		}
+	}
+	return nil
+}
+
+// kickFromDenied deauthenticates mac on each radio op denies where it is still
+// associated, and nowhere else.
+func (e *Engine) kickFromDenied(op *pinOp, mac string) {
+	if e.cfg.Demo {
+		return
+	}
+	for _, w := range op.deny {
+		if _, on := StationDump(w)[mac]; !on {
+			continue
+		}
+		reply, err := hostapdCmd(w, deauthCommand(mac, 0))
+		if err == nil && !strings.HasPrefix(reply, "OK") {
+			err = fmt.Errorf("hostapd rejected the deauth: %s", strings.TrimSpace(reply))
+		}
+		if err != nil {
+			log.Printf("pin deauth %s on %s: %v", mac, w, err)
+		}
+	}
+}
+
+// pinPending reports whether mac has yet to land for op.
+func (e *Engine) pinPending(op *pinOp, mac string) bool {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return op.pending[mac]
+}
+
+// pinHeld reports whether op is still the claim holding mac. False once the
+// operation has been lifted, which deletes its entries from e.pins.
+func (e *Engine) pinHeld(op *pinOp, mac string) bool {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return e.pins[mac] == op
+}
+
+// steerWasAccepted reports whether mac accepted its most recent transition
+// request.
+func (e *Engine) steerWasAccepted(mac string) bool {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return e.steerAccepted[mac]
+}
+
+// steerPending reports whether a transition request to mac is still awaiting
+// its answer. The monitor removes the entry when the answer arrives.
+func (e *Engine) steerPending(mac string) bool {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	_, ok := e.pendingSteers[mac]
+	return ok
 }
 
 // joinRadios lists radios the way the activity log reads best: "a and b", not
