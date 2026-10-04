@@ -421,6 +421,12 @@ func (e *Engine) SetRadioRole(iface string, scanner bool) (string, error) {
 	if scanner {
 		return scan, nil
 	}
+	// The name it serves under now, not the one it was asked by: a radio
+	// promoted from phy3-scan serves as phy3-ap0, and the reply said
+	// "now": "phy3-scan" -- the interface this function had just deleted.
+	if ap := apIfaceOn(phy, scan); ap != "" {
+		return ap, nil
+	}
 	return iface, nil
 }
 
@@ -835,10 +841,13 @@ func orphanIsLeftOverFromServe(phy, name string, servesAP bool) bool {
 // phyServesAP reports whether any interface on phy other than skip is an
 // access point, read from the kernel rather than from uci, since a stale
 // interface is exactly the case where the two disagree.
-func phyServesAP(phy, skip string) bool {
+func phyServesAP(phy, skip string) bool { return apIfaceOn(phy, skip) != "" }
+
+// apIfaceOn names an access-point interface on phy other than skip, or "".
+func apIfaceOn(phy, skip string) string {
 	ents, err := os.ReadDir(filepath.Join("/sys/class/ieee80211", phy, "device", "net"))
 	if err != nil {
-		return false
+		return ""
 	}
 	for _, ent := range ents {
 		name := ent.Name()
@@ -847,8 +856,8 @@ func phyServesAP(phy, skip string) bool {
 		}
 		out, err := exec.Command("iw", "dev", name, "info").Output()
 		if err == nil && strings.Contains(string(out), "type AP") {
-			return true
+			return name
 		}
 	}
-	return false
+	return ""
 }
