@@ -662,12 +662,28 @@ useful control is the ladder, sent one mode at a time to one client.
 
 **A steer honoured is not a client that stays.** An iPhone moved to 2.4 GHz in
 3 s and went back to 5 GHz on its own 23 s later. Anything measuring "did it
-honour the steer?" has to sample within seconds; placement that must persist
-needs `gather`, which removes the alternatives instead of asking.
+honour the steer?" has to sample within seconds.
+
+**Clients go back where they prefer, whatever moved them.** Every command here
+moves a client for a moment; none of them changes which radio it likes. `gather`
+and `evict` bar the radios a client must leave, but only until every client has
+landed, and then the bars lift. Measured on the Cudy on 2026-10-02, across 8
+gathers and evicts: clients **forced** onto 2.4 GHz by a bar were back on their
+preferred 5 GHz radio within 4–12 s of the bars lifting, every time. Clients
+that **accepted** the request were still on 2.4 GHz 30 s later. So a client that
+agrees to move tends to stay, and one that is pushed comes back. That is clear
+for the two Macs. The iPhone stayed after accepting a gather's request, but in a
+separate run it accepted 6 plain requests to 2.4 GHz and was back on 5 GHz
+within 9 s every time, so for the iPhone it is not settled. Keeping a client on
+a radio it does not prefer needs a bar that stays on, which no control offers
+yet (#523).
 
 Those moves were all **5 GHz to 2.4 GHz**: the box had only those two radios
-then. Re-measured on 2026-10-02 with a second 5 GHz radio, **no client accepted
-a move to it**, 0 of 27 requests, while 14 of 27 to 2.4 GHz were accepted.
+then. Re-measured on 2026-10-02 with a second 5 GHz radio, which reached the
+clients 5–10 dB weaker than the first, **no client accepted a move to it**:
+0 of 27 requests, and about 15 more by hand. Requests between the two stronger
+radios were mostly accepted, in both directions. So a request is weighed
+against signal, not band, as far as three Apple clients show.
 [`docs/STEERING.md`](docs/STEERING.md) has every command, client and radio,
 and what is still unknown.
 
