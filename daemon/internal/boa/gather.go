@@ -635,11 +635,12 @@ func (e *Engine) EvictFrom(iface string, durSec float64) (int, error) {
 // pinAskGrace is how long a pin waits, after asking, for clients to leave on
 // their own before the deny takes them off.
 //
-// A client that accepts a transition leaves within 0.2-0.4 s (the Cudy,
-// 2026-10-02, 14 accepted moves), so this only binds one that refused or never
-// answered, and the wait ends early once every client asked has either gone
-// or answered.
-const pinAskGrace = 2 * time.Second
+// The same as the countdown the request announces (steerInsist carries
+// Disassociation Imminent with a evictDisassocSec timer), so what a client is
+// told is what happens. A client that accepts leaves within 0.2-0.4 s (the
+// Cudy, 2026-10-02), so this only binds one that refused or never answered,
+// and the wait ends early once every client asked has gone or answered.
+const pinAskGrace = evictDisassocSec * time.Second
 
 // runPin applies one operation: ask, deny, then disconnect only where denied.
 //
@@ -780,7 +781,7 @@ func (e *Engine) runPin(
 	return moved, firstErr
 }
 
-// askBeforeDeny sends each client on a radio it must leave an 802.11v request
+// askBeforeDeny sends each client on a radio it must leave a force request
 // toward hint, then waits up to pinAskGrace for them to go or answer.
 //
 // Best effort: BTM is not deliverable from every radio (no client has ever
@@ -793,7 +794,12 @@ func (e *Engine) askBeforeDeny(op *pinOp, macs []string, origin map[string]strin
 		if from == "" || from == hint || !slices.Contains(op.deny, from) {
 			continue
 		}
-		if err := e.SteerClient(mac, from, hint, steerSuggest); err != nil {
+		// FORCE, not suggest: the client IS about to be dropped, so the request
+		// says so, with the countdown. On the Cudy, 2026-10-02, toward 2.4 GHz,
+		// all three clients refused every plain suggest a gather sent, and
+		// accepted 7 of 9 force requests. hostapd's own timer acts only on
+		// the radio being left, so it cannot reach the destination.
+		if err := e.SteerClient(mac, from, hint, steerInsist); err != nil {
 			log.Printf("pin steer %s %s->%s: %v", mac, from, hint, err)
 			continue
 		}
