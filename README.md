@@ -674,16 +674,21 @@ that **accepted** the request were still on 2.4 GHz 30 s later. So a client that
 agrees to move tends to stay, and one that is pushed comes back. That is clear
 for the two Macs. The iPhone stayed after accepting a gather's request, but in a
 separate run it accepted 6 plain requests to 2.4 GHz and was back on 5 GHz
-within 9 s every time, so for the iPhone it is not settled. Keeping a client on
-a radio it does not prefer needs a bar that stays on, which no control offers
-yet (#523).
+within 9 s every time, so for the iPhone it is not settled. `gather` and
+`evict` do not keep a client on a radio it does not prefer: the bars are there
+to move it, and a client that did not want the destination goes back once they
+lift.
 
 Those moves were all **5 GHz to 2.4 GHz**: the box had only those two radios
 then. Re-measured on 2026-10-02 with a second 5 GHz radio, which reached the
 clients 5–10 dB weaker than the first, **no client accepted a move to it**:
 0 of 27 requests, and about 15 more by hand. Requests between the two stronger
-radios were mostly accepted, in both directions. So a request is weighed
-against signal, not band, as far as three Apple clients show.
+radios were mostly accepted, in both directions. Then, on 2026-10-04, the 5 GHz
+radio was turned down to 0 dBm, leaving 2.4 GHz about 30 dB stronger at the
+clients, and they **still went back to 5 GHz**, within 4–36 s of accepting a
+move off it. So these Apple clients weigh **band first**, preferring 5 GHz
+while it is usable (−55 dBm is), and **signal second**, between radios on the
+same band. Transmit power alone does not move them to 2.4 GHz.
 [`docs/STEERING.md`](docs/STEERING.md) has every command, client and radio,
 and what is still unknown.
 

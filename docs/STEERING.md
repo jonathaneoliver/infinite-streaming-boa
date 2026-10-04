@@ -16,17 +16,22 @@
 - **Clients go where they prefer, and a request only works when they already
   half agree.** Requests to the weakest radio, `phy2-ap0`/`phy3-ap0` on 5 GHz
   ch 36, were refused every time: 0 of 27 in the run and about 15 by hand.
-  Requests between the two strong radios were mostly accepted, **in both
-  directions**: 5 to 2.4 GHz and 2.4 to 5 GHz. So signal, not band, looks like
-  what decides it. Section 5 has the evidence.
+  Requests between the two strong radios were mostly accepted, in both
+  directions. **Band comes first, then signal**: these Apple clients prefer
+  5 GHz while it is usable, however much stronger 2.4 GHz is (section 6), and
+  when they choose between two 5 GHz radios themselves they pick the stronger
+  one (section 7). Signal does not make them accept a *request*, though: the
+  Macs refused every request to the USB radio, whether it was 5–10 dB weaker
+  or 21–23 dB stronger.
 - **The iPhone never stays on 2.4 GHz.** In all 6 of its accepted moves it was
   back on 5 GHz within about 9 s. The Macs mostly stay.
 - **A disconnect is not a redirect.** `deauth`, `disassoc`, and the disconnect
   `force` adds after a refusal all left clients reconnecting to the radio they
   prefer, usually the one they were thrown off.
 - **Only a deny moves a client reliably**: `ban`, `gather`, `evict`. Even then
-  a slow client can outlast the 10 s hold, and one left the network twice
-  (#523).
+  a slow client can outlast the 10 s hold, and one left the network twice.
+  The hold ends when every client has landed, so it moves clients but does not
+  keep them: one that did not want the destination goes back.
 
 | Command | What it sends | Reliable move? |
 | --- | --- | --- |
@@ -131,8 +136,19 @@ iPhone's video played straight through both moves.
 **The hold is 10 s, and some clients take longer.** The Mac mini twice
 failed to land within it when gathered by hand on 2026-10-02: once it rejoined
 51 s later, and once it left `cudy1263` for another network entirely. A
-client that has not landed when the hold lifts is free to go back. That is
-#523, and the API already accepts a longer `?pin=`.
+client that has not landed when the hold lifts is free to go back. The API
+accepts a longer ceiling with `?pin=<seconds>`; the rack's buttons always use
+10 s.
+
+**Since #527 (2026-10-02), gather and evict ask before they bar.** They bar
+every radio the client must not use except the one it is on, send a `force`
+request toward the destination while it is still associated, wait up to 5 s
+for it to leave or refuse, and only then bar its current radio. A client that
+accepts moves without being disconnected; one that refuses is barred and
+lands where it must. Nothing is ever sent to the destination. Measured on the
+Cudy after the change: clients that accepted stayed on the destination after
+the bars lifted, and clients pushed by the bar went back to their preferred
+radio within 4–12 s. The measurements above this paragraph predate #527.
 
 ## 5. Hand tests after a reboot: the target radio decides
 
@@ -169,12 +185,100 @@ What this adds to sections 1 and 2:
 - **Requests between `phy0-ap0` and `phy1-ap0`, the two strong radios, were
   mostly accepted, in both directions.** 2.4 → 5 GHz at 19:34:10 was accepted
   by all three. So the 5 → 5 GHz refusals in section 1 are better explained by
-  the target being weaker than by its band. That is a likely explanation, not
-  a proven one; making `phy2-ap0` the strongest radio would test it.
+  the target being weaker than by its band. Section 6 shows the reverse does
+  not hold across bands: a far stronger 2.4 GHz radio does not win a client
+  off a usable 5 GHz one.
 - **Where `force` puts a client depends on which radios are up.** With only
   the source and one other radio serving, a disconnected client often lands on
   the other, because it is the only choice. With a strong alternative up it
   goes back to the strong one.
+
+## 6. A 2.4 GHz radio 30 dB stronger still does not keep them
+
+> **Scope:** tested by hand from the rack's buttons, 2026-10-04, after
+> `phy1-ap0` (5 GHz ch 149) was turned down from 28 dBm to **0 dBm**, its
+> slider's floor, with `phy0-ap0` (2.4 GHz ch 1) left at 26 dBm. The USB radio
+> was not serving: it had come back from a USB reset as `phy3-scan`, the box's
+> listening radio, so these were the only two access points.
+
+What the clients heard, from each Mac's own scan (CoreWLAN):
+
+| | `phy0-ap0`, 2.4 GHz, 26 dBm | `phy1-ap0`, 5 GHz, 0 dBm |
+| --- | --- | --- |
+| MacBook Pro | −23 dBm | −55 dBm |
+| Mac mini | −16 dBm | −54 dBm |
+
+At 28 dBm the MacBook had heard `phy1-ap0` at −29 dBm (2026-10-01), so the
+28 dB cut arrived as a 26 dB drop: the mt798x honours transmit power live and
+nearly exactly.
+
+With 2.4 GHz now about 30 dB stronger at the clients:
+
+- **Requests to 2.4 GHz were still often refused**: 6 of the first 9 answers,
+  "none of the candidates suit it" or "offering its own list of candidates".
+- **Clients that accepted went straight back to 5 GHz.** The MacBook accepted
+  four times and was back on `phy1-ap0` 4 s, 4 s, 16 s and 16 s later; the Mac
+  mini after 36 s. The radio they went back to reached them at −55 dBm, the
+  one they left at −16 to −23 dBm.
+
+So the preference for 5 GHz holds while 5 GHz is usable, and −55 dBm is
+usable. Signal decides between radios on the same band (sections 1 and 5);
+it does not pull a client to 2.4 GHz until 5 GHz is genuinely weak. Power
+alone could not get there in this room: 0 dBm is the floor, and it still
+reached the clients at −55 dBm. **Distance can.** Tested by hand earlier, with
+the iPhone carried to another room and the radios' power adjusted: it did
+switch between the radios once the signal changed enough. The signal levels
+at which it switched were not recorded. This matches Apple's published
+description of its devices roaming only once the current signal falls low,
+and favouring 5 GHz, but that match is reasoned, not measured here.
+
+**For steering:** with the clients close to the box, transmit power cannot
+push them onto 2.4 GHz; a bar holds them there only while it is on. Further
+away, where 5 GHz is genuinely weak, power can move them, as the hand test
+shows.
+
+## 7. A stronger 5 GHz radio: chosen, but not on request
+
+> **Scope:** 2026-10-04. `phy1-ap0` (onboard, 5 GHz ch 149) turned down to
+> 0 dBm; `phy3-ap0` (the USB mt7921u, 5 GHz ch 40) left as it was; `phy0-ap0`'s
+> access point off. Radio-wide `warn`, `term` and `force` from `phy1-ap0` to
+> `phy3-ap0`, all three clients at once. 4 valid trials of 9 planned: the run
+> was stopped once the clients moved to `phy3-ap0` faster than they could be
+> held on `phy1-ap0` between trials.
+
+What the Macs heard, from their own scans:
+
+| | `phy1-ap0`, ch 149, 0 dBm | `phy3-ap0`, ch 40 |
+| --- | --- | --- |
+| MacBook Pro | −56 dBm | −35 dBm |
+| Mac mini | −54 dBm | −31 dBm |
+
+`phy3-ap0` was **21–23 dB stronger**; in sections 1 and 5 it had been 5–10 dB
+weaker.
+
+| | Answer to the request | Where it went when free to choose |
+| --- | --- | --- |
+| Mac mini | **refused all 4**, status 1 | `phy3-ap0`, after `force` disconnected it, and stayed |
+| MacBook Pro | **refused all 4**, status 1 | `phy3-ap0`, after `force` disconnected it, and stayed |
+| iPhone | **never answered**; moved once, at 5 s, without replying | `phy3-ap0`, every time it rejoined |
+
+So signal decides the clients' **own** choice within a band. Every time a
+client chose a radio itself (after a disconnect, rejoining, or drifting
+between trials), it chose the one 21–23 dB stronger, and went back there
+faster than a deny could be lifted and re-placed. When `phy3-ap0` was weaker,
+the same disconnects sent them back to `phy1-ap0`.
+
+Signal does **not** decide whether the Macs accept a request to this radio.
+They refused every 802.11v request to `phy3-ap0`, with status 1, at both
+strengths, while they accepted requests between `phy0-ap0` and `phy1-ap0`.
+What makes `phy3-ap0` different is not known: it is on channel 40 (UNII-1), it
+is the USB mt7921u rather than the onboard mt798x, and the request boa builds
+for it names a different operating class. Any of these could be it.
+
+**For steering:** to move these clients onto a stronger 5 GHz radio, a request
+is unnecessary and refused; a disconnect is enough, because they choose the
+stronger radio on the way back. `force` does both, which is why it worked
+here.
 
 ## What is not known
 
@@ -182,10 +286,14 @@ What this adds to sections 1 and 2:
   from 2026-10-01 are void, because it was not advertising BSS Transition
   then (#516, fixed by #517). They were not repeated, and section 1 used it
   only as a target.
-- **Whether signal alone explains the refusals.** Turning `phy1-ap0` down
-  until `phy2-ap0` is the stronger 5 GHz radio, then repeating the requests,
-  would show it. The onboard radios honour transmit power live, so it is a
-  ten-minute test.
+- **Why the Macs refuse every request to the USB radio.** Section 7 rules
+  out its signal. Moving it to channel 149's neighbour block, or steering
+  between two onboard radios on the same band, would separate the channel,
+  the chipset and the request's operating class.
+- **How weak 5 GHz must be before a client prefers 2.4 GHz.** The switch
+  happens (section 6, tested by hand with the iPhone in another room), but the
+  signal levels at which it does were not recorded. A client-side scan at each
+  step, as in section 6's table, would measure it.
 - **What drives the streaks in section 2.** A channel scan alongside each
   trial would show whether a busy channel 1 explains the refusals.
 - **How general any of this is.** Three Apple devices, one room, two days,
@@ -194,11 +302,13 @@ What this adds to sections 1 and 2:
 
 ## Related
 
-- #498: the deauth that follows a gather or evict can catch a client as it
-  lands.
+- #498 / #527: the deauth that followed a gather or evict could kick a client
+  off the radio it had just been sent to. Fixed: the pin now asks first and
+  never sends anything to the destination.
 - #516 / #517: a hotplugged radio did not advertise 802.11k/v.
-- #523: the 10 s gather/evict hold is too short for some clients, and the rack
-  has no way to set a longer one.
-- The activity log words `steer`, `warn`, `term` and `force` identically, so
-  a session tested by hand cannot be read back by button. Naming the mode in
-  the "asked to move" line would fix it.
+- The 10 s gather/evict hold is too short for some clients, and the rack has
+  no way to set a longer one. The API's `?pin=` can. A hold that keeps clients
+  in place after they land is not planned.
+- #525 / #526: the activity log worded `steer`, `warn`, `term` and `force`
+  identically, so the hand session in section 5 could not be read back by
+  button. Fixed: each "asked to move" line now names the button.
