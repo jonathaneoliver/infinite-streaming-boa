@@ -277,6 +277,11 @@ type Engine struct {
 	// accepted, so a pin waiting on them keeps waiting until they have actually
 	// gone: an accept arrives seconds before the roam can (#498).
 	steerAccepted map[string]bool
+	// scanRetired is the listen-only interfaces a role change has just taken
+	// away, which the rebuild timer must not put back. ScanPorts is read at
+	// startup, so until the restart that ends every role change it still names
+	// them, and the timer would recreate the interface the change just deleted.
+	scanRetired map[string]bool
 
 	// btmCandidates is where a transition refusal's candidate list waits for
 	// the BSS-TM-RESP event that reports the refusal, so one line can say both
