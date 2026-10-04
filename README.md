@@ -665,6 +665,12 @@ useful control is the ladder, sent one mode at a time to one client.
 honour the steer?" has to sample within seconds; placement that must persist
 needs `gather`, which removes the alternatives instead of asking.
 
+Those moves were all **5 GHz to 2.4 GHz**: the box had only those two radios
+then. Re-measured on 2026-10-02 with a second 5 GHz radio, **no client accepted
+a move to it**, 0 of 27 requests, while 14 of 27 to 2.4 GHz were accepted.
+[`docs/STEERING.md`](docs/STEERING.md) has every command, client and radio,
+and what is still unknown.
+
 ### What scanning while serving costs
 
 A full both-band scan from the serving 5 GHz radio, pinging a MacBook 5 times a
