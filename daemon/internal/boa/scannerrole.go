@@ -119,7 +119,7 @@ func (e *Engine) rebuildMissingScanIfaces() {
 		return
 	}
 	for _, s := range e.cfg.ScanPorts {
-		if s == "" || LinkExists(s) {
+		if s == "" || LinkExists(s) || e.scanIsRetired(s) {
 			continue
 		}
 		phy := phyOfScanIface(s)
@@ -188,7 +188,26 @@ func (e *Engine) warnOrphanScanIfaces() {
 	}
 	for _, ent := range ents {
 		name := ent.Name()
-		if claimed[name] || phyOfScanIface(name) == "" {
+		phy := phyOfScanIface(name)
+		if claimed[name] || phy == "" {
+			continue
+		}
+		// LEFT OVER FROM A SERVE, SO TAKEN AWAY. A listen-only interface boa
+		// no longer claims, on a radio that is serving an access point, is the
+		// residue of that radio being switched back to serving -- not hardware
+		// somebody made on purpose, because the radio it sits on is already
+		// doing another job. Deleted, and said so, rather than warned about and
+		// left for the operator to type `iw dev ... del`.
+		if orphanIsLeftOverFromServe(phy, name, phyServesAP(phy, name)) {
+			if out, err := exec.Command("iw", "dev", name, "del").CombinedOutput(); err != nil {
+				e.logEvent(EventWarning, name, "",
+					"%s is left over from %s being switched to serve, and could not be removed: %v: %s",
+					name, phy, err, strings.TrimSpace(string(out)))
+			} else {
+				e.logEvent(EventRadio, name, "",
+					"%s removed: left over from %s being switched back to serving, and nothing listens on it",
+					name, phy)
+			}
 			continue
 		}
 		want := strings.TrimSpace(strings.Join(e.cfg.ScanPorts, " ") + " " + name)
@@ -284,6 +303,13 @@ func (e *Engine) SetRadioRole(iface string, scanner bool) (string, error) {
 		if err := uciCommit("wireless"); err != nil {
 			return "", err
 		}
+		// RETIRED BEFORE IT IS DELETED. The rebuild timer recreates any
+		// listening interface in ScanPorts that is missing, and ScanPorts is
+		// only re-read by the restart that ends this function -- seconds away,
+		// past a wifi reload and a wait for the access point. Seen on the Cudy
+		// 2026-10-04: a radio set to serve came back with both phy3-ap0 and a
+		// phy3-scan beside it, which the rack showed as a radio serving nobody.
+		e.retireScan(scan)
 		if LinkExists(scan) {
 			if out, err := exec.Command("iw", "dev", scan, "del").CombinedOutput(); err != nil {
 				return "", fmt.Errorf("removing %s: %v: %s", scan, err, strings.TrimSpace(string(out)))
@@ -778,4 +804,51 @@ func uciCommit(pkg string) error {
 		return fmt.Errorf("uci commit %s: %v: %s", pkg, err, strings.TrimSpace(string(out)))
 	}
 	return nil
+}
+
+// retireScan marks a listen-only interface as taken away by a role change, so
+// the rebuild timer leaves it gone until the restart re-reads ScanPorts.
+func (e *Engine) retireScan(name string) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.scanRetired == nil {
+		e.scanRetired = map[string]bool{}
+	}
+	e.scanRetired[name] = true
+}
+
+// scanIsRetired reports whether a role change has taken this interface away.
+func (e *Engine) scanIsRetired(name string) bool {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return e.scanRetired[name]
+}
+
+// orphanIsLeftOverFromServe is the rule for deleting an unclaimed listen-only
+// interface: only when the radio it sits on also serves an access point. An
+// orphan on a radio doing nothing else may be somebody's on purpose, and is
+// still only warned about.
+func orphanIsLeftOverFromServe(phy, name string, servesAP bool) bool {
+	return phy != "" && phyOfScanIface(name) == phy && servesAP
+}
+
+// phyServesAP reports whether any interface on phy other than skip is an
+// access point, read from the kernel rather than from uci, since a stale
+// interface is exactly the case where the two disagree.
+func phyServesAP(phy, skip string) bool {
+	ents, err := os.ReadDir(filepath.Join("/sys/class/ieee80211", phy, "device", "net"))
+	if err != nil {
+		return false
+	}
+	for _, ent := range ents {
+		name := ent.Name()
+		if name == skip {
+			continue
+		}
+		out, err := exec.Command("iw", "dev", name, "info").Output()
+		if err == nil && strings.Contains(string(out), "type AP") {
+			return true
+		}
+	}
+	return false
 }
