@@ -25,8 +25,9 @@
   `force` adds after a refusal all left clients reconnecting to the radio they
   prefer, usually the one they were thrown off.
 - **Only a deny moves a client reliably**: `ban`, `gather`, `evict`. Even then
-  a slow client can outlast the 10 s hold, and one left the network twice
-  (#523).
+  a slow client can outlast the 10 s hold, and one left the network twice.
+  The hold ends when every client has landed, so it moves clients but does not
+  keep them: one that did not want the destination goes back.
 
 | Command | What it sends | Reliable move? |
 | --- | --- | --- |
@@ -131,8 +132,19 @@ iPhone's video played straight through both moves.
 **The hold is 10 s, and some clients take longer.** The Mac mini twice
 failed to land within it when gathered by hand on 2026-10-02: once it rejoined
 51 s later, and once it left `cudy1263` for another network entirely. A
-client that has not landed when the hold lifts is free to go back. That is
-#523, and the API already accepts a longer `?pin=`.
+client that has not landed when the hold lifts is free to go back. The API
+accepts a longer ceiling with `?pin=<seconds>`; the rack's buttons always use
+10 s.
+
+**Since #527 (2026-10-02), gather and evict ask before they bar.** They bar
+every radio the client must not use except the one it is on, send a `force`
+request toward the destination while it is still associated, wait up to 5 s
+for it to leave or refuse, and only then bar its current radio. A client that
+accepts moves without being disconnected; one that refuses is barred and
+lands where it must. Nothing is ever sent to the destination. Measured on the
+Cudy after the change: clients that accepted stayed on the destination after
+the bars lifted, and clients pushed by the bar went back to their preferred
+radio within 4–12 s. The measurements above this paragraph predate #527.
 
 ## 5. Hand tests after a reboot: the target radio decides
 
@@ -194,11 +206,13 @@ What this adds to sections 1 and 2:
 
 ## Related
 
-- #498: the deauth that follows a gather or evict can catch a client as it
-  lands.
+- #498 / #527: the deauth that followed a gather or evict could kick a client
+  off the radio it had just been sent to. Fixed: the pin now asks first and
+  never sends anything to the destination.
 - #516 / #517: a hotplugged radio did not advertise 802.11k/v.
-- #523: the 10 s gather/evict hold is too short for some clients, and the rack
-  has no way to set a longer one.
-- The activity log words `steer`, `warn`, `term` and `force` identically, so
-  a session tested by hand cannot be read back by button. Naming the mode in
-  the "asked to move" line would fix it.
+- The 10 s gather/evict hold is too short for some clients, and the rack has
+  no way to set a longer one. The API's `?pin=` can. A hold that keeps clients
+  in place after they land is not planned.
+- #525 / #526: the activity log worded `steer`, `warn`, `term` and `force`
+  identically, so the hand session in section 5 could not be read back by
+  button. Fixed: each "asked to move" line now names the button.
