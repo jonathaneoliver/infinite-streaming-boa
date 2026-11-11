@@ -11,16 +11,16 @@
   },
   "dependencies": {
     "d3-sankey": "^0.12.3",
-    "d3-shape": "^3.2.0",
-    "vue": "^3.5.43"
+    "d3-shape": "^3.2.1",
+    "vue": "^3.5.45"
   },
   "devDependencies": {
     "@types/d3-sankey": "^0.12.5",
     "@types/d3-shape": "^3.2.0",
-    "@types/node": "^26.6.3",
-    "@vitejs/plugin-vue": "^6.0.9",
+    "@types/node": "^26.6.6",
+    "@vitejs/plugin-vue": "^6.0.10",
     "typescript": "^6.0.3",
-    "vite": "^8.3.1",
-    "vue-tsc": "^3.3.11"
+    "vite": "^8.3.6",
+    "vue-tsc": "^3.3.14"
   }
 }
